@@ -1,0 +1,6 @@
+{
+  "log_dir": "observer_logs",
+  "prediction_window_sec": 60,
+  "rolling_days": 7,
+  "max_models": 3
+}

@@ -1,0 +1,24 @@
+#ifndef __MODEL_INTERFACE_MQH__
+#define __MODEL_INTERFACE_MQH__
+
+struct ModelSignal
+{
+   datetime timestamp;
+   string   symbol;
+   int      direction; // 1 = buy, -1 = sell
+   double   lots;
+   double   price;
+   double   sl;
+   double   tp;
+};
+
+struct ModelMetrics
+{
+   string   model_id;
+   int      predicted_events;
+   int      matched_events;
+   double   success_pct;
+   double   coverage_pct;
+};
+
+#endif
