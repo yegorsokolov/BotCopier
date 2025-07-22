@@ -118,7 +118,7 @@ void OnTick()
       {
          LogTrade("OPEN", ticket, OrderMagicNumber(), "mt4", OrderSymbol(), OrderType(),
                   OrderLots(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
-                  now, OrderComment());
+                  0.0, now, OrderComment());
          AddTicket(ticket);
       }
    }
@@ -142,7 +142,8 @@ void OnTick()
          {
             LogTrade("CLOSE", ticket, OrderMagicNumber(), "mt4", OrderSymbol(),
                      OrderType(), OrderLots(), OrderClosePrice(), OrderStopLoss(),
-                     OrderTakeProfit(), now, OrderComment());
+                     OrderTakeProfit(), OrderProfit()+OrderSwap()+OrderCommission(),
+                     now, OrderComment());
          }
          RemoveTicket(ticket);
          t--; // adjust index after removal
@@ -163,16 +164,24 @@ void OnTimer()
 
 void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
-              double sl, double tp, datetime time_event, string comment)
+              double sl, double tp, double profit, datetime time_event, string comment)
 {
    string fname = LogDirectoryName + "\\trades_raw.csv";
    int f = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE, ';');
    if(f==INVALID_HANDLE)
       return;
+   bool need_header = (FileSize(f)==0);
    FileSeek(f, 0, SEEK_END);
-   string line = StringFormat("%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%s",
+   if(need_header)
+   {
+      string header = "event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment";
+      FileWrite(f, header);
+   }
+   string line = StringFormat("%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s",
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
-      ticket, magic, source, symbol, order_type, lots, price, sl, tp, comment);
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
+      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment);
    FileWrite(f, line);
    FileClose(f);
 }
