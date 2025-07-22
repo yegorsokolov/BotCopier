@@ -12,7 +12,7 @@ This project provides a skeleton framework for creating an "Observer" Expert Adv
   - `train_target_clone.py` – trains a model from exported logs.
   - `generate_mql4_from_model.py` – renders a new EA from a trained model description.
   - `evaluate_predictions.py` – basic log evaluation utility.
-  - `promote_best_models.py` – copies highest scoring models to a best directory.
+  - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
 - `models/` – location for generated models.
 - `utils/` – miscellaneous utilities.
 - `config.json` – example configuration file.
