@@ -14,7 +14,6 @@ This project provides a skeleton framework for creating an "Observer" Expert Adv
   - `evaluate_predictions.py` – basic log evaluation utility.
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
 - `models/` – location for generated models.
-- `utils/` – miscellaneous utilities.
 - `config.json` – example configuration file.
 
 ## Installation
