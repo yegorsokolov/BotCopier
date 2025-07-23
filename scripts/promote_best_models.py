@@ -44,7 +44,12 @@ def _score_for_model(model_json: Path, metric: str) -> float:
     return score
 
 
-def promote(models_dir: Path, best_dir: Path, max_models: int, metric: str) -> None:
+def promote(
+    models_dir: Path,
+    best_dir: Path,
+    max_models: int,
+    metric: str,
+) -> None:
     """Copy the top ``max_models`` from ``models_dir`` to ``best_dir``."""
 
     best_dir.mkdir(parents=True, exist_ok=True)
@@ -70,7 +75,13 @@ def main():
     p.add_argument('--metric', default='success_pct',
                    help='metric key to sort by')
     args = p.parse_args()
-    promote(Path(args.models_dir), Path(args.best_dir), args.max_models, args.metric)
+    promote(
+        Path(args.models_dir),
+        Path(args.best_dir),
+        args.max_models,
+        args.metric,
+    )
+
 
 if __name__ == '__main__':
     main()

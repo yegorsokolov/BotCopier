@@ -32,8 +32,12 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
         reader = csv.DictReader(f, delimiter=";")
         preds = []
         for r in reader:
-            ts = _parse_time(r.get("timestamp") or r.get("time") or r[reader.fieldnames[0]])
-            direction_raw = str(r.get("direction") or r.get("order_type") or "").lower()
+            ts = _parse_time(
+                r.get("timestamp") or r.get("time") or r[reader.fieldnames[0]]
+            )
+            direction_raw = str(
+                r.get("direction") or r.get("order_type") or ""
+            ).lower()
             if direction_raw in ("1", "buy", "0"):
                 direction = 1
             elif direction_raw in ("-1", "sell", "1"):
@@ -62,12 +66,18 @@ def _load_actual_trades(log_file: Path) -> List[Dict]:
         for r in reader:
             action = (r.get("action") or "").upper()
             ticket = r.get("ticket")
-            ts = _parse_time(r.get("event_time") or r.get("time_event") or r[reader.fieldnames[0]])
+            ts = _parse_time(
+                r.get("event_time")
+                or r.get("time_event")
+                or r[reader.fieldnames[0]]
+            )
             if action == "OPEN":
                 open_map[ticket] = {
                     "open_time": ts,
                     "symbol": r.get("symbol", ""),
-                    "direction": 1 if int(float(r.get("order_type", 0))) == 0 else -1,
+                    "direction": 1
+                    if int(float(r.get("order_type", 0))) == 0
+                    else -1,
                     "lots": float(r.get("lots", 0) or 0),
                 }
             elif action == "CLOSE" and ticket in open_map:
@@ -134,11 +144,24 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Evaluate prediction logs")
     p.add_argument("predicted_log", help="CSV of predicted signals")
     p.add_argument("actual_log", help="CSV of observed trades")
-    p.add_argument("--window", type=int, default=60, help="matching window in seconds")
-    p.add_argument("--json-out", type=Path, help="optional path for JSON summary")
+    p.add_argument(
+        "--window",
+        type=int,
+        default=60,
+        help="matching window in seconds",
+    )
+    p.add_argument(
+        "--json-out",
+        type=Path,
+        help="optional path for JSON summary",
+    )
     args = p.parse_args()
 
-    stats = evaluate(Path(args.predicted_log), Path(args.actual_log), args.window)
+    stats = evaluate(
+        Path(args.predicted_log),
+        Path(args.actual_log),
+        args.window,
+    )
 
     if args.json_out:
         with open(args.json_out, "w") as f:
@@ -147,11 +170,16 @@ def main() -> None:
 
     print("--- Evaluation Summary ---")
     print(f"Predicted events : {stats['predicted_events']}")
-    print(f"Matched events   : {stats['matched_events']} ({stats['hit_rate']*100:.1f}% hit rate)")
+    print(
+        f"Matched events   : {stats['matched_events']}"
+        f" ({stats['hit_rate']*100:.1f}% hit rate)"
+    )
     print(f"Coverage         : {stats['coverage']*100:.1f}% of actual trades")
     print(
-        f"Profit Factor    : {stats['profit_factor']:.2f} (gross P/L: {stats['gross_profit']-stats['gross_loss']:.2f})"
+        f"Profit Factor    : {stats['profit_factor']:.2f}"
+        f" (gross P/L: {stats['gross_profit']-stats['gross_loss']:.2f})"
     )
+
 
 if __name__ == '__main__':
     main()
