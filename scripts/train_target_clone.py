@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Train model from exported features.
 
-The observer EA continuously exports trade logs as CSV files.  This script loads
-those logs, extracts a few simple features from each trade entry and trains a
-very small predictive model.  The resulting parameters along with some training
-metadata are written to ``model.json`` so they can be consumed by other helper
-scripts.
+The observer EA continuously exports trade logs as CSV files. This script
+loads those logs, extracts a few simple features from each trade entry and
+trains a very small predictive model. The resulting parameters along with
+some training metadata are written to ``model.json`` so they can be consumed
+by other helper scripts.
 """
 import argparse
 import csv
@@ -17,6 +17,7 @@ import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+
 
 def _load_logs(data_dir: Path):
     """Load log rows from ``data_dir``.
@@ -63,7 +64,10 @@ def _load_logs(data_dir: Path):
                     rows.append(dict(zip(fields, row)))
                 else:
                     # best effort alignment
-                    r = {fields[i]: row[i] for i in range(min(len(row), len(fields)))}
+                    r = {
+                        fields[i]: row[i]
+                        for i in range(min(len(row), len(fields)))
+                    }
                     rows.append(r)
     return rows
 
@@ -146,6 +150,7 @@ def main():
     p.add_argument('--out-dir', required=True)
     args = p.parse_args()
     train(Path(args.data_dir), Path(args.out_dir))
+
 
 if __name__ == '__main__':
     main()

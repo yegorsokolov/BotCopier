@@ -4,7 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
-template_path = Path(__file__).resolve().parent.parent / 'experts' / 'StrategyTemplate.mq4'
+template_path = (
+    Path(__file__).resolve().parent.parent / 'experts' / 'StrategyTemplate.mq4'
+)
 
 
 def generate(model_json: Path, out_dir: Path):
@@ -14,8 +16,11 @@ def generate(model_json: Path, out_dir: Path):
     with open(template_path) as f:
         template = f.read()
     # Placeholder: simply copy template
-    output = template.replace('MagicNumber = 1234', f'MagicNumber = {model.get("magic", 9999)}')
-    out_file = out_dir / f"Generated_{model.get('model_id','model')}.mq4"
+    output = template.replace(
+        'MagicNumber = 1234',
+        f"MagicNumber = {model.get('magic', 9999)}",
+    )
+    out_file = out_dir / f"Generated_{model.get('model_id', 'model')}.mq4"
     with open(out_file, 'w') as f:
         f.write(output)
     print(f"Strategy written to {out_file}")
@@ -27,6 +32,7 @@ def main():
     p.add_argument('out_dir')
     args = p.parse_args()
     generate(Path(args.model_json), Path(args.out_dir))
+
 
 if __name__ == '__main__':
     main()
