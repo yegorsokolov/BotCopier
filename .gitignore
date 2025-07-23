@@ -1,0 +1,16 @@
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# MetaTrader build artifacts
+experts/*.ex4
+
+# Log directories
+observer_logs/
+logs/
+*.log
+
+# Generated models
+models/best/
