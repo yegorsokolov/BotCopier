@@ -38,6 +38,7 @@ Compile the generated MQ4 file and the observer will begin evaluating prediction
 ## Maintenance
 
 Logs are written to the directory specified by the EA parameter `LogDirectoryName` (default `observer_logs`).  Periodically archive or clean this directory to avoid large disk usage.  Models placed in the `models/best` folder can be retained for future analysis.
+Metrics entries older than the number of days specified by `MetricsDaysToKeep` (default 30) are removed automatically during log export.
 
 ## Running Tests
 
