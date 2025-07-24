@@ -25,6 +25,5 @@ def test_generate(tmp_path: Path):
     with open(out_file) as f:
         content = f.read()
     assert "MagicNumber = 777" in content
-    assert "0.1" in content
-    assert "-0.2" in content
-    assert "0.05" in content
+    assert "double ModelCoefficients[] = {0.1, -0.2};" in content
+    assert "double ModelIntercept = 0.05;" in content
