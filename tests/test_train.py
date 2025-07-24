@@ -24,6 +24,9 @@ def _write_log(file: Path):
         "tp",
         "profit",
         "comment",
+        "spread",
+        "balance",
+        "uid",
     ]
     rows = [
         [
@@ -42,6 +45,9 @@ def _write_log(file: Path):
             "1.1100",
             "0",
             "",
+            "0.0002",
+            "1000.00",
+            "1",
         ],
         [
             "2024.01.01 01:00:00",
@@ -59,6 +65,9 @@ def _write_log(file: Path):
             "1.2100",
             "0",
             "",
+            "0.0003",
+            "1000.00",
+            "2",
         ],
     ]
     with open(file, "w", newline="") as f:

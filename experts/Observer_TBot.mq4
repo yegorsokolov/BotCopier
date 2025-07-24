@@ -22,6 +22,7 @@ int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
+int      next_log_id = 1;
 
 int OnInit()
 {
@@ -49,7 +50,7 @@ int OnInit()
       FileSeek(trade_log_handle, 0, SEEK_END);
       if(need_header)
       {
-         string header = "event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment";
+         string header = "event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment;spread;balance;uid";
          FileWrite(trade_log_handle, header);
       }
    }
@@ -189,11 +190,15 @@ void LogTrade(string action, int ticket, int magic, string source,
    if(trade_log_handle==INVALID_HANDLE)
       return;
    FileSeek(trade_log_handle, 0, SEEK_END);
-   string line = StringFormat("%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s",
+   double spread = MarketInfo(symbol, MODE_SPREAD) * Point;
+   double balance = AccountBalance();
+   int uid = next_log_id++;
+   string line = StringFormat("%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s;%.5f;%.2f;%d",
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
-      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment);
+      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment,
+      spread, balance, uid);
    FileWrite(trade_log_handle, line);
    FileFlush(trade_log_handle);
 }

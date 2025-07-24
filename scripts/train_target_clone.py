@@ -50,6 +50,9 @@ def _load_logs(data_dir: Path):
         "tp",
         "profit",
         "comment",
+        "spread",
+        "balance",
+        "uid",
     ]
 
     rows = []
