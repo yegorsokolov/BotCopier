@@ -20,6 +20,7 @@ int      tracked_tickets[];
 int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
+int      trade_log_handle = INVALID_HANDLE;
 
 int OnInit()
 {
@@ -39,6 +40,19 @@ int OnInit()
    for(int j=0; j<sym_cnt; j++)
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
+   string log_fname = LogDirectoryName + "\\trades_raw.csv";
+   trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+   if(trade_log_handle!=INVALID_HANDLE)
+   {
+      bool need_header = (FileSize(trade_log_handle)==0);
+      FileSeek(trade_log_handle, 0, SEEK_END);
+      if(need_header)
+      {
+         string header = "event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment";
+         FileWrite(trade_log_handle, header);
+      }
+   }
+
    last_export = UseBrokerTime ? TimeCurrent() : TimeLocal();
    return(INIT_SUCCEEDED);
 }
@@ -46,6 +60,11 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   if(trade_log_handle!=INVALID_HANDLE)
+   {
+      FileClose(trade_log_handle);
+      trade_log_handle = INVALID_HANDLE;
+   }
 }
 
 bool MagicMatches(int magic)
@@ -166,24 +185,16 @@ void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
               double sl, double tp, double profit, datetime time_event, string comment)
 {
-   string fname = LogDirectoryName + "\\trades_raw.csv";
-   int f = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE, ';');
-   if(f==INVALID_HANDLE)
+   if(trade_log_handle==INVALID_HANDLE)
       return;
-   bool need_header = (FileSize(f)==0);
-   FileSeek(f, 0, SEEK_END);
-   if(need_header)
-   {
-      string header = "event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment";
-      FileWrite(f, header);
-   }
+   FileSeek(trade_log_handle, 0, SEEK_END);
    string line = StringFormat("%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s",
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment);
-   FileWrite(f, line);
-   FileClose(f);
+   FileWrite(trade_log_handle, line);
+   FileFlush(trade_log_handle);
 }
 
 void ExportLogs(datetime ts)
