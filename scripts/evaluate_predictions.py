@@ -37,12 +37,14 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
             )
             direction_raw = str(
                 r.get("direction") or r.get("order_type") or ""
-            ).lower()
-            if direction_raw in ("1", "buy", "0"):
+            ).strip().lower()
+
+            if direction_raw in ("1", "buy"):
                 direction = 1
-            elif direction_raw in ("-1", "sell", "1"):
+            elif direction_raw in ("0", "-1", "sell"):
                 direction = -1
             else:
+                # default to buy when direction is missing
                 direction = 1
 
             preds.append(
