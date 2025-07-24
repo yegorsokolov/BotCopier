@@ -21,11 +21,100 @@ extern int    LogSocketPort                 = 9000;
 int timer_handle;
 
 int      tracked_tickets[];
+int      ticket_map_keys[];    // sorted ticket numbers
+int      ticket_map_indices[]; // index in tracked_tickets
 int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
 int      log_socket = INVALID_HANDLE;
+
+// Binary search helper for sorted arrays. Returns index if found
+// or bitwise complement of insertion position if not found.
+int MapFind(int key)
+{
+   int left = 0;
+   int right = ArraySize(ticket_map_keys) - 1;
+   while(left <= right)
+   {
+      int mid = (left + right) / 2;
+      int v = ticket_map_keys[mid];
+      if(v == key)
+         return(mid);
+      if(v < key)
+         left = mid + 1;
+      else
+         right = mid - 1;
+   }
+   return(~left);
+}
+
+int MapGet(int key)
+{
+   int pos = MapFind(key);
+   if(pos >= 0)
+      return(ticket_map_indices[pos]);
+   return(-1);
+}
+
+void MapAdd(int key, int index)
+{
+   int pos = MapFind(key);
+   if(pos >= 0)
+   {
+      ticket_map_indices[pos] = index;
+      return;
+   }
+   pos = ~pos;
+   int n = ArraySize(ticket_map_keys);
+   ArrayResize(ticket_map_keys, n+1);
+   ArrayResize(ticket_map_indices, n+1);
+   for(int i=n; i>pos; i--)
+   {
+      ticket_map_keys[i] = ticket_map_keys[i-1];
+      ticket_map_indices[i] = ticket_map_indices[i-1];
+   }
+   ticket_map_keys[pos] = key;
+   ticket_map_indices[pos] = index;
+}
+
+void MapRemove(int key)
+{
+   int pos = MapFind(key);
+   if(pos < 0)
+      return;
+   int removed_idx = ticket_map_indices[pos];
+   for(int i=pos; i<ArraySize(ticket_map_keys)-1; i++)
+   {
+      ticket_map_keys[i] = ticket_map_keys[i+1];
+      ticket_map_indices[i] = ticket_map_indices[i+1];
+   }
+   ArrayResize(ticket_map_keys, ArraySize(ticket_map_keys)-1);
+   ArrayResize(ticket_map_indices, ArraySize(ticket_map_indices)-1);
+   for(int j=0; j<ArraySize(ticket_map_indices); j++)
+   {
+      if(ticket_map_indices[j] > removed_idx)
+         ticket_map_indices[j]--;
+   }
+}
+
+bool Contains(int &arr[], int value)
+{
+   int left = 0;
+   int right = ArraySize(arr) - 1;
+   while(left <= right)
+   {
+      int mid = (left + right) / 2;
+      int v = arr[mid];
+      if(v == value)
+         return(true);
+      if(v < value)
+         left = mid + 1;
+      else
+         right = mid - 1;
+   }
+   return(false);
+}
 
 int OnInit()
 {
@@ -110,10 +199,7 @@ bool SymbolMatches(string symbol)
 
 bool IsTracked(int ticket)
 {
-   for(int i=0; i<ArraySize(tracked_tickets); i++)
-      if(tracked_tickets[i]==ticket)
-         return(true);
-   return(false);
+   return(MapGet(ticket)>=0);
 }
 
 void AddTicket(int ticket)
@@ -121,20 +207,18 @@ void AddTicket(int ticket)
    int n = ArraySize(tracked_tickets);
    ArrayResize(tracked_tickets, n+1);
    tracked_tickets[n] = ticket;
+   MapAdd(ticket, n);
 }
 
 void RemoveTicket(int ticket)
 {
-   for(int i=0; i<ArraySize(tracked_tickets); i++)
-   {
-      if(tracked_tickets[i]==ticket)
-      {
-         for(int j=i; j<ArraySize(tracked_tickets)-1; j++)
-            tracked_tickets[j] = tracked_tickets[j+1];
-         ArrayResize(tracked_tickets, ArraySize(tracked_tickets)-1);
-         break;
-      }
-   }
+   int idx = MapGet(ticket);
+   if(idx<0)
+      return;
+   for(int j=idx; j<ArraySize(tracked_tickets)-1; j++)
+      tracked_tickets[j] = tracked_tickets[j+1];
+   ArrayResize(tracked_tickets, ArraySize(tracked_tickets)-1);
+   MapRemove(ticket);
 }
 
 void OnTick()
@@ -165,19 +249,12 @@ void OnTick()
       }
    }
    ArrayResize(current, cur_idx);
+   ArraySort(current, WHOLE_ARRAY, 0, MODE_ASCEND);
 
    for(int t=0; t<ArraySize(tracked_tickets); t++)
    {
       int ticket = tracked_tickets[t];
-      bool still_open = false;
-      for(int c=0; c<cur_idx; c++)
-      {
-         if(current[c]==ticket)
-         {
-            still_open = true;
-            break;
-         }
-      }
+      bool still_open = Contains(current, ticket);
       if(!still_open)
       {
          if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
