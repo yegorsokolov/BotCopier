@@ -4,6 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
+
+def _fmt(value: float) -> str:
+    """Format floats for insertion into MQL4 code."""
+    return f"{value:.6g}"
+
 template_path = (
     Path(__file__).resolve().parent.parent / 'experts' / 'StrategyTemplate.mq4'
 )
@@ -22,11 +27,11 @@ def generate(model_json: Path, out_dir: Path):
     )
 
     coeffs = model.get('coefficients', [])
-    coeff_str = ', '.join(str(c) for c in coeffs)
+    coeff_str = ', '.join(_fmt(c) for c in coeffs)
     output = output.replace('__COEFFICIENTS__', coeff_str)
-    output = output.replace(
-        '__INTERCEPT__', str(model.get('intercept', 0.0))
-    )
+
+    intercept = model.get('intercept', 0.0)
+    output = output.replace('__INTERCEPT__', _fmt(intercept))
     out_file = out_dir / f"Generated_{model.get('model_id', 'model')}.mq4"
     with open(out_file, 'w') as f:
         f.write(output)
