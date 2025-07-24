@@ -15,10 +15,17 @@ def generate(model_json: Path, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(template_path) as f:
         template = f.read()
-    # Placeholder: simply copy template
+
     output = template.replace(
         'MagicNumber = 1234',
         f"MagicNumber = {model.get('magic', 9999)}",
+    )
+
+    coeffs = model.get('coefficients', [])
+    coeff_str = ', '.join(str(c) for c in coeffs)
+    output = output.replace('__COEFFICIENTS__', coeff_str)
+    output = output.replace(
+        '__INTERCEPT__', str(model.get('intercept', 0.0))
     )
     out_file = out_dir / f"Generated_{model.get('model_id', 'model')}.mq4"
     with open(out_file, 'w') as f:
