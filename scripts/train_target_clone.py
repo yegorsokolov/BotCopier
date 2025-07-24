@@ -166,8 +166,9 @@ def train(data_dir: Path, out_dir: Path):
         "coefficients": clf.coef_[0].tolist(),
         "intercept": float(clf.intercept_[0]),
         "train_accuracy": train_acc,
-        "accuracy": train_acc,
         "val_accuracy": val_acc,
+        # main accuracy metric is validation performance when available
+        "accuracy": val_acc,
         "num_samples": int(labels.shape[0]),
     }
 
