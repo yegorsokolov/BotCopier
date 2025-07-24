@@ -21,4 +21,14 @@ struct ModelMetrics
    double   coverage_pct;
 };
 
+// Description of a simple logistic regression model used by generated
+// strategies.  ``coefficients`` is an array of weights that should be
+// multiplied by the feature vector returned at runtime.  ``intercept``
+// is added to the weighted sum before applying the logistic function.
+struct LogisticModel
+{
+   double coefficients[];
+   double intercept;
+};
+
 #endif
