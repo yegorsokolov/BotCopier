@@ -54,3 +54,8 @@ pytest
 - Use the Experts and Journal tabs inside MT4 for additional debugging information.
 
 This repository contains only minimal placeholder code to get started.  Extend the MQL4 and Python modules to implement full learning and cloning functionality.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
