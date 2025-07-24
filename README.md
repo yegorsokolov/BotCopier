@@ -35,6 +35,14 @@ python generate_mql4_from_model.py models/model.json experts
 
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
+## Metrics Tracking
+
+During operation the EA records a summary line for each tracked model in
+`observer_logs/metrics.csv`. Each entry contains the time of capture, the model
+identifier (its magic number), the hit rate and the profit factor calculated
+over the last `MetricsRollingDays` days. Old entries beyond
+`MetricsDaysToKeep` days are pruned automatically.
+
 ## Maintenance
 
 Logs are written to the directory specified by the EA parameter `LogDirectoryName` (default `observer_logs`).  Periodically archive or clean this directory to avoid large disk usage.  Models placed in the `models/best` folder can be retained for future analysis.
