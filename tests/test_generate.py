@@ -7,7 +7,12 @@ from scripts.generate_mql4_from_model import generate
 
 
 def test_generate(tmp_path: Path):
-    model = {"model_id": "test", "magic": 777}
+    model = {
+        "model_id": "test",
+        "magic": 777,
+        "coefficients": [0.1, -0.2],
+        "intercept": 0.05,
+    }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
         json.dump(model, f)
@@ -20,3 +25,6 @@ def test_generate(tmp_path: Path):
     with open(out_file) as f:
         content = f.read()
     assert "MagicNumber = 777" in content
+    assert "0.1" in content
+    assert "-0.2" in content
+    assert "0.05" in content
