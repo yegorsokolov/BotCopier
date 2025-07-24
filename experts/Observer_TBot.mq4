@@ -9,6 +9,7 @@ extern double PriceTolerancePips            = 5.0;
 extern bool   EnableLiveCloneMode           = false;
 extern int    MaxModelsToRetain             = 3;
 extern int    MetricsRollingDays            = 7;
+extern int    MetricsDaysToKeep             = 30;
 extern string LogDirectoryName              = "observer_logs";
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
@@ -230,7 +231,7 @@ void ManageMetrics(datetime ts)
    if(in_h==INVALID_HANDLE)
       return;
    string lines[];
-   datetime cutoff = ts - MetricsRollingDays*24*60*60;
+   datetime cutoff = ts - MetricsDaysToKeep*24*60*60;
    while(!FileIsEnding(in_h))
    {
       string l = FileReadString(in_h);
@@ -253,7 +254,7 @@ void ManageMetrics(datetime ts)
    int out_h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
    if(out_h==INVALID_HANDLE)
       return;
-   for(int i=0; i<MathMin(ArraySize(lines), MaxModelsToRetain); i++)
+   for(int i=0; i<ArraySize(lines); i++)
       FileWrite(out_h, lines[i]);
    FileClose(out_h);
 }
