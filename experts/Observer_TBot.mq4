@@ -14,6 +14,9 @@ extern string LogDirectoryName              = "observer_logs";
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
+extern bool   EnableSocketLogging           = false;
+extern string LogSocketHost                 = "127.0.0.1";
+extern int    LogSocketPort                 = 9000;
 
 int timer_handle;
 
@@ -22,6 +25,7 @@ int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
+int      log_socket = INVALID_HANDLE;
 
 int OnInit()
 {
@@ -54,6 +58,19 @@ int OnInit()
       }
    }
 
+   if(EnableSocketLogging)
+   {
+      log_socket = SocketCreate();
+      if(log_socket!=INVALID_HANDLE)
+      {
+         if(!SocketConnect(log_socket, LogSocketHost, LogSocketPort, 1000))
+         {
+            SocketClose(log_socket);
+            log_socket = INVALID_HANDLE;
+         }
+      }
+   }
+
    last_export = UseBrokerTime ? TimeCurrent() : TimeLocal();
    return(INIT_SUCCEEDED);
 }
@@ -65,6 +82,11 @@ void OnDeinit(const int reason)
    {
       FileClose(trade_log_handle);
       trade_log_handle = INVALID_HANDLE;
+   }
+   if(log_socket!=INVALID_HANDLE)
+   {
+      SocketClose(log_socket);
+      log_socket = INVALID_HANDLE;
    }
 }
 
@@ -196,6 +218,17 @@ void LogTrade(string action, int ticket, int magic, string source,
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment);
    FileWrite(trade_log_handle, line);
    FileFlush(trade_log_handle);
+
+   if(log_socket!=INVALID_HANDLE)
+   {
+      uchar bytes[];
+      StringToCharArray(line+"\n", bytes);
+      if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
+      {
+         SocketClose(log_socket);
+         log_socket = INVALID_HANDLE;
+      }
+   }
 }
 
 void ExportLogs(datetime ts)
