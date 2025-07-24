@@ -17,6 +17,7 @@ import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 
 
 def _load_logs(data_dir: Path):
@@ -118,13 +119,43 @@ def train(data_dir: Path, out_dir: Path):
         raise ValueError(f"No training data found in {data_dir}")
 
     vec = DictVectorizer(sparse=False)
-    X = vec.fit_transform(features)
+
+    if len(labels) < 5 or len(np.unique(labels)) < 2:
+        # Not enough data to create a meaningful split
+        feat_train, y_train = features, labels
+        feat_val, y_val = [], np.array([])
+    else:
+        feat_train, feat_val, y_train, y_val = train_test_split(
+            features,
+            labels,
+            test_size=0.2,
+            random_state=42,
+            stratify=labels,
+        )
+
+        # if the training split ended up with only one class, fall back to using
+        # all data for training so the model can be fit
+        if len(np.unique(y_train)) < 2:
+            feat_train, y_train = features, labels
+            feat_val, y_val = [], np.array([])
+
+    X_train = vec.fit_transform(feat_train)
+    if feat_val:
+        X_val = vec.transform(feat_val)
+    else:
+        X_val = np.empty((0, X_train.shape[1]))
 
     clf = LogisticRegression(max_iter=200)
-    clf.fit(X, labels)
+    clf.fit(X_train, y_train)
 
-    preds = clf.predict(X)
-    acc = float(accuracy_score(labels, preds))
+    train_preds = clf.predict(X_train)
+    train_acc = float(accuracy_score(y_train, train_preds))
+
+    if len(y_val) > 0:
+        val_preds = clf.predict(X_val)
+        val_acc = float(accuracy_score(y_val, val_preds))
+    else:
+        val_acc = float("nan")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -134,7 +165,9 @@ def train(data_dir: Path, out_dir: Path):
         "feature_names": vec.get_feature_names_out().tolist(),
         "coefficients": clf.coef_[0].tolist(),
         "intercept": float(clf.intercept_[0]),
-        "accuracy": acc,
+        "train_accuracy": train_acc,
+        "accuracy": train_acc,
+        "val_accuracy": val_acc,
         "num_samples": int(labels.shape[0]),
     }
 
@@ -142,6 +175,7 @@ def train(data_dir: Path, out_dir: Path):
         json.dump(model, f, indent=2)
 
     print(f"Model written to {out_dir / 'model.json'}")
+    print(f"Validation accuracy: {val_acc:.3f}")
 
 
 def main():
