@@ -221,6 +221,52 @@ void RemoveTicket(int ticket)
    MapRemove(ticket);
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &req,
+                        const MqlTradeResult  &res)
+{
+   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+
+   // Only process executed deals
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD)
+      return;
+
+   if(!HistoryDealSelect(trans.deal))
+      return;
+
+   int    entry      = (int)HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   int    magic      = (int)HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
+   string symbol     = HistoryDealGetString(trans.deal, DEAL_SYMBOL);
+   int    order_type = (int)HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+   double lots       = HistoryDealGetDouble(trans.deal, DEAL_VOLUME);
+   double price      = HistoryDealGetDouble(trans.deal, DEAL_PRICE);
+   double sl         = HistoryDealGetDouble(trans.deal, DEAL_SL);
+   double tp         = HistoryDealGetDouble(trans.deal, DEAL_TP);
+   double profit     = HistoryDealGetDouble(trans.deal, DEAL_PROFIT)+
+                       HistoryDealGetDouble(trans.deal, DEAL_SWAP)+
+                       HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+   string comment    = HistoryDealGetString(trans.deal, DEAL_COMMENT);
+   int    ticket     = (int)trans.order;
+
+   if(!MagicMatches(magic) || !SymbolMatches(symbol))
+      return;
+
+   if(entry==DEAL_ENTRY_IN || entry==DEAL_ENTRY_INOUT)
+   {
+      LogTrade("OPEN", ticket, magic, "mt4", symbol, order_type,
+               lots, price, sl, tp, 0.0, now, comment);
+      if(!IsTracked(ticket))
+         AddTicket(ticket);
+   }
+   else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
+   {
+      LogTrade("CLOSE", ticket, magic, "mt4", symbol, order_type,
+               lots, price, sl, tp, profit, now, comment);
+      if(IsTracked(ticket))
+         RemoveTicket(ticket);
+   }
+}
+
 void OnTick()
 {
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();

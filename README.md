@@ -2,6 +2,8 @@
 
 This project provides a skeleton framework for creating an "Observer" Expert Advisor (EA) that monitors other bots trading in the same MetaTrader 4 account.  It logs trade activity, exports data for learning and can generate candidate strategy EAs based on that information.
 
+The EA records trade openings and closings using the `OnTradeTransaction` callback when available. Platforms without this callback fall back to scanning orders each tick so logs remain accurate.
+
 ## Directory Layout
 
 - `experts/` – MQL4 source files.
