@@ -9,6 +9,7 @@ import json
 
 
 FIELDS = [
+    "event_id",
     "event_time",
     "broker_time",
     "local_time",

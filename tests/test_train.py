@@ -9,6 +9,7 @@ from scripts.train_target_clone import train, _load_logs
 
 def _write_log(file: Path):
     fields = [
+        "event_id",
         "event_time",
         "broker_time",
         "local_time",
@@ -27,6 +28,7 @@ def _write_log(file: Path):
     ]
     rows = [
         [
+            "1",
             "2024.01.01 00:00:00",
             "",
             "",
@@ -44,6 +46,7 @@ def _write_log(file: Path):
             "",
         ],
         [
+            "2",
             "2024.01.01 01:00:00",
             "",
             "",

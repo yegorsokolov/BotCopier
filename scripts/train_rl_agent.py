@@ -19,6 +19,7 @@ from sklearn.feature_extraction import DictVectorizer
 def _load_logs(data_dir: Path) -> List[Dict]:
     """Load raw log rows from ``data_dir``."""
     fields = [
+        "event_id",
         "event_time",
         "broker_time",
         "local_time",

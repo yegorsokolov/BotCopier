@@ -79,6 +79,7 @@ def _load_logs(data_dir: Path):
     """
 
     fields = [
+        "event_id",
         "event_time",
         "broker_time",
         "local_time",

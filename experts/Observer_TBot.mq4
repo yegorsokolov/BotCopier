@@ -31,6 +31,7 @@ int      trade_log_handle = INVALID_HANDLE;
 int      log_socket = INVALID_HANDLE;
 datetime last_socket_attempt = 0;
 string   trade_log_buffer[];
+int      NextEventId = 1;
 
 // Binary search helper for sorted arrays. Returns index if found
 // or bitwise complement of insertion position if not found.
@@ -145,7 +146,7 @@ int OnInit()
       FileSeek(trade_log_handle, 0, SEEK_END);
       if(need_header)
       {
-         string header = "event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment";
+         string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment";
          FileWrite(trade_log_handle, header);
       }
    }
@@ -388,7 +389,9 @@ void LogTrade(string action, int ticket, int magic, string source,
 {
    if(trade_log_handle==INVALID_HANDLE)
       return;
-   string line = StringFormat("%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s",
+   int id = NextEventId++;
+   string line = StringFormat("%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s",
+      id,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
@@ -408,7 +411,8 @@ void LogTrade(string action, int ticket, int magic, string source,
          FlushTradeBuffer();
    }
 
-   string json = StringFormat("{\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\"}",
+   string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\"}",
+      id,
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
