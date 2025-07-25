@@ -1,16 +1,41 @@
 #!/usr/bin/env python3
-"""Simple socket listener that writes incoming lines to a CSV file."""
+"""Simple socket listener that converts JSON messages to a CSV log."""
 
 import argparse
 import socket
 from pathlib import Path
+import csv
+import json
+
+
+FIELDS = [
+    "event_time",
+    "broker_time",
+    "local_time",
+    "action",
+    "ticket",
+    "magic",
+    "source",
+    "symbol",
+    "order_type",
+    "lots",
+    "price",
+    "sl",
+    "tp",
+    "profit",
+    "comment",
+]
 
 
 def _write_lines(conn: socket.socket, out_file: Path) -> None:
-    """Read newline-delimited messages from ``conn`` and append to ``out_file``."""
+    """Read newline-delimited JSON messages from ``conn`` and append rows."""
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "a", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        need_header = f.tell() == 0
+        if need_header:
+            writer.writerow(FIELDS)
         buffer = b""
         while True:
             data = conn.recv(4096)
@@ -20,9 +45,15 @@ def _write_lines(conn: socket.socket, out_file: Path) -> None:
             while b"\n" in buffer:
                 line, buffer = buffer.split(b"\n", 1)
                 line = line.decode("utf-8", errors="replace").strip()
-                if line:
-                    f.write(line + "\n")
-                    f.flush()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                row = [str(obj.get(field, "")) for field in FIELDS]
+                writer.writerow(row)
+                f.flush()
 
 
 def listen_once(host: str, port: int, out_file: Path) -> None:
