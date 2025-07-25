@@ -7,6 +7,7 @@ extern int MagicNumber = 1234;
 
 double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
+double ModelThreshold = __THRESHOLD__;
 
 int OnInit()
 {
@@ -63,9 +64,9 @@ void OnTick()
 
    double prob = ComputeLogisticScore();
 
-   // Very naive trade logic: open buy if probability > 0.5 else sell
+   // Open buy if probability exceeds threshold else sell
    int ticket;
-   if(prob > 0.5)
+   if(prob > ModelThreshold)
    {
       ticket = OrderSend(SymbolToTrade, OP_BUY, Lots, Ask, 3, 0, 0,
                          "model", MagicNumber, 0, clrBlue);

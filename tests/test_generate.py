@@ -12,6 +12,7 @@ def test_generate(tmp_path: Path):
         "magic": 777,
         "coefficients": [0.1, -0.2],
         "intercept": 0.05,
+        "threshold": 0.6,
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
@@ -27,3 +28,4 @@ def test_generate(tmp_path: Path):
     assert "MagicNumber = 777" in content
     assert "double ModelCoefficients[] = {0.1, -0.2};" in content
     assert "double ModelIntercept = 0.05;" in content
+    assert "double ModelThreshold = 0.6;" in content

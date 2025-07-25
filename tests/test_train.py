@@ -81,6 +81,7 @@ def test_train(tmp_path: Path):
     with open(model_file) as f:
         data = json.load(f)
     assert "coefficients" in data
+    assert "threshold" in data
 
 
 def test_train_with_indicators(tmp_path: Path):

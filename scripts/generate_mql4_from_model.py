@@ -32,6 +32,9 @@ def generate(model_json: Path, out_dir: Path):
 
     intercept = model.get('intercept', 0.0)
     output = output.replace('__INTERCEPT__', _fmt(intercept))
+
+    threshold = model.get('threshold', 0.5)
+    output = output.replace('__THRESHOLD__', _fmt(threshold))
     out_file = out_dir / f"Generated_{model.get('model_id', 'model')}.mq4"
     with open(out_file, 'w') as f:
         f.write(output)
