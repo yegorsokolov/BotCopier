@@ -156,9 +156,19 @@ int OnInit()
       {
          if(!SocketConnect(log_socket, LogSocketHost, LogSocketPort, 1000))
          {
+            if(EnableDebugLogging)
+               Print("Socket connection failed: ", GetLastError());
             SocketClose(log_socket);
             log_socket = INVALID_HANDLE;
          }
+         else if(EnableDebugLogging)
+         {
+            Print("Socket connected to ", LogSocketHost, ":", LogSocketPort);
+         }
+      }
+      else if(EnableDebugLogging)
+      {
+         Print("Socket creation failed: ", GetLastError());
       }
    }
 
@@ -177,6 +187,8 @@ void OnDeinit(const int reason)
    }
    if(log_socket!=INVALID_HANDLE)
    {
+      if(EnableDebugLogging)
+         Print("Closing log socket");
       SocketClose(log_socket);
       log_socket = INVALID_HANDLE;
    }

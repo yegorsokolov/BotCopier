@@ -4,6 +4,7 @@
 extern string SymbolToTrade = "EURUSD";
 extern double Lots = 0.1;
 extern int MagicNumber = 1234;
+extern bool EnableDebugLogging = false;
 
 double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
@@ -63,6 +64,17 @@ void OnTick()
       return;
 
    double prob = ComputeLogisticScore();
+   if(EnableDebugLogging)
+   {
+      string feat_vals = "";
+      int n_feats = ArraySize(ModelCoefficients);
+      for(int i=0; i<n_feats; i++)
+      {
+         if(i>0) feat_vals += ",";
+         feat_vals += DoubleToString(GetFeature(i), 2);
+      }
+      Print("Features: [" + feat_vals + "] prob=" + DoubleToString(prob, 4));
+   }
 
    // Open buy if probability exceeds threshold else sell
    int ticket;
