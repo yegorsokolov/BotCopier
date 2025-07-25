@@ -114,6 +114,49 @@ def _load_logs(data_dir: Path):
                         for i in range(min(len(row), len(fields)))
                     }
                     rows.append(r)
+
+    # Attach metrics if available
+    metrics_file = data_dir / "metrics.csv"
+    metrics_map = {}
+    if metrics_file.exists():
+        with open(metrics_file, newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            header = next(reader, None)
+            header_l = [h.lower() for h in header] if header else []
+            if header_l:
+                try:
+                    m_idx = header_l.index("magic") if "magic" in header_l else header_l.index("model_id")
+                except ValueError:
+                    m_idx = None
+            else:
+                m_idx = None
+
+            if m_idx is not None:
+                for row in reader:
+                    if not row:
+                        continue
+                    try:
+                        key = row[m_idx] if m_idx < len(row) else "0"
+                        magic = int(float(key or 0))
+                    except Exception:
+                        magic = 0
+                    metrics_map[magic] = {
+                        header_l[i]: row[i]
+                        for i in range(min(len(header_l), len(row)))
+                    }
+
+    for r in rows:
+        try:
+            magic = int(float(r.get("magic", 0) or 0))
+        except Exception:
+            magic = 0
+        m = metrics_map.get(magic)
+        if m:
+            for k, v in m.items():
+                if k in ("magic", "model_id"):
+                    continue
+                r[k] = v
+
     return rows
 
 

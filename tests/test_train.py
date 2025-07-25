@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.train_target_clone import train
+from scripts.train_target_clone import train, _load_logs
 
 
 def _write_log(file: Path):
@@ -67,6 +67,19 @@ def _write_log(file: Path):
         writer.writerows(rows)
 
 
+def _write_metrics(file: Path):
+    with open(file, "w", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(["time", "magic", "win_rate", "avg_profit", "trade_count"])
+        writer.writerow([
+            "2024.01.02 00:00",
+            "0",
+            "0.5",
+            "1.0",
+            "2",
+        ])
+
+
 def test_train(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
@@ -98,3 +111,15 @@ def test_train_with_indicators(tmp_path: Path):
     with open(model_file) as f:
         data = json.load(f)
     assert any(name in data.get("feature_names", []) for name in ["sma", "rsi", "macd"])
+
+
+def test_load_logs_with_metrics(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+    metrics_file = data_dir / "metrics.csv"
+    _write_metrics(metrics_file)
+
+    rows = _load_logs(data_dir)
+    assert all("win_rate" in r for r in rows)

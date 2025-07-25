@@ -327,7 +327,7 @@ void OnTimer()
       return;
 
    ExportLogs(now);
-   UpdateModelMetrics(now);
+   WriteMetrics(now);
    ManageMetrics(now);
    last_export = now;
 }
@@ -406,8 +406,61 @@ void ExportLogs(datetime ts)
       }
       FileClose(out_h);
    }
-   FileClose(in_h);
-  FileDelete(src);
+  FileClose(in_h);
+ FileDelete(src);
+}
+
+void WriteMetrics(datetime ts)
+{
+   string fname = LogDirectoryName + "\\metrics.csv";
+   int h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+   if(h==INVALID_HANDLE)
+   {
+      h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
+      if(h==INVALID_HANDLE)
+         return;
+      FileWrite(h, "time;magic;win_rate;avg_profit;trade_count");
+   }
+   else
+   {
+      FileSeek(h, 0, SEEK_END);
+   }
+
+   datetime cutoff = ts - MetricsRollingDays*24*60*60;
+   for(int m=0; m<ArraySize(target_magics); m++)
+   {
+      int magic = target_magics[m];
+      int trades = 0;
+      int wins = 0;
+      double profit_total = 0.0;
+
+      for(int i=OrdersHistoryTotal()-1; i>=0; i--)
+      {
+         if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY))
+            continue;
+         if(OrderMagicNumber()!=magic)
+            continue;
+         if(OrderCloseTime() < cutoff)
+            continue;
+
+         double p = OrderProfit()+OrderSwap()+OrderCommission();
+         trades++;
+         if(p >= 0)
+            wins++;
+         profit_total += p;
+      }
+
+      if(trades==0)
+         continue;
+
+      double win_rate = double(wins)/trades;
+      double avg_profit = profit_total/trades;
+
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades);
+      FileWrite(h, line);
+   }
+
+   FileClose(h);
 }
 
 void UpdateModelMetrics(datetime ts)
