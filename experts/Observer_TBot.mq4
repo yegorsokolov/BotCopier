@@ -1,5 +1,6 @@
 #property strict
 #include "model_interface.mqh"
+#include <Arrays/ArrayInt.mqh>
 
 extern string TargetMagicNumbers = "12345,23456";
 extern int    LearningExportIntervalMinutes = 15;
@@ -22,8 +23,7 @@ extern int    LogBufferSize                 = 10;
 int timer_handle;
 
 int      tracked_tickets[];
-int      ticket_map_keys[];    // sorted ticket numbers
-int      ticket_map_indices[]; // index in tracked_tickets
+CArrayInt ticket_map;
 int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
@@ -33,73 +33,22 @@ datetime last_socket_attempt = 0;
 string   trade_log_buffer[];
 int      NextEventId = 1;
 
-// Binary search helper for sorted arrays. Returns index if found
-// or bitwise complement of insertion position if not found.
-int MapFind(int key)
-{
-   int left = 0;
-   int right = ArraySize(ticket_map_keys) - 1;
-   while(left <= right)
-   {
-      int mid = (left + right) / 2;
-      int v = ticket_map_keys[mid];
-      if(v == key)
-         return(mid);
-      if(v < key)
-         left = mid + 1;
-      else
-         right = mid - 1;
-   }
-   return(~left);
-}
-
 int MapGet(int key)
 {
-   int pos = MapFind(key);
-   if(pos >= 0)
-      return(ticket_map_indices[pos]);
-   return(-1);
+   return(ticket_map.Search(key));
 }
 
-void MapAdd(int key, int index)
+void MapAdd(int key)
 {
-   int pos = MapFind(key);
-   if(pos >= 0)
-   {
-      ticket_map_indices[pos] = index;
-      return;
-   }
-   pos = ~pos;
-   int n = ArraySize(ticket_map_keys);
-   ArrayResize(ticket_map_keys, n+1);
-   ArrayResize(ticket_map_indices, n+1);
-   for(int i=n; i>pos; i--)
-   {
-      ticket_map_keys[i] = ticket_map_keys[i-1];
-      ticket_map_indices[i] = ticket_map_indices[i-1];
-   }
-   ticket_map_keys[pos] = key;
-   ticket_map_indices[pos] = index;
+   if(ticket_map.Search(key) < 0)
+      ticket_map.Add(key);
 }
 
 void MapRemove(int key)
 {
-   int pos = MapFind(key);
-   if(pos < 0)
-      return;
-   int removed_idx = ticket_map_indices[pos];
-   for(int i=pos; i<ArraySize(ticket_map_keys)-1; i++)
-   {
-      ticket_map_keys[i] = ticket_map_keys[i+1];
-      ticket_map_indices[i] = ticket_map_indices[i+1];
-   }
-   ArrayResize(ticket_map_keys, ArraySize(ticket_map_keys)-1);
-   ArrayResize(ticket_map_indices, ArraySize(ticket_map_indices)-1);
-   for(int j=0; j<ArraySize(ticket_map_indices); j++)
-   {
-      if(ticket_map_indices[j] > removed_idx)
-         ticket_map_indices[j]--;
-   }
+   int pos = ticket_map.Search(key);
+   if(pos >= 0)
+      ticket_map.Delete(pos);
 }
 
 bool Contains(int &arr[], int value)
@@ -124,6 +73,7 @@ int OnInit()
 {
    EventSetTimer(1);
    ArrayResize(tracked_tickets, 0);
+   ticket_map.Clear();
 
    string parts[];
    int cnt = StringSplit(TargetMagicNumbers, ',', parts);
@@ -225,12 +175,20 @@ void AddTicket(int ticket)
    int n = ArraySize(tracked_tickets);
    ArrayResize(tracked_tickets, n+1);
    tracked_tickets[n] = ticket;
-   MapAdd(ticket, n);
+   MapAdd(ticket);
 }
 
 void RemoveTicket(int ticket)
 {
-   int idx = MapGet(ticket);
+   int idx = -1;
+   for(int i=0; i<ArraySize(tracked_tickets); i++)
+   {
+      if(tracked_tickets[i]==ticket)
+      {
+         idx = i;
+         break;
+      }
+   }
    if(idx<0)
       return;
    for(int j=idx; j<ArraySize(tracked_tickets)-1; j++)
