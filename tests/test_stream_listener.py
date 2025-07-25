@@ -23,6 +23,7 @@ def test_stream_listener(tmp_path: Path):
     time.sleep(0.1)
 
     msg = {
+        "event_id": 1,
         "event_time": "t",
         "broker_time": "b",
         "local_time": "l",
@@ -52,7 +53,7 @@ def test_stream_listener(tmp_path: Path):
         lines = [l.strip() for l in f.readlines() if l.strip()]
 
     expected = [
-        "event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment",
-        "t;b;l;OPEN;1;2;mt4;EURUSD;0;0.1;1.2345;1.0;2.0;0.0;hi",
+        "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment",
+        "1;t;b;l;OPEN;1;2;mt4;EURUSD;0;0.1;1.2345;1.0;2.0;0.0;hi",
     ]
     assert lines == expected

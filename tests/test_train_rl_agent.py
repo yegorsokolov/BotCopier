@@ -9,6 +9,7 @@ from scripts.train_rl_agent import train
 
 def _write_log(file: Path):
     fields = [
+        "event_id",
         "event_time",
         "broker_time",
         "local_time",
@@ -27,6 +28,7 @@ def _write_log(file: Path):
     ]
     rows = [
         [
+            "1",
             "2024.01.01 00:00:00",
             "",
             "",
@@ -44,6 +46,7 @@ def _write_log(file: Path):
             "",
         ],
         [
+            "2",
             "2024.01.01 00:30:00",
             "",
             "",
@@ -61,6 +64,7 @@ def _write_log(file: Path):
             "",
         ],
         [
+            "3",
             "2024.01.01 01:00:00",
             "",
             "",
@@ -78,6 +82,7 @@ def _write_log(file: Path):
             "",
         ],
         [
+            "4",
             "2024.01.01 01:30:00",
             "",
             "",
