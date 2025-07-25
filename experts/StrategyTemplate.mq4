@@ -27,13 +27,7 @@ double GetFeature(int index)
       to zero. */
    switch(index)
    {
-      case 0:
-         // Hour of day (0-23)
-         return(TimeHour(TimeCurrent()));
-      case 1:
-         // Current market spread in points
-         return(MarketInfo(SymbolToTrade, MODE_SPREAD));
-      default:
+__FEATURE_CASES__      default:
          return(0.0);
    }
 }
