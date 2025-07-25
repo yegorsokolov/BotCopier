@@ -146,7 +146,7 @@ int OnInit()
       FileSeek(trade_log_handle, 0, SEEK_END);
       if(need_header)
       {
-         string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment";
+         string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment;remaining_lots";
          FileWrite(trade_log_handle, header);
       }
    }
@@ -245,8 +245,10 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 {
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
 
-   // Only process executed deals
-   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD)
+   // Only process executed deals or order updates
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD &&
+      trans.type!=TRADE_TRANSACTION_DEAL_UPDATE &&
+      trans.type!=TRADE_TRANSACTION_ORDER_UPDATE)
       return;
 
    if(!HistoryDealSelect(trans.deal))
@@ -269,18 +271,22 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(!MagicMatches(magic) || !SymbolMatches(symbol))
       return;
 
+   double remaining = 0.0;
+   if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      remaining = OrderLots();
+
    if(entry==DEAL_ENTRY_IN || entry==DEAL_ENTRY_INOUT)
    {
       LogTrade("OPEN", ticket, magic, "mt4", symbol, order_type,
-               lots, price, sl, tp, 0.0, now, comment);
+               lots, price, sl, tp, 0.0, remaining, now, comment);
       if(!IsTracked(ticket))
          AddTicket(ticket);
    }
    else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
    {
       LogTrade("CLOSE", ticket, magic, "mt4", symbol, order_type,
-               lots, price, sl, tp, profit, now, comment);
-      if(IsTracked(ticket))
+               lots, price, sl, tp, profit, remaining, now, comment);
+      if(IsTracked(ticket) && remaining==0.0)
          RemoveTicket(ticket);
    }
 }
@@ -308,7 +314,7 @@ void OnTick()
       {
          LogTrade("OPEN", ticket, OrderMagicNumber(), "mt4", OrderSymbol(), OrderType(),
                   OrderLots(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
-                  0.0, now, OrderComment());
+                  0.0, OrderLots(), now, OrderComment());
          AddTicket(ticket);
       }
    }
@@ -326,7 +332,7 @@ void OnTick()
             LogTrade("CLOSE", ticket, OrderMagicNumber(), "mt4", OrderSymbol(),
                      OrderType(), OrderLots(), OrderClosePrice(), OrderStopLoss(),
                      OrderTakeProfit(), OrderProfit()+OrderSwap()+OrderCommission(),
-                     now, OrderComment());
+                     0.0, now, OrderComment());
          }
          RemoveTicket(ticket);
          t--; // adjust index after removal
@@ -385,17 +391,18 @@ string EscapeJson(string s)
 
 void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
-              double sl, double tp, double profit, datetime time_event, string comment)
+              double sl, double tp, double profit, double remaining,
+              datetime time_event, string comment)
 {
    if(trade_log_handle==INVALID_HANDLE)
       return;
    int id = NextEventId++;
-   string line = StringFormat("%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s",
+   string line = StringFormat("%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s;%.2f",
       id,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
-      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment);
+      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment, remaining);
    if(EnableDebugLogging)
    {
       FileSeek(trade_log_handle, 0, SEEK_END);
@@ -411,13 +418,13 @@ void LogTrade(string action, int ticket, int magic, string source,
          FlushTradeBuffer();
    }
 
-   string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\"}",
+   string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\",\"remaining_lots\":%.2f}",
       id,
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
-      lots, price, sl, tp, profit, EscapeJson(comment));
+      lots, price, sl, tp, profit, EscapeJson(comment), remaining);
 
    if(log_socket!=INVALID_HANDLE)
    {

@@ -35,6 +35,7 @@ def _load_logs(data_dir: Path) -> List[Dict]:
         "tp",
         "profit",
         "comment",
+        "remaining_lots",
     ]
 
     rows: List[Dict] = []
