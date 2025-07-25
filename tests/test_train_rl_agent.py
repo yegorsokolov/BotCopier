@@ -116,3 +116,4 @@ def test_train_rl_agent(tmp_path: Path):
         data = json.load(f)
     assert "coefficients" in data
     assert "intercept" in data
+    assert "avg_reward" in data
