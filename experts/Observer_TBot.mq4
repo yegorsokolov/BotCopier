@@ -328,6 +328,15 @@ void OnTimer()
    last_export = now;
 }
 
+string EscapeJson(string s)
+{
+   s = StringReplace(s, "\\", "\\\\");
+   s = StringReplace(s, "\"", "\\\"");
+   s = StringReplace(s, "\n", "\\n");
+   s = StringReplace(s, "\r", "\\r");
+   return(s);
+}
+
 void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
               double sl, double tp, double profit, datetime time_event, string comment)
@@ -343,10 +352,17 @@ void LogTrade(string action, int ticket, int magic, string source,
    FileWrite(trade_log_handle, line);
    FileFlush(trade_log_handle);
 
+   string json = StringFormat("{\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\"}",
+      EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
+      EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
+      EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
+      EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
+      lots, price, sl, tp, profit, EscapeJson(comment));
+
    if(log_socket!=INVALID_HANDLE)
    {
       uchar bytes[];
-      StringToCharArray(line+"\n", bytes);
+      StringToCharArray(json+"\n", bytes);
       if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
       {
          SocketClose(log_socket);

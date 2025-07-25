@@ -50,6 +50,19 @@ over the last `MetricsRollingDays` days. Old entries beyond
 Logs are written to the directory specified by the EA parameter `LogDirectoryName` (default `observer_logs`).  Periodically archive or clean this directory to avoid large disk usage.  Models placed in the `models/best` folder can be retained for future analysis.
 Metrics entries older than the number of days specified by `MetricsDaysToKeep` (default 30) are removed automatically during log export.
 
+## Real-time Streaming
+
+When `EnableSocketLogging` is enabled the observer EA emits each trade event as a JSON
+line over a TCP socket. The helper script ``stream_listener.py`` can convert these
+messages into a CSV log in real time:
+
+```bash
+python scripts/stream_listener.py --out stream.csv
+```
+
+Attach ``Observer_TBot`` in MT4 with the same host and port parameters and the CSV
+will be populated as trades occur.
+
 ## Running Tests
 
 Install the Python requirements and run `pytest` from the repository root:
