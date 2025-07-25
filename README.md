@@ -70,6 +70,20 @@ will be populated as trades occur.
 If the connection is lost, the EA will automatically attempt to reconnect
 periodically so streaming can resume without manual intervention.
 
+## Tick History Export
+
+Historical tick data can be exported for all symbols that appear in the account
+history using the ``TickHistoryExporter`` script.  Copy
+``experts/TickHistoryExporter.mq4`` to your ``MQL4\Scripts`` directory and run
+it from the terminal.  CSV files named ``ticks_SYMBOL.csv`` will be written to
+the ``Files`` folder inside ``OutDir`` for the period spanning your trading
+activity.  The helper script ``analyze_ticks.py`` can then compute basic
+statistics from these files:
+
+```bash
+python scripts/analyze_ticks.py observer_logs/ticks_EURUSD.csv
+```
+
 ## Running Tests
 
 Install the Python requirements and run `pytest` from the repository root:
