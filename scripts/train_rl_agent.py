@@ -6,7 +6,7 @@ import csv
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 from sklearn.feature_extraction import DictVectorizer
@@ -94,7 +94,17 @@ def _extract_feature(row: Dict) -> Dict:
 # RL Training
 # -------------------------------
 
-def train(data_dir: Path, out_dir: Path) -> None:
+def train(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    learning_rate: float = 0.1,
+    epsilon: float = 0.1,
+    episodes: int = 10,
+    batch_size: int = 4,
+) -> None:
+    """Train a very small Q-learning agent from ``data_dir``."""
+
     rows = _load_logs(data_dir)
     trades = _pair_trades(rows)
 
@@ -111,23 +121,44 @@ def train(data_dir: Path, out_dir: Path) -> None:
         rewards.append(float(t["profit"]))
 
     vec = DictVectorizer(sparse=False)
-    X = vec.fit_transform(feats)
-    n_features = X.shape[1]
+    states = vec.fit_transform(feats)
+    n_features = states.shape[1]
+
+    # prepare experience tuples (state, action, reward, next_state)
+    experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = []
+    for i in range(len(actions)):
+        s = states[i]
+        ns = states[i + 1] if i + 1 < len(actions) else states[i]
+        experiences.append((s, actions[i], rewards[i], ns))
 
     weights = np.zeros((2, n_features))
     intercepts = np.zeros(2)
-    alpha = 0.1
+    gamma = 0.9
 
-    for x, a, r in zip(X, actions, rewards):
-        q_val = intercepts[a] + np.dot(weights[a], x)
-        td_err = r - q_val
-        weights[a] += alpha * td_err * x
-        intercepts[a] += alpha * td_err
+    episode_rewards: List[float] = []
+    for _ in range(episodes):
+        total_r = 0.0
+        for _ in range(len(experiences)):
+            batch_idx = np.random.randint(0, len(experiences), size=batch_size)
+            for idx in batch_idx:
+                s, a, r, ns = experiences[idx]
+                total_r += r
+                q_next0 = intercepts[0] + np.dot(weights[0], ns)
+                q_next1 = intercepts[1] + np.dot(weights[1], ns)
+                q_target = r + gamma * max(q_next0, q_next1)
+                q_current = intercepts[a] + np.dot(weights[a], s)
+                td_err = q_target - q_current
+                weights[a] += learning_rate * td_err * s
+                intercepts[a] += learning_rate * td_err
+        episode_rewards.append(total_r / len(experiences))
 
-    preds = []
-    for x in X:
-        qb = intercepts[0] + np.dot(weights[0], x)
-        qs = intercepts[1] + np.dot(weights[1], x)
+    preds: List[int] = []
+    for s in states:
+        if np.random.rand() < epsilon:
+            preds.append(np.random.randint(0, 2))
+            continue
+        qb = intercepts[0] + np.dot(weights[0], s)
+        qs = intercepts[1] + np.dot(weights[1], s)
         preds.append(0 if qb >= qs else 1)
     train_acc = float(np.mean(np.array(preds) == np.array(actions)))
 
@@ -139,6 +170,9 @@ def train(data_dir: Path, out_dir: Path) -> None:
         "coefficients": (weights[0] - weights[1]).tolist(),
         "intercept": float(intercepts[0] - intercepts[1]),
         "train_accuracy": train_acc,
+        "avg_reward": float(np.mean(episode_rewards)),
+        "learning_rate": learning_rate,
+        "epsilon": epsilon,
         "val_accuracy": float("nan"),
         "accuracy": float("nan"),
         "num_samples": len(actions),
@@ -154,8 +188,19 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Train RL agent from logs")
     p.add_argument("--data-dir", required=True)
     p.add_argument("--out-dir", required=True)
+    p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
+    p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
+    p.add_argument("--episodes", type=int, default=10, help="training episodes")
+    p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
     args = p.parse_args()
-    train(Path(args.data_dir), Path(args.out_dir))
+    train(
+        Path(args.data_dir),
+        Path(args.out_dir),
+        learning_rate=args.learning_rate,
+        epsilon=args.epsilon,
+        episodes=args.episodes,
+        batch_size=args.batch_size,
+    )
 
 
 if __name__ == "__main__":
