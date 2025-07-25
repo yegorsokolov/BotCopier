@@ -13,6 +13,7 @@ def test_generate(tmp_path: Path):
         "coefficients": [0.1, -0.2],
         "intercept": 0.05,
         "threshold": 0.6,
+        "feature_names": ["hour", "spread"],
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
@@ -29,3 +30,5 @@ def test_generate(tmp_path: Path):
     assert "double ModelCoefficients[] = {0.1, -0.2};" in content
     assert "double ModelIntercept = 0.05;" in content
     assert "double ModelThreshold = 0.6;" in content
+    assert "TimeHour(TimeCurrent())" in content
+    assert "MODE_SPREAD" in content

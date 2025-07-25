@@ -30,6 +30,29 @@ def generate(model_json: Path, out_dir: Path):
     coeff_str = ', '.join(_fmt(c) for c in coeffs)
     output = output.replace('__COEFFICIENTS__', coeff_str)
 
+    feature_names = model.get('feature_names', [])
+
+    feature_map = {
+        'hour': 'TimeHour(TimeCurrent())',
+        'spread': 'MarketInfo(SymbolToTrade, MODE_SPREAD)',
+        'lots': 'Lots',
+        'sl_dist': '0.0',
+        'tp_dist': '0.0',
+        'sma': 'iMA(SymbolToTrade, 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0)',
+        'rsi': 'iRSI(SymbolToTrade, 0, 14, PRICE_CLOSE, 0)',
+        'macd': 'iMACD(SymbolToTrade, 0, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0)',
+        'macd_signal': 'iMACD(SymbolToTrade, 0, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0)',
+    }
+
+    cases = []
+    for idx, name in enumerate(feature_names):
+        expr = feature_map.get(name, '0.0')
+        cases.append(f"      case {idx}:\n         return({expr});")
+    case_block = "\n".join(cases)
+    if case_block:
+        case_block += "\n"
+    output = output.replace('__FEATURE_CASES__', case_block)
+
     intercept = model.get('intercept', 0.0)
     output = output.replace('__INTERCEPT__', _fmt(intercept))
 
