@@ -16,7 +16,8 @@ from pathlib import Path
 import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV
 
 
@@ -174,6 +175,19 @@ def _extract_features(
     return feature_dicts, np.array(labels)
 
 
+def _best_threshold(y_true, probas):
+    """Return probability threshold with best F1 score."""
+    best_t = 0.5
+    best_f1 = -1.0
+    for t in np.linspace(0.1, 0.9, 17):
+        preds = (probas >= t).astype(int)
+        score = f1_score(y_true, preds)
+        if score > best_f1:
+            best_f1 = score
+            best_t = float(t)
+    return best_t, best_f1
+
+
 def train(
     data_dir: Path,
     out_dir: Path,
@@ -185,8 +199,9 @@ def train(
     use_macd: bool = False,
     grid_search: bool = False,
     c_values=None,
+    model_type: str = "logreg",
 ):
-    """Train a simple logistic regression model from the log directory."""
+    """Train a simple classifier model from the log directory."""
 
     rows = _load_logs(data_dir)
     features, labels = _extract_features(
@@ -228,26 +243,32 @@ def train(
     else:
         X_val = np.empty((0, X_train.shape[1]))
 
-    if grid_search:
-        if c_values is None:
-            c_values = [0.01, 0.1, 1.0, 10.0]
-        param_grid = {"C": c_values}
-        gs = GridSearchCV(LogisticRegression(max_iter=200), param_grid, cv=3)
-        gs.fit(X_train, y_train)
-        clf = gs.best_estimator_
-        train_preds = clf.predict(X_train)
-        train_acc = float(accuracy_score(y_train, train_preds))
-        val_acc = float(gs.best_score_)
-    else:
-        clf = LogisticRegression(max_iter=200)
+    if model_type == "random_forest":
+        clf = RandomForestClassifier(n_estimators=100, random_state=42)
         clf.fit(X_train, y_train)
-        train_preds = clf.predict(X_train)
-        train_acc = float(accuracy_score(y_train, train_preds))
-        if len(y_val) > 0:
-            val_preds = clf.predict(X_val)
-            val_acc = float(accuracy_score(y_val, val_preds))
+    else:
+        if grid_search:
+            if c_values is None:
+                c_values = [0.01, 0.1, 1.0, 10.0]
+            param_grid = {"C": c_values}
+            gs = GridSearchCV(LogisticRegression(max_iter=200), param_grid, cv=3)
+            gs.fit(X_train, y_train)
+            clf = gs.best_estimator_
         else:
-            val_acc = float("nan")
+            clf = LogisticRegression(max_iter=200)
+            clf.fit(X_train, y_train)
+
+    train_proba = clf.predict_proba(X_train)[:, 1]
+    if len(y_val) > 0:
+        val_proba = clf.predict_proba(X_val)[:, 1]
+        threshold, _ = _best_threshold(y_val, val_proba)
+        val_preds = (val_proba >= threshold).astype(int)
+        val_acc = float(accuracy_score(y_val, val_preds))
+    else:
+        threshold = 0.5
+        val_acc = float("nan")
+    train_preds = (train_proba >= threshold).astype(int)
+    train_acc = float(accuracy_score(y_train, train_preds))
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -255,14 +276,18 @@ def train(
         "model_id": "target_clone",
         "trained_at": datetime.utcnow().isoformat(),
         "feature_names": vec.get_feature_names_out().tolist(),
-        "coefficients": clf.coef_[0].tolist(),
-        "intercept": float(clf.intercept_[0]),
+        "model_type": model_type,
         "train_accuracy": train_acc,
         "val_accuracy": val_acc,
+        "threshold": threshold,
         # main accuracy metric is validation performance when available
         "accuracy": val_acc,
         "num_samples": int(labels.shape[0]),
     }
+
+    if model_type == "logreg":
+        model["coefficients"] = clf.coef_[0].tolist()
+        model["intercept"] = float(clf.intercept_[0])
 
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
@@ -282,6 +307,8 @@ def main():
     p.add_argument('--use-macd', action='store_true', help='include MACD feature')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
+    p.add_argument('--model-type', choices=['logreg', 'random_forest'], default='logreg',
+                   help='classifier type')
     args = p.parse_args()
     train(
         Path(args.data_dir),
@@ -293,6 +320,7 @@ def main():
         use_macd=args.use_macd,
         grid_search=args.grid_search,
         c_values=args.c_values,
+        model_type=args.model_type,
     )
 
 
