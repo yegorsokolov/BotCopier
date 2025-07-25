@@ -29,6 +29,7 @@ string   track_symbols[];
 datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
 int      log_socket = INVALID_HANDLE;
+datetime last_socket_attempt = 0;
 string   trade_log_buffer[];
 
 // Binary search helper for sorted arrays. Returns index if found
@@ -151,6 +152,7 @@ int OnInit()
 
    if(EnableSocketLogging)
    {
+      last_socket_attempt = UseBrokerTime ? TimeCurrent() : TimeLocal();
       log_socket = SocketCreate();
       if(log_socket!=INVALID_HANDLE)
       {
@@ -335,6 +337,33 @@ void OnTimer()
 {
    FlushTradeBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+
+   if(EnableSocketLogging && log_socket==INVALID_HANDLE)
+   {
+      if(now - last_socket_attempt >= 60)
+      {
+         last_socket_attempt = now;
+         log_socket = SocketCreate();
+         if(log_socket!=INVALID_HANDLE)
+         {
+            if(!SocketConnect(log_socket, LogSocketHost, LogSocketPort, 1000))
+            {
+               if(EnableDebugLogging)
+                  Print("Socket reconnection failed: ", GetLastError());
+               SocketClose(log_socket);
+               log_socket = INVALID_HANDLE;
+            }
+            else if(EnableDebugLogging)
+            {
+               Print("Socket reconnected to ", LogSocketHost, ":", LogSocketPort);
+            }
+         }
+         else if(EnableDebugLogging)
+         {
+            Print("Socket creation failed: ", GetLastError());
+         }
+      }
+   }
    if(now - last_export < LearningExportIntervalMinutes*60)
       return;
 

@@ -63,6 +63,8 @@ python scripts/stream_listener.py --out stream.csv
 
 Attach ``Observer_TBot`` in MT4 with the same host and port parameters and the CSV
 will be populated as trades occur.
+If the connection is lost, the EA will automatically attempt to reconnect
+periodically so streaming can resume without manual intervention.
 
 ## Running Tests
 
