@@ -48,7 +48,7 @@ over the last `MetricsRollingDays` days. Old entries beyond
 ## Maintenance
 
 Logs are written to the directory specified by the EA parameter `LogDirectoryName` (default `observer_logs`).  Periodically archive or clean this directory to avoid large disk usage.  Models placed in the `models/best` folder can be retained for future analysis.
-Trade events are stored in a small in-memory buffer before being flushed to `trades_raw.csv` on each timer tick or when the buffer reaches `LogBufferSize` lines.  Set `EnableDebugLogging` to `true` to force immediate writes for easier debugging.
+Trade events are stored in a small in-memory buffer before being flushed to `trades_raw.csv` on each timer tick or when the buffer reaches `LogBufferSize` lines.  Set `EnableDebugLogging` to `true` to enable verbose output and force immediate writes for easier debugging.
 Metrics entries older than the number of days specified by `MetricsDaysToKeep` (default 30) are removed automatically during log export.
 
 ## Real-time Streaming
@@ -77,6 +77,11 @@ pytest
 - Ensure the MT4 terminal has permission to write files in `MQL4\Files`.
 - When running Python scripts, verify the paths to log files and models are correct.
 - Use the Experts and Journal tabs inside MT4 for additional debugging information.
+
+## Debugging Tips
+
+- Set `EnableDebugLogging` to `true` to print socket status and feature values.
+- Review the Experts and Journal tabs in MT4 to see these messages.
 
 This repository contains only minimal placeholder code to get started.  Extend the MQL4 and Python modules to implement full learning and cloning functionality.
 
