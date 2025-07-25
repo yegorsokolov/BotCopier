@@ -17,6 +17,7 @@ extern string SymbolsToTrack                = ""; // empty=all
 extern bool   EnableSocketLogging           = false;
 extern string LogSocketHost                 = "127.0.0.1";
 extern int    LogSocketPort                 = 9000;
+extern int    LogBufferSize                 = 10;
 
 int timer_handle;
 
@@ -28,6 +29,7 @@ string   track_symbols[];
 datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
 int      log_socket = INVALID_HANDLE;
+string   trade_log_buffer[];
 
 // Binary search helper for sorted arrays. Returns index if found
 // or bitwise complement of insertion position if not found.
@@ -167,6 +169,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   FlushTradeBuffer();
    if(trade_log_handle!=INVALID_HANDLE)
    {
       FileClose(trade_log_handle);
@@ -318,6 +321,7 @@ void OnTick()
 
 void OnTimer()
 {
+   FlushTradeBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    if(now - last_export < LearningExportIntervalMinutes*60)
       return;
@@ -334,14 +338,25 @@ void LogTrade(string action, int ticket, int magic, string source,
 {
    if(trade_log_handle==INVALID_HANDLE)
       return;
-   FileSeek(trade_log_handle, 0, SEEK_END);
    string line = StringFormat("%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s",
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment);
-   FileWrite(trade_log_handle, line);
-   FileFlush(trade_log_handle);
+   if(EnableDebugLogging)
+   {
+      FileSeek(trade_log_handle, 0, SEEK_END);
+      FileWrite(trade_log_handle, line);
+      FileFlush(trade_log_handle);
+   }
+   else
+   {
+      int n = ArraySize(trade_log_buffer);
+      ArrayResize(trade_log_buffer, n+1);
+      trade_log_buffer[n] = line;
+      if(ArraySize(trade_log_buffer) >= LogBufferSize)
+         FlushTradeBuffer();
+   }
 
    if(log_socket!=INVALID_HANDLE)
    {
@@ -471,7 +486,21 @@ void ManageMetrics(datetime ts)
    int out_h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
    if(out_h==INVALID_HANDLE)
       return;
-   for(int i=0; i<ArraySize(lines); i++)
-      FileWrite(out_h, lines[i]);
-   FileClose(out_h);
+  for(int i=0; i<ArraySize(lines); i++)
+     FileWrite(out_h, lines[i]);
+  FileClose(out_h);
+}
+
+void FlushTradeBuffer()
+{
+   if(trade_log_handle==INVALID_HANDLE)
+      return;
+   int n = ArraySize(trade_log_buffer);
+   if(n==0)
+      return;
+   FileSeek(trade_log_handle, 0, SEEK_END);
+   for(int i=0; i<n; i++)
+      FileWrite(trade_log_handle, trade_log_buffer[i]);
+   FileFlush(trade_log_handle);
+   ArrayResize(trade_log_buffer, 0);
 }
