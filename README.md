@@ -15,6 +15,7 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
   - `generate_mql4_from_model.py` – renders a new EA from a trained model description.
   - `evaluate_predictions.py` – basic log evaluation utility.
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
+  - `plot_metrics.py` – plot metric history using Matplotlib.
 - `models/` – location for generated models.
 - `config.json` – example configuration file.
 
@@ -41,9 +42,11 @@ Compile the generated MQ4 file and the observer will begin evaluating prediction
 
 During operation the EA records a summary line for each tracked model in
 `observer_logs/metrics.csv`. Each entry contains the time of capture, the model
-identifier (its magic number), the hit rate and the profit factor calculated
-over the last `MetricsRollingDays` days. Old entries beyond
-`MetricsDaysToKeep` days are pruned automatically.
+identifier (its magic number), the rolling win rate, average profit, trade
+count, drawdown and Sharpe ratio calculated over the last
+`MetricsRollingDays` days. Old entries beyond `MetricsDaysToKeep` days are
+pruned automatically.
+The ``plot_metrics.py`` script can be used to visualise these values.
 
 ## Maintenance
 
@@ -53,9 +56,10 @@ Metrics entries older than the number of days specified by `MetricsDaysToKeep` (
 
 ## Real-time Streaming
 
-When `EnableSocketLogging` is enabled the observer EA emits each trade event as a JSON
-line over a TCP socket. The helper script ``stream_listener.py`` can convert these
-messages into a CSV log in real time:
+When `EnableSocketLogging` is enabled the observer EA emits each trade event and
+periodic metric summary as newline separated JSON over a TCP socket. The helper
+script ``stream_listener.py`` can convert these messages into a CSV log in real
+time:
 
 ```bash
 python scripts/stream_listener.py --out stream.csv
