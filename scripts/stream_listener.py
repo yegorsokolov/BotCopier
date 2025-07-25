@@ -25,6 +25,7 @@ FIELDS = [
     "tp",
     "profit",
     "comment",
+    "remaining_lots",
 ]
 
 
