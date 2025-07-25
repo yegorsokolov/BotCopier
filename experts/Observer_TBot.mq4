@@ -464,7 +464,7 @@ void WriteMetrics(datetime ts)
       h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
       if(h==INVALID_HANDLE)
          return;
-      FileWrite(h, "time;magic;win_rate;avg_profit;trade_count");
+      FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe");
    }
    else
    {
@@ -478,8 +478,13 @@ void WriteMetrics(datetime ts)
       int trades = 0;
       int wins = 0;
       double profit_total = 0.0;
+      double sum_profit = 0.0;
+      double sum_sq_profit = 0.0;
+      double cumulative = 0.0;
+      double peak = 0.0;
+      double max_dd = 0.0;
 
-      for(int i=OrdersHistoryTotal()-1; i>=0; i--)
+      for(int i=0; i<OrdersHistoryTotal(); i++)
       {
          if(!OrderSelect(i, SELECT_BY_POS, MODE_HISTORY))
             continue;
@@ -493,6 +498,14 @@ void WriteMetrics(datetime ts)
          if(p >= 0)
             wins++;
          profit_total += p;
+         sum_profit += p;
+         sum_sq_profit += p*p;
+         cumulative += p;
+         if(cumulative > peak)
+            peak = cumulative;
+         double dd = peak - cumulative;
+         if(dd > max_dd)
+            max_dd = dd;
       }
 
       if(trades==0)
@@ -500,9 +513,25 @@ void WriteMetrics(datetime ts)
 
       double win_rate = double(wins)/trades;
       double avg_profit = profit_total/trades;
+      double variance = trades>0 ? sum_sq_profit/trades - MathPow(sum_profit/trades, 2) : 0.0;
+      double stddev = variance>0 ? MathSqrt(variance) : 0.0;
+      double sharpe = stddev>0 ? (sum_profit/trades)/stddev : 0.0;
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe);
       FileWrite(h, line);
+
+      if(log_socket!=INVALID_HANDLE)
+      {
+         string json = StringFormat("{\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f}",
+            EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe);
+         uchar bytes[];
+         StringToCharArray(json+"\n", bytes);
+         if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
+         {
+            SocketClose(log_socket);
+            log_socket = INVALID_HANDLE;
+         }
+      }
    }
 
    FileClose(h);
