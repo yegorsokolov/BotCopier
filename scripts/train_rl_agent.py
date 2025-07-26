@@ -103,6 +103,8 @@ def train(
     epsilon: float = 0.1,
     episodes: int = 10,
     batch_size: int = 4,
+    buffer_size: int = 100,
+    update_freq: int = 1,
 ) -> None:
     """Train a very small Q-learning agent from ``data_dir``."""
 
@@ -139,18 +141,25 @@ def train(
     episode_rewards: List[float] = []
     for _ in range(episodes):
         total_r = 0.0
-        for _ in range(len(experiences)):
-            batch_idx = np.random.randint(0, len(experiences), size=batch_size)
-            for idx in batch_idx:
-                s, a, r, ns = experiences[idx]
-                total_r += r
-                q_next0 = intercepts[0] + np.dot(weights[0], ns)
-                q_next1 = intercepts[1] + np.dot(weights[1], ns)
-                q_target = r + gamma * max(q_next0, q_next1)
-                q_current = intercepts[a] + np.dot(weights[a], s)
-                td_err = q_target - q_current
-                weights[a] += learning_rate * td_err * s
-                intercepts[a] += learning_rate * td_err
+        buffer: List[Tuple[np.ndarray, int, float, np.ndarray]] = []
+        for step, exp in enumerate(experiences):
+            s, a, r, ns = exp
+            total_r += r
+            if len(buffer) >= buffer_size:
+                buffer.pop(0)
+            buffer.append(exp)
+
+            if step % update_freq == 0 and len(buffer) >= batch_size:
+                batch_idx = np.random.randint(0, len(buffer), size=batch_size)
+                for idx in batch_idx:
+                    bs, ba, br, bns = buffer[idx]
+                    q_next0 = intercepts[0] + np.dot(weights[0], bns)
+                    q_next1 = intercepts[1] + np.dot(weights[1], bns)
+                    q_target = br + gamma * max(q_next0, q_next1)
+                    q_current = intercepts[ba] + np.dot(weights[ba], bs)
+                    td_err = q_target - q_current
+                    weights[ba] += learning_rate * td_err * bs
+                    intercepts[ba] += learning_rate * td_err
         episode_rewards.append(total_r / len(experiences))
 
     preds: List[int] = []
@@ -172,6 +181,7 @@ def train(
         "intercept": float(intercepts[0] - intercepts[1]),
         "train_accuracy": train_acc,
         "avg_reward": float(np.mean(episode_rewards)),
+        "episode_rewards": [float(r) for r in episode_rewards],
         "learning_rate": learning_rate,
         "epsilon": epsilon,
         "val_accuracy": float("nan"),
@@ -193,6 +203,8 @@ def main() -> None:
     p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
     p.add_argument("--episodes", type=int, default=10, help="training episodes")
     p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
+    p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
+    p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
     args = p.parse_args()
     train(
         Path(args.data_dir),
@@ -201,6 +213,8 @@ def main() -> None:
         epsilon=args.epsilon,
         episodes=args.episodes,
         batch_size=args.batch_size,
+        buffer_size=args.buffer_size,
+        update_freq=args.update_freq,
     )
 
 
