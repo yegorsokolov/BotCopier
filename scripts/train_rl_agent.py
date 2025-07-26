@@ -138,21 +138,25 @@ def train(
     intercepts = np.zeros(2)
     gamma = 0.9
 
-    episode_rewards: List[float] = []
+    episode_rewards: List[float] = []  # average reward per step
+    episode_totals: List[float] = []   # total reward per episode
     for _ in range(episodes):
         total_r = 0.0
-        buffer: List[Tuple[np.ndarray, int, float, np.ndarray]] = []
+        buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
         for step, exp in enumerate(experiences):
             s, a, r, ns = exp
             total_r += r
             if len(buffer) >= buffer_size:
                 buffer.pop(0)
-            buffer.append(exp)
+            # add with initial priority weight of 1.0
+            buffer.append((s, a, r, ns, 1.0))
 
             if step % update_freq == 0 and len(buffer) >= batch_size:
-                batch_idx = np.random.randint(0, len(buffer), size=batch_size)
+                weights_arr = np.array([b[4] for b in buffer], dtype=float)
+                prob = weights_arr / weights_arr.sum()
+                batch_idx = np.random.choice(len(buffer), size=batch_size, p=prob)
                 for idx in batch_idx:
-                    bs, ba, br, bns = buffer[idx]
+                    bs, ba, br, bns, bw = buffer[idx]
                     q_next0 = intercepts[0] + np.dot(weights[0], bns)
                     q_next1 = intercepts[1] + np.dot(weights[1], bns)
                     q_target = br + gamma * max(q_next0, q_next1)
@@ -160,7 +164,10 @@ def train(
                     td_err = q_target - q_current
                     weights[ba] += learning_rate * td_err * bs
                     intercepts[ba] += learning_rate * td_err
+                    # update priority weight based on TD error
+                    buffer[idx] = (bs, ba, br, bns, float(abs(td_err)) + 1e-6)
         episode_rewards.append(total_r / len(experiences))
+        episode_totals.append(total_r)
 
     preds: List[int] = []
     for s in states:
@@ -181,6 +188,7 @@ def train(
         "intercept": float(intercepts[0] - intercepts[1]),
         "train_accuracy": train_acc,
         "avg_reward": float(np.mean(episode_rewards)),
+        "avg_reward_per_episode": float(np.mean(episode_totals)),
         "episode_rewards": [float(r) for r in episode_rewards],
         "learning_rate": learning_rate,
         "epsilon": epsilon,

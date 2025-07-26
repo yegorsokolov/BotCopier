@@ -127,3 +127,4 @@ def test_train_rl_agent(tmp_path: Path):
     assert "coefficients" in data
     assert "intercept" in data
     assert "avg_reward" in data
+    assert "avg_reward_per_episode" in data
