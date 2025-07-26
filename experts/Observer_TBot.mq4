@@ -239,6 +239,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                lots, price, sl, tp, 0.0, remaining, now, comment);
       if(!IsTracked(ticket))
          AddTicket(ticket);
+      else if(entry==DEAL_ENTRY_INOUT && remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      {
+         double cur_price = OrderOpenPrice();
+         double cur_sl    = OrderStopLoss();
+         double cur_tp    = OrderTakeProfit();
+         LogTrade("MODIFY", ticket, magic, "mt4", symbol, order_type,
+                  0.0, cur_price, cur_sl, cur_tp, 0.0, remaining, now, comment);
+      }
    }
    else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
    {
@@ -246,6 +254,14 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                lots, price, sl, tp, profit, remaining, now, comment);
       if(IsTracked(ticket) && remaining==0.0)
          RemoveTicket(ticket);
+      else if(remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      {
+         double cur_price = OrderOpenPrice();
+         double cur_sl    = OrderStopLoss();
+         double cur_tp    = OrderTakeProfit();
+         LogTrade("MODIFY", ticket, magic, "mt4", symbol, order_type,
+                  0.0, cur_price, cur_sl, cur_tp, 0.0, remaining, now, comment);
+      }
    }
 }
 

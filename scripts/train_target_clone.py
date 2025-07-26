@@ -67,6 +67,8 @@ def _macd_update(state, price, short=12, long=26, signal=9):
 def _load_logs(data_dir: Path):
     """Load log rows from ``data_dir``.
 
+    ``MODIFY`` entries are retained alongside ``OPEN`` and ``CLOSE``.
+
     Parameters
     ----------
     data_dir : Path
@@ -99,6 +101,7 @@ def _load_logs(data_dir: Path):
     ]
 
     rows = []
+    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     for log_file in sorted(data_dir.glob("trades_*.csv")):
         with open(log_file, newline="") as f:
             reader = csv.reader(f, delimiter=";")
@@ -108,14 +111,17 @@ def _load_logs(data_dir: Path):
                 if not row:
                     continue
                 if len(row) == len(fields):
-                    rows.append(dict(zip(fields, row)))
+                    r = dict(zip(fields, row))
                 else:
                     # best effort alignment
                     r = {
                         fields[i]: row[i]
                         for i in range(min(len(row), len(fields)))
                     }
-                    rows.append(r)
+                action = (r.get("action") or "").upper()
+                if action and action not in valid_actions:
+                    continue
+                rows.append(r)
 
     # Attach metrics if available
     metrics_file = data_dir / "metrics.csv"
