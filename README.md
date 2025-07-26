@@ -51,24 +51,23 @@ The ``plot_metrics.py`` script can be used to visualise these values.
 ## Maintenance
 
 Logs are written to the directory specified by the EA parameter `LogDirectoryName` (default `observer_logs`).  Periodically archive or clean this directory to avoid large disk usage.  Models placed in the `models/best` folder can be retained for future analysis.
-Trade events are stored in a small in-memory buffer before being flushed to `trades_raw.csv` on each timer tick or when the buffer reaches `LogBufferSize` lines.  Set `EnableDebugLogging` to `true` to enable verbose output and force immediate writes for easier debugging.
+Trade events are streamed as JSON over a socket and can be persisted by running the Python service `trade_log_service.py`.  The EA keeps a small in-memory buffer that is only flushed to `trades_raw.csv` if the socket connection fails.  Set `EnableDebugLogging` to `true` to print extra messages.
 Metrics entries older than the number of days specified by `MetricsDaysToKeep` (default 30) are removed automatically during log export.
 
 ## Real-time Streaming
 
 When `EnableSocketLogging` is enabled the observer EA emits each trade event and
-periodic metric summary as newline separated JSON over a TCP socket. The helper
-script ``stream_listener.py`` can convert these messages into a CSV log in real
-time:
+periodic metric summary as newline separated JSON over a TCP socket. Run
+``trade_log_service.py`` to write these messages to a CSV file:
 
 ```bash
-python scripts/stream_listener.py --out stream.csv
+python scripts/trade_log_service.py --out observer_logs/trades_raw.csv
 ```
 
-Attach ``Observer_TBot`` in MT4 with the same host and port parameters and the CSV
-will be populated as trades occur.
-If the connection is lost, the EA will automatically attempt to reconnect
-periodically so streaming can resume without manual intervention.
+Attach ``Observer_TBot`` in MT4 with the same host and port parameters and the
+CSV will be populated as trades occur. If the connection is lost, the EA
+automatically attempts to reconnect so streaming can resume without manual
+intervention.
 
 ## Tick History Export
 

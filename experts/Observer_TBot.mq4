@@ -368,30 +368,7 @@ void LogTrade(string action, int ticket, int magic, string source,
               double sl, double tp, double profit, double remaining,
               datetime time_event, string comment)
 {
-   if(trade_log_handle==INVALID_HANDLE)
-      return;
    int id = NextEventId++;
-   string line = StringFormat("%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s;%.2f",
-      id,
-      TimeToString(time_event, TIME_DATE|TIME_SECONDS),
-      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-      TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
-      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment, remaining);
-   if(EnableDebugLogging)
-   {
-      FileSeek(trade_log_handle, 0, SEEK_END);
-      FileWrite(trade_log_handle, line);
-      FileFlush(trade_log_handle);
-   }
-   else
-   {
-      int n = ArraySize(trade_log_buffer);
-      ArrayResize(trade_log_buffer, n+1);
-      trade_log_buffer[n] = line;
-      if(ArraySize(trade_log_buffer) >= LogBufferSize)
-         FlushTradeBuffer();
-   }
-
    string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\",\"remaining_lots\":%.2f}",
       id,
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
@@ -400,14 +377,41 @@ void LogTrade(string action, int ticket, int magic, string source,
       EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
       lots, price, sl, tp, profit, EscapeJson(comment), remaining);
 
+   bool sent = false;
    if(log_socket!=INVALID_HANDLE)
    {
       uchar bytes[];
       StringToCharArray(json+"\n", bytes);
-      if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
+      if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)!=-1)
+         sent = true;
+      else
       {
          SocketClose(log_socket);
          log_socket = INVALID_HANDLE;
+      }
+   }
+
+   if(!sent && trade_log_handle!=INVALID_HANDLE)
+   {
+      string line = StringFormat("%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s;%.2f",
+         id,
+         TimeToString(time_event, TIME_DATE|TIME_SECONDS),
+         TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+         TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
+         action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment, remaining);
+      if(EnableDebugLogging)
+      {
+         FileSeek(trade_log_handle, 0, SEEK_END);
+         FileWrite(trade_log_handle, line);
+         FileFlush(trade_log_handle);
+      }
+      else
+      {
+         int n = ArraySize(trade_log_buffer);
+         ArrayResize(trade_log_buffer, n+1);
+         trade_log_buffer[n] = line;
+         if(ArraySize(trade_log_buffer) >= LogBufferSize)
+            FlushTradeBuffer();
       }
    }
 }
