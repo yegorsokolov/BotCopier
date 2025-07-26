@@ -3,8 +3,13 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tests import HAS_NUMPY
 from scripts.train_rl_agent import train
+
+pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for RL training tests")
 
 
 def _write_log(file: Path):

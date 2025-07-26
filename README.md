@@ -86,9 +86,12 @@ python scripts/analyze_ticks.py observer_logs/ticks_EURUSD.csv
 
 ## Running Tests
 
-Install the Python requirements and run `pytest` from the repository root:
+Install the Python requirements and run `pytest` from the repository root. At a
+minimum `numpy`, `scikit-learn` and `pytest` are needed.  The `xgboost` package
+is optional if you want to train XGBoost models:
 
 ```bash
+pip install numpy scikit-learn pytest xgboost
 pytest
 ```
 

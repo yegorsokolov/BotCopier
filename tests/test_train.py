@@ -3,8 +3,13 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tests import HAS_NUMPY
 from scripts.train_target_clone import train, _load_logs
+
+pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for training tests")
 
 
 def _write_log(file: Path):
@@ -132,6 +137,7 @@ def test_load_logs_with_metrics(tmp_path: Path):
 
 
 def test_train_xgboost(tmp_path: Path):
+    pytest.importorskip("xgboost")
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     data_dir.mkdir()
