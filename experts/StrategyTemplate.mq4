@@ -19,6 +19,36 @@ int OnInit()
 // Feature extraction utilities
 //----------------------------------------------------------------------
 
+double GetSLDistance()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+      if(OrderSelect(i, SELECT_BY_POS) &&
+         OrderMagicNumber() == MagicNumber &&
+         OrderSymbol() == SymbolToTrade)
+      {
+         if(OrderType() == OP_BUY)
+            return(Bid - OrderStopLoss());
+         else
+            return(OrderStopLoss() - Ask);
+      }
+   return(0.0);
+}
+
+double GetTPDistance()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+      if(OrderSelect(i, SELECT_BY_POS) &&
+         OrderMagicNumber() == MagicNumber &&
+         OrderSymbol() == SymbolToTrade)
+      {
+         if(OrderType() == OP_BUY)
+            return(OrderTakeProfit() - Bid);
+         else
+            return(Ask - OrderTakeProfit());
+      }
+   return(0.0);
+}
+
 double GetFeature(int index)
 {
    /* Return a simple set of features for the logistic model.
