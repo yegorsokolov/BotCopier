@@ -9,6 +9,7 @@ extern bool EnableDebugLogging = false;
 double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
 double ModelThreshold = __THRESHOLD__;
+double ProbabilityLookup[] = {__PROBABILITY_TABLE__};
 
 int OnInit()
 {
@@ -72,6 +73,13 @@ double ComputeLogisticScore()
    return(1.0 / (1.0 + MathExp(-z)));
 }
 
+double GetProbability()
+{
+   if(ArraySize(ProbabilityLookup) == 24)
+      return(ProbabilityLookup[TimeHour(TimeCurrent())]);
+   return(ComputeLogisticScore());
+}
+
 bool HasOpenOrders()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -87,7 +95,7 @@ void OnTick()
    if(HasOpenOrders())
       return;
 
-   double prob = ComputeLogisticScore();
+   double prob = GetProbability();
    if(EnableDebugLogging)
    {
       string feat_vals = "";

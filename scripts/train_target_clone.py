@@ -366,6 +366,18 @@ def train(
         model["coefficients"] = coef[1:].tolist()
         model["intercept"] = float(coef[0])
 
+        # lookup probabilities per trading hour for simple export
+        feature_names = vec.get_feature_names_out().tolist()
+        base_feat = {name: 0.0 for name in feature_names}
+        lookup = []
+        for h in range(24):
+            f = base_feat.copy()
+            if "hour" in f:
+                f["hour"] = float(h)
+            X_h = vec.transform([f])
+            lookup.append(float(clf.predict_proba(X_h)[0, 1]))
+        model["probability_table"] = lookup
+
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
 
