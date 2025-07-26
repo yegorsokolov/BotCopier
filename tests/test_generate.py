@@ -32,3 +32,27 @@ def test_generate(tmp_path: Path):
     assert "double ModelThreshold = 0.6;" in content
     assert "TimeHour(TimeCurrent())" in content
     assert "MODE_SPREAD" in content
+
+
+def test_sl_tp_features(tmp_path: Path):
+    model = {
+        "model_id": "tp_sl",
+        "magic": 555,
+        "coefficients": [0.1, 0.2],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["sl_dist", "tp_dist"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    out_file = out_dir / "Generated_tp_sl.mq4"
+    assert out_file.exists()
+    with open(out_file) as f:
+        content = f.read()
+    assert "GetSLDistance()" in content
+    assert "GetTPDistance()" in content
