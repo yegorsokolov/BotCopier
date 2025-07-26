@@ -31,7 +31,9 @@ def _load_metrics(path: Path):
                     "trade_count": int(float(r.get("trade_count", 0) or 0)),
                     "drawdown": float(r.get("drawdown", 0) or 0),
                     "sharpe": float(r.get("sharpe", 0) or 0),
-                    "write_errors": int(float(r.get("write_errors", 0) or 0)),
+                    "file_write_errors": int(
+                        float(r.get("file_write_errors") or r.get("write_errors") or 0)
+                    ),
                     "socket_errors": int(float(r.get("socket_errors", 0) or 0)),
                 }
             )
@@ -49,7 +51,7 @@ def _plot(rows, magic=None):
     win_rate = [r["win_rate"] for r in rows]
     drawdown = [r["drawdown"] for r in rows]
     sharpe = [r["sharpe"] for r in rows]
-    write_err = [r["write_errors"] for r in rows]
+    write_err = [r["file_write_errors"] for r in rows]
     socket_err = [r["socket_errors"] for r in rows]
 
     fig, (ax1, ax3) = plt.subplots(2, 1, sharex=True)
@@ -64,7 +66,7 @@ def _plot(rows, magic=None):
     ax1.legend(loc="upper left")
     ax2.legend(loc="upper right")
 
-    ax3.plot(times, write_err, label="Write Errors", color="purple")
+    ax3.plot(times, write_err, label="File Write Errors", color="purple")
     ax3.plot(times, socket_err, label="Socket Errors", color="orange")
     ax3.set_ylabel("Error Count")
     ax3.set_xlabel("Time")
