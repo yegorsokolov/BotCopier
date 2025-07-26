@@ -32,8 +32,8 @@ int      log_socket = INVALID_HANDLE;
 datetime last_socket_attempt = 0;
 string   trade_log_buffer[];
 int      NextEventId = 1;
-int      write_error_count = 0;
-int      socket_error_count = 0;
+int      FileWriteErrors = 0;
+int      SocketErrors = 0;
 
 int MapGet(int key)
 {
@@ -101,7 +101,7 @@ int OnInit()
          string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment;remaining_lots";
          int _wr = FileWrite(trade_log_handle, header);
          if(_wr <= 0)
-            write_error_count++;
+            FileWriteErrors++;
       }
    }
 
@@ -386,7 +386,7 @@ void LogTrade(string action, int ticket, int magic, string source,
       FileSeek(trade_log_handle, 0, SEEK_END);
       int _wr = FileWrite(trade_log_handle, line);
       if(_wr <= 0)
-         write_error_count++;
+         FileWriteErrors++;
       FileFlush(trade_log_handle);
    }
    else
@@ -412,7 +412,7 @@ void LogTrade(string action, int ticket, int magic, string source,
       StringToCharArray(json+"\n", bytes);
       if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
       {
-         socket_error_count++;
+         SocketErrors++;
          SocketClose(log_socket);
          log_socket = INVALID_HANDLE;
       }
@@ -438,7 +438,7 @@ void ExportLogs(datetime ts)
          {
             int _wr = FileWrite(out_h, line);
             if(_wr <= 0)
-               write_error_count++;
+               FileWriteErrors++;
          }
       }
       FileClose(out_h);
@@ -456,9 +456,9 @@ void WriteMetrics(datetime ts)
       h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
       if(h==INVALID_HANDLE)
          return;
-      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;write_errors;socket_errors");
+      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;file_write_errors;socket_errors");
       if(_wr <= 0)
-         write_error_count++;
+         FileWriteErrors++;
    }
    else
    {
@@ -511,20 +511,20 @@ void WriteMetrics(datetime ts)
       double stddev = variance>0 ? MathSqrt(variance) : 0.0;
       double sharpe = stddev>0 ? (sum_profit/trades)/stddev : 0.0;
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, write_error_count, socket_error_count);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, FileWriteErrors, SocketErrors);
       int _wr_line = FileWrite(h, line);
       if(_wr_line <= 0)
-         write_error_count++;
+         FileWriteErrors++;
 
       if(log_socket!=INVALID_HANDLE)
       {
-         string json = StringFormat("{\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"write_errors\":%d,\"socket_errors\":%d}",
-            EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe, write_error_count, socket_error_count);
+         string json = StringFormat("{\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"file_write_errors\":%d,\"socket_errors\":%d}",
+            EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe, FileWriteErrors, SocketErrors);
          uchar bytes[];
          StringToCharArray(json+"\n", bytes);
          if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
          {
-            socket_error_count++;
+            SocketErrors++;
             SocketClose(log_socket);
             log_socket = INVALID_HANDLE;
          }
@@ -545,7 +545,7 @@ void UpdateModelMetrics(datetime ts)
          return;
       int _wr_h = FileWrite(h, "time;model_id;hit_rate;profit_factor");
       if(_wr_h <= 0)
-         write_error_count++;
+         FileWriteErrors++;
    }
    else
    {
@@ -592,7 +592,7 @@ void UpdateModelMetrics(datetime ts)
       string line = StringFormat("%s;%d;%.3f;%.3f", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, hit_rate, profit_factor);
       int _wr_line = FileWrite(h, line);
       if(_wr_line <= 0)
-         write_error_count++;
+         FileWriteErrors++;
    }
 
    FileClose(h);
@@ -634,7 +634,7 @@ void ManageMetrics(datetime ts)
   {
      int _wr = FileWrite(out_h, lines[i]);
      if(_wr <= 0)
-        write_error_count++;
+        FileWriteErrors++;
   }
   FileClose(out_h);
 }
@@ -651,7 +651,7 @@ void FlushTradeBuffer()
    {
       int _wr = FileWrite(trade_log_handle, trade_log_buffer[i]);
       if(_wr <= 0)
-         write_error_count++;
+         FileWriteErrors++;
    }
    FileFlush(trade_log_handle);
    ArrayResize(trade_log_buffer, 0);
