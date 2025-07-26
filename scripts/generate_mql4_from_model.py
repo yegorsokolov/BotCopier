@@ -30,6 +30,10 @@ def generate(model_json: Path, out_dir: Path):
     coeff_str = ', '.join(_fmt(c) for c in coeffs)
     output = output.replace('__COEFFICIENTS__', coeff_str)
 
+    prob_table = model.get('probability_table', [])
+    prob_str = ', '.join(_fmt(p) for p in prob_table)
+    output = output.replace('__PROBABILITY_TABLE__', prob_str)
+
     feature_names = model.get('feature_names', [])
 
     feature_map = {

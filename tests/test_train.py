@@ -146,3 +146,4 @@ def test_train_xgboost(tmp_path: Path):
         data = json.load(f)
     assert data.get("model_type") == "xgboost"
     assert "coefficients" in data
+    assert len(data.get("probability_table", [])) == 24
