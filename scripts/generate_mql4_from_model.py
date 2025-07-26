@@ -26,7 +26,7 @@ def generate(model_json: Path, out_dir: Path):
         f"MagicNumber = {model.get('magic', 9999)}",
     )
 
-    coeffs = model.get('coefficients', [])
+    coeffs = model.get('coefficients') or model.get('coef_vector', [])
     coeff_str = ', '.join(_fmt(c) for c in coeffs)
     output = output.replace('__COEFFICIENTS__', coeff_str)
 

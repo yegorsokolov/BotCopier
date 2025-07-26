@@ -17,6 +17,11 @@ import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+
+try:
+    from xgboost import XGBClassifier
+except Exception:  # pragma: no cover - optional dependency
+    XGBClassifier = None
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV
 
@@ -251,6 +256,9 @@ def train(
     grid_search: bool = False,
     c_values=None,
     model_type: str = "logreg",
+    n_estimators: int = 100,
+    learning_rate: float = 0.1,
+    max_depth: int = 3,
 ):
     """Train a simple classifier model from the log directory."""
 
@@ -297,6 +305,17 @@ def train(
     if model_type == "random_forest":
         clf = RandomForestClassifier(n_estimators=100, random_state=42)
         clf.fit(X_train, y_train)
+    elif model_type == "xgboost":
+        if XGBClassifier is None:
+            raise ImportError("xgboost is not installed")
+        clf = XGBClassifier(
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            max_depth=max_depth,
+            eval_metric="logloss",
+            use_label_encoder=False,
+        )
+        clf.fit(X_train, y_train)
     else:
         if grid_search:
             if c_values is None:
@@ -339,6 +358,13 @@ def train(
     if model_type == "logreg":
         model["coefficients"] = clf.coef_[0].tolist()
         model["intercept"] = float(clf.intercept_[0])
+    elif model_type == "xgboost":
+        # approximate tree ensemble with linear model for MQL4 export
+        logit_p = np.log(train_proba / (1.0 - train_proba + 1e-9))
+        A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
+        coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
+        model["coefficients"] = coef[1:].tolist()
+        model["intercept"] = float(coef[0])
 
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
@@ -358,8 +384,11 @@ def main():
     p.add_argument('--use-macd', action='store_true', help='include MACD feature')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
-    p.add_argument('--model-type', choices=['logreg', 'random_forest'], default='logreg',
+    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost'], default='logreg',
                    help='classifier type')
+    p.add_argument('--n-estimators', type=int, default=100, help='xgboost trees')
+    p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
+    p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
     args = p.parse_args()
     train(
         Path(args.data_dir),
@@ -372,6 +401,9 @@ def main():
         grid_search=args.grid_search,
         c_values=args.c_values,
         model_type=args.model_type,
+        n_estimators=args.n_estimators,
+        learning_rate=args.learning_rate,
+        max_depth=args.max_depth,
     )
 
 

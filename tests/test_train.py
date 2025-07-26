@@ -129,3 +129,20 @@ def test_load_logs_with_metrics(tmp_path: Path):
 
     rows = _load_logs(data_dir)
     assert all("win_rate" in r for r in rows)
+
+
+def test_train_xgboost(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, model_type="xgboost", n_estimators=10)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("model_type") == "xgboost"
+    assert "coefficients" in data
