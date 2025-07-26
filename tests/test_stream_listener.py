@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.stream_listener import listen_once
+from scripts.stream_listener import listen_once, SCHEMA_VERSION
 
 
 def test_stream_listener(tmp_path: Path):
@@ -40,6 +40,7 @@ def test_stream_listener(tmp_path: Path):
         "profit": 0.0,
         "comment": "hi",
         "remaining_lots": 0.1,
+        "schema_version": SCHEMA_VERSION,
     }
 
     client = socket.socket()

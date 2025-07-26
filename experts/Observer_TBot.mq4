@@ -32,6 +32,7 @@ int      log_socket = INVALID_HANDLE;
 datetime last_socket_attempt = 0;
 string   trade_log_buffer[];
 int      NextEventId = 1;
+int const JSON_SCHEMA_VERSION = 1;
 
 int MapGet(int key)
 {
@@ -392,13 +393,13 @@ void LogTrade(string action, int ticket, int magic, string source,
          FlushTradeBuffer();
    }
 
-   string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\",\"remaining_lots\":%.2f}",
+   string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"schema_version\":%d}",
       id,
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
-      lots, price, sl, tp, profit, EscapeJson(comment), remaining);
+      lots, price, sl, tp, profit, EscapeJson(comment), remaining, JSON_SCHEMA_VERSION);
 
    if(log_socket!=INVALID_HANDLE)
    {
@@ -503,8 +504,8 @@ void WriteMetrics(datetime ts)
 
       if(log_socket!=INVALID_HANDLE)
       {
-         string json = StringFormat("{\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f}",
-            EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe);
+         string json = StringFormat("{\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"schema_version\":%d}",
+            EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe, JSON_SCHEMA_VERSION);
          uchar bytes[];
          StringToCharArray(json+"\n", bytes);
          if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)

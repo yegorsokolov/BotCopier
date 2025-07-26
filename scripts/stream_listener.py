@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 import csv
 import json
+import warnings
 
 
 FIELDS = [
@@ -27,6 +28,8 @@ FIELDS = [
     "comment",
     "remaining_lots",
 ]
+
+SCHEMA_VERSION = 1
 
 
 def _write_lines(conn: socket.socket, out_file: Path) -> None:
@@ -53,6 +56,10 @@ def _write_lines(conn: socket.socket, out_file: Path) -> None:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if obj.get("schema_version") != SCHEMA_VERSION:
+                    warnings.warn(
+                        f"Unexpected schema_version {obj.get('schema_version')} (expected {SCHEMA_VERSION})"
+                    )
                 row = [str(obj.get(field, "")) for field in FIELDS]
                 writer.writerow(row)
                 f.flush()

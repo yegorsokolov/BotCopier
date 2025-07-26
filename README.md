@@ -70,6 +70,56 @@ will be populated as trades occur.
 If the connection is lost, the EA will automatically attempt to reconnect
 periodically so streaming can resume without manual intervention.
 
+### Streaming Message Schema
+
+Each JSON message includes a ``schema_version`` field so downstream
+consumers can detect incompatible changes.  The current implementation
+emits ``schema_version`` ``1``.
+
+Trade event messages contain the following keys:
+
+```
+{
+  "event_id": int,
+  "event_time": "YYYY.MM.DD HH:MM:SS",
+  "broker_time": "YYYY.MM.DD HH:MM:SS",
+  "local_time": "YYYY.MM.DD HH:MM:SS",
+  "action": "OPEN|CLOSE|MODIFY",
+  "ticket": int,
+  "magic": int,
+  "source": "mt4",
+  "symbol": str,
+  "order_type": int,
+  "lots": float,
+  "price": float,
+  "sl": float,
+  "tp": float,
+  "profit": float,
+  "comment": str,
+  "remaining_lots": float,
+  "schema_version": 1
+}
+```
+
+Metrics summaries have keys:
+
+```
+{
+  "type": "metrics",
+  "time": "YYYY.MM.DD HH:MM",
+  "magic": int,
+  "win_rate": float,
+  "avg_profit": float,
+  "trade_count": int,
+  "drawdown": float,
+  "sharpe": float,
+  "schema_version": 1
+}
+```
+
+The ``stream_listener.py`` script validates this field and warns if the
+version differs from the one it expects.
+
 ## Tick History Export
 
 Historical tick data can be exported for all symbols that appear in the account
