@@ -472,6 +472,18 @@ def train(
     train_preds = (train_proba >= threshold).astype(int)
     train_acc = float(accuracy_score(y_train, train_preds))
 
+    hourly_thresholds = None
+    if len(y_val) > 0:
+        hours_val = np.array([f.get("hour", 0) for f in feat_val], dtype=int)
+        hourly_thresholds = []
+        for h in range(24):
+            idx = np.where(hours_val == h)[0]
+            if len(idx) > 0:
+                t, _ = _best_threshold(y_val[idx], val_proba[idx])
+            else:
+                t = threshold
+            hourly_thresholds.append(float(t))
+
     # Compute SHAP feature importance on the training set
     try:
         import shap  # type: ignore
@@ -500,6 +512,8 @@ def train(
         "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
         "feature_importance": feature_importance,
     }
+    if hourly_thresholds is not None:
+        model["hourly_thresholds"] = hourly_thresholds
 
     if model_type == "logreg":
         model["coefficients"] = clf.coef_[0].tolist()
