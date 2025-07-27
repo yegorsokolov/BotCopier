@@ -56,3 +56,26 @@ def test_sl_tp_features(tmp_path: Path):
         content = f.read()
     assert "GetSLDistance()" in content
     assert "GetTPDistance()" in content
+
+
+def test_day_of_week_feature(tmp_path: Path):
+    model = {
+        "model_id": "dow",
+        "magic": 888,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["day_of_week"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    out_file = out_dir / "Generated_dow.mq4"
+    assert out_file.exists()
+    with open(out_file) as f:
+        content = f.read()
+    assert "TimeDayOfWeek(TimeCurrent())" in content
