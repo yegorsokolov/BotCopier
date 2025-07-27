@@ -19,6 +19,14 @@ import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+
+try:
+    import tensorflow as tf  # type: ignore
+    from tensorflow import keras  # type: ignore
+    HAS_TF = True
+except Exception:  # pragma: no cover - optional dependency
+    HAS_TF = False
 
 try:
     from xgboost import XGBClassifier
@@ -317,6 +325,8 @@ def train(
     if model_type == "random_forest":
         clf = RandomForestClassifier(n_estimators=100, random_state=42)
         clf.fit(X_train, y_train)
+        train_proba = clf.predict_proba(X_train)[:, 1]
+        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     elif model_type == "xgboost":
         if XGBClassifier is None:
             raise ImportError("xgboost is not installed")
@@ -328,6 +338,27 @@ def train(
             use_label_encoder=False,
         )
         clf.fit(X_train, y_train)
+        train_proba = clf.predict_proba(X_train)[:, 1]
+        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+    elif model_type == "nn":
+        if HAS_TF:
+            model_nn = keras.Sequential([
+                keras.layers.Input(shape=(X_train.shape[1],)),
+                keras.layers.Dense(8, activation="relu"),
+                keras.layers.Dense(1, activation="sigmoid"),
+            ])
+            model_nn.compile(optimizer="adam", loss="binary_crossentropy")
+            model_nn.fit(X_train, y_train, epochs=50, verbose=0)
+            train_proba = model_nn.predict(X_train).reshape(-1)
+            val_proba = (
+                model_nn.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
+            )
+            clf = model_nn
+        else:
+            clf = MLPClassifier(hidden_layer_sizes=(8,), max_iter=500, random_state=42)
+            clf.fit(X_train, y_train)
+            train_proba = clf.predict_proba(X_train)[:, 1]
+            val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     else:
         if grid_search:
             if c_values is None:
@@ -343,10 +374,10 @@ def train(
                 clf.coef_ = np.array([existing_model.get("coefficients", [])])
                 clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
             clf.fit(X_train, y_train)
+            train_proba = clf.predict_proba(X_train)[:, 1]
+            val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
 
-    train_proba = clf.predict_proba(X_train)[:, 1]
     if len(y_val) > 0:
-        val_proba = clf.predict_proba(X_val)[:, 1]
         threshold, _ = _best_threshold(y_val, val_proba)
         val_preds = (val_proba >= threshold).astype(int)
         val_acc = float(accuracy_score(y_val, val_preds))
@@ -407,6 +438,18 @@ def train(
             X_h = vec.transform([f])
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
+    elif model_type == "nn":
+        if HAS_TF:
+            weights = [w.tolist() for w in clf.get_weights()]
+        else:
+            weights = [
+                clf.coefs_[0].tolist(),
+                clf.intercepts_[0].tolist(),
+                clf.coefs_[1].tolist(),
+                clf.intercepts_[1].tolist(),
+            ]
+        model["nn_weights"] = weights
+        model["hidden_size"] = len(weights[1]) if weights else 0
 
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
@@ -427,7 +470,7 @@ def main():
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
-    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost'], default='logreg',
+    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost', 'nn'], default='logreg',
                    help='classifier type')
     p.add_argument('--n-estimators', type=int, default=100, help='xgboost trees')
     p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
