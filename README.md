@@ -86,10 +86,11 @@ python scripts/analyze_ticks.py observer_logs/ticks_EURUSD.csv
 
 Install the Python requirements and run `pytest` from the repository root. At a
 minimum `numpy`, `scikit-learn` and `pytest` are needed.  The `xgboost` package
-is optional if you want to train XGBoost models:
+is optional if you want to train XGBoost models.  `stable-baselines3` can be
+installed to experiment with PPO or DQN agents:
 
 ```bash
-pip install numpy scikit-learn pytest xgboost
+pip install numpy scikit-learn pytest xgboost stable-baselines3
 pytest
 ```
 

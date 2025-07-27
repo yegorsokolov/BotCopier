@@ -8,6 +8,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+try:
+    import stable_baselines3 as sb3  # type: ignore
+    try:
+        from gym import Env, spaces  # type: ignore
+    except Exception:  # pragma: no cover - gymnasium fallback
+        from gymnasium import Env, spaces  # type: ignore
+    HAS_SB3 = True
+except Exception:  # pragma: no cover - optional dependency
+    sb3 = None  # type: ignore
+    spaces = None  # type: ignore
+    Env = object  # type: ignore
+    HAS_SB3 = False
+
 import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 
@@ -105,8 +118,9 @@ def train(
     batch_size: int = 4,
     buffer_size: int = 100,
     update_freq: int = 1,
+    algo: str = "qlearn",
 ) -> None:
-    """Train a very small Q-learning agent from ``data_dir``."""
+    """Train a small RL agent from ``data_dir``."""
 
     rows = _load_logs(data_dir)
     trades = _pair_trades(rows)
@@ -126,6 +140,85 @@ def train(
     vec = DictVectorizer(sparse=False)
     states = vec.fit_transform(feats)
     n_features = states.shape[1]
+
+    if algo != "qlearn":
+        if not HAS_SB3:
+            raise ImportError("stable_baselines3 is not installed")
+
+        class TradeEnv(Env):
+            def __init__(self, observations, rewards):
+                super().__init__()
+                self.observations = observations.astype(np.float32)
+                self.rewards = np.asarray(rewards, dtype=np.float32)
+                self.action_space = spaces.Discrete(2)
+                self.observation_space = spaces.Box(
+                    -np.inf,
+                    np.inf,
+                    shape=(self.observations.shape[1],),
+                    dtype=np.float32,
+                )
+                self.idx = 0
+
+            def reset(self, *, seed=None, options=None):  # type: ignore[override]
+                self.idx = 0
+                return self.observations[self.idx], {}
+
+            def step(self, action):
+                reward = float(self.rewards[self.idx])
+                self.idx += 1
+                done = self.idx >= len(self.observations)
+                obs = (
+                    self.observations[self.idx]
+                    if not done
+                    else self.observations[-1]
+                )
+                return obs, reward, done, False, {}
+
+        env = TradeEnv(states, rewards)
+        algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
+        algo_key = algo.lower()
+        if algo_key not in algo_map:
+            raise ValueError(f"Unsupported algorithm: {algo}")
+        model_cls = algo_map[algo_key]
+        model = model_cls("MlpPolicy", env, verbose=0)
+        model.learn(total_timesteps=episodes * len(actions))
+
+        preds = []
+        obs, _ = env.reset()
+        for _ in range(len(actions)):
+            act, _ = model.predict(obs, deterministic=True)
+            preds.append(int(act))
+            obs, _, done, _, _ = env.step(int(act))
+            if done:
+                break
+        train_acc = float(np.mean(np.array(preds) == np.array(actions)))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        weights_path = out_dir / "model_weights"
+        model.save(str(weights_path))
+        episode_total = float(np.sum(rewards))
+        model_info = {
+            "model_id": "rl_agent_sb3",
+            "algo": algo_key,
+            "trained_at": datetime.utcnow().isoformat(),
+            "feature_names": vec.get_feature_names_out().tolist(),
+            "train_accuracy": train_acc,
+            "avg_reward": float(np.mean(rewards)),
+            "avg_reward_per_episode": episode_total,
+            "episode_rewards": [episode_total for _ in range(episodes)],
+            "learning_rate": learning_rate,
+            "epsilon": epsilon,
+            "val_accuracy": float("nan"),
+            "accuracy": float("nan"),
+            "num_samples": len(actions),
+            "weights_file": weights_path.with_suffix(".zip").name,
+        }
+
+        with open(out_dir / "model.json", "w") as f:
+            json.dump(model_info, f, indent=2)
+
+        print(f"Model written to {out_dir / 'model.json'}")
+        print(f"Weights written to {weights_path.with_suffix('.zip')}")
+        return
 
     # prepare experience tuples (state, action, reward, next_state)
     experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = []
@@ -213,6 +306,11 @@ def main() -> None:
     p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
     p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
     p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
+    p.add_argument(
+        "--algo",
+        default="qlearn",
+        help="RL algorithm: qlearn (default), ppo or dqn if stable-baselines3 is installed",
+    )
     args = p.parse_args()
     train(
         Path(args.data_dir),
@@ -223,6 +321,7 @@ def main() -> None:
         batch_size=args.batch_size,
         buffer_size=args.buffer_size,
         update_freq=args.update_freq,
+        algo=args.algo,
     )
 
 

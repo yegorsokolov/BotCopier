@@ -6,7 +6,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tests import HAS_NUMPY
+from tests import HAS_NUMPY, HAS_SB3
 from scripts.train_rl_agent import train
 
 pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for RL training tests")
@@ -133,3 +133,23 @@ def test_train_rl_agent(tmp_path: Path):
     assert "intercept" in data
     assert "avg_reward" in data
     assert "avg_reward_per_episode" in data
+
+
+@pytest.mark.skipif(not HAS_SB3, reason="stable-baselines3 not installed")
+def test_train_rl_agent_sb3(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, algo="ppo", episodes=1)
+
+    model_file = out_dir / "model.json"
+    weight_file = out_dir / "model_weights.zip"
+    assert model_file.exists()
+    assert weight_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("algo") == "ppo"
+    assert data.get("weights_file") == "model_weights.zip"
