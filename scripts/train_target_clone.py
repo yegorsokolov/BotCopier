@@ -254,6 +254,7 @@ def train(
     n_estimators: int = 100,
     learning_rate: float = 0.1,
     max_depth: int = 3,
+    incremental: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
 
@@ -271,7 +272,19 @@ def train(
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
 
-    vec = DictVectorizer(sparse=False)
+    existing_model = None
+    if incremental:
+        model_file = out_dir / "model.json"
+        if not model_file.exists():
+            raise FileNotFoundError(f"{model_file} not found for incremental training")
+        with open(model_file) as f:
+            existing_model = json.load(f)
+
+    if existing_model is not None:
+        vec = DictVectorizer(sparse=False)
+        vec.fit([{name: 0.0} for name in existing_model.get("feature_names", [])])
+    else:
+        vec = DictVectorizer(sparse=False)
 
     if len(labels) < 5 or len(np.unique(labels)) < 2:
         # Not enough data to create a meaningful split
@@ -292,7 +305,10 @@ def train(
             feat_train, y_train = features, labels
             feat_val, y_val = [], np.array([])
 
-    X_train = vec.fit_transform(feat_train)
+    if existing_model is not None:
+        X_train = vec.transform(feat_train)
+    else:
+        X_train = vec.fit_transform(feat_train)
     if feat_val:
         X_val = vec.transform(feat_val)
     else:
@@ -321,7 +337,11 @@ def train(
             gs.fit(X_train, y_train)
             clf = gs.best_estimator_
         else:
-            clf = LogisticRegression(max_iter=200)
+            clf = LogisticRegression(max_iter=200, warm_start=existing_model is not None)
+            if existing_model is not None:
+                clf.classes_ = np.array([0, 1])
+                clf.coef_ = np.array([existing_model.get("coefficients", [])])
+                clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
             clf.fit(X_train, y_train)
 
     train_proba = clf.predict_proba(X_train)[:, 1]
@@ -352,7 +372,7 @@ def train(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = {
-        "model_id": "target_clone",
+        "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
         "trained_at": datetime.utcnow().isoformat(),
         "feature_names": vec.get_feature_names_out().tolist(),
         "model_type": model_type,
@@ -361,7 +381,7 @@ def train(
         "threshold": threshold,
         # main accuracy metric is validation performance when available
         "accuracy": val_acc,
-        "num_samples": int(labels.shape[0]),
+        "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
         "feature_importance": feature_importance,
     }
 
@@ -412,6 +432,7 @@ def main():
     p.add_argument('--n-estimators', type=int, default=100, help='xgboost trees')
     p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
     p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
+    p.add_argument('--incremental', action='store_true', help='update existing model.json')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -434,6 +455,7 @@ def main():
         n_estimators=args.n_estimators,
         learning_rate=args.learning_rate,
         max_depth=args.max_depth,
+        incremental=args.incremental,
     )
 
 

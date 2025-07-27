@@ -64,7 +64,17 @@ def generate(model_json: Path, out_dir: Path):
 
     threshold = model.get('threshold', 0.5)
     output = output.replace('__THRESHOLD__', _fmt(threshold))
-    out_file = out_dir / f"Generated_{model.get('model_id', 'model')}.mq4"
+    ts = model.get('trained_at')
+    if ts:
+        try:
+            from datetime import datetime
+            ts = datetime.fromisoformat(ts).strftime('%Y%m%d_%H%M%S')
+        except Exception:
+            ts = None
+    if not ts:
+        from datetime import datetime
+        ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    out_file = out_dir / f"Generated_{model.get('model_id', 'model')}_{ts}.mq4"
     with open(out_file, 'w') as f:
         f.write(output)
     print(f"Strategy written to {out_file}")

@@ -22,9 +22,9 @@ def test_generate(tmp_path: Path):
     out_dir = tmp_path / "out"
     generate(model_file, out_dir)
 
-    out_file = out_dir / "Generated_test.mq4"
-    assert out_file.exists()
-    with open(out_file) as f:
+    generated = list(out_dir.glob("Generated_test_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
         content = f.read()
     assert "MagicNumber = 777" in content
     assert "double ModelCoefficients[] = {0.1, -0.2};" in content
@@ -50,9 +50,9 @@ def test_sl_tp_features(tmp_path: Path):
     out_dir = tmp_path / "out"
     generate(model_file, out_dir)
 
-    out_file = out_dir / "Generated_tp_sl.mq4"
-    assert out_file.exists()
-    with open(out_file) as f:
+    generated = list(out_dir.glob("Generated_tp_sl_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
         content = f.read()
     assert "GetSLDistance()" in content
     assert "GetTPDistance()" in content
@@ -74,9 +74,9 @@ def test_day_of_week_feature(tmp_path: Path):
     out_dir = tmp_path / "out"
     generate(model_file, out_dir)
 
-    out_file = out_dir / "Generated_dow.mq4"
-    assert out_file.exists()
-    with open(out_file) as f:
+    generated = list(out_dir.glob("Generated_dow_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
         content = f.read()
     assert "TimeDayOfWeek(TimeCurrent())" in content
 
@@ -97,8 +97,8 @@ def test_volatility_feature(tmp_path: Path):
     out_dir = tmp_path / "out"
     generate(model_file, out_dir)
 
-    out_file = out_dir / "Generated_vol.mq4"
-    assert out_file.exists()
-    with open(out_file) as f:
+    generated = list(out_dir.glob("Generated_vol_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
         content = f.read()
     assert "StdDevRecentTicks()" in content
