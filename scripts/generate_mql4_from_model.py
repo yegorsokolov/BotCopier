@@ -51,7 +51,29 @@ def generate(model_json: Path, out_dir: Path):
     output = output.replace('__NN_L2_BIAS__', l2_b)
     output = output.replace('__NN_HIDDEN_SIZE__', str(hidden_size))
 
+    lstm_weights = model.get('lstm_weights', [])
+    if lstm_weights:
+        kernel = ', '.join(_fmt(v) for row in lstm_weights[0] for v in row)
+        recurrent = ', '.join(_fmt(v) for row in lstm_weights[1] for v in row)
+        bias = ', '.join(_fmt(v) for v in lstm_weights[2])
+        dense_w = ', '.join(_fmt(v) for row in lstm_weights[3] for v in (row if isinstance(row, list) else [row]))
+        dense_b = _fmt(lstm_weights[4][0] if isinstance(lstm_weights[4], list) else lstm_weights[4])
+        lstm_hidden = len(lstm_weights[1])
+    else:
+        kernel = recurrent = bias = dense_w = ''
+        dense_b = '0'
+        lstm_hidden = 0
+    seq_len = model.get('sequence_length', 0)
+    output = output.replace('__LSTM_KERNEL__', kernel)
+    output = output.replace('__LSTM_RECURRENT__', recurrent)
+    output = output.replace('__LSTM_BIAS__', bias)
+    output = output.replace('__LSTM_DENSE_W__', dense_w)
+    output = output.replace('__LSTM_DENSE_B__', dense_b)
+    output = output.replace('__LSTM_HIDDEN_SIZE__', str(lstm_hidden))
+    output = output.replace('__LSTM_SEQ_LEN__', str(seq_len))
+
     feature_names = model.get('feature_names', [])
+    feature_count = len(feature_names)
 
     feature_map = {
         'hour': 'TimeHour(TimeCurrent())',
@@ -79,6 +101,7 @@ def generate(model_json: Path, out_dir: Path):
     if case_block:
         case_block += "\n"
     output = output.replace('__FEATURE_CASES__', case_block)
+    output = output.replace('__FEATURE_COUNT__', str(feature_count))
 
     intercept = model.get('intercept', 0.0)
     output = output.replace('__INTERCEPT__', _fmt(intercept))

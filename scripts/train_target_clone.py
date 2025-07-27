@@ -308,6 +308,7 @@ def train(
     learning_rate: float = 0.1,
     max_depth: int = 3,
     incremental: bool = False,
+    sequence_length: int = 5,
 ):
     """Train a simple classifier model from the log directory."""
 
@@ -408,6 +409,41 @@ def train(
             clf.fit(X_train, y_train)
             train_proba = clf.predict_proba(X_train)[:, 1]
             val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+    elif model_type == "lstm":
+        if not HAS_TF:
+            raise ImportError("TensorFlow is required for LSTM model")
+        seq_len = sequence_length
+        X_all = vec.fit_transform(features) if existing_model is None else vec.transform(features)
+        sequences = []
+        for i in range(len(X_all)):
+            start = max(0, i - seq_len + 1)
+            seq = X_all[start : i + 1]
+            if seq.shape[0] < seq_len:
+                pad = np.zeros((seq_len - seq.shape[0], X_all.shape[1]))
+                seq = np.vstack([pad, seq])
+            sequences.append(seq)
+        X_all_seq = np.array(sequences)
+        if len(labels) < 5 or len(np.unique(labels)) < 2:
+            X_train_seq, y_train = X_all_seq, labels
+            X_val_seq, y_val = np.empty((0, seq_len, X_all.shape[1])), np.array([])
+        else:
+            X_train_seq, X_val_seq, y_train, y_val = train_test_split(
+                X_all_seq,
+                labels,
+                test_size=0.2,
+                random_state=42,
+                stratify=labels,
+            )
+        model_nn = keras.Sequential([
+            keras.layers.Input(shape=(seq_len, X_all.shape[1])),
+            keras.layers.LSTM(8),
+            keras.layers.Dense(1, activation="sigmoid"),
+        ])
+        model_nn.compile(optimizer="adam", loss="binary_crossentropy")
+        model_nn.fit(X_train_seq, y_train, epochs=50, verbose=0)
+        train_proba = model_nn.predict(X_train_seq).reshape(-1)
+        val_proba = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
+        clf = model_nn
     else:
         if grid_search:
             if c_values is None:
@@ -499,6 +535,11 @@ def train(
             ]
         model["nn_weights"] = weights
         model["hidden_size"] = len(weights[1]) if weights else 0
+    elif model_type == "lstm":
+        weights = [w.tolist() for w in clf.get_weights()]
+        model["lstm_weights"] = weights
+        model["sequence_length"] = sequence_length
+        model["hidden_size"] = len(weights[1]) // 4 if weights else 0
 
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
@@ -521,8 +562,9 @@ def main():
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
-    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost', 'nn'], default='logreg',
+    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost', 'nn', 'lstm'], default='logreg',
                    help='classifier type')
+    p.add_argument('--sequence-length', type=int, default=5, help='LSTM sequence length')
     p.add_argument('--n-estimators', type=int, default=100, help='xgboost trees')
     p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
     p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
@@ -552,6 +594,7 @@ def main():
         learning_rate=args.learning_rate,
         max_depth=args.max_depth,
         incremental=args.incremental,
+        sequence_length=args.sequence_length,
     )
 
 
