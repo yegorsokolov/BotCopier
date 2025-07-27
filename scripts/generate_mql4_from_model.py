@@ -34,6 +34,23 @@ def generate(model_json: Path, out_dir: Path):
     prob_str = ', '.join(_fmt(p) for p in prob_table)
     output = output.replace('__PROBABILITY_TABLE__', prob_str)
 
+    nn_weights = model.get('nn_weights', [])
+    if nn_weights:
+        l1_w = ', '.join(_fmt(v) for row in nn_weights[0] for v in row)
+        l1_b = ', '.join(_fmt(v) for v in nn_weights[1])
+        l2_w = ', '.join(_fmt(v) for row in nn_weights[2] for v in (row if isinstance(row, list) else [row]))
+        l2_b = _fmt(nn_weights[3][0] if isinstance(nn_weights[3], list) else nn_weights[3])
+        hidden_size = len(nn_weights[1])
+    else:
+        l1_w = l1_b = l2_w = ''
+        l2_b = '0'
+        hidden_size = 0
+    output = output.replace('__NN_L1_WEIGHTS__', l1_w)
+    output = output.replace('__NN_L1_BIAS__', l1_b)
+    output = output.replace('__NN_L2_WEIGHTS__', l2_w)
+    output = output.replace('__NN_L2_BIAS__', l2_b)
+    output = output.replace('__NN_HIDDEN_SIZE__', str(hidden_size))
+
     feature_names = model.get('feature_names', [])
 
     feature_map = {

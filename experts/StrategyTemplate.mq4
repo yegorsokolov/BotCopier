@@ -12,6 +12,11 @@ double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
 double ModelThreshold = __THRESHOLD__;
 double ProbabilityLookup[] = {__PROBABILITY_TABLE__};
+int ModelHiddenSize = __NN_HIDDEN_SIZE__;
+double NNLayer1Weights[] = {__NN_L1_WEIGHTS__};
+double NNLayer1Bias[] = {__NN_L1_BIAS__};
+double NNLayer2Weights[] = {__NN_L2_WEIGHTS__};
+double NNLayer2Bias = __NN_L2_BIAS__;
 
 int OnInit()
 {
@@ -75,10 +80,30 @@ double ComputeLogisticScore()
    return(1.0 / (1.0 + MathExp(-z)));
 }
 
+double ComputeNNScore()
+{
+   int hidden = ModelHiddenSize;
+   if(hidden <= 0)
+      return(ComputeLogisticScore());
+   int inputCount = ArraySize(NNLayer1Weights) / hidden;
+   double z = NNLayer2Bias;
+   for(int j=0; j<hidden; j++)
+   {
+      double h = NNLayer1Bias[j];
+      for(int i=0; i<inputCount; i++)
+         h += NNLayer1Weights[j*inputCount + i] * GetFeature(i);
+      if(h < 0) h = 0; // ReLU
+      z += NNLayer2Weights[j] * h;
+   }
+   return(1.0 / (1.0 + MathExp(-z)));
+}
+
 double GetProbability()
 {
    if(ArraySize(ProbabilityLookup) == 24)
       return(ProbabilityLookup[TimeHour(TimeCurrent())]);
+   if(ArraySize(NNLayer1Weights) > 0)
+      return(ComputeNNScore());
    return(ComputeLogisticScore());
 }
 
@@ -109,6 +134,8 @@ void OnTick()
    {
       string feat_vals = "";
       int n_feats = ArraySize(ModelCoefficients);
+      if(n_feats == 0 && ModelHiddenSize > 0)
+         n_feats = ArraySize(NNLayer1Weights) / ModelHiddenSize;
       for(int i=0; i<n_feats; i++)
       {
          if(i>0) feat_vals += ",";

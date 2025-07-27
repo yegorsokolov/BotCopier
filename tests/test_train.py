@@ -173,6 +173,24 @@ def test_train_xgboost(tmp_path: Path):
     assert len(data.get("probability_table", [])) == 24
 
 
+def test_train_nn(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, model_type="nn")
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("model_type") == "nn"
+    assert "nn_weights" in data
+    assert data.get("hidden_size", 0) > 0
+
+
 def test_incremental_train(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"

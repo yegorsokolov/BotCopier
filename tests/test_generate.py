@@ -102,3 +102,32 @@ def test_volatility_feature(tmp_path: Path):
     with open(generated[0]) as f:
         content = f.read()
     assert "StdDevRecentTicks()" in content
+
+
+def test_generate_nn(tmp_path: Path):
+    model = {
+        "model_id": "nn",
+        "magic": 222,
+        "hidden_size": 2,
+        "nn_weights": [
+            [[0.1, 0.2], [0.3, 0.4]],
+            [0.0, 0.1],
+            [[0.5], [0.6]],
+            [0.2],
+        ],
+        "threshold": 0.5,
+        "feature_names": ["hour", "spread"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_nn_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "NNLayer1Weights" in content
+    assert "MagicNumber = 222" in content
