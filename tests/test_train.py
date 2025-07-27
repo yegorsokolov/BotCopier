@@ -6,7 +6,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tests import HAS_NUMPY
+from tests import HAS_NUMPY, HAS_TF
 from scripts.train_target_clone import train, _load_logs
 
 pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for training tests")
@@ -212,6 +212,25 @@ def test_train_nn(tmp_path: Path):
     assert data.get("model_type") == "nn"
     assert "nn_weights" in data
     assert data.get("hidden_size", 0) > 0
+
+
+@pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
+def test_train_lstm(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, model_type="lstm", sequence_length=3)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("model_type") == "lstm"
+    assert "lstm_weights" in data
+    assert data.get("sequence_length") == 3
 
 
 def test_incremental_train(tmp_path: Path):

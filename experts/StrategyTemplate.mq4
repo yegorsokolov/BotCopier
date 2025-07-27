@@ -17,6 +17,16 @@ double NNLayer1Weights[] = {__NN_L1_WEIGHTS__};
 double NNLayer1Bias[] = {__NN_L1_BIAS__};
 double NNLayer2Weights[] = {__NN_L2_WEIGHTS__};
 double NNLayer2Bias = __NN_L2_BIAS__;
+int LSTMSequenceLength = __LSTM_SEQ_LEN__;
+int LSTMHiddenSize = __LSTM_HIDDEN_SIZE__;
+int FeatureCount = __FEATURE_COUNT__;
+double LSTMKernels[] = {__LSTM_KERNEL__};
+double LSTMRecurrent[] = {__LSTM_RECURRENT__};
+double LSTMBias[] = {__LSTM_BIAS__};
+double LSTMDenseWeights[] = {__LSTM_DENSE_W__};
+double LSTMDenseBias = __LSTM_DENSE_B__;
+double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
+int FeatureHistorySize = 0;
 
 int OnInit()
 {
@@ -98,10 +108,76 @@ double ComputeNNScore()
    return(1.0 / (1.0 + MathExp(-z)));
 }
 
+void UpdateFeatureHistory()
+{
+   for(int j=LSTMSequenceLength-1; j>0; j--)
+      for(int i=0; i<FeatureCount; i++)
+         FeatureHistory[j][i] = FeatureHistory[j-1][i];
+   for(int i=0; i<FeatureCount; i++)
+      FeatureHistory[0][i] = GetFeature(i);
+   if(FeatureHistorySize < LSTMSequenceLength)
+      FeatureHistorySize++;
+}
+
+double ComputeLSTMScore()
+{
+   int hidden = LSTMHiddenSize;
+   if(hidden <= 0)
+      return(ComputeNNScore());
+   double h[100];
+   double c[100];
+   ArrayInitialize(h, 0.0);
+   ArrayInitialize(c, 0.0);
+   int steps = FeatureHistorySize;
+   if(steps > LSTMSequenceLength)
+      steps = LSTMSequenceLength;
+   for(int t=steps-1; t>=0; t--)
+   {
+      for(int u=0; u<hidden; u++)
+      {
+         double zi = LSTMBias[u];
+         double zf = LSTMBias[hidden + u];
+         double zg = LSTMBias[hidden*2 + u];
+         double zo = LSTMBias[hidden*3 + u];
+         for(int i=0; i<FeatureCount; i++)
+         {
+            int base = i*hidden*4;
+            double x = FeatureHistory[t][i];
+            zi += x * LSTMKernels[base + u];
+            zf += x * LSTMKernels[base + hidden + u];
+            zg += x * LSTMKernels[base + hidden*2 + u];
+            zo += x * LSTMKernels[base + hidden*3 + u];
+         }
+         for(int k=0; k<hidden; k++)
+         {
+            int base = k*hidden*4;
+            double hp = h[k];
+            zi += hp * LSTMRecurrent[base + u];
+            zf += hp * LSTMRecurrent[base + hidden + u];
+            zg += hp * LSTMRecurrent[base + hidden*2 + u];
+            zo += hp * LSTMRecurrent[base + hidden*3 + u];
+         }
+         double i_g = 1.0 / (1.0 + MathExp(-zi));
+         double f_g = 1.0 / (1.0 + MathExp(-zf));
+         double g_g = MathTanH(zg);
+         double o_g = 1.0 / (1.0 + MathExp(-zo));
+         c[u] = f_g * c[u] + i_g * g_g;
+         h[u] = o_g * MathTanH(c[u]);
+      }
+   }
+   double z = LSTMDenseBias;
+   for(int u=0; u<hidden; u++)
+      z += LSTMDenseWeights[u] * h[u];
+   return(1.0 / (1.0 + MathExp(-z)));
+}
+
 double GetProbability()
 {
+   UpdateFeatureHistory();
    if(ArraySize(ProbabilityLookup) == 24)
       return(ProbabilityLookup[TimeHour(TimeCurrent())]);
+   if(LSTMSequenceLength > 0 && ArraySize(LSTMDenseWeights) > 0)
+      return(ComputeLSTMScore());
    if(ArraySize(NNLayer1Weights) > 0)
       return(ComputeNNScore());
    return(ComputeLogisticScore());

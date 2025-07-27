@@ -160,3 +160,32 @@ def test_generate_nn(tmp_path: Path):
         content = f.read()
     assert "NNLayer1Weights" in content
     assert "MagicNumber = 222" in content
+
+
+def test_generate_lstm(tmp_path: Path):
+    model = {
+        "model_id": "lstm",
+        "magic": 333,
+        "feature_names": ["hour", "spread"],
+        "sequence_length": 2,
+        "lstm_weights": [
+            [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]],
+            [[0.9, 1.0, 1.1, 1.2]],
+            [0.0, 0.1, 0.2, 0.3],
+            [[1.3], [1.4]],
+            [0.5],
+        ],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_lstm_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "LSTMSequenceLength" in content
+    assert "MagicNumber = 333" in content
