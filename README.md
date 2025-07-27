@@ -58,7 +58,8 @@ Metrics entries older than the number of days specified by `MetricsDaysToKeep` (
 
 When `EnableSocketLogging` is enabled the observer EA emits each trade event and
 periodic metric summary as newline separated JSON over a TCP socket. Run the
-``socket_log_service.py`` helper to capture these messages into a CSV file:
+``socket_log_service.py`` helper to capture these messages into a CSV file. The
+service now uses ``asyncio`` to handle multiple connections concurrently:
 
 ```bash
 python scripts/socket_log_service.py --out stream.csv
