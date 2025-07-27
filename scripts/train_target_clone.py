@@ -111,6 +111,7 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         "sl",
         "tp",
         "profit",
+        "spread",
         "comment",
         "remaining_lots",
     ]
@@ -198,6 +199,8 @@ def _extract_features(
         tp = float(r.get("tp", 0) or 0)
         lots = float(r.get("lots", 0) or 0)
 
+        spread = float(r.get("spread", 0) or 0)
+
         feat = {
             "symbol": r.get("symbol", ""),
             "hour": t.hour,
@@ -205,6 +208,7 @@ def _extract_features(
             "lots": lots,
             "sl_dist": sl - price,
             "tp_dist": tp - price,
+            "spread": spread,
         }
 
         if volatility is not None:
