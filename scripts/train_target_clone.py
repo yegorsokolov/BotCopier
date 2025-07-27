@@ -8,10 +8,12 @@ some training metadata are written to ``model.json`` so they can be consumed
 by other helper scripts.
 """
 import argparse
-import csv
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import List
+
+import pandas as pd
 
 import numpy as np
 from sklearn.feature_extraction import DictVectorizer
@@ -69,7 +71,7 @@ def _macd_update(state, price, short=12, long=26, signal=9):
     return macd, ema_signal
 
 
-def _load_logs(data_dir: Path):
+def _load_logs(data_dir: Path) -> pd.DataFrame:
     """Load log rows from ``data_dir``.
 
     ``MODIFY`` entries are retained alongside ``OPEN`` and ``CLOSE``.
@@ -81,8 +83,8 @@ def _load_logs(data_dir: Path):
 
     Returns
     -------
-    list[dict]
-        Parsed rows as dictionaries.
+    pandas.DataFrame
+        Parsed rows as a DataFrame.
     """
 
     fields = [
@@ -105,72 +107,49 @@ def _load_logs(data_dir: Path):
         "remaining_lots",
     ]
 
-    rows = []
-    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
+    dfs: List[pd.DataFrame] = []
     for log_file in sorted(data_dir.glob("trades_*.csv")):
-        with open(log_file, newline="") as f:
-            reader = csv.reader(f, delimiter=";")
-            header = next(reader, None)
-            # If header is missing assume standard order
-            for row in reader:
-                if not row:
-                    continue
-                if len(row) == len(fields):
-                    r = dict(zip(fields, row))
-                else:
-                    # best effort alignment
-                    r = {
-                        fields[i]: row[i]
-                        for i in range(min(len(row), len(fields)))
-                    }
-                action = (r.get("action") or "").upper()
-                if action and action not in valid_actions:
-                    continue
-                rows.append(r)
+        df = pd.read_csv(
+            log_file,
+            sep=";",
+            names=fields,
+            header=0,
+            parse_dates=["event_time"],
+        )
+        dfs.append(df)
 
-    # Attach metrics if available
+    if dfs:
+        df_logs = pd.concat(dfs, ignore_index=True)
+    else:
+        df_logs = pd.DataFrame(columns=fields)
+
+    df_logs.columns = [c.lower() for c in df_logs.columns]
+
+    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
+    df_logs["action"] = df_logs["action"].fillna("").str.upper()
+    df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
+
     metrics_file = data_dir / "metrics.csv"
-    metrics_map = {}
     if metrics_file.exists():
-        with open(metrics_file, newline="") as f:
-            reader = csv.reader(f, delimiter=";")
-            header = next(reader, None)
-            header_l = [h.lower() for h in header] if header else []
-            if header_l:
-                try:
-                    m_idx = header_l.index("magic") if "magic" in header_l else header_l.index("model_id")
-                except ValueError:
-                    m_idx = None
+        df_metrics = pd.read_csv(metrics_file, sep=";")
+        df_metrics.columns = [c.lower() for c in df_metrics.columns]
+        if "magic" in df_metrics.columns:
+            key_col = "magic"
+        elif "model_id" in df_metrics.columns:
+            key_col = "model_id"
+        else:
+            key_col = None
+
+        if key_col is not None:
+            df_metrics[key_col] = pd.to_numeric(df_metrics[key_col], errors="coerce").fillna(0).astype(int)
+            df_logs["magic"] = pd.to_numeric(df_logs["magic"], errors="coerce").fillna(0).astype(int)
+            if key_col == "magic":
+                df_logs = df_logs.merge(df_metrics, how="left", on="magic")
             else:
-                m_idx = None
+                df_logs = df_logs.merge(df_metrics, how="left", left_on="magic", right_on="model_id")
+                df_logs = df_logs.drop(columns=["model_id"])
 
-            if m_idx is not None:
-                for row in reader:
-                    if not row:
-                        continue
-                    try:
-                        key = row[m_idx] if m_idx < len(row) else "0"
-                        magic = int(float(key or 0))
-                    except Exception:
-                        magic = 0
-                    metrics_map[magic] = {
-                        header_l[i]: row[i]
-                        for i in range(min(len(header_l), len(row)))
-                    }
-
-    for r in rows:
-        try:
-            magic = int(float(r.get("magic", 0) or 0))
-        except Exception:
-            magic = 0
-        m = metrics_map.get(magic)
-        if m:
-            for k, v in m.items():
-                if k in ("magic", "model_id"):
-                    continue
-                r[k] = v
-
-    return rows
+    return df_logs
 
 
 def _extract_features(
@@ -189,13 +168,18 @@ def _extract_features(
         if r.get("action", "").upper() != "OPEN":
             continue
 
-        try:
-            t = datetime.strptime(r["event_time"], "%Y.%m.%d %H:%M:%S")
-        except ValueError:
-            try:
-                t = datetime.strptime(r["event_time"], "%Y.%m.%d %H:%M")
-            except Exception:
+        t = r["event_time"]
+        if not isinstance(t, datetime):
+            parsed = None
+            for fmt in ("%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M"):
+                try:
+                    parsed = datetime.strptime(str(t), fmt)
+                    break
+                except Exception:
+                    continue
+            if parsed is None:
                 continue
+            t = parsed
 
         order_type = int(float(r.get("order_type", 0)))
         label = 1 if order_type == 0 else 0  # buy=1, sell=0
@@ -262,9 +246,9 @@ def train(
 ):
     """Train a simple classifier model from the log directory."""
 
-    rows = _load_logs(data_dir)
+    rows_df = _load_logs(data_dir)
     features, labels = _extract_features(
-        rows,
+        rows_df.to_dict("records"),
         use_sma=use_sma,
         sma_window=sma_window,
         use_rsi=use_rsi,
