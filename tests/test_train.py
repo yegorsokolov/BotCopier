@@ -171,3 +171,23 @@ def test_train_xgboost(tmp_path: Path):
     assert data.get("model_type") == "xgboost"
     assert "coefficients" in data
     assert len(data.get("probability_table", [])) == 24
+
+
+def test_incremental_train(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+
+    log_file1 = data_dir / "trades_a.csv"
+    _write_log(log_file1)
+
+    train(data_dir, out_dir)
+
+    log_file2 = data_dir / "trades_b.csv"
+    _write_log(log_file2)
+
+    train(data_dir, out_dir, incremental=True)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    assert data.get("num_samples", 0) >= 4

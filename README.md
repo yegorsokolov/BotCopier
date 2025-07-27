@@ -39,6 +39,15 @@ python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir 
 python generate_mql4_from_model.py models/model.json experts
 ```
 
+For ongoing training simply rerun the script with the ``--incremental`` flag and
+the latest log directory. The generated MQ4 file name will include the training
+timestamp so previous versions remain intact:
+
+```bash
+python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir models --incremental
+python generate_mql4_from_model.py models/model.json experts
+```
+
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
 ## Metrics Tracking
