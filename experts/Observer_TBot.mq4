@@ -90,18 +90,21 @@ int OnInit()
    for(int j=0; j<sym_cnt; j++)
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
-   string log_fname = LogDirectoryName + "\\trades_raw.csv";
-   trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-   if(trade_log_handle!=INVALID_HANDLE)
+   if(!EnableSocketLogging)
    {
-      bool need_header = (FileSize(trade_log_handle)==0);
-      FileSeek(trade_log_handle, 0, SEEK_END);
-      if(need_header)
+      string log_fname = LogDirectoryName + "\\trades_raw.csv";
+      trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+      if(trade_log_handle!=INVALID_HANDLE)
       {
-         string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment;remaining_lots";
-         int _wr = FileWrite(trade_log_handle, header);
-         if(_wr <= 0)
-            FileWriteErrors++;
+         bool need_header = (FileSize(trade_log_handle)==0);
+         FileSeek(trade_log_handle, 0, SEEK_END);
+         if(need_header)
+         {
+            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment;remaining_lots";
+            int _wr = FileWrite(trade_log_handle, header);
+            if(_wr <= 0)
+               FileWriteErrors++;
+         }
       }
    }
 
@@ -372,8 +375,6 @@ void LogTrade(string action, int ticket, int magic, string source,
               double sl, double tp, double profit, double remaining,
               datetime time_event, string comment)
 {
-   if(trade_log_handle==INVALID_HANDLE)
-      return;
    int id = NextEventId++;
    string line = StringFormat("%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%s;%.2f",
       id,
@@ -381,21 +382,27 @@ void LogTrade(string action, int ticket, int magic, string source,
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, comment, remaining);
-   if(EnableDebugLogging)
+
+   if(!EnableSocketLogging)
    {
-      FileSeek(trade_log_handle, 0, SEEK_END);
-      int _wr = FileWrite(trade_log_handle, line);
-      if(_wr <= 0)
-         FileWriteErrors++;
-      FileFlush(trade_log_handle);
-   }
-   else
-   {
-      int n = ArraySize(trade_log_buffer);
-      ArrayResize(trade_log_buffer, n+1);
-      trade_log_buffer[n] = line;
-      if(ArraySize(trade_log_buffer) >= LogBufferSize)
-         FlushTradeBuffer();
+      if(trade_log_handle==INVALID_HANDLE)
+         return;
+      if(EnableDebugLogging)
+      {
+         FileSeek(trade_log_handle, 0, SEEK_END);
+         int _wr = FileWrite(trade_log_handle, line);
+         if(_wr <= 0)
+            FileWriteErrors++;
+         FileFlush(trade_log_handle);
+      }
+      else
+      {
+         int n = ArraySize(trade_log_buffer);
+         ArrayResize(trade_log_buffer, n+1);
+         trade_log_buffer[n] = line;
+         if(ArraySize(trade_log_buffer) >= LogBufferSize)
+            FlushTradeBuffer();
+      }
    }
 
    string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"comment\":\"%s\",\"remaining_lots\":%.2f}",
@@ -641,6 +648,8 @@ void ManageMetrics(datetime ts)
 
 void FlushTradeBuffer()
 {
+   if(EnableSocketLogging)
+      return;
    if(trade_log_handle==INVALID_HANDLE)
       return;
    int n = ArraySize(trade_log_buffer);
