@@ -34,6 +34,10 @@ def generate(model_json: Path, out_dir: Path):
     prob_str = ', '.join(_fmt(p) for p in prob_table)
     output = output.replace('__PROBABILITY_TABLE__', prob_str)
 
+    hourly_thr = model.get('hourly_thresholds', [])
+    thr_str = ', '.join(_fmt(t) for t in hourly_thr)
+    output = output.replace('__HOURLY_THRESHOLDS__', thr_str)
+
     nn_weights = model.get('nn_weights', [])
     if nn_weights:
         l1_w = ', '.join(_fmt(v) for row in nn_weights[0] for v in row)

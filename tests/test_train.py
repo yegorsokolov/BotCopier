@@ -81,6 +81,57 @@ def _write_log(file: Path):
         writer.writerows(rows)
 
 
+def _write_log_many(file: Path, count: int = 10):
+    fields = [
+        "event_id",
+        "event_time",
+        "broker_time",
+        "local_time",
+        "action",
+        "ticket",
+        "magic",
+        "source",
+        "symbol",
+        "order_type",
+        "lots",
+        "price",
+        "sl",
+        "tp",
+        "profit",
+        "spread",
+        "comment",
+        "remaining_lots",
+    ]
+    rows = []
+    for i in range(count):
+        hour = i % 24
+        order_type = "0" if i % 2 == 0 else "1"
+        rows.append([
+            str(i + 1),
+            f"2024.01.01 {hour:02d}:00:00",
+            "",
+            "",
+            "OPEN",
+            str(i + 1),
+            "",
+            "",
+            "EURUSD",
+            order_type,
+            "0.1",
+            "1.1000",
+            "1.0950",
+            "1.1100",
+            "0",
+            "2",
+            "",
+            "0.1",
+        ])
+    with open(file, "w", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(fields)
+        writer.writerows(rows)
+
+
 def _write_metrics(file: Path):
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")
@@ -251,3 +302,19 @@ def test_incremental_train(tmp_path: Path):
     with open(out_dir / "model.json") as f:
         data = json.load(f)
     assert data.get("num_samples", 0) >= 4
+
+
+def test_hourly_thresholds(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_many.csv"
+    _write_log_many(log_file, count=12)
+
+    train(data_dir, out_dir)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    ht = data.get("hourly_thresholds")
+    assert isinstance(ht, list)
+    assert len(ht) == 24

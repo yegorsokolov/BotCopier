@@ -11,6 +11,7 @@ extern double MaxLots = 0.1;
 double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
 double ModelThreshold = __THRESHOLD__;
+double HourlyThresholds[] = {__HOURLY_THRESHOLDS__};
 double ProbabilityLookup[] = {__PROBABILITY_TABLE__};
 int ModelHiddenSize = __NN_HIDDEN_SIZE__;
 double NNLayer1Weights[] = {__NN_L1_WEIGHTS__};
@@ -190,6 +191,13 @@ double GetTradeLots(double prob)
    return(lots);
 }
 
+double GetTradeThreshold()
+{
+   if(ArraySize(HourlyThresholds) == 24)
+      return(HourlyThresholds[TimeHour(TimeCurrent())]);
+   return(ModelThreshold);
+}
+
 bool HasOpenOrders()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -223,7 +231,8 @@ void OnTick()
    // Open buy if probability exceeds threshold else sell
    double tradeLots = GetTradeLots(prob);
    int ticket;
-   if(prob > ModelThreshold)
+   double thr = GetTradeThreshold();
+   if(prob > thr)
    {
       ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3, 0, 0,
                          "model", MagicNumber, 0, clrBlue);
