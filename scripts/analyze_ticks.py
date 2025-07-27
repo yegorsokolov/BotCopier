@@ -2,8 +2,12 @@
 """Compute basic metrics from exported tick history."""
 import argparse
 import csv
+import json
 from pathlib import Path
 from typing import Dict, List
+
+import numpy as np
+import pandas as pd
 
 
 def load_ticks(file: Path) -> List[Dict]:
@@ -34,17 +38,43 @@ def compute_metrics(rows: List[Dict]) -> Dict:
     }
 
 
+def compute_volatility(rows: List[Dict], period: str = "daily") -> Dict[str, float]:
+    """Return volatility (std dev of log returns) grouped by period."""
+    if not rows:
+        return {}
+
+    df = pd.DataFrame(rows)
+    df["time"] = pd.to_datetime(df["time"])
+    df["mid"] = (df["bid"] + df["ask"]) / 2
+    df["ret"] = np.log(df["mid"]).diff()
+
+    if period == "hourly":
+        grp = df.groupby(df["time"].dt.strftime("%Y-%m-%d %H"))
+    else:
+        grp = df.groupby(df["time"].dt.strftime("%Y-%m-%d"))
+
+    vol = grp["ret"].std().fillna(0.0)
+    return {str(k): float(v) for k, v in vol.items()}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("tick_file")
     p.add_argument("--out", help="Output JSON file")
+    p.add_argument(
+        "--volatility",
+        choices=["daily", "hourly"],
+        help="Output volatility series instead of basic metrics",
+    )
     args = p.parse_args()
 
     rows = load_ticks(Path(args.tick_file))
-    stats = compute_metrics(rows)
-    if args.out:
-        import json
+    if args.volatility:
+        stats = compute_volatility(rows, period=args.volatility)
+    else:
+        stats = compute_metrics(rows)
 
+    if args.out:
         with open(args.out, "w") as f:
             json.dump(stats, f)
     else:

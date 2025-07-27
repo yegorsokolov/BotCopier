@@ -1,7 +1,7 @@
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.analyze_ticks import load_ticks, compute_metrics
+from scripts.analyze_ticks import load_ticks, compute_metrics, compute_volatility
 import pytest
 
 
@@ -23,3 +23,15 @@ def test_metrics(tmp_path: Path):
     assert stats["tick_count"] == 3
     assert stats["avg_spread"] == pytest.approx(0.0002)
     assert stats["price_change"] == pytest.approx(0.0002)
+
+
+def test_volatility(tmp_path: Path):
+    tick_file = tmp_path / "ticks.csv"
+    _write_ticks(tick_file)
+
+    rows = load_ticks(tick_file)
+    vols = compute_volatility(rows, period="hourly")
+
+    key = "2024-01-01 00"
+    assert key in vols
+    assert isinstance(vols[key], float)

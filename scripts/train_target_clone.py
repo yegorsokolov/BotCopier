@@ -11,7 +11,7 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Optional
 
 import pandas as pd
 
@@ -159,6 +159,7 @@ def _extract_features(
     use_rsi=False,
     rsi_period=14,
     use_macd=False,
+    volatility: Optional[Dict[str, float]] = None,
 ):
     feature_dicts = []
     labels = []
@@ -196,6 +197,14 @@ def _extract_features(
             "sl_dist": sl - price,
             "tp_dist": tp - price,
         }
+
+        if volatility is not None:
+            key_hour = t.strftime("%Y-%m-%d %H")
+            key_day = t.strftime("%Y-%m-%d")
+            vol = volatility.get(key_hour)
+            if vol is None:
+                vol = volatility.get(key_day, 0.0)
+            feat["volatility"] = float(vol)
 
         if use_sma:
             feat["sma"] = _sma(prices, sma_window)
@@ -243,6 +252,7 @@ def train(
     n_estimators: int = 100,
     learning_rate: float = 0.1,
     max_depth: int = 3,
+    volatility: Optional[Dict[str, float]] = None,
 ):
     """Train a simple classifier model from the log directory."""
 
@@ -254,6 +264,7 @@ def train(
         use_rsi=use_rsi,
         rsi_period=rsi_period,
         use_macd=use_macd,
+        volatility=volatility,
     )
 
     if not features:
@@ -399,7 +410,14 @@ def main():
     p.add_argument('--n-estimators', type=int, default=100, help='xgboost trees')
     p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
     p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
+    p.add_argument('--volatility-file', help='JSON file with volatility values')
     args = p.parse_args()
+
+    vol_data = None
+    if args.volatility_file:
+        with open(args.volatility_file) as f:
+            vol_data = json.load(f)
+
     train(
         Path(args.data_dir),
         Path(args.out_dir),
@@ -414,6 +432,7 @@ def main():
         n_estimators=args.n_estimators,
         learning_rate=args.learning_rate,
         max_depth=args.max_depth,
+        volatility=vol_data,
     )
 
 

@@ -124,6 +124,26 @@ def test_train_with_indicators(tmp_path: Path):
     assert any(name in data.get("feature_names", []) for name in ["sma", "rsi", "macd"])
 
 
+def test_train_with_volatility(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    vol_file = tmp_path / "vol.json"
+    with open(vol_file, "w") as f:
+        json.dump({"2024-01-01": 0.5}, f)
+
+    train(data_dir, out_dir, volatility=json.load(open(vol_file)))
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert "volatility" in data.get("feature_names", [])
+
+
 def test_load_logs_with_metrics(tmp_path: Path):
     data_dir = tmp_path / "logs"
     data_dir.mkdir()
