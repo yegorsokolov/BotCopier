@@ -5,6 +5,8 @@ extern string SymbolToTrade = "EURUSD";
 extern double Lots = 0.1;
 extern int MagicNumber = 1234;
 extern bool EnableDebugLogging = false;
+extern double MinLots = 0.01;
+extern double MaxLots = 0.1;
 
 double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
@@ -80,6 +82,13 @@ double GetProbability()
    return(ComputeLogisticScore());
 }
 
+double GetTradeLots(double prob)
+{
+   double x = 1.0 / (1.0 + MathExp(-10.0*(prob - 0.5)));
+   double lots = MinLots + (MaxLots - MinLots) * x;
+   return(lots);
+}
+
 bool HasOpenOrders()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -109,15 +118,16 @@ void OnTick()
    }
 
    // Open buy if probability exceeds threshold else sell
+   double tradeLots = GetTradeLots(prob);
    int ticket;
    if(prob > ModelThreshold)
    {
-      ticket = OrderSend(SymbolToTrade, OP_BUY, Lots, Ask, 3, 0, 0,
+      ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3, 0, 0,
                          "model", MagicNumber, 0, clrBlue);
    }
    else
    {
-      ticket = OrderSend(SymbolToTrade, OP_SELL, Lots, Bid, 3, 0, 0,
+      ticket = OrderSend(SymbolToTrade, OP_SELL, tradeLots, Bid, 3, 0, 0,
                          "model", MagicNumber, 0, clrRed);
    }
 
