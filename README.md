@@ -57,18 +57,16 @@ Metrics entries older than the number of days specified by `MetricsDaysToKeep` (
 ## Real-time Streaming
 
 When `EnableSocketLogging` is enabled the observer EA emits each trade event and
-periodic metric summary as newline separated JSON over a TCP socket. The helper
-script ``stream_listener.py`` can convert these messages into a CSV log in real
-time:
+periodic metric summary as newline separated JSON over a TCP socket. Run the
+``socket_log_service.py`` helper to capture these messages into a CSV file:
 
 ```bash
-python scripts/stream_listener.py --out stream.csv
+python scripts/socket_log_service.py --out stream.csv
 ```
 
-Attach ``Observer_TBot`` in MT4 with the same host and port parameters and the CSV
-will be populated as trades occur.
-If the connection is lost, the EA will automatically attempt to reconnect
-periodically so streaming can resume without manual intervention.
+Start ``Observer_TBot`` with the same host and port settings and the CSV will be
+populated as trades occur.  If the connection is lost, the EA automatically
+attempts to reconnect so streaming can resume without manual intervention.
 
 ## Tick History Export
 
