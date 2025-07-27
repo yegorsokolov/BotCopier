@@ -12,6 +12,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import List
+import sqlite3
 
 import pandas as pd
 
@@ -103,6 +104,25 @@ def _macd_update(state, price, short=12, long=26, signal=9):
     return macd, ema_signal
 
 
+def _load_logs_db(db_file: Path) -> pd.DataFrame:
+    """Load log rows from a SQLite database."""
+
+    conn = sqlite3.connect(db_file)
+    try:
+        df_logs = pd.read_sql_query("SELECT * FROM logs", conn, parse_dates=["event_time"])
+    finally:
+        conn.close()
+
+    df_logs.columns = [c.lower() for c in df_logs.columns]
+
+    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
+    if "action" in df_logs.columns:
+        df_logs["action"] = df_logs["action"].fillna("").str.upper()
+        df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
+
+    return df_logs
+
+
 def _load_logs(data_dir: Path) -> pd.DataFrame:
     """Load log rows from ``data_dir``.
 
@@ -111,13 +131,16 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
     Parameters
     ----------
     data_dir : Path
-        Directory containing ``trades_*.csv`` files.
+        Directory containing ``trades_*.csv`` files or a SQLite ``.db`` file.
 
     Returns
     -------
     pandas.DataFrame
         Parsed rows as a DataFrame.
     """
+
+    if data_dir.suffix == ".db":
+        return _load_logs_db(data_dir)
 
     fields = [
         "event_id",

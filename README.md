@@ -77,6 +77,18 @@ service now uses ``asyncio`` to handle multiple connections concurrently:
 python scripts/socket_log_service.py --out stream.csv
 ```
 
+For persistent storage you can instead log directly to a SQLite database using ``sqlite_log_service.py``:
+
+```bash
+python scripts/sqlite_log_service.py --db stream.db
+```
+
+Query the logs later with the ``sqlite3`` command line tool, for example:
+
+```bash
+sqlite3 stream.db "SELECT COUNT(*) FROM logs;"
+```
+
 Start ``Observer_TBot`` with the same host and port settings and the CSV will be
 populated as trades occur.  If the connection is lost, the EA automatically
 attempts to reconnect so streaming can resume without manual intervention.
