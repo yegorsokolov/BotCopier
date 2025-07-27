@@ -44,6 +44,30 @@ def _sma(values, window):
     return float(sum(values[-w:]) / w)
 
 
+def _atr(values, period):
+    """Average true range over ``period`` price changes."""
+    if len(values) < 2:
+        return 0.0
+    diffs = np.abs(np.diff(values[-(period + 1) :]))
+    if len(diffs) == 0:
+        return 0.0
+    w = min(period, len(diffs))
+    return float(diffs[-w:].mean())
+
+
+def _bollinger(values, window, dev=2.0):
+    """Return Bollinger Bands for the last ``window`` values."""
+    if not values:
+        return 0.0, 0.0, 0.0
+    w = min(window, len(values))
+    arr = np.array(values[-w:])
+    sma = arr.mean()
+    std = arr.std(ddof=0)
+    upper = sma + dev * std
+    lower = sma - dev * std
+    return float(upper), float(sma), float(lower)
+
+
 def _rsi(values, period):
     """Very small RSI implementation on ``values``."""
     if len(values) < 2:
@@ -168,6 +192,10 @@ def _extract_features(
     use_rsi=False,
     rsi_period=14,
     use_macd=False,
+    use_atr=False,
+    atr_period=14,
+    use_bollinger=False,
+    boll_window=20,
     volatility=None,
 ):
     feature_dicts = []
@@ -230,6 +258,15 @@ def _extract_features(
             feat["macd"] = macd
             feat["macd_signal"] = signal
 
+        if use_atr:
+            feat["atr"] = _atr(prices, atr_period)
+
+        if use_bollinger:
+            upper, mid, lower = _bollinger(prices, boll_window)
+            feat["bollinger_upper"] = upper
+            feat["bollinger_middle"] = mid
+            feat["bollinger_lower"] = lower
+
         prices.append(price)
 
         feature_dicts.append(feat)
@@ -259,6 +296,10 @@ def train(
     use_rsi: bool = False,
     rsi_period: int = 14,
     use_macd: bool = False,
+    use_atr: bool = False,
+    atr_period: int = 14,
+    use_bollinger: bool = False,
+    boll_window: int = 20,
     volatility_series=None,
     grid_search: bool = False,
     c_values=None,
@@ -278,6 +319,10 @@ def train(
         use_rsi=use_rsi,
         rsi_period=rsi_period,
         use_macd=use_macd,
+        use_atr=use_atr,
+        atr_period=atr_period,
+        use_bollinger=use_bollinger,
+        boll_window=boll_window,
         volatility=volatility_series,
     )
 
@@ -471,6 +516,8 @@ def main():
     p.add_argument('--use-rsi', action='store_true', help='include RSI feature')
     p.add_argument('--rsi-period', type=int, default=14)
     p.add_argument('--use-macd', action='store_true', help='include MACD feature')
+    p.add_argument('--use-atr', action='store_true', help='include ATR feature')
+    p.add_argument('--use-bollinger', action='store_true', help='include Bollinger Bands feature')
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
@@ -495,6 +542,8 @@ def main():
         use_rsi=args.use_rsi,
         rsi_period=args.rsi_period,
         use_macd=args.use_macd,
+        use_atr=args.use_atr,
+        use_bollinger=args.use_bollinger,
         volatility_series=vol_data,
         grid_search=args.grid_search,
         c_values=args.c_values,
