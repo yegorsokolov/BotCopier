@@ -340,6 +340,19 @@ def train(
     train_preds = (train_proba >= threshold).astype(int)
     train_acc = float(accuracy_score(y_train, train_preds))
 
+    # Compute SHAP feature importance on the training set
+    try:
+        import shap  # type: ignore
+
+        explainer = shap.Explainer(clf, X_train)
+        shap_values = explainer(X_train)
+        importances = np.abs(shap_values.values).mean(axis=0)
+        feature_importance = dict(
+            zip(vec.get_feature_names_out().tolist(), importances.tolist())
+        )
+    except Exception:  # pragma: no cover - shap optional
+        feature_importance = {}
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = {
@@ -353,6 +366,7 @@ def train(
         # main accuracy metric is validation performance when available
         "accuracy": val_acc,
         "num_samples": int(labels.shape[0]),
+        "feature_importance": feature_importance,
     }
 
     if model_type == "logreg":

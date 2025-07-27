@@ -90,8 +90,26 @@ is optional if you want to train XGBoost models.  `stable-baselines3` can be
 installed to experiment with PPO or DQN agents:
 
 ```bash
-pip install numpy scikit-learn pytest xgboost stable-baselines3
+pip install numpy scikit-learn pytest xgboost stable-baselines3 shap
 pytest
+```
+
+## Feature Importance Visualization
+
+Training stores SHAP-based feature importances in `model.json`. Create a bar chart with Matplotlib:
+
+```python
+import json
+import matplotlib.pyplot as plt
+
+with open("models/model.json") as f:
+    data = json.load(f)
+
+fi = data.get("feature_importance", {})
+plt.bar(range(len(fi)), list(fi.values()), tick_label=list(fi.keys()))
+plt.xticks(rotation=45, ha="right")
+plt.tight_layout()
+plt.show()
 ```
 
 ## Troubleshooting
