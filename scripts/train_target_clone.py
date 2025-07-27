@@ -159,6 +159,7 @@ def _extract_features(
     use_rsi=False,
     rsi_period=14,
     use_macd=False,
+    volatility=None,
 ):
     feature_dicts = []
     labels = []
@@ -197,6 +198,14 @@ def _extract_features(
             "sl_dist": sl - price,
             "tp_dist": tp - price,
         }
+
+        if volatility is not None:
+            key = t.strftime("%Y-%m-%d %H")
+            vol = volatility.get(key)
+            if vol is None:
+                key = t.strftime("%Y-%m-%d")
+                vol = volatility.get(key, 0.0)
+            feat["volatility"] = float(vol)
 
         if use_sma:
             feat["sma"] = _sma(prices, sma_window)
@@ -238,6 +247,7 @@ def train(
     use_rsi: bool = False,
     rsi_period: int = 14,
     use_macd: bool = False,
+    volatility_series=None,
     grid_search: bool = False,
     c_values=None,
     model_type: str = "logreg",
@@ -255,6 +265,7 @@ def train(
         use_rsi=use_rsi,
         rsi_period=rsi_period,
         use_macd=use_macd,
+        volatility=volatility_series,
     )
 
     if not features:
@@ -393,6 +404,7 @@ def main():
     p.add_argument('--use-rsi', action='store_true', help='include RSI feature')
     p.add_argument('--rsi-period', type=int, default=14)
     p.add_argument('--use-macd', action='store_true', help='include MACD feature')
+    p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
     p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost'], default='logreg',
@@ -401,6 +413,12 @@ def main():
     p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
     p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
     args = p.parse_args()
+    if args.volatility_file:
+        import json
+        with open(args.volatility_file) as f:
+            vol_data = json.load(f)
+    else:
+        vol_data = None
     train(
         Path(args.data_dir),
         Path(args.out_dir),
@@ -409,6 +427,7 @@ def main():
         use_rsi=args.use_rsi,
         rsi_period=args.rsi_period,
         use_macd=args.use_macd,
+        volatility_series=vol_data,
         grid_search=args.grid_search,
         c_values=args.c_values,
         model_type=args.model_type,
