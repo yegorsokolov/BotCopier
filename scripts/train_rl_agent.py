@@ -2,11 +2,12 @@
 """Train a simple RL agent from trade logs."""
 
 import argparse
-import csv
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+import pandas as pd
 
 try:
     import stable_baselines3 as sb3  # type: ignore
@@ -29,8 +30,9 @@ from sklearn.feature_extraction import DictVectorizer
 # Data loading utilities
 # -------------------------------
 
-def _load_logs(data_dir: Path) -> List[Dict]:
+def _load_logs(data_dir: Path) -> pd.DataFrame:
     """Load raw log rows from ``data_dir``."""
+
     fields = [
         "event_id",
         "event_time",
@@ -51,20 +53,29 @@ def _load_logs(data_dir: Path) -> List[Dict]:
         "remaining_lots",
     ]
 
-    rows: List[Dict] = []
+    dfs: List[pd.DataFrame] = []
     for log_file in sorted(data_dir.glob("trades_*.csv")):
-        with open(log_file, newline="") as f:
-            reader = csv.reader(f, delimiter=";")
-            header = next(reader, None)
-            for row in reader:
-                if not row:
-                    continue
-                if len(row) == len(fields):
-                    rows.append(dict(zip(fields, row)))
-                else:
-                    r = {fields[i]: row[i] for i in range(min(len(row), len(fields)))}
-                    rows.append(r)
-    return rows
+        df = pd.read_csv(
+            log_file,
+            sep=";",
+            names=fields,
+            header=0,
+            parse_dates=["event_time"],
+        )
+        dfs.append(df)
+
+    if dfs:
+        df_logs = pd.concat(dfs, ignore_index=True)
+    else:
+        df_logs = pd.DataFrame(columns=fields)
+
+    df_logs.columns = [c.lower() for c in df_logs.columns]
+
+    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
+    df_logs["action"] = df_logs["action"].fillna("").str.upper()
+    df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
+
+    return df_logs
 
 
 def _pair_trades(rows: List[Dict]) -> List[Dict]:
@@ -85,10 +96,18 @@ def _pair_trades(rows: List[Dict]) -> List[Dict]:
 
 def _extract_feature(row: Dict) -> Dict:
     """Extract feature dictionary from an OPEN row."""
-    try:
-        t = datetime.strptime(row["event_time"], "%Y.%m.%d %H:%M:%S")
-    except ValueError:
-        t = datetime.strptime(row["event_time"], "%Y.%m.%d %H:%M")
+    t = row["event_time"]
+    if not isinstance(t, datetime):
+        parsed = None
+        for fmt in ("%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M"):
+            try:
+                parsed = datetime.strptime(str(t), fmt)
+                break
+            except Exception:
+                continue
+        if parsed is None:
+            parsed = datetime.utcnow()
+        t = parsed
 
     price = float(row.get("price", 0) or 0)
     sl = float(row.get("sl", 0) or 0)
@@ -122,8 +141,8 @@ def train(
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
 
-    rows = _load_logs(data_dir)
-    trades = _pair_trades(rows)
+    rows_df = _load_logs(data_dir)
+    trades = _pair_trades(rows_df.to_dict("records"))
 
     if not trades:
         raise ValueError(f"No training data found in {data_dir}")

@@ -132,8 +132,8 @@ def test_load_logs_with_metrics(tmp_path: Path):
     metrics_file = data_dir / "metrics.csv"
     _write_metrics(metrics_file)
 
-    rows = _load_logs(data_dir)
-    assert all("win_rate" in r for r in rows)
+    df = _load_logs(data_dir)
+    assert "win_rate" in df.columns
 
 
 def test_train_xgboost(tmp_path: Path):
