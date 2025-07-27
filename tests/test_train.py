@@ -106,6 +106,7 @@ def test_train(tmp_path: Path):
         data = json.load(f)
     assert "coefficients" in data
     assert "threshold" in data
+    assert "day_of_week" in data.get("feature_names", [])
 
 
 def test_train_with_indicators(tmp_path: Path):

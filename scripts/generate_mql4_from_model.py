@@ -42,6 +42,7 @@ def generate(model_json: Path, out_dir: Path):
         'lots': 'Lots',
         'sl_dist': 'GetSLDistance()',
         'tp_dist': 'GetTPDistance()',
+        'day_of_week': 'TimeDayOfWeek(TimeCurrent())',
         'sma': 'iMA(SymbolToTrade, 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0)',
         'rsi': 'iRSI(SymbolToTrade, 0, 14, PRICE_CLOSE, 0)',
         'macd': 'iMACD(SymbolToTrade, 0, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0)',

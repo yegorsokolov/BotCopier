@@ -192,6 +192,7 @@ def _extract_features(
         feat = {
             "symbol": r.get("symbol", ""),
             "hour": t.hour,
+            "day_of_week": t.weekday(),
             "lots": lots,
             "sl_dist": sl - price,
             "tp_dist": tp - price,
