@@ -9,6 +9,8 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
 - `experts/` – MQL4 source files.
   - `Observer_TBot.mq4` – main observer EA.
   - `StrategyTemplate.mq4` – template used for generated strategies.
+    Trade volume is automatically scaled between `MinLots` and `MaxLots`
+    based on the model probability.
   - `model_interface.mqh` – shared structures.
 - `scripts/` – helper Python scripts.
   - `train_target_clone.py` – trains a model from exported logs.
@@ -25,7 +27,8 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
 2. Copy the contents of `experts/` to your terminal's `MQL4\Experts` folder.
 3. Copy the `scripts/` directory somewhere accessible with Python 3 installed.
 4. Restart the MT4 terminal and compile `Observer_TBot.mq4` using MetaEditor.
-5. Attach `Observer_TBot` to a single chart and adjust the extern inputs as needed (magic numbers to observe, log directory, etc.).
+5. Attach `Observer_TBot` to a single chart and adjust the extern inputs as needed
+   (magic numbers to observe, log directory, lot bounds, etc.).
 
 ## External Training
 
