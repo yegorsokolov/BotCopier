@@ -104,6 +104,35 @@ def test_volatility_feature(tmp_path: Path):
     assert "StdDevRecentTicks()" in content
 
 
+def test_atr_bollinger_features(tmp_path: Path):
+    model = {
+        "model_id": "ind",
+        "magic": 321,
+        "coefficients": [0.1] * 4,
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": [
+            "atr",
+            "bollinger_upper",
+            "bollinger_middle",
+            "bollinger_lower",
+        ],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_ind_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "iATR(SymbolToTrade" in content
+    assert "iBands(SymbolToTrade" in content
+
+
 def test_generate_nn(tmp_path: Path):
     model = {
         "model_id": "nn",
