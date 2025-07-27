@@ -29,6 +29,7 @@ def _write_log(file: Path):
         "sl",
         "tp",
         "profit",
+        "spread",
         "comment",
         "remaining_lots",
     ]
@@ -49,6 +50,7 @@ def _write_log(file: Path):
             "1.0950",
             "1.1100",
             "0",
+            "2",
             "",
             "0.1",
         ],
@@ -68,6 +70,7 @@ def _write_log(file: Path):
             "1.1950",
             "1.2100",
             "0",
+            "3",
             "",
             "0.1",
         ],
@@ -107,6 +110,7 @@ def test_train(tmp_path: Path):
     assert "coefficients" in data
     assert "threshold" in data
     assert "day_of_week" in data.get("feature_names", [])
+    assert "spread" in data.get("feature_names", [])
 
 
 def test_train_with_indicators(tmp_path: Path):
@@ -152,6 +156,7 @@ def test_load_logs_with_metrics(tmp_path: Path):
 
     df = _load_logs(data_dir)
     assert "win_rate" in df.columns
+    assert "spread" in df.columns
 
 
 def test_train_xgboost(tmp_path: Path):
