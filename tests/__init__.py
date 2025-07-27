@@ -6,4 +6,10 @@ try:
 except Exception:
     HAS_NUMPY = False
 
-__all__ = ["HAS_NUMPY"]
+try:
+    import stable_baselines3  # noqa: F401
+    HAS_SB3 = True
+except Exception:
+    HAS_SB3 = False
+
+__all__ = ["HAS_NUMPY", "HAS_SB3"]
