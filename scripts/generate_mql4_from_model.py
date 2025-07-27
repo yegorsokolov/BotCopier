@@ -47,6 +47,7 @@ def generate(model_json: Path, out_dir: Path):
         'rsi': 'iRSI(SymbolToTrade, 0, 14, PRICE_CLOSE, 0)',
         'macd': 'iMACD(SymbolToTrade, 0, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0)',
         'macd_signal': 'iMACD(SymbolToTrade, 0, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0)',
+        'volatility': 'StdDevRecentTicks()',
     }
 
     cases = []

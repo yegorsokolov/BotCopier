@@ -79,3 +79,26 @@ def test_day_of_week_feature(tmp_path: Path):
     with open(out_file) as f:
         content = f.read()
     assert "TimeDayOfWeek(TimeCurrent())" in content
+
+
+def test_volatility_feature(tmp_path: Path):
+    model = {
+        "model_id": "vol",
+        "magic": 123,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["volatility"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    out_file = out_dir / "Generated_vol.mq4"
+    assert out_file.exists()
+    with open(out_file) as f:
+        content = f.read()
+    assert "StdDevRecentTicks()" in content
