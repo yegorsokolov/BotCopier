@@ -57,6 +57,20 @@ python generate_mql4_from_model.py models/model.json experts
 
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
+## Model Reloading
+
+Strategies built from ``StrategyTemplate.mq4`` can reload their parameters
+without recompilation. After new training completes run:
+
+```bash
+python scripts/publish_model.py models/model.json /path/to/MT4/MQL4/Files
+```
+
+Set the ``ReloadModelInterval`` input on the EA to the desired number of
+seconds. When the file ``model.json`` in the terminal's ``Files`` directory is
+updated the strategy will automatically load the new coefficients and continue
+trading with minimal downtime.
+
 ## Metrics Tracking
 
 During operation the EA records a summary line for each tracked model in
