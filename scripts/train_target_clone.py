@@ -792,6 +792,22 @@ def train(
         json.dump(model, f, indent=2)
 
     print(f"Model written to {out_dir / 'model.json'}")
+
+    if "coefficients" in model and "intercept" in model:
+        w = np.array(model["coefficients"], dtype=float)
+        b = float(model["intercept"])
+        init = {
+            "weights": [
+                (w / 2.0).tolist(),
+                (-w / 2.0).tolist(),
+            ],
+            "intercepts": [b / 2.0, -b / 2.0],
+            "feature_names": model.get("feature_names", []),
+        }
+        with open(out_dir / "policy_init.json", "w") as f:
+            json.dump(init, f, indent=2)
+        print(f"Initial policy written to {out_dir / 'policy_init.json'}")
+
     print(f"Validation accuracy: {val_acc:.3f}")
 
 

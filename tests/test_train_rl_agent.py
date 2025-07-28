@@ -135,6 +135,32 @@ def test_train_rl_agent(tmp_path: Path):
     assert "avg_reward_per_episode" in data
 
 
+def test_train_rl_agent_start_model(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    start_model = out_dir / "start.json"
+    start = {
+        "model_id": "sup_model",
+        "coefficients": [0.1, -0.1],
+        "intercept": 0.05,
+        "feature_names": ["hour", "lots"],
+    }
+    out_dir.mkdir()
+    with open(start_model, "w") as f:
+        json.dump(start, f)
+
+    train(data_dir, out_dir, start_model=start_model)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    assert data.get("training_type") == "supervised+rl"
+    assert data.get("init_model_id") == "sup_model"
+
+
 @pytest.mark.skipif(not HAS_SB3, reason="stable-baselines3 not installed")
 def test_train_rl_agent_sb3(tmp_path: Path):
     data_dir = tmp_path / "logs"

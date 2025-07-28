@@ -27,6 +27,14 @@ def generate(model_json: Path, out_dir: Path):
     )
 
     coeffs = model.get('coefficients') or model.get('coef_vector', [])
+    if not coeffs:
+        q_w = model.get('q_weights')
+        if isinstance(q_w, list) and len(q_w) >= 2:
+            try:
+                import numpy as np
+                coeffs = (np.array(q_w[0]) - np.array(q_w[1])).tolist()
+            except Exception:
+                coeffs = []
     coeff_str = ', '.join(_fmt(c) for c in coeffs)
     output = output.replace('__COEFFICIENTS__', coeff_str)
 
@@ -135,7 +143,13 @@ def generate(model_json: Path, out_dir: Path):
     output = output.replace('__FEATURE_CASES__', case_block)
     output = output.replace('__FEATURE_COUNT__', str(feature_count))
 
-    intercept = model.get('intercept', 0.0)
+    intercept = model.get('intercept')
+    if intercept is None:
+        q_int = model.get('q_intercepts')
+        if isinstance(q_int, list) and len(q_int) >= 2:
+            intercept = float(q_int[0]) - float(q_int[1])
+        else:
+            intercept = 0.0
     output = output.replace('__INTERCEPT__', _fmt(intercept))
 
     threshold = model.get('threshold', 0.5)

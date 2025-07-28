@@ -138,6 +138,7 @@ def train(
     buffer_size: int = 100,
     update_freq: int = 1,
     algo: str = "qlearn",
+    start_model: Path | None = None,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
 
@@ -159,6 +160,14 @@ def train(
     vec = DictVectorizer(sparse=False)
     states = vec.fit_transform(feats)
     n_features = states.shape[1]
+
+    init_model_data = None
+    if start_model is not None and start_model.exists():
+        try:
+            with open(start_model) as f:
+                init_model_data = json.load(f)
+        except Exception:
+            init_model_data = None
 
     if algo != "qlearn":
         if not HAS_SB3:
@@ -248,6 +257,21 @@ def train(
 
     weights = np.zeros((2, n_features))
     intercepts = np.zeros(2)
+    if init_model_data is not None:
+        feats_match = init_model_data.get("feature_names") == vec.get_feature_names_out().tolist()
+        if feats_match:
+            if "weights" in init_model_data and "intercepts" in init_model_data:
+                try:
+                    weights = np.array(init_model_data["weights"], dtype=float)
+                    intercepts = np.array(init_model_data["intercepts"], dtype=float)
+                except Exception:
+                    weights = np.zeros((2, n_features))
+                    intercepts = np.zeros(2)
+            elif "coefficients" in init_model_data and "intercept" in init_model_data:
+                coefs = np.array(init_model_data["coefficients"], dtype=float)
+                bias = float(init_model_data["intercept"])
+                weights = np.vstack([coefs / 2.0, -coefs / 2.0])
+                intercepts = np.array([bias / 2.0, -bias / 2.0], dtype=float)
     gamma = 0.9
 
     episode_rewards: List[float] = []  # average reward per step
@@ -298,6 +322,8 @@ def train(
         "feature_names": vec.get_feature_names_out().tolist(),
         "coefficients": (weights[0] - weights[1]).tolist(),
         "intercept": float(intercepts[0] - intercepts[1]),
+        "q_weights": weights.tolist(),
+        "q_intercepts": intercepts.tolist(),
         "train_accuracy": train_acc,
         "avg_reward": float(np.mean(episode_rewards)),
         "avg_reward_per_episode": float(np.mean(episode_totals)),
@@ -308,6 +334,13 @@ def train(
         "accuracy": float("nan"),
         "num_samples": len(actions),
     }
+
+    if init_model_data is not None:
+        model["init_model"] = start_model.name if start_model is not None else None
+        model["init_model_id"] = init_model_data.get("model_id")
+        model["training_type"] = "supervised+rl"
+    else:
+        model["training_type"] = "rl_only"
 
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
@@ -330,6 +363,7 @@ def main() -> None:
         default="qlearn",
         help="RL algorithm: qlearn (default), ppo or dqn if stable-baselines3 is installed",
     )
+    p.add_argument("--start-model", help="path to initial model coefficients")
     args = p.parse_args()
     train(
         Path(args.data_dir),
@@ -341,6 +375,7 @@ def main() -> None:
         buffer_size=args.buffer_size,
         update_freq=args.update_freq,
         algo=args.algo,
+        start_model=Path(args.start_model) if args.start_model else None,
     )
 
 

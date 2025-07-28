@@ -163,6 +163,13 @@ def test_train(tmp_path: Path):
     assert "day_of_week" in data.get("feature_names", [])
     assert "spread" in data.get("feature_names", [])
 
+    init_file = out_dir / "policy_init.json"
+    assert init_file.exists()
+    with open(init_file) as f:
+        init = json.load(f)
+    assert "weights" in init
+    assert "intercepts" in init
+
 
 def test_train_with_indicators(tmp_path: Path):
     data_dir = tmp_path / "logs"
