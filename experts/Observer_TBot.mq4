@@ -19,6 +19,7 @@ extern bool   EnableSocketLogging           = false;
 extern string LogSocketHost                 = "127.0.0.1";
 extern int    LogSocketPort                 = 9000;
 extern int    LogBufferSize                 = 10;
+extern bool   StreamMetricsOnly            = false;
 
 int timer_handle;
 
@@ -108,7 +109,7 @@ int OnInit()
       }
    }
 
-   if(EnableSocketLogging)
+   if(EnableSocketLogging || StreamMetricsOnly)
    {
       last_socket_attempt = UseBrokerTime ? TimeCurrent() : TimeLocal();
       log_socket = SocketCreate();
@@ -462,20 +463,24 @@ void ExportLogs(datetime ts)
 
 void WriteMetrics(datetime ts)
 {
-   string fname = LogDirectoryName + "\\metrics.csv";
-   int h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-   if(h==INVALID_HANDLE)
+   int h = INVALID_HANDLE;
+   if(!StreamMetricsOnly)
    {
-      h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
+      string fname = LogDirectoryName + "\\metrics.csv";
+      h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
       if(h==INVALID_HANDLE)
-         return;
-      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;file_write_errors;socket_errors");
-      if(_wr <= 0)
-         FileWriteErrors++;
-   }
-   else
-   {
-      FileSeek(h, 0, SEEK_END);
+      {
+         h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
+         if(h==INVALID_HANDLE)
+            return;
+         int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;file_write_errors;socket_errors");
+         if(_wr <= 0)
+            FileWriteErrors++;
+      }
+      else
+      {
+         FileSeek(h, 0, SEEK_END);
+      }
    }
 
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
@@ -525,9 +530,12 @@ void WriteMetrics(datetime ts)
       double sharpe = stddev>0 ? (sum_profit/trades)/stddev : 0.0;
 
       string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, FileWriteErrors, SocketErrors);
-      int _wr_line = FileWrite(h, line);
-      if(_wr_line <= 0)
-         FileWriteErrors++;
+      if(h!=INVALID_HANDLE)
+      {
+         int _wr_line = FileWrite(h, line);
+         if(_wr_line <= 0)
+            FileWriteErrors++;
+      }
 
       if(log_socket!=INVALID_HANDLE)
       {
@@ -544,7 +552,8 @@ void WriteMetrics(datetime ts)
       }
    }
 
-   FileClose(h);
+   if(h!=INVALID_HANDLE)
+      FileClose(h);
 }
 
 void UpdateModelMetrics(datetime ts)
