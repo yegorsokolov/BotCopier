@@ -343,6 +343,7 @@ def _extract_features(
         sl = float(r.get("sl", 0) or 0)
         tp = float(r.get("tp", 0) or 0)
         lots = float(r.get("lots", 0) or 0)
+        profit = float(r.get("profit", 0) or 0)
 
         symbol = r.get("symbol", "")
         sym_prices = price_map.setdefault(symbol, [])
@@ -354,6 +355,7 @@ def _extract_features(
             "hour": t.hour,
             "day_of_week": t.weekday(),
             "lots": lots,
+            "profit": profit,
             "sl_dist": sl - price,
             "tp_dist": tp - price,
             "spread": spread,
@@ -533,6 +535,18 @@ def train(
             feat_train, y_train = features, labels
             feat_val, y_val = [], np.array([])
 
+    sample_weight = None
+    if model_type == "logreg" and not grid_search:
+        sample_weight = np.array(
+            [abs(f.get("profit", f.get("lots", 1.0))) for f in feat_train],
+            dtype=float,
+        )
+
+    for f in feat_train:
+        f.pop("profit", None)
+    for f in feat_val:
+        f.pop("profit", None)
+
     if existing_model is not None:
         X_train = vec.transform(feat_train)
     else:
@@ -685,7 +699,7 @@ def train(
                 clf.classes_ = np.array([0, 1])
                 clf.coef_ = np.array([existing_model.get("coefficients", [])])
                 clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
-            clf.fit(X_train, y_train)
+            clf.fit(X_train, y_train, sample_weight=sample_weight)
             train_proba = clf.predict_proba(X_train)[:, 1]
             val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
 
@@ -731,6 +745,7 @@ def train(
         "trained_at": datetime.utcnow().isoformat(),
         "feature_names": vec.get_feature_names_out().tolist(),
         "model_type": model_type,
+        "weighted": sample_weight is not None,
         "train_accuracy": train_acc,
         "val_accuracy": val_acc,
         "threshold": threshold,
