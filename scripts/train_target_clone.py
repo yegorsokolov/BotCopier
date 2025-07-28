@@ -725,6 +725,12 @@ def train(
                 t = threshold
             hourly_thresholds.append(float(t))
 
+    # statistics for feature scaling
+    X_stats = vec.transform(feat_train)
+    feature_mean = X_stats.mean(axis=0)
+    feature_std = X_stats.std(axis=0)
+    feature_std[feature_std == 0] = 1.0
+
     # Compute SHAP feature importance on the training set
     try:
         import shap  # type: ignore
@@ -753,6 +759,8 @@ def train(
         "accuracy": val_acc,
         "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
         "feature_importance": feature_importance,
+        "feature_mean": feature_mean.tolist(),
+        "feature_std": feature_std.tolist(),
     }
     if encoder is not None:
         model["encoder_weights"] = encoder.get("weights")

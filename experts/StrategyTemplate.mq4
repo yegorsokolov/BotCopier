@@ -28,6 +28,8 @@ double LSTMRecurrent[] = {__LSTM_RECURRENT__};
 double LSTMBias[] = {__LSTM_BIAS__};
 double LSTMDenseWeights[] = {__LSTM_DENSE_W__};
 double LSTMDenseBias = __LSTM_DENSE_B__;
+double FeatureMean[] = {__FEATURE_MEAN__};
+double FeatureStd[] = {__FEATURE_STD__};
 double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
 int FeatureHistorySize = 0;
 int EncoderWindow = __ENCODER_WINDOW__;
@@ -82,6 +84,8 @@ bool ParseModelJson(string json)
    ExtractJsonArray(json, "\"coefficients\"", ModelCoefficients);
    ExtractJsonArray(json, "\"hourly_thresholds\"", HourlyThresholds);
    ExtractJsonArray(json, "\"probability_table\"", ProbabilityLookup);
+   ExtractJsonArray(json, "\"feature_mean\"", FeatureMean);
+   ExtractJsonArray(json, "\"feature_std\"", FeatureStd);
    ModelIntercept = ExtractJsonNumber(json, "\"intercept\"");
    ModelThreshold = ExtractJsonNumber(json, "\"threshold\"");
    return(true);
@@ -183,11 +187,16 @@ double GetFeature(int index)
       Feature mapping is intentionally minimal and should be kept in
       sync with the Python training script.  Unknown indices default
       to zero. */
+   double val = 0.0;
    switch(index)
    {
 __FEATURE_CASES__      default:
-         return(0.0);
+         val = 0.0;
+         break;
    }
+   if(index < ArraySize(FeatureMean) && index < ArraySize(FeatureStd) && FeatureStd[index] != 0)
+      val = (val - FeatureMean[index]) / FeatureStd[index];
+   return(val);
 }
 
 double ComputeLogisticScore()
