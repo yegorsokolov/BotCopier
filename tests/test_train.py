@@ -32,6 +32,7 @@ def _write_log(file: Path):
         "spread",
         "comment",
         "remaining_lots",
+        "slippage",
     ]
     rows = [
         [
@@ -53,6 +54,7 @@ def _write_log(file: Path):
             "2",
             "",
             "0.1",
+            "0.0001",
         ],
         [
             "2",
@@ -73,6 +75,7 @@ def _write_log(file: Path):
             "3",
             "",
             "0.1",
+            "0.0002",
         ],
     ]
     with open(file, "w", newline="") as f:
@@ -101,6 +104,7 @@ def _write_log_many(file: Path, count: int = 10):
         "spread",
         "comment",
         "remaining_lots",
+        "slippage",
     ]
     rows = []
     for i in range(count):
@@ -125,6 +129,7 @@ def _write_log_many(file: Path, count: int = 10):
             "2",
             "",
             "0.1",
+            "0.0001",
         ])
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")
@@ -255,6 +260,7 @@ def test_load_logs_with_metrics(tmp_path: Path):
     df = _load_logs(data_dir)
     assert "win_rate" in df.columns
     assert "spread" in df.columns
+    assert "slippage" in df.columns
 
 
 def test_train_xgboost(tmp_path: Path):
@@ -366,3 +372,18 @@ def test_corr_features(tmp_path: Path):
     feats = data.get("feature_names", [])
     assert "ratio_EURUSD_USDCHF" in feats
     assert "corr_EURUSD_USDCHF" in feats
+
+
+def test_slippage_feature(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_slip.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, use_slippage=True)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "slippage" in feats
