@@ -7,6 +7,8 @@ extern int MagicNumber = 1234;
 extern bool EnableDebugLogging = false;
 extern double MinLots = 0.01;
 extern double MaxLots = 0.1;
+extern string ModelFileName = "model.json";
+extern int ReloadModelInterval = 0; // seconds, 0=disabled
 
 double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
@@ -31,9 +33,99 @@ int FeatureHistorySize = 0;
 int EncoderWindow = __ENCODER_WINDOW__;
 int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
+datetime LastModelLoad = 0;
+
+//----------------------------------------------------------------------
+// Model loading utilities
+//----------------------------------------------------------------------
+
+double ExtractJsonNumber(string json, string key)
+{
+   int pos = StringFind(json, key);
+   if(pos < 0)
+      return(0.0);
+   pos = StringFind(json, ":", pos);
+   if(pos < 0)
+      return(0.0);
+   pos++;
+   while(pos < StringLen(json) && StringMid(json, pos, 1) == " ") pos++;
+   int end = pos;
+   while(end < StringLen(json))
+   {
+      string ch = StringMid(json, end, 1);
+      if(ch == "," || ch == "}")
+         break;
+      end++;
+   }
+   string val = StringSubstr(json, pos, end-pos);
+   return(StrToDouble(val));
+}
+
+void ExtractJsonArray(string json, string key, double &arr[])
+{
+   int pos = StringFind(json, key);
+   if(pos < 0) return;
+   pos = StringFind(json, "[", pos);
+   if(pos < 0) return;
+   int end = StringFind(json, "]", pos);
+   if(end < 0) return;
+   string vals = StringSubstr(json, pos+1, end-pos-1);
+   string parts[];
+   int cnt = StringSplit(vals, ',', parts);
+   ArrayResize(arr, cnt);
+   for(int i=0; i<cnt; i++)
+      arr[i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i])));
+}
+
+bool ParseModelJson(string json)
+{
+   ExtractJsonArray(json, "\"coefficients\"", ModelCoefficients);
+   ExtractJsonArray(json, "\"hourly_thresholds\"", HourlyThresholds);
+   ExtractJsonArray(json, "\"probability_table\"", ProbabilityLookup);
+   ModelIntercept = ExtractJsonNumber(json, "\"intercept\"");
+   ModelThreshold = ExtractJsonNumber(json, "\"threshold\"");
+   return(true);
+}
+
+bool ParseModelCsv(string line)
+{
+   string parts[];
+   int cnt = StringSplit(StringTrimLeft(StringTrimRight(line)), ',', parts);
+   if(cnt < 3)
+      return(false);
+   ModelIntercept = StrToDouble(parts[0]);
+   ModelThreshold = StrToDouble(parts[1]);
+   int n = cnt - 2;
+   ArrayResize(ModelCoefficients, n);
+   for(int i=0; i<n; i++)
+      ModelCoefficients[i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i+2])));
+   return(true);
+}
+
+bool LoadModel()
+{
+   int h = FileOpen(ModelFileName, FILE_READ|FILE_TXT|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+   {
+      Print("Model load failed: ", GetLastError());
+      return(false);
+   }
+   string content = "";
+   while(!FileIsEnding(h))
+      content += FileReadString(h);
+   FileClose(h);
+   if(StringFind(StringToLower(ModelFileName), ".json") >= 0)
+      return(ParseModelJson(content));
+   else
+      return(ParseModelCsv(content));
+}
 
 int OnInit()
 {
+   bool ok = LoadModel();
+   LastModelLoad = TimeCurrent();
+   if(!ok)
+      Print("Using built-in model parameters");
    return(INIT_SUCCEEDED);
 }
 
@@ -227,6 +319,12 @@ bool HasOpenOrders()
 
 void OnTick()
 {
+   if(ReloadModelInterval > 0 && TimeCurrent() - LastModelLoad >= ReloadModelInterval)
+   {
+      if(LoadModel())
+         Print("Model parameters reloaded");
+      LastModelLoad = TimeCurrent();
+   }
    if(HasOpenOrders())
       return;
 
