@@ -238,3 +238,26 @@ def test_generate_hourly_thresholds(tmp_path: Path):
         content = f.read()
     assert "HourlyThresholds" in content
     assert "GetTradeThreshold()" in content
+
+
+def test_generate_ratio_feature(tmp_path: Path):
+    model = {
+        "model_id": "ratio",
+        "magic": 999,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["ratio_EURUSD_USDCHF"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_ratio_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert 'iClose("EURUSD", 0, 0) / iClose("USDCHF", 0, 0)' in content

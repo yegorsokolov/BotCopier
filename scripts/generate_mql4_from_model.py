@@ -102,7 +102,21 @@ def generate(model_json: Path, out_dir: Path):
 
     cases = []
     for idx, name in enumerate(feature_names):
-        expr = feature_map.get(name, '0.0')
+        expr = feature_map.get(name)
+        if expr is None:
+            if name.startswith('ratio_'):
+                parts = name[6:].split('_')
+                if len(parts) == 2:
+                    expr = f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
+            elif name.startswith('corr_'):
+                parts = name[5:].split('_')
+                if len(parts) == 2:
+                    expr = (
+                        f'iMA("{parts[0]}", 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0) - '
+                        f'iMA("{parts[1]}", 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0)'
+                    )
+        if expr is None:
+            expr = '0.0'
         cases.append(f"      case {idx}:\n         return({expr});")
     case_block = "\n".join(cases)
     if case_block:

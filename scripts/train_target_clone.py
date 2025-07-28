@@ -166,6 +166,20 @@ def _adx_update(state, price, period=14):
     return float(adx)
 
 
+def _rolling_corr(a, b, window=5):
+    """Return correlation of the last ``window`` points of ``a`` and ``b``."""
+    if not a or not b:
+        return 0.0
+    w = min(len(a), len(b), window)
+    if w < 2:
+        return 0.0
+    arr1 = np.array(a[-w:], dtype=float)
+    arr2 = np.array(b[-w:], dtype=float)
+    if arr1.std(ddof=0) == 0 or arr2.std(ddof=0) == 0:
+        return 0.0
+    return float(np.corrcoef(arr1, arr2)[0, 1])
+
+
 def _load_logs_db(db_file: Path) -> pd.DataFrame:
     """Load log rows from a SQLite database."""
 
@@ -284,6 +298,10 @@ def _extract_features(
     use_stochastic=False,
     use_adx=False,
     volatility=None,
+    *,
+    corr_pairs=None,
+    extra_price_series=None,
+    corr_window: int = 5,
 ):
     feature_dicts = []
     labels = []
@@ -291,6 +309,7 @@ def _extract_features(
     macd_state = {}
     stoch_state = {}
     adx_state = {}
+    price_map = {sym: list(vals) for sym, vals in (extra_price_series or {}).items()}
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
             continue
@@ -316,10 +335,13 @@ def _extract_features(
         tp = float(r.get("tp", 0) or 0)
         lots = float(r.get("lots", 0) or 0)
 
+        symbol = r.get("symbol", "")
+        sym_prices = price_map.setdefault(symbol, [])
+
         spread = float(r.get("spread", 0) or 0)
 
         feat = {
-            "symbol": r.get("symbol", ""),
+            "symbol": symbol,
             "hour": t.hour,
             "day_of_week": t.weekday(),
             "lots": lots,
@@ -364,7 +386,19 @@ def _extract_features(
         if use_adx:
             feat["adx"] = _adx_update(adx_state, price)
 
+        if corr_pairs:
+            for s1, s2 in corr_pairs:
+                p1 = price_map.get(s1, [])
+                p2 = price_map.get(s2, [])
+                corr = _rolling_corr(p1, p2, corr_window)
+                ratio = 0.0
+                if p1 and p2 and p2[-1] != 0:
+                    ratio = p1[-1] / p2[-1]
+                feat[f"corr_{s1}_{s2}"] = corr
+                feat[f"ratio_{s1}_{s2}"] = ratio
+
         prices.append(price)
+        sym_prices.append(price)
 
         feature_dicts.append(feat)
         labels.append(label)
@@ -408,6 +442,9 @@ def train(
     max_depth: int = 3,
     incremental: bool = False,
     sequence_length: int = 5,
+    corr_pairs=None,
+    corr_window: int = 5,
+    extra_price_series=None,
 ):
     """Train a simple classifier model from the log directory."""
 
@@ -426,6 +463,9 @@ def train(
         use_stochastic=use_stochastic,
         use_adx=use_adx,
         volatility=volatility_series,
+        corr_pairs=corr_pairs,
+        corr_window=corr_window,
+        extra_price_series=extra_price_series,
     )
 
     if not features:
@@ -686,6 +726,8 @@ def main():
     p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
     p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
     p.add_argument('--incremental', action='store_true', help='update existing model.json')
+    p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
+    p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -693,6 +735,10 @@ def main():
             vol_data = json.load(f)
     else:
         vol_data = None
+    if args.corr_symbols:
+        corr_pairs = [tuple(p.split(':')) for p in args.corr_symbols.split(',')]
+    else:
+        corr_pairs = None
     train(
         Path(args.data_dir),
         Path(args.out_dir),
@@ -714,6 +760,8 @@ def main():
         max_depth=args.max_depth,
         incremental=args.incremental,
         sequence_length=args.sequence_length,
+        corr_pairs=corr_pairs,
+        corr_window=args.corr_window,
     )
 
 
