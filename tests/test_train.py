@@ -337,3 +337,19 @@ def test_hourly_thresholds(tmp_path: Path):
     ht = data.get("hourly_thresholds")
     assert isinstance(ht, list)
     assert len(ht) == 24
+
+
+def test_corr_features(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_corr.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, corr_pairs=[("EURUSD", "USDCHF")])
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "ratio_EURUSD_USDCHF" in feats
+    assert "corr_EURUSD_USDCHF" in feats
