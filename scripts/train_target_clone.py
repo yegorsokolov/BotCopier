@@ -243,6 +243,7 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         "spread",
         "comment",
         "remaining_lots",
+        "slippage",
     ]
 
     dfs: List[pd.DataFrame] = []
@@ -303,6 +304,7 @@ def _extract_features(
     boll_window=20,
     use_stochastic=False,
     use_adx=False,
+    use_slippage=False,
     volatility=None,
     *,
     corr_pairs=None,
@@ -349,6 +351,7 @@ def _extract_features(
         sym_prices = price_map.setdefault(symbol, [])
 
         spread = float(r.get("spread", 0) or 0)
+        slippage = float(r.get("slippage", 0) or 0)
 
         feat = {
             "symbol": symbol,
@@ -360,6 +363,9 @@ def _extract_features(
             "tp_dist": tp - price,
             "spread": spread,
         }
+
+        if use_slippage:
+            feat["slippage"] = slippage
 
         if volatility is not None:
             key = t.strftime("%Y-%m-%d %H")
@@ -453,6 +459,7 @@ def train(
     boll_window: int = 20,
     use_stochastic: bool = False,
     use_adx: bool = False,
+    use_slippage: bool = False,
     volatility_series=None,
     grid_search: bool = False,
     c_values=None,
@@ -488,6 +495,7 @@ def train(
         boll_window=boll_window,
         use_stochastic=use_stochastic,
         use_adx=use_adx,
+        use_slippage=use_slippage,
         volatility=volatility_series,
         corr_pairs=corr_pairs,
         corr_window=corr_window,
@@ -847,6 +855,7 @@ def main():
     p.add_argument('--use-bollinger', action='store_true', help='include Bollinger Bands feature')
     p.add_argument('--use-stochastic', action='store_true', help='include Stochastic Oscillator feature')
     p.add_argument('--use-adx', action='store_true', help='include ADX feature')
+    p.add_argument('--use-slippage', action='store_true', help='include slippage feature')
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
@@ -884,6 +893,7 @@ def main():
         use_bollinger=args.use_bollinger,
         use_stochastic=args.use_stochastic,
         use_adx=args.use_adx,
+        use_slippage=args.use_slippage,
         volatility_series=vol_data,
         grid_search=args.grid_search,
         c_values=args.c_values,

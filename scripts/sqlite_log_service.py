@@ -26,6 +26,7 @@ FIELDS = [
     "profit",
     "comment",
     "remaining_lots",
+    "slippage",
 ]
 
 
