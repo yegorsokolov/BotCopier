@@ -163,6 +163,8 @@ def test_train(tmp_path: Path):
     assert "day_of_week" in data.get("feature_names", [])
     assert "spread" in data.get("feature_names", [])
     assert data.get("weighted") is True
+    assert "feature_mean" in data
+    assert "feature_std" in data
 
     init_file = out_dir / "policy_init.json"
     assert init_file.exists()

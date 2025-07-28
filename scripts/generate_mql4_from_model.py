@@ -92,6 +92,13 @@ def generate(model_json: Path, out_dir: Path):
     output = output.replace('__ENCODER_WINDOW__', str(enc_window))
     output = output.replace('__ENCODER_DIM__', str(enc_dim))
 
+    feature_mean = model.get('feature_mean', [])
+    mean_str = ', '.join(_fmt(v) for v in feature_mean)
+    output = output.replace('__FEATURE_MEAN__', mean_str)
+    feature_std = model.get('feature_std', [])
+    std_str = ', '.join(_fmt(v) for v in feature_std)
+    output = output.replace('__FEATURE_STD__', std_str)
+
     feature_names = model.get('feature_names', [])
     feature_count = len(feature_names)
 
@@ -136,7 +143,7 @@ def generate(model_json: Path, out_dir: Path):
                 expr = f'GetEncodedFeature({idx_ae})'
         if expr is None:
             expr = '0.0'
-        cases.append(f"      case {idx}:\n         return({expr});")
+        cases.append(f"      case {idx}:\n         val = ({expr});\n         break;")
     case_block = "\n".join(cases)
     if case_block:
         case_block += "\n"
