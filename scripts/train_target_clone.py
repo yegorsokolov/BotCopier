@@ -23,6 +23,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
 
 try:
+    import optuna  # type: ignore
+    HAS_OPTUNA = True
+except Exception:  # pragma: no cover - optional dependency
+    HAS_OPTUNA = False
+
+try:
     import tensorflow as tf  # type: ignore
     from tensorflow import keras  # type: ignore
     HAS_TF = True
@@ -445,6 +451,7 @@ def train(
     corr_pairs=None,
     corr_window: int = 5,
     extra_price_series=None,
+    optuna_trials: int = 0,
 ):
     """Train a simple classifier model from the log directory."""
 
@@ -470,6 +477,10 @@ def train(
 
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
+
+    hidden_size = 8
+    logreg_C = 1.0
+    best_trial = None
 
     existing_model = None
     if incremental:
@@ -513,6 +524,63 @@ def train(
     else:
         X_val = np.empty((0, X_train.shape[1]))
 
+    if optuna_trials > 0 and HAS_OPTUNA:
+        def _objective(trial):
+            if model_type == "logreg":
+                c = trial.suggest_float("C", 1e-3, 10.0, log=True)
+                clf = LogisticRegression(max_iter=200, C=c)
+            elif model_type == "xgboost":
+                if XGBClassifier is None:
+                    raise ImportError("xgboost is not installed")
+                est = trial.suggest_int("n_estimators", 50, 300)
+                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                depth = trial.suggest_int("max_depth", 2, 8)
+                clf = XGBClassifier(
+                    n_estimators=est,
+                    learning_rate=lr,
+                    max_depth=depth,
+                    eval_metric="logloss",
+                    use_label_encoder=False,
+                )
+            elif model_type == "nn":
+                h = trial.suggest_int("hidden_size", 4, 64)
+                if HAS_TF:
+                    clf = keras.Sequential([
+                        keras.layers.Input(shape=(X_train.shape[1],)),
+                        keras.layers.Dense(h, activation="relu"),
+                        keras.layers.Dense(1, activation="sigmoid"),
+                    ])
+                    clf.compile(optimizer="adam", loss="binary_crossentropy")
+                    clf.fit(X_train, y_train, epochs=50, verbose=0)
+                else:
+                    clf = MLPClassifier(hidden_layer_sizes=(h,), max_iter=500, random_state=42)
+                    clf.fit(X_train, y_train)
+            else:
+                return 0.0
+
+            if model_type == "nn" and HAS_TF:
+                val_proba = clf.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
+            else:
+                val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+
+            if len(y_val) > 0:
+                t, _ = _best_threshold(y_val, val_proba)
+                preds = (val_proba >= t).astype(int)
+                return accuracy_score(y_val, preds)
+            return 0.0
+
+        study = optuna.create_study(direction="maximize")
+        study.optimize(_objective, n_trials=optuna_trials)
+        best_trial = study.best_trial
+        if model_type == "logreg":
+            logreg_C = float(best_trial.params["C"])
+        elif model_type == "xgboost":
+            n_estimators = int(best_trial.params["n_estimators"])
+            learning_rate = float(best_trial.params["learning_rate"])
+            max_depth = int(best_trial.params["max_depth"])
+        elif model_type == "nn":
+            hidden_size = int(best_trial.params["hidden_size"])
+
     if model_type == "random_forest":
         clf = RandomForestClassifier(n_estimators=100, random_state=42)
         clf.fit(X_train, y_train)
@@ -535,7 +603,7 @@ def train(
         if HAS_TF:
             model_nn = keras.Sequential([
                 keras.layers.Input(shape=(X_train.shape[1],)),
-                keras.layers.Dense(8, activation="relu"),
+                keras.layers.Dense(hidden_size, activation="relu"),
                 keras.layers.Dense(1, activation="sigmoid"),
             ])
             model_nn.compile(optimizer="adam", loss="binary_crossentropy")
@@ -546,7 +614,7 @@ def train(
             )
             clf = model_nn
         else:
-            clf = MLPClassifier(hidden_layer_sizes=(8,), max_iter=500, random_state=42)
+            clf = MLPClassifier(hidden_layer_sizes=(hidden_size,), max_iter=500, random_state=42)
             clf.fit(X_train, y_train)
             train_proba = clf.predict_proba(X_train)[:, 1]
             val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
@@ -594,7 +662,7 @@ def train(
             gs.fit(X_train, y_train)
             clf = gs.best_estimator_
         else:
-            clf = LogisticRegression(max_iter=200, warm_start=existing_model is not None)
+            clf = LogisticRegression(max_iter=200, C=logreg_C, warm_start=existing_model is not None)
             if existing_model is not None:
                 clf.classes_ = np.array([0, 1])
                 clf.coef_ = np.array([existing_model.get("coefficients", [])])
@@ -653,6 +721,9 @@ def train(
         "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
         "feature_importance": feature_importance,
     }
+    if best_trial is not None:
+        model["optuna_best_params"] = best_trial.params
+        model["optuna_best_score"] = best_trial.value
     if hourly_thresholds is not None:
         model["hourly_thresholds"] = hourly_thresholds
 
@@ -728,6 +799,7 @@ def main():
     p.add_argument('--incremental', action='store_true', help='update existing model.json')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
+    p.add_argument('--optuna-trials', type=int, default=0, help='number of Optuna trials for hyperparameter search')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -762,6 +834,7 @@ def main():
         sequence_length=args.sequence_length,
         corr_pairs=corr_pairs,
         corr_window=args.corr_window,
+        optuna_trials=args.optuna_trials,
     )
 
 

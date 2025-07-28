@@ -39,6 +39,13 @@ python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir 
 python generate_mql4_from_model.py models/model.json experts
 ```
 
+Hyperparameters can be optimised automatically when `optuna` is installed:
+
+```bash
+pip install optuna
+python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir models --optuna-trials 50
+```
+
 For ongoing training simply rerun the script with the ``--incremental`` flag and
 the latest log directory. The generated MQ4 file name will include the training
 timestamp so previous versions remain intact:
