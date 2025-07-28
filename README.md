@@ -100,6 +100,14 @@ Start ``Observer_TBot`` with the same host and port settings and the CSV will be
 populated as trades occur.  If the connection is lost, the EA automatically
 attempts to reconnect so streaming can resume without manual intervention.
 
+To forward metric snapshots without creating ``metrics.csv`` set ``StreamMetricsOnly``
+to ``true``. Use the ``metrics_collector.py`` helper to store these messages
+in a SQLite database:
+
+```bash
+python scripts/metrics_collector.py --db metrics.db
+```
+
 ## Tick History Export
 
 Historical tick data can be exported for all symbols that appear in the account
