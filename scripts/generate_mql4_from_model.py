@@ -84,6 +84,39 @@ def generate(model_json: Path, out_dir: Path):
     output = output.replace('__LSTM_HIDDEN_SIZE__', str(lstm_hidden))
     output = output.replace('__LSTM_SEQ_LEN__', str(seq_len))
 
+    trans_weights = model.get('transformer_weights', [])
+    def _flat(a):
+        if isinstance(a, list):
+            r = []
+            for x in a:
+                r.extend(_flat(x))
+            return r
+        return [a]
+    if trans_weights:
+        qk = ', '.join(_fmt(v) for v in _flat(trans_weights[0]))
+        qb = ', '.join(_fmt(v) for v in _flat(trans_weights[1]))
+        kk = ', '.join(_fmt(v) for v in _flat(trans_weights[2]))
+        kb = ', '.join(_fmt(v) for v in _flat(trans_weights[3]))
+        vk = ', '.join(_fmt(v) for v in _flat(trans_weights[4]))
+        vb = ', '.join(_fmt(v) for v in _flat(trans_weights[5]))
+        ok = ', '.join(_fmt(v) for v in _flat(trans_weights[6]))
+        ob = ', '.join(_fmt(v) for v in _flat(trans_weights[7]))
+        dw = ', '.join(_fmt(v) for v in _flat(trans_weights[8]))
+        db = _fmt(trans_weights[9][0] if isinstance(trans_weights[9], list) else trans_weights[9])
+    else:
+        qk = qb = kk = kb = vk = vb = ok = ob = dw = ''
+        db = '0'
+    output = output.replace('__TRANS_QK__', qk)
+    output = output.replace('__TRANS_QB__', qb)
+    output = output.replace('__TRANS_KK__', kk)
+    output = output.replace('__TRANS_KB__', kb)
+    output = output.replace('__TRANS_VK__', vk)
+    output = output.replace('__TRANS_VB__', vb)
+    output = output.replace('__TRANS_OK__', ok)
+    output = output.replace('__TRANS_OB__', ob)
+    output = output.replace('__TRANS_DENSE_W__', dw)
+    output = output.replace('__TRANS_DENSE_B__', db)
+
     enc_weights = model.get('encoder_weights', [])
     enc_window = int(model.get('encoder_window', 0))
     enc_dim = len(enc_weights[0]) if enc_weights else 0
