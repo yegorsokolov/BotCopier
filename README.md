@@ -71,6 +71,20 @@ seconds. When the file ``model.json`` in the terminal's ``Files`` directory is
 updated the strategy will automatically load the new coefficients and continue
 trading with minimal downtime.
 
+## Automated Promotion
+
+The ``promote_best_models.py`` helper can be scheduled to run periodically,
+copying the highest-scoring models to ``models/best`` and publishing the top
+one to the terminal's ``Files`` directory. An example cron entry running every
+30 minutes:
+
+```cron
+*/30 * * * * /path/to/BotCopier/scripts/promote_and_publish.sh
+```
+
+Set ``ReloadModelInterval`` on the EA so it automatically reloads the published
+model when ``model.json`` changes.
+
 ## Metrics Tracking
 
 During operation the EA records a summary line for each tracked model in
