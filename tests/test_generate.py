@@ -133,6 +133,30 @@ def test_atr_bollinger_features(tmp_path: Path):
     assert "iBands(SymbolToTrade" in content
 
 
+def test_stochastic_adx_features(tmp_path: Path):
+    model = {
+        "model_id": "stoch",
+        "magic": 654,
+        "coefficients": [0.1] * 3,
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["stochastic_k", "stochastic_d", "adx"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_stoch_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "iStochastic(SymbolToTrade" in content
+    assert "iADX(SymbolToTrade" in content
+
+
 def test_generate_nn(tmp_path: Path):
     model = {
         "model_id": "nn",

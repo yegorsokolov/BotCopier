@@ -104,6 +104,68 @@ def _macd_update(state, price, short=12, long=26, signal=9):
     return macd, ema_signal
 
 
+def _stochastic_update(state, price, k_period=14, d_period=3):
+    """Update and return stochastic %K and %D values."""
+    prices = state.setdefault("prices", [])
+    prices.append(price)
+    if len(prices) > k_period:
+        del prices[0]
+    low = min(prices)
+    high = max(prices)
+    if high == low:
+        k = 0.0
+    else:
+        k = (price - low) / (high - low) * 100.0
+    k_history = state.setdefault("k_values", [])
+    k_history.append(k)
+    if len(k_history) > d_period:
+        del k_history[0]
+    d = float(sum(k_history) / len(k_history))
+    return float(k), d
+
+
+def _adx_update(state, price, period=14):
+    """Update ADX state with ``price`` and return current ADX."""
+    prev = state.get("prev_price")
+    state["prev_price"] = price
+    if prev is None:
+        return 0.0
+
+    up_move = price - prev if price > prev else 0.0
+    down_move = prev - price if price < prev else 0.0
+    tr = abs(price - prev)
+
+    plus_dm = state.setdefault("plus_dm", [])
+    minus_dm = state.setdefault("minus_dm", [])
+    tr_list = state.setdefault("tr", [])
+    dx_list = state.setdefault("dx", [])
+
+    plus_dm.append(up_move)
+    minus_dm.append(down_move)
+    tr_list.append(tr)
+    if len(plus_dm) > period:
+        del plus_dm[0]
+    if len(minus_dm) > period:
+        del minus_dm[0]
+    if len(tr_list) > period:
+        del tr_list[0]
+
+    atr = sum(tr_list) / len(tr_list)
+    if atr == 0:
+        di_plus = di_minus = 0.0
+    else:
+        di_plus = 100.0 * (sum(plus_dm) / len(plus_dm)) / atr
+        di_minus = 100.0 * (sum(minus_dm) / len(minus_dm)) / atr
+
+    denom = di_plus + di_minus
+    dx = 0.0 if denom == 0 else 100.0 * abs(di_plus - di_minus) / denom
+    dx_list.append(dx)
+    if len(dx_list) > period:
+        del dx_list[0]
+    adx = sum(dx_list) / len(dx_list)
+    return float(adx)
+
+
 def _load_logs_db(db_file: Path) -> pd.DataFrame:
     """Load log rows from a SQLite database."""
 
@@ -219,12 +281,16 @@ def _extract_features(
     atr_period=14,
     use_bollinger=False,
     boll_window=20,
+    use_stochastic=False,
+    use_adx=False,
     volatility=None,
 ):
     feature_dicts = []
     labels = []
     prices = []
     macd_state = {}
+    stoch_state = {}
+    adx_state = {}
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
             continue
@@ -290,6 +356,14 @@ def _extract_features(
             feat["bollinger_middle"] = mid
             feat["bollinger_lower"] = lower
 
+        if use_stochastic:
+            k, d_val = _stochastic_update(stoch_state, price)
+            feat["stochastic_k"] = k
+            feat["stochastic_d"] = d_val
+
+        if use_adx:
+            feat["adx"] = _adx_update(adx_state, price)
+
         prices.append(price)
 
         feature_dicts.append(feat)
@@ -323,6 +397,8 @@ def train(
     atr_period: int = 14,
     use_bollinger: bool = False,
     boll_window: int = 20,
+    use_stochastic: bool = False,
+    use_adx: bool = False,
     volatility_series=None,
     grid_search: bool = False,
     c_values=None,
@@ -347,6 +423,8 @@ def train(
         atr_period=atr_period,
         use_bollinger=use_bollinger,
         boll_window=boll_window,
+        use_stochastic=use_stochastic,
+        use_adx=use_adx,
         volatility=volatility_series,
     )
 
@@ -596,6 +674,8 @@ def main():
     p.add_argument('--use-macd', action='store_true', help='include MACD feature')
     p.add_argument('--use-atr', action='store_true', help='include ATR feature')
     p.add_argument('--use-bollinger', action='store_true', help='include Bollinger Bands feature')
+    p.add_argument('--use-stochastic', action='store_true', help='include Stochastic Oscillator feature')
+    p.add_argument('--use-adx', action='store_true', help='include ADX feature')
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
@@ -623,6 +703,8 @@ def main():
         use_macd=args.use_macd,
         use_atr=args.use_atr,
         use_bollinger=args.use_bollinger,
+        use_stochastic=args.use_stochastic,
+        use_adx=args.use_adx,
         volatility_series=vol_data,
         grid_search=args.grid_search,
         c_values=args.c_values,
