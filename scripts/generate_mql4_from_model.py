@@ -76,6 +76,14 @@ def generate(model_json: Path, out_dir: Path):
     output = output.replace('__LSTM_HIDDEN_SIZE__', str(lstm_hidden))
     output = output.replace('__LSTM_SEQ_LEN__', str(seq_len))
 
+    enc_weights = model.get('encoder_weights', [])
+    enc_window = int(model.get('encoder_window', 0))
+    enc_dim = len(enc_weights[0]) if enc_weights else 0
+    enc_flat = ', '.join(_fmt(v) for row in enc_weights for v in row)
+    output = output.replace('__ENCODER_WEIGHTS__', enc_flat)
+    output = output.replace('__ENCODER_WINDOW__', str(enc_window))
+    output = output.replace('__ENCODER_DIM__', str(enc_dim))
+
     feature_names = model.get('feature_names', [])
     feature_count = len(feature_names)
 
@@ -115,6 +123,9 @@ def generate(model_json: Path, out_dir: Path):
                         f'iMA("{parts[0]}", 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0) - '
                         f'iMA("{parts[1]}", 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0)'
                     )
+            elif name.startswith('ae') and name[2:].isdigit():
+                idx_ae = int(name[2:])
+                expr = f'GetEncodedFeature({idx_ae})'
         if expr is None:
             expr = '0.0'
         cases.append(f"      case {idx}:\n         return({expr});")
