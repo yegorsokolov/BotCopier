@@ -322,6 +322,26 @@ def test_train_lstm(tmp_path: Path):
     assert data.get("weighted") is False
 
 
+@pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
+def test_train_transformer(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, model_type="transformer", sequence_length=3)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("model_type") == "transformer"
+    assert "transformer_weights" in data
+    assert data.get("sequence_length") == 3
+    assert data.get("weighted") is False
+
+
 def test_incremental_train(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"

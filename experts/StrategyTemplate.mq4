@@ -28,6 +28,16 @@ double LSTMRecurrent[] = {__LSTM_RECURRENT__};
 double LSTMBias[] = {__LSTM_BIAS__};
 double LSTMDenseWeights[] = {__LSTM_DENSE_W__};
 double LSTMDenseBias = __LSTM_DENSE_B__;
+double TransformerQKernel[] = {__TRANS_QK__};
+double TransformerQBias[] = {__TRANS_QB__};
+double TransformerKKernel[] = {__TRANS_KK__};
+double TransformerKBias[] = {__TRANS_KB__};
+double TransformerVKernel[] = {__TRANS_VK__};
+double TransformerVBias[] = {__TRANS_VB__};
+double TransformerOutKernel[] = {__TRANS_OK__};
+double TransformerOutBias[] = {__TRANS_OB__};
+double TransformerDenseWeights[] = {__TRANS_DENSE_W__};
+double TransformerDenseBias = __TRANS_DENSE_B__;
 double FeatureMean[] = {__FEATURE_MEAN__};
 double FeatureStd[] = {__FEATURE_STD__};
 double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
@@ -285,8 +295,79 @@ double ComputeLSTMScore()
       }
    }
    double z = LSTMDenseBias;
-   for(int u=0; u<hidden; u++)
-      z += LSTMDenseWeights[u] * h[u];
+  for(int u=0; u<hidden; u++)
+     z += LSTMDenseWeights[u] * h[u];
+  return(1.0 / (1.0 + MathExp(-z)));
+}
+
+double ComputeTransformerScore()
+{
+   int steps = FeatureHistorySize;
+   if(steps > LSTMSequenceLength)
+      steps = LSTMSequenceLength;
+   int f = FeatureCount;
+   double Q[100][100];
+   double K[100][100];
+   double V[100][100];
+   for(int t=0; t<steps; t++)
+      for(int j=0; j<f; j++)
+      {
+         double xq = TransformerQBias[j];
+         double xk = TransformerKBias[j];
+         double xv = TransformerVBias[j];
+         for(int i=0; i<f; i++)
+         {
+            double x = FeatureHistory[steps-1 - t][i];
+            xq += x * TransformerQKernel[i*f + j];
+            xk += x * TransformerKKernel[i*f + j];
+            xv += x * TransformerVKernel[i*f + j];
+         }
+         Q[t][j] = xq;
+         K[t][j] = xk;
+         V[t][j] = xv;
+      }
+   double Context[100][100];
+   ArrayInitialize(Context, 0.0);
+   for(int i=0; i<steps; i++)
+   {
+      double scores[100];
+      double denom = 0.0;
+      for(int j=0; j<steps; j++)
+      {
+         double s = 0.0;
+         for(int d=0; d<f; d++)
+            s += Q[i][d] * K[j][d];
+         s = MathExp(s / MathSqrt(f));
+         scores[j] = s;
+         denom += s;
+      }
+      for(int j=0; j<steps; j++)
+      {
+         double w = scores[j] / denom;
+         for(int d=0; d<f; d++)
+            Context[i][d] += w * V[j][d];
+      }
+   }
+   double Out[100][100];
+   for(int i=0; i<steps; i++)
+      for(int d=0; d<f; d++)
+      {
+         double s = TransformerOutBias[d];
+         for(int j=0; j<f; j++)
+            s += Context[i][j] * TransformerOutKernel[j*f + d];
+         Out[i][d] = s;
+      }
+   double pooled[100];
+   for(int d=0; d<f; d++)
+   {
+      double sum = 0.0;
+      for(int i=0; i<steps; i++)
+         sum += Out[i][d];
+      pooled[d] = sum / steps;
+   }
+   double z = TransformerDenseBias;
+   for(int d=0; d<f; d++)
+      z += TransformerDenseWeights[d] * pooled[d];
    return(1.0 / (1.0 + MathExp(-z)));
 }
 
@@ -295,6 +376,8 @@ double GetProbability()
    UpdateFeatureHistory();
    if(ArraySize(ProbabilityLookup) == 24)
       return(ProbabilityLookup[TimeHour(TimeCurrent())]);
+   if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
+      return(ComputeTransformerScore());
    if(LSTMSequenceLength > 0 && ArraySize(LSTMDenseWeights) > 0)
       return(ComputeLSTMScore());
    if(ArraySize(NNLayer1Weights) > 0)
