@@ -162,6 +162,7 @@ def test_train(tmp_path: Path):
     assert "threshold" in data
     assert "day_of_week" in data.get("feature_names", [])
     assert "spread" in data.get("feature_names", [])
+    assert data.get("weighted") is True
 
     init_file = out_dir / "policy_init.json"
     assert init_file.exists()
@@ -271,6 +272,7 @@ def test_train_xgboost(tmp_path: Path):
     assert data.get("model_type") == "xgboost"
     assert "coefficients" in data
     assert len(data.get("probability_table", [])) == 24
+    assert data.get("weighted") is False
 
 
 def test_train_nn(tmp_path: Path):
@@ -289,6 +291,7 @@ def test_train_nn(tmp_path: Path):
     assert data.get("model_type") == "nn"
     assert "nn_weights" in data
     assert data.get("hidden_size", 0) > 0
+    assert data.get("weighted") is False
 
 
 @pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
@@ -308,6 +311,7 @@ def test_train_lstm(tmp_path: Path):
     assert data.get("model_type") == "lstm"
     assert "lstm_weights" in data
     assert data.get("sequence_length") == 3
+    assert data.get("weighted") is False
 
 
 def test_incremental_train(tmp_path: Path):
