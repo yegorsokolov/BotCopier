@@ -28,6 +28,9 @@ double LSTMDenseWeights[] = {__LSTM_DENSE_W__};
 double LSTMDenseBias = __LSTM_DENSE_B__;
 double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
 int FeatureHistorySize = 0;
+int EncoderWindow = __ENCODER_WINDOW__;
+int EncoderDim = __ENCODER_DIM__;
+double EncoderWeights[] = {__ENCODER_WEIGHTS__};
 
 int OnInit()
 {
@@ -66,6 +69,20 @@ double GetTPDistance()
             return(Ask - OrderTakeProfit());
       }
    return(0.0);
+}
+
+double GetEncodedFeature(int idx)
+{
+   if(idx >= EncoderDim)
+      return(0.0);
+   double val = 0.0;
+   int base = idx * EncoderWindow;
+   for(int i=0; i<EncoderWindow; i++)
+   {
+      double diff = iClose(SymbolToTrade, 0, i) - iClose(SymbolToTrade, 0, i+1);
+      val += EncoderWeights[base + i] * diff;
+   }
+   return(val);
 }
 
 double GetFeature(int index)

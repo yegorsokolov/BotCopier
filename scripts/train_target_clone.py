@@ -11,7 +11,7 @@ import argparse
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import sqlite3
 
 import pandas as pd
@@ -308,6 +308,7 @@ def _extract_features(
     corr_pairs=None,
     extra_price_series=None,
     corr_window: int = 5,
+    encoder: dict | None = None,
 ):
     feature_dicts = []
     labels = []
@@ -316,6 +317,8 @@ def _extract_features(
     stoch_state = {}
     adx_state = {}
     price_map = {sym: list(vals) for sym, vals in (extra_price_series or {}).items()}
+    enc_window = int(encoder.get("window")) if encoder else 0
+    enc_weights = np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
             continue
@@ -403,6 +406,15 @@ def _extract_features(
                 feat[f"corr_{s1}_{s2}"] = corr
                 feat[f"ratio_{s1}_{s2}"] = ratio
 
+        if enc_window > 0 and enc_weights.size > 0:
+            seq = (prices + [price])[-(enc_window + 1) :]
+            if len(seq) < enc_window + 1:
+                seq = [seq[0]] * (enc_window + 1 - len(seq)) + seq
+            deltas = np.diff(seq)
+            vals = deltas.dot(enc_weights)
+            for i, v in enumerate(vals):
+                feat[f"ae{i}"] = float(v)
+
         prices.append(price)
         sym_prices.append(price)
 
@@ -452,10 +464,15 @@ def train(
     corr_window: int = 5,
     extra_price_series=None,
     optuna_trials: int = 0,
+    encoder_file: Path | None = None,
 ):
     """Train a simple classifier model from the log directory."""
 
     rows_df = _load_logs(data_dir)
+    encoder = None
+    if encoder_file is not None and encoder_file.exists():
+        with open(encoder_file) as f:
+            encoder = json.load(f)
     features, labels = _extract_features(
         rows_df.to_dict("records"),
         use_sma=use_sma,
@@ -473,6 +490,7 @@ def train(
         corr_pairs=corr_pairs,
         corr_window=corr_window,
         extra_price_series=extra_price_series,
+        encoder=encoder,
     )
 
     if not features:
@@ -721,6 +739,9 @@ def train(
         "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
         "feature_importance": feature_importance,
     }
+    if encoder is not None:
+        model["encoder_weights"] = encoder.get("weights")
+        model["encoder_window"] = encoder.get("window")
     if best_trial is not None:
         model["optuna_best_params"] = best_trial.params
         model["optuna_best_score"] = best_trial.value
@@ -800,6 +821,7 @@ def main():
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--optuna-trials', type=int, default=0, help='number of Optuna trials for hyperparameter search')
+    p.add_argument('--encoder-file', help='JSON file with pretrained encoder weights')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -835,6 +857,7 @@ def main():
         corr_pairs=corr_pairs,
         corr_window=args.corr_window,
         optuna_trials=args.optuna_trials,
+        encoder_file=Path(args.encoder_file) if args.encoder_file else None,
     )
 
 
