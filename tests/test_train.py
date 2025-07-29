@@ -430,3 +430,28 @@ def test_encoder_regime(tmp_path: Path):
     feats = data.get("feature_names", [])
     assert "regime" in feats
     assert "encoder_centers" in data
+
+
+def test_higher_timeframe_features(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_many.csv"
+    _write_log_many(log_file, count=6)
+
+    train(
+        data_dir,
+        out_dir,
+        use_sma=True,
+        use_rsi=True,
+        use_macd=True,
+        use_higher_timeframe=True,
+        higher_timeframe="H1",
+    )
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "sma_H1" in feats
+    assert "rsi_H1" in feats
+    assert "macd_H1" in feats

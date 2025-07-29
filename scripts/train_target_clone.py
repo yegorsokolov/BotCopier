@@ -306,6 +306,8 @@ def _extract_features(
     use_adx=False,
     use_slippage=False,
     volatility=None,
+    use_higher_timeframe=False,
+    higher_timeframe="H1",
     *,
     corr_pairs=None,
     extra_price_series=None,
@@ -316,6 +318,25 @@ def _extract_features(
     labels = []
     prices = []
     macd_state = {}
+    tf_prices = []
+    tf_macd_state = {}
+    tf_macd = 0.0
+    tf_macd_sig = 0.0
+    tf_last_bin = None
+    tf_prev_price = None
+    tf_map = {
+        "M1": 1,
+        "M5": 5,
+        "M15": 15,
+        "M30": 30,
+        "H1": 60,
+        "H4": 240,
+        "D1": 1440,
+        "W1": 10080,
+        "MN1": 43200,
+    }
+    tf_minutes = tf_map.get(str(higher_timeframe).upper(), 60)
+    tf_secs = tf_minutes * 60
     stoch_state = {}
     adx_state = {}
     price_map = {sym: list(vals) for sym, vals in (extra_price_series or {}).items()}
@@ -351,6 +372,17 @@ def _extract_features(
         tp = float(r.get("tp", 0) or 0)
         lots = float(r.get("lots", 0) or 0)
         profit = float(r.get("profit", 0) or 0)
+
+        tf_bin = int(t.timestamp() // tf_secs)
+        if tf_last_bin is None:
+            tf_last_bin = tf_bin
+        elif tf_bin != tf_last_bin:
+            if tf_prev_price is not None:
+                tf_prices.append(tf_prev_price)
+                if use_higher_timeframe and use_macd:
+                    tf_macd, tf_macd_sig = _macd_update(tf_macd_state, tf_prev_price)
+            tf_last_bin = tf_bin
+        tf_prev_price = price
 
         symbol = r.get("symbol", "")
         sym_prices = price_map.setdefault(symbol, [])
@@ -411,6 +443,15 @@ def _extract_features(
 
         if use_adx:
             feat["adx"] = _adx_update(adx_state, price)
+
+        if use_higher_timeframe:
+            if use_sma:
+                feat[f"sma_{higher_timeframe}"] = _sma(tf_prices, sma_window)
+            if use_rsi:
+                feat[f"rsi_{higher_timeframe}"] = _rsi(tf_prices, rsi_period)
+            if use_macd:
+                feat[f"macd_{higher_timeframe}"] = tf_macd
+                feat[f"macd_signal_{higher_timeframe}"] = tf_macd_sig
 
         if corr_pairs:
             for s1, s2 in corr_pairs:
@@ -473,6 +514,8 @@ def train(
     use_adx: bool = False,
     use_slippage: bool = False,
     volatility_series=None,
+    use_higher_timeframe: bool = False,
+    higher_timeframe: str = "H1",
     grid_search: bool = False,
     c_values=None,
     model_type: str = "logreg",
@@ -509,6 +552,8 @@ def train(
         use_adx=use_adx,
         use_slippage=use_slippage,
         volatility=volatility_series,
+        use_higher_timeframe=use_higher_timeframe,
+        higher_timeframe=higher_timeframe,
         corr_pairs=corr_pairs,
         corr_window=corr_window,
         extra_price_series=extra_price_series,
@@ -910,6 +955,8 @@ def main():
     p.add_argument('--use-stochastic', action='store_true', help='include Stochastic Oscillator feature')
     p.add_argument('--use-adx', action='store_true', help='include ADX feature')
     p.add_argument('--use-slippage', action='store_true', help='include slippage feature')
+    p.add_argument('--use-higher-timeframe', action='store_true', help='include higher timeframe indicators')
+    p.add_argument('--higher-timeframe', default='H1', help='timeframe for higher timeframe indicators')
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
@@ -948,6 +995,8 @@ def main():
         use_stochastic=args.use_stochastic,
         use_adx=args.use_adx,
         use_slippage=args.use_slippage,
+        use_higher_timeframe=args.use_higher_timeframe,
+        higher_timeframe=args.higher_timeframe,
         volatility_series=vol_data,
         grid_search=args.grid_search,
         c_values=args.c_values,

@@ -164,11 +164,36 @@ def generate(model_json: Path, out_dir: Path):
         'regime': 'GetRegime()',
     }
 
+    tf_const = {
+        'M1': 'PERIOD_M1',
+        'M5': 'PERIOD_M5',
+        'M15': 'PERIOD_M15',
+        'M30': 'PERIOD_M30',
+        'H1': 'PERIOD_H1',
+        'H4': 'PERIOD_H4',
+        'D1': 'PERIOD_D1',
+        'W1': 'PERIOD_W1',
+        'MN1': 'PERIOD_MN1',
+    }
+
+    import re
     cases = []
     for idx, name in enumerate(feature_names):
         expr = feature_map.get(name)
         if expr is None:
-            if name.startswith('ratio_'):
+            m = re.match(r'^(sma|rsi|macd|macd_signal)_([A-Za-z0-9]+)$', name)
+            if m:
+                ind, tf = m.group(1), m.group(2).upper()
+                tf_val = tf_const.get(tf, '0')
+                if ind == 'sma':
+                    expr = f'iMA(SymbolToTrade, {tf_val}, 5, 0, MODE_SMA, PRICE_CLOSE, 0)'
+                elif ind == 'rsi':
+                    expr = f'iRSI(SymbolToTrade, {tf_val}, 14, PRICE_CLOSE, 0)'
+                elif ind == 'macd':
+                    expr = f'iMACD(SymbolToTrade, {tf_val}, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0)'
+                elif ind == 'macd_signal':
+                    expr = f'iMACD(SymbolToTrade, {tf_val}, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0)'
+            elif name.startswith('ratio_'):
                 parts = name[6:].split('_')
                 if len(parts) == 2:
                     expr = f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
