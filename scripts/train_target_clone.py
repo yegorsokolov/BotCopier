@@ -40,7 +40,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     XGBClassifier = None
 from sklearn.metrics import accuracy_score, f1_score
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 
 
 def _sma(values, window):
@@ -533,13 +533,14 @@ def train(
         feat_train, y_train = features, labels
         feat_val, y_val = [], np.array([])
     else:
-        feat_train, feat_val, y_train, y_val = train_test_split(
-            features,
-            labels,
-            test_size=0.2,
-            random_state=42,
-            stratify=labels,
-        )
+        tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
+        # iterate through sequential splits and select the final one for validation
+        for train_idx, val_idx in tscv.split(features):
+            pass
+        feat_train = [features[i] for i in train_idx]
+        feat_val = [features[i] for i in val_idx]
+        y_train = labels[train_idx]
+        y_val = labels[val_idx]
 
         # if the training split ended up with only one class, fall back to using
         # all data for training so the model can be fit
