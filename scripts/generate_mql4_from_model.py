@@ -141,6 +141,8 @@ def generate(model_json: Path, out_dir: Path):
         'lots': 'Lots',
         'sl_dist': 'GetSLDistance()',
         'tp_dist': 'GetTPDistance()',
+        'equity': 'AccountEquity()',
+        'margin_level': 'AccountMarginLevel()',
         'day_of_week': 'TimeDayOfWeek(TimeCurrent())',
         'sma': 'iMA(SymbolToTrade, 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0)',
         'rsi': 'iRSI(SymbolToTrade, 0, 14, PRICE_CLOSE, 0)',

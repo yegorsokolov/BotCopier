@@ -352,6 +352,8 @@ def _extract_features(
 
         spread = float(r.get("spread", 0) or 0)
         slippage = float(r.get("slippage", 0) or 0)
+        account_equity = float(r.get("equity", 0) or 0)
+        margin_level = float(r.get("margin_level", 0) or 0)
 
         feat = {
             "symbol": symbol,
@@ -362,6 +364,8 @@ def _extract_features(
             "sl_dist": sl - price,
             "tp_dist": tp - price,
             "spread": spread,
+            "equity": account_equity,
+            "margin_level": margin_level,
         }
 
         if use_slippage:

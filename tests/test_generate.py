@@ -343,3 +343,27 @@ def test_generate_scaling_arrays(tmp_path: Path):
         content = f.read()
     assert "FeatureMean[]" in content
     assert "FeatureStd[]" in content
+
+
+def test_generate_account_features(tmp_path: Path):
+    model = {
+        "model_id": "acct",
+        "magic": 101,
+        "coefficients": [0.1, 0.2],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["equity", "margin_level"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_acct_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "AccountEquity()" in content
+    assert "AccountMarginLevel()" in content

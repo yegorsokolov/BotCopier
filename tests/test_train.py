@@ -167,6 +167,8 @@ def test_train(tmp_path: Path):
     assert "threshold" in data
     assert "day_of_week" in data.get("feature_names", [])
     assert "spread" in data.get("feature_names", [])
+    assert "equity" in data.get("feature_names", [])
+    assert "margin_level" in data.get("feature_names", [])
     assert data.get("weighted") is True
     assert "feature_mean" in data
     assert "feature_std" in data
