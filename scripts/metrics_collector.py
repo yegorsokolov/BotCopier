@@ -6,7 +6,9 @@ import asyncio
 import json
 import sqlite3
 from pathlib import Path
+from typing import Optional
 from asyncio import StreamReader, StreamWriter, Queue
+from aiohttp import web
 
 FIELDS = [
     "time",
@@ -59,13 +61,44 @@ async def _handle_conn(reader: StreamReader, writer: StreamWriter, queue: Queue)
         await writer.wait_closed()
 
 
-def serve(host: str, port: int, db_file: Path) -> None:
+def serve(host: str, port: int, db_file: Path, http_port: Optional[int] = None) -> None:
     async def _run() -> None:
         queue: Queue = Queue()
         server = await asyncio.start_server(lambda r, w: _handle_conn(r, w, queue), host, port)
         writer_task = asyncio.create_task(_writer_task(db_file, queue))
+
+        async def metrics_handler(request: web.Request) -> web.Response:
+            limit_param = request.query.get("limit", "100")
+            try:
+                limit = int(limit_param)
+            except ValueError:
+                limit = 100
+            conn = sqlite3.connect(db_file)
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM metrics ORDER BY ROWID DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            finally:
+                conn.close()
+            # return rows in chronological order
+            rows = [dict(zip(FIELDS, r)) for r in reversed(rows)]
+            return web.json_response(rows)
+
+        runner = None
         async with server:
+            if http_port is not None:
+                app = web.Application()
+                app.add_routes([web.get("/metrics", metrics_handler)])
+                runner = web.AppRunner(app)
+                await runner.setup()
+                site = web.TCPSite(runner, host, http_port)
+                await site.start()
+
             await server.serve_forever()
+
+        if runner is not None:
+            await runner.cleanup()
         await queue.join()
         queue.put_nowait(None)
         await writer_task
@@ -78,9 +111,10 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--db", required=True, help="output SQLite file")
+    p.add_argument("--http-port", type=int, help="serve metrics via HTTP on this port")
     args = p.parse_args()
 
-    serve(args.host, args.port, Path(args.db))
+    serve(args.host, args.port, Path(args.db), args.http_port)
 
 
 if __name__ == "__main__":

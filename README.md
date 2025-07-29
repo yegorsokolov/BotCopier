@@ -133,7 +133,13 @@ to ``true``. Use the ``metrics_collector.py`` helper to store these messages
 in a SQLite database:
 
 ```bash
-python scripts/metrics_collector.py --db metrics.db
+python scripts/metrics_collector.py --db metrics.db --http-port 8080
+```
+
+The collector exposes an HTTP endpoint returning the most recent metrics as JSON:
+
+```bash
+curl http://127.0.0.1:8080/metrics?limit=10
 ```
 
 ## Tick History Export
