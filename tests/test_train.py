@@ -33,6 +33,7 @@ def _write_log(file: Path):
         "comment",
         "remaining_lots",
         "slippage",
+        "volume",
     ]
     rows = [
         [
@@ -55,6 +56,7 @@ def _write_log(file: Path):
             "",
             "0.1",
             "0.0001",
+            "100",
         ],
         [
             "2",
@@ -76,6 +78,7 @@ def _write_log(file: Path):
             "",
             "0.1",
             "0.0002",
+            "200",
         ],
     ]
     with open(file, "w", newline="") as f:
@@ -105,6 +108,7 @@ def _write_log_many(file: Path, count: int = 10):
         "comment",
         "remaining_lots",
         "slippage",
+        "volume",
     ]
     rows = []
     for i in range(count):
@@ -130,6 +134,7 @@ def _write_log_many(file: Path, count: int = 10):
             "",
             "0.1",
             "0.0001",
+            str(100 + i),
         ])
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")
@@ -413,6 +418,25 @@ def test_slippage_feature(tmp_path: Path):
         data = json.load(f)
     feats = data.get("feature_names", [])
     assert "slippage" in feats
+
+
+def test_volume_feature(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_vol.csv"
+    _write_log(log_file)
+
+    df = _load_logs(data_dir)
+    assert "volume" in df.columns
+    assert int(df["volume"].iloc[0]) == 100
+
+    train(data_dir, out_dir, use_volume=True)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "volume" in feats
 
 
 def test_encoder_regime(tmp_path: Path):

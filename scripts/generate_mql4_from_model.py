@@ -166,6 +166,7 @@ def generate(model_json: Path, out_dir: Path):
         'stochastic_d': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 0)',
         'adx': 'iADX(SymbolToTrade, 0, 14, PRICE_CLOSE, MODE_MAIN, 0)',
         'regime': 'GetRegime()',
+        'volume': 'iVolume(SymbolToTrade, 0, 0)',
     }
 
     tf_const = {

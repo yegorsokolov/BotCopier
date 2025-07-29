@@ -43,6 +43,7 @@ def test_sqlite_log_service(tmp_path: Path):
         "comment": "hi",
         "remaining_lots": 0.1,
         "slippage": 0.0,
+        "volume": 123,
     }
 
     client = socket.socket()
@@ -65,10 +66,10 @@ def test_load_logs_from_db(tmp_path: Path):
     db_file = tmp_path / "logs.db"
     conn = sqlite3.connect(db_file)
     conn.execute(
-        "CREATE TABLE logs (event_id TEXT, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket TEXT, magic TEXT, source TEXT, symbol TEXT, order_type TEXT, lots TEXT, price TEXT, sl TEXT, tp TEXT, profit TEXT, comment TEXT, remaining_lots TEXT, slippage TEXT)"
+        "CREATE TABLE logs (event_id TEXT, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket TEXT, magic TEXT, source TEXT, symbol TEXT, order_type TEXT, lots TEXT, price TEXT, sl TEXT, tp TEXT, profit TEXT, comment TEXT, remaining_lots TEXT, slippage TEXT, volume TEXT)"
     )
     conn.execute(
-        "INSERT INTO logs VALUES (1, '2024.01.01 00:00:00', '', '', 'OPEN', '1', '', '', 'EURUSD', '0', '0.1', '1.1000', '1.0950', '1.1100', '0', '', '0.1', '0.0')"
+        "INSERT INTO logs VALUES (1, '2024.01.01 00:00:00', '', '', 'OPEN', '1', '', '', 'EURUSD', '0', '0.1', '1.1000', '1.0950', '1.1100', '0', '', '0.1', '0.0', '123')"
     )
     conn.commit()
     conn.close()
@@ -77,4 +78,5 @@ def test_load_logs_from_db(tmp_path: Path):
     assert not df.empty
     assert "symbol" in df.columns
     assert "slippage" in df.columns
+    assert int(df["volume"].iloc[0]) == 123
 
