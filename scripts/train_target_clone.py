@@ -320,7 +320,12 @@ def _extract_features(
     adx_state = {}
     price_map = {sym: list(vals) for sym, vals in (extra_price_series or {}).items()}
     enc_window = int(encoder.get("window")) if encoder else 0
-    enc_weights = np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
+    enc_weights = (
+        np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
+    )
+    enc_centers = (
+        np.array(encoder.get("centers", []), dtype=float) if encoder else np.empty((0, 0))
+    )
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
             continue
@@ -426,6 +431,9 @@ def _extract_features(
             vals = deltas.dot(enc_weights)
             for i, v in enumerate(vals):
                 feat[f"ae{i}"] = float(v)
+            if enc_centers.size > 0:
+                d = ((enc_centers - vals) ** 2).sum(axis=1)
+                feat["regime"] = float(int(np.argmin(d)))
 
         prices.append(price)
         sym_prices.append(price)
@@ -813,6 +821,8 @@ def train(
     if encoder is not None:
         model["encoder_weights"] = encoder.get("weights")
         model["encoder_window"] = encoder.get("window")
+        if "centers" in encoder:
+            model["encoder_centers"] = encoder.get("centers")
     if best_trial is not None:
         model["optuna_best_params"] = best_trial.params
         model["optuna_best_score"] = best_trial.value

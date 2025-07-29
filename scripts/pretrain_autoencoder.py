@@ -15,6 +15,8 @@ try:
 except Exception:
     HAS_TF = False
 
+from sklearn.cluster import KMeans
+
 
 def _load_ticks(file: Path) -> List[float]:
     """Load bid prices from TickHistoryExporter CSV."""
@@ -29,7 +31,15 @@ def _load_ticks(file: Path) -> List[float]:
     return prices
 
 
-def train(tick_dir: Path, out_path: Path, *, window: int = 10, latent_dim: int = 4, epochs: int = 10) -> None:
+def train(
+    tick_dir: Path,
+    out_path: Path,
+    *,
+    window: int = 10,
+    latent_dim: int = 4,
+    epochs: int = 10,
+    n_clusters: int = 4,
+) -> None:
     if not HAS_TF:
         raise ImportError("TensorFlow is required for autoencoder training")
 
@@ -54,7 +64,16 @@ def train(tick_dir: Path, out_path: Path, *, window: int = 10, latent_dim: int =
     model.fit(X, X, epochs=epochs, batch_size=32, verbose=0)
 
     encoder_weights = model.layers[1].get_weights()[0]  # type: ignore[index]
-    data = {"window": window, "weights": encoder_weights.tolist()}
+
+    encoded = X.dot(encoder_weights.astype(np.float32))
+    km = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
+    km.fit(encoded)
+
+    data = {
+        "window": window,
+        "weights": encoder_weights.tolist(),
+        "centers": km.cluster_centers_.tolist(),
+    }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(data, f, indent=2)
@@ -68,8 +87,16 @@ def main() -> None:
     p.add_argument("--window", type=int, default=10)
     p.add_argument("--latent-dim", type=int, default=4)
     p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--clusters", type=int, default=4)
     args = p.parse_args()
-    train(Path(args.tick_dir), Path(args.out_file), window=args.window, latent_dim=args.latent_dim, epochs=args.epochs)
+    train(
+        Path(args.tick_dir),
+        Path(args.out_file),
+        window=args.window,
+        latent_dim=args.latent_dim,
+        epochs=args.epochs,
+        n_clusters=args.clusters,
+    )
 
 
 if __name__ == "__main__":
