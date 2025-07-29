@@ -142,6 +142,10 @@ def generate(model_json: Path, out_dir: Path):
 
     feature_map = {
         'hour': 'TimeHour(TimeCurrent())',
+        'hour_sin': 'MathSin(2*M_PI*TimeHour(TimeCurrent())/24)',
+        'hour_cos': 'MathCos(2*M_PI*TimeHour(TimeCurrent())/24)',
+        'dow_sin': 'MathSin(2*M_PI*TimeDayOfWeek(TimeCurrent())/7)',
+        'dow_cos': 'MathCos(2*M_PI*TimeDayOfWeek(TimeCurrent())/7)',
         'spread': 'MarketInfo(SymbolToTrade, MODE_SPREAD)',
         'lots': 'Lots',
         'sl_dist': 'GetSLDistance()',

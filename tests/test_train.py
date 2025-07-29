@@ -166,6 +166,10 @@ def test_train(tmp_path: Path):
     assert "coefficients" in data
     assert "threshold" in data
     assert "day_of_week" in data.get("feature_names", [])
+    assert "hour_sin" in data.get("feature_names", [])
+    assert "hour_cos" in data.get("feature_names", [])
+    assert "dow_sin" in data.get("feature_names", [])
+    assert "dow_cos" in data.get("feature_names", [])
     assert "spread" in data.get("feature_names", [])
     assert "equity" in data.get("feature_names", [])
     assert "margin_level" in data.get("feature_names", [])
