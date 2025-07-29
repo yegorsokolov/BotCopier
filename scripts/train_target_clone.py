@@ -245,6 +245,7 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         "comment",
         "remaining_lots",
         "slippage",
+        "volume",
     ]
 
     dfs: List[pd.DataFrame] = []
@@ -306,6 +307,7 @@ def _extract_features(
     use_stochastic=False,
     use_adx=False,
     use_slippage=False,
+    use_volume=False,
     volatility=None,
     use_higher_timeframe=False,
     higher_timeframe="H1",
@@ -418,6 +420,9 @@ def _extract_features(
         if use_slippage:
             feat["slippage"] = slippage
 
+        if use_volume:
+            feat["volume"] = float(r.get("volume", 0) or 0)
+
         if volatility is not None:
             key = t.strftime("%Y-%m-%d %H")
             vol = volatility.get(key)
@@ -523,6 +528,7 @@ def train(
     use_stochastic: bool = False,
     use_adx: bool = False,
     use_slippage: bool = False,
+    use_volume: bool = False,
     volatility_series=None,
     use_higher_timeframe: bool = False,
     higher_timeframe: str = "H1",
@@ -561,6 +567,7 @@ def train(
         use_stochastic=use_stochastic,
         use_adx=use_adx,
         use_slippage=use_slippage,
+        use_volume=use_volume,
         volatility=volatility_series,
         use_higher_timeframe=use_higher_timeframe,
         higher_timeframe=higher_timeframe,
