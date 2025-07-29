@@ -10,6 +10,7 @@ by other helper scripts.
 import argparse
 import json
 from datetime import datetime
+import math
 from pathlib import Path
 from typing import List, Optional
 import sqlite3
@@ -392,10 +393,19 @@ def _extract_features(
         account_equity = float(r.get("equity", 0) or 0)
         margin_level = float(r.get("margin_level", 0) or 0)
 
+        hour_sin = math.sin(2 * math.pi * t.hour / 24)
+        hour_cos = math.cos(2 * math.pi * t.hour / 24)
+        dow_sin = math.sin(2 * math.pi * t.weekday() / 7)
+        dow_cos = math.cos(2 * math.pi * t.weekday() / 7)
+
         feat = {
             "symbol": symbol,
             "hour": t.hour,
             "day_of_week": t.weekday(),
+            "hour_sin": hour_sin,
+            "hour_cos": hour_cos,
+            "dow_sin": dow_sin,
+            "dow_cos": dow_cos,
             "lots": lots,
             "profit": profit,
             "sl_dist": sl - price,
