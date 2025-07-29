@@ -367,3 +367,30 @@ def test_generate_account_features(tmp_path: Path):
         content = f.read()
     assert "AccountEquity()" in content
     assert "AccountMarginLevel()" in content
+
+
+def test_generate_regime_feature(tmp_path: Path):
+    model = {
+        "model_id": "regime",
+        "magic": 202,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["regime"],
+        "encoder_weights": [[1.0]],
+        "encoder_window": 1,
+        "encoder_centers": [[0.0], [1.0]],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_regime_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "EncoderCenters" in content
+    assert "GetRegime()" in content

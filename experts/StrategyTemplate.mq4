@@ -45,6 +45,8 @@ int FeatureHistorySize = 0;
 int EncoderWindow = __ENCODER_WINDOW__;
 int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
+int EncoderCenterCount = __ENCODER_CENTER_COUNT__;
+double EncoderCenters[] = {__ENCODER_CENTERS__};
 datetime LastModelLoad = 0;
 
 //----------------------------------------------------------------------
@@ -189,6 +191,33 @@ double GetEncodedFeature(int idx)
       val += EncoderWeights[base + i] * diff;
    }
    return(val);
+}
+
+int GetRegime()
+{
+   if(EncoderCenterCount <= 0)
+      return(0);
+   double enc[100];
+   for(int i=0; i<EncoderDim && i<100; i++)
+      enc[i] = GetEncodedFeature(i);
+   int best = 0;
+   double bestDist = 0.0;
+   for(int c=0; c<EncoderCenterCount; c++)
+   {
+      double d = 0.0;
+      int base = c * EncoderDim;
+      for(int j=0; j<EncoderDim; j++)
+      {
+         double diff = enc[j] - EncoderCenters[base + j];
+         d += diff * diff;
+      }
+      if(c == 0 || d < bestDist)
+      {
+         bestDist = d;
+         best = c;
+      }
+   }
+   return(best);
 }
 
 double GetFeature(int index)

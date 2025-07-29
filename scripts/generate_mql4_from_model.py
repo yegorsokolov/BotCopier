@@ -125,6 +125,11 @@ def generate(model_json: Path, out_dir: Path):
     output = output.replace('__ENCODER_WINDOW__', str(enc_window))
     output = output.replace('__ENCODER_DIM__', str(enc_dim))
 
+    centers = model.get('encoder_centers', [])
+    center_flat = ', '.join(_fmt(v) for row in centers for v in row)
+    output = output.replace('__ENCODER_CENTERS__', center_flat)
+    output = output.replace('__ENCODER_CENTER_COUNT__', str(len(centers)))
+
     feature_mean = model.get('feature_mean', [])
     mean_str = ', '.join(_fmt(v) for v in feature_mean)
     output = output.replace('__FEATURE_MEAN__', mean_str)
@@ -156,6 +161,7 @@ def generate(model_json: Path, out_dir: Path):
         'stochastic_k': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_MAIN, 0)',
         'stochastic_d': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 0)',
         'adx': 'iADX(SymbolToTrade, 0, 14, PRICE_CLOSE, MODE_MAIN, 0)',
+        'regime': 'GetRegime()',
     }
 
     cases = []

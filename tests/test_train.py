@@ -409,3 +409,24 @@ def test_slippage_feature(tmp_path: Path):
         data = json.load(f)
     feats = data.get("feature_names", [])
     assert "slippage" in feats
+
+
+def test_encoder_regime(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_reg.csv"
+    _write_log(log_file)
+
+    enc = {"window": 1, "weights": [[1.0]], "centers": [[0.0], [1.0]]}
+    enc_file = tmp_path / "enc.json"
+    with open(enc_file, "w") as f:
+        json.dump(enc, f)
+
+    train(data_dir, out_dir, encoder_file=enc_file)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "regime" in feats
+    assert "encoder_centers" in data
