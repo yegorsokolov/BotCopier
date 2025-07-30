@@ -10,7 +10,9 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
   - `Observer_TBot.mq4` – main observer EA.
   - `StrategyTemplate.mq4` – template used for generated strategies.
     Trade volume is automatically scaled between `MinLots` and `MaxLots`
-    based on the model probability.
+    based on the model probability. Stop management can move the
+    stop loss to break-even after `BreakEvenPips` profit and optionally
+    trail by `TrailingPips`.
   - `model_interface.mqh` – shared structures.
 - `scripts/` – helper Python scripts.
   - `train_target_clone.py` – trains a model from exported logs.
