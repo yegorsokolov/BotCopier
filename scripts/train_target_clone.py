@@ -323,6 +323,8 @@ def _extract_features(
 ):
     feature_dicts = []
     labels = []
+    sl_targets = []
+    tp_targets = []
     prices = []
     macd_state = {}
     tf_prices = []
@@ -404,6 +406,9 @@ def _extract_features(
         dow_sin = math.sin(2 * math.pi * t.weekday() / 7)
         dow_cos = math.cos(2 * math.pi * t.weekday() / 7)
 
+        sl_dist = sl - price
+        tp_dist = tp - price
+
         feat = {
             "symbol": symbol,
             "hour": t.hour,
@@ -414,8 +419,8 @@ def _extract_features(
             "dow_cos": dow_cos,
             "lots": lots,
             "profit": profit,
-            "sl_dist": sl - price,
-            "tp_dist": tp - price,
+            "sl_dist": sl_dist,
+            "tp_dist": tp_dist,
             "spread": spread,
             "equity": account_equity,
             "margin_level": margin_level,
@@ -500,7 +505,9 @@ def _extract_features(
 
         feature_dicts.append(feat)
         labels.append(label)
-    return feature_dicts, np.array(labels)
+        sl_targets.append(sl_dist)
+        tp_targets.append(tp_dist)
+    return feature_dicts, np.array(labels), np.array(sl_targets), np.array(tp_targets)
 
 
 def _best_threshold(y_true, probas):
@@ -548,6 +555,7 @@ def train(
     corr_window: int = 5,
     extra_price_series=None,
     optuna_trials: int = 0,
+    regress_sl_tp: bool = False,
     early_stop: bool = False,
     encoder_file: Path | None = None,
 ):
@@ -558,7 +566,7 @@ def train(
     if encoder_file is not None and encoder_file.exists():
         with open(encoder_file) as f:
             encoder = json.load(f)
-    features, labels = _extract_features(
+    features, labels, sl_targets, tp_targets = _extract_features(
         rows_df.to_dict("records"),
         use_sma=use_sma,
         sma_window=sma_window,
@@ -588,6 +596,10 @@ def train(
     hidden_size = 8
     logreg_C = 1.0
     best_trial = None
+    sl_coef = []
+    tp_coef = []
+    sl_inter = 0.0
+    tp_inter = 0.0
 
     existing_model = None
     if incremental:
@@ -607,6 +619,10 @@ def train(
         # Not enough data to create a meaningful split
         feat_train, y_train = features, labels
         feat_val, y_val = [], np.array([])
+        sl_train = sl_targets
+        sl_val = np.array([])
+        tp_train = tp_targets
+        tp_val = np.array([])
     else:
         tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
         # iterate through sequential splits and select the final one for validation
@@ -616,6 +632,10 @@ def train(
         feat_val = [features[i] for i in val_idx]
         y_train = labels[train_idx]
         y_val = labels[val_idx]
+        sl_train = sl_targets[train_idx]
+        sl_val = sl_targets[val_idx]
+        tp_train = tp_targets[train_idx]
+        tp_val = tp_targets[val_idx]
 
         # if the training split ended up with only one class, fall back to using
         # all data for training so the model can be fit
@@ -630,19 +650,33 @@ def train(
             dtype=float,
         )
 
-    for f in feat_train:
+    feat_train_clf = [dict(f) for f in feat_train]
+    feat_val_clf = [dict(f) for f in feat_val]
+    for f in feat_train_clf:
         f.pop("profit", None)
-    for f in feat_val:
+    for f in feat_val_clf:
         f.pop("profit", None)
 
+    feat_train_reg = [dict(f) for f in feat_train_clf]
+    feat_val_reg = [dict(f) for f in feat_val_clf]
+    for f in feat_train_reg:
+        f["sl_dist"] = 0.0
+        f["tp_dist"] = 0.0
+    for f in feat_val_reg:
+        f["sl_dist"] = 0.0
+        f["tp_dist"] = 0.0
+
     if existing_model is not None:
-        X_train = vec.transform(feat_train)
+        X_train = vec.transform(feat_train_clf)
     else:
-        X_train = vec.fit_transform(feat_train)
-    if feat_val:
-        X_val = vec.transform(feat_val)
+        X_train = vec.fit_transform(feat_train_clf)
+    if feat_val_clf:
+        X_val = vec.transform(feat_val_clf)
     else:
         X_val = np.empty((0, X_train.shape[1]))
+
+    X_train_reg = vec.transform(feat_train_reg)
+    X_val_reg = vec.transform(feat_val_reg) if feat_val_reg else np.empty((0, X_train_reg.shape[1]))
 
     if optuna_trials > 0 and HAS_OPTUNA:
         def _objective(trial):
@@ -873,6 +907,18 @@ def train(
             train_proba = clf.predict_proba(X_train)[:, 1]
             val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
 
+    if regress_sl_tp:
+        from sklearn.linear_model import LinearRegression
+
+        reg_sl = LinearRegression()
+        reg_sl.fit(X_train_reg, sl_train)
+        reg_tp = LinearRegression()
+        reg_tp.fit(X_train_reg, tp_train)
+        sl_coef = reg_sl.coef_
+        sl_inter = reg_sl.intercept_
+        tp_coef = reg_tp.coef_
+        tp_inter = reg_tp.intercept_
+
     if len(y_val) > 0:
         threshold, _ = _best_threshold(y_val, val_proba)
         val_preds = (val_proba >= threshold).astype(int)
@@ -1005,6 +1051,12 @@ def train(
         model["transformer_weights"] = weights
         model["sequence_length"] = sequence_length
 
+    if regress_sl_tp:
+        model["sl_coefficients"] = sl_coef.tolist()
+        model["sl_intercept"] = float(sl_inter)
+        model["tp_coefficients"] = tp_coef.tolist()
+        model["tp_intercept"] = float(tp_inter)
+
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
 
@@ -1058,6 +1110,7 @@ def main():
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--optuna-trials', type=int, default=0, help='number of Optuna trials for hyperparameter search')
     p.add_argument('--encoder-file', help='JSON file with pretrained encoder weights')
+    p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     args = p.parse_args()
     if args.volatility_file:
@@ -1097,6 +1150,7 @@ def main():
         corr_pairs=corr_pairs,
         corr_window=args.corr_window,
         optuna_trials=args.optuna_trials,
+        regress_sl_tp=args.regress_sl_tp,
         early_stop=args.early_stop,
         encoder_file=Path(args.encoder_file) if args.encoder_file else None,
     )

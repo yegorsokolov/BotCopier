@@ -58,6 +58,35 @@ def test_sl_tp_features(tmp_path: Path):
     assert "GetTPDistance()" in content
 
 
+def test_generate_sl_tp_coeffs(tmp_path: Path):
+    model = {
+        "model_id": "slcoeff",
+        "magic": 999,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["hour"],
+        "sl_coefficients": [0.2],
+        "sl_intercept": 0.01,
+        "tp_coefficients": [0.3],
+        "tp_intercept": 0.02,
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_slcoeff_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "SLModelCoefficients" in content
+    assert "TPModelCoefficients" in content
+    assert "GetNewSL(" in content
+
+
 def test_day_of_week_feature(tmp_path: Path):
     model = {
         "model_id": "dow",

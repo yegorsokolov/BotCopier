@@ -46,6 +46,16 @@ def generate(model_json: Path, out_dir: Path):
     thr_str = ', '.join(_fmt(t) for t in hourly_thr)
     output = output.replace('__HOURLY_THRESHOLDS__', thr_str)
 
+    sl_coeff = model.get('sl_coefficients', [])
+    sl_str = ', '.join(_fmt(c) for c in sl_coeff)
+    output = output.replace('__SL_COEFFICIENTS__', sl_str)
+    output = output.replace('__SL_INTERCEPT__', _fmt(model.get('sl_intercept', 0.0)))
+
+    tp_coeff = model.get('tp_coefficients', [])
+    tp_str = ', '.join(_fmt(c) for c in tp_coeff)
+    output = output.replace('__TP_COEFFICIENTS__', tp_str)
+    output = output.replace('__TP_INTERCEPT__', _fmt(model.get('tp_intercept', 0.0)))
+
     nn_weights = model.get('nn_weights', [])
     if nn_weights:
         l1_w = ', '.join(_fmt(v) for row in nn_weights[0] for v in row)

@@ -503,3 +503,18 @@ def test_higher_timeframe_features(tmp_path: Path):
     assert "sma_H1" in feats
     assert "rsi_H1" in feats
     assert "macd_H1" in feats
+
+
+def test_train_regress_sl_tp(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_reg_sl.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, regress_sl_tp=True)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    assert "sl_coefficients" in data
+    assert "tp_coefficients" in data
