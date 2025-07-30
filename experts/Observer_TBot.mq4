@@ -482,7 +482,7 @@ void WriteMetrics(datetime ts)
          h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
          if(h==INVALID_HANDLE)
             return;
-         int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;file_write_errors;socket_errors");
+         int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors");
          if(_wr <= 0)
             FileWriteErrors++;
       }
@@ -498,9 +498,13 @@ void WriteMetrics(datetime ts)
       int magic = target_magics[m];
       int trades = 0;
       int wins = 0;
+      int losses = 0;
       double profit_total = 0.0;
       double sum_profit = 0.0;
       double sum_sq_profit = 0.0;
+      double neg_sum = 0.0;
+      double neg_sum_sq = 0.0;
+      double loss_sum = 0.0;
       double cumulative = 0.0;
       double peak = 0.0;
       double max_dd = 0.0;
@@ -518,6 +522,13 @@ void WriteMetrics(datetime ts)
          trades++;
          if(p >= 0)
             wins++;
+         else
+         {
+            losses++;
+            neg_sum += p;
+            neg_sum_sq += p*p;
+            loss_sum += -p;
+         }
          profit_total += p;
          sum_profit += p;
          sum_sq_profit += p*p;
@@ -534,11 +545,16 @@ void WriteMetrics(datetime ts)
 
       double win_rate = double(wins)/trades;
       double avg_profit = profit_total/trades;
+      double avg_loss = losses>0 ? loss_sum/losses : 0.0;
       double variance = trades>0 ? sum_sq_profit/trades - MathPow(sum_profit/trades, 2) : 0.0;
       double stddev = variance>0 ? MathSqrt(variance) : 0.0;
       double sharpe = stddev>0 ? (sum_profit/trades)/stddev : 0.0;
+      double var_neg = losses>0 ? neg_sum_sq/losses - MathPow(neg_sum/losses, 2) : 0.0;
+      double stddev_neg = var_neg>0 ? MathSqrt(var_neg) : 0.0;
+      double sortino = stddev_neg>0 ? (sum_profit/trades)/stddev_neg : 0.0;
+      double expectancy = (avg_profit * win_rate) - (avg_loss * (1.0 - win_rate));
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, FileWriteErrors, SocketErrors);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -548,8 +564,8 @@ void WriteMetrics(datetime ts)
 
       if(log_socket!=INVALID_HANDLE)
       {
-         string json = StringFormat("{\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"file_write_errors\":%d,\"socket_errors\":%d}",
-            EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe, FileWriteErrors, SocketErrors);
+         string json = StringFormat("{\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"sortino\":%.3f,\"expectancy\":%.2f,\"file_write_errors\":%d,\"socket_errors\":%d}",
+            EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors);
          uchar bytes[];
          StringToCharArray(json+"\n", bytes);
          if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)

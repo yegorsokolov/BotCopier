@@ -18,6 +18,8 @@ FIELDS = [
     "trade_count",
     "drawdown",
     "sharpe",
+    "sortino",
+    "expectancy",
     "file_write_errors",
     "socket_errors",
 ]
