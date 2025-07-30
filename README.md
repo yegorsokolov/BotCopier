@@ -39,6 +39,10 @@ python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir 
 python generate_mql4_from_model.py models/model.json experts
 ```
 
+Pass ``--regress-sl-tp`` to also fit linear models predicting stop loss and take
+profit distances. The coefficients are saved in ``model.json`` and generated
+strategies will automatically place orders with these predicted values.
+
 Hyperparameters can be optimised automatically when `optuna` is installed:
 
 ```bash

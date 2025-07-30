@@ -15,6 +15,10 @@ double ModelIntercept = __INTERCEPT__;
 double ModelThreshold = __THRESHOLD__;
 double HourlyThresholds[] = {__HOURLY_THRESHOLDS__};
 double ProbabilityLookup[] = {__PROBABILITY_TABLE__};
+double SLModelCoefficients[] = {__SL_COEFFICIENTS__};
+double SLModelIntercept = __SL_INTERCEPT__;
+double TPModelCoefficients[] = {__TP_COEFFICIENTS__};
+double TPModelIntercept = __TP_INTERCEPT__;
 int ModelHiddenSize = __NN_HIDDEN_SIZE__;
 double NNLayer1Weights[] = {__NN_L1_WEIGHTS__};
 double NNLayer1Bias[] = {__NN_L1_BIAS__};
@@ -96,9 +100,13 @@ bool ParseModelJson(string json)
    ExtractJsonArray(json, "\"coefficients\"", ModelCoefficients);
    ExtractJsonArray(json, "\"hourly_thresholds\"", HourlyThresholds);
    ExtractJsonArray(json, "\"probability_table\"", ProbabilityLookup);
+   ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
+   ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
    ExtractJsonArray(json, "\"feature_mean\"", FeatureMean);
    ExtractJsonArray(json, "\"feature_std\"", FeatureStd);
    ModelIntercept = ExtractJsonNumber(json, "\"intercept\"");
+   SLModelIntercept = ExtractJsonNumber(json, "\"sl_intercept\"");
+   TPModelIntercept = ExtractJsonNumber(json, "\"tp_intercept\"");
    ModelThreshold = ExtractJsonNumber(json, "\"threshold\"");
    return(true);
 }
@@ -428,6 +436,40 @@ double GetTradeThreshold()
    return(ModelThreshold);
 }
 
+double PredictSLDistance()
+{
+   double z = SLModelIntercept;
+   int n = ArraySize(SLModelCoefficients);
+   for(int i=0; i<n; i++)
+      z += SLModelCoefficients[i] * GetFeature(i);
+   return(z);
+}
+
+double PredictTPDistance()
+{
+   double z = TPModelIntercept;
+   int n = ArraySize(TPModelCoefficients);
+   for(int i=0; i<n; i++)
+      z += TPModelCoefficients[i] * GetFeature(i);
+   return(z);
+}
+
+double GetNewSL(bool isBuy)
+{
+   double d = PredictSLDistance();
+   if(d <= 0) return(0);
+   if(isBuy) return(Bid - d);
+   return(Ask + d);
+}
+
+double GetNewTP(bool isBuy)
+{
+   double d = PredictTPDistance();
+   if(d <= 0) return(0);
+   if(isBuy) return(Bid + d);
+   return(Ask - d);
+}
+
 bool HasOpenOrders()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
@@ -470,12 +512,14 @@ void OnTick()
    double thr = GetTradeThreshold();
    if(prob > thr)
    {
-      ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3, 0, 0,
+      ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3,
+                         GetNewSL(true), GetNewTP(true),
                          "model", MagicNumber, 0, clrBlue);
    }
    else
    {
-      ticket = OrderSend(SymbolToTrade, OP_SELL, tradeLots, Bid, 3, 0, 0,
+      ticket = OrderSend(SymbolToTrade, OP_SELL, tradeLots, Bid, 3,
+                         GetNewSL(false), GetNewTP(false),
                          "model", MagicNumber, 0, clrRed);
    }
 
