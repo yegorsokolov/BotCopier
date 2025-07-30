@@ -61,6 +61,10 @@ python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir 
 python generate_mql4_from_model.py models/model.json experts
 ```
 
+Pass ``--cache-features`` to reuse the previously extracted feature matrix when
+running incrementally. This avoids reprocessing large log files as long as the
+configured features match the cached ``feature_names``.
+
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
 ## Model Reloading
