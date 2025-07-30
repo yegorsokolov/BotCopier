@@ -40,6 +40,10 @@ try:
     from xgboost import XGBClassifier
 except Exception:  # pragma: no cover - optional dependency
     XGBClassifier = None
+try:
+    from lightgbm import LGBMClassifier
+except Exception:  # pragma: no cover - optional dependency
+    LGBMClassifier = None
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 
@@ -657,6 +661,17 @@ def train(
                     eval_metric="logloss",
                     use_label_encoder=False,
                 )
+            elif model_type == "lgbm":
+                if LGBMClassifier is None:
+                    raise ImportError("lightgbm is not installed")
+                est = trial.suggest_int("n_estimators", 50, 300)
+                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                depth = trial.suggest_int("max_depth", 2, 8)
+                clf = LGBMClassifier(
+                    n_estimators=est,
+                    learning_rate=lr,
+                    max_depth=depth,
+                )
             elif model_type == "nn":
                 h = trial.suggest_int("hidden_size", 4, 64)
                 if HAS_TF:
@@ -693,6 +708,10 @@ def train(
             n_estimators = int(best_trial.params["n_estimators"])
             learning_rate = float(best_trial.params["learning_rate"])
             max_depth = int(best_trial.params["max_depth"])
+        elif model_type == "lgbm":
+            n_estimators = int(best_trial.params["n_estimators"])
+            learning_rate = float(best_trial.params["learning_rate"])
+            max_depth = int(best_trial.params["max_depth"])
         elif model_type == "nn":
             hidden_size = int(best_trial.params["hidden_size"])
 
@@ -710,6 +729,17 @@ def train(
             max_depth=max_depth,
             eval_metric="logloss",
             use_label_encoder=False,
+        )
+        clf.fit(X_train, y_train)
+        train_proba = clf.predict_proba(X_train)[:, 1]
+        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+    elif model_type == "lgbm":
+        if LGBMClassifier is None:
+            raise ImportError("lightgbm is not installed")
+        clf = LGBMClassifier(
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            max_depth=max_depth,
         )
         clf.fit(X_train, y_train)
         train_proba = clf.predict_proba(X_train)[:, 1]
@@ -913,6 +943,24 @@ def train(
             X_h = vec.transform([f])
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
+    elif model_type == "lgbm":
+        # approximate boosting model with linear regression for export
+        logit_p = np.log(train_proba / (1.0 - train_proba + 1e-9))
+        A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
+        coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
+        model["coefficients"] = coef[1:].tolist()
+        model["intercept"] = float(coef[0])
+
+        feature_names = vec.get_feature_names_out().tolist()
+        base_feat = {name: 0.0 for name in feature_names}
+        lookup = []
+        for h in range(24):
+            f = base_feat.copy()
+            if "hour" in f:
+                f["hour"] = float(h)
+            X_h = vec.transform([f])
+            lookup.append(float(clf.predict_proba(X_h)[0, 1]))
+        model["probability_table"] = lookup
     elif model_type == "nn":
         if HAS_TF:
             weights = [w.tolist() for w in clf.get_weights()]
@@ -977,7 +1025,7 @@ def main():
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
-    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost', 'nn', 'lstm', 'transformer'], default='logreg',
+    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost', 'lgbm', 'nn', 'lstm', 'transformer'], default='logreg',
                    help='classifier type')
     p.add_argument('--sequence-length', type=int, default=5, help='sequence length for LSTM/transformer models')
     p.add_argument('--n-estimators', type=int, default=100, help='xgboost trees')
