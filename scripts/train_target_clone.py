@@ -558,37 +558,69 @@ def train(
     regress_sl_tp: bool = False,
     early_stop: bool = False,
     encoder_file: Path | None = None,
+    cache_features: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
 
-    rows_df = _load_logs(data_dir)
-    encoder = None
-    if encoder_file is not None and encoder_file.exists():
-        with open(encoder_file) as f:
-            encoder = json.load(f)
-    features, labels, sl_targets, tp_targets = _extract_features(
-        rows_df.to_dict("records"),
-        use_sma=use_sma,
-        sma_window=sma_window,
-        use_rsi=use_rsi,
-        rsi_period=rsi_period,
-        use_macd=use_macd,
-        use_atr=use_atr,
-        atr_period=atr_period,
-        use_bollinger=use_bollinger,
-        boll_window=boll_window,
-        use_stochastic=use_stochastic,
-        use_adx=use_adx,
-        use_slippage=use_slippage,
-        use_volume=use_volume,
-        volatility=volatility_series,
-        use_higher_timeframe=use_higher_timeframe,
-        higher_timeframe=higher_timeframe,
-        corr_pairs=corr_pairs,
-        corr_window=corr_window,
-        extra_price_series=extra_price_series,
-        encoder=encoder,
-    )
+    cache_file = out_dir / "feature_cache.npz"
+
+    existing_model = None
+    if incremental:
+        model_file = out_dir / "model.json"
+        if not model_file.exists():
+            raise FileNotFoundError(f"{model_file} not found for incremental training")
+        with open(model_file) as f:
+            existing_model = json.load(f)
+
+    features = labels = sl_targets = tp_targets = None
+    loaded_from_cache = False
+    if cache_features and incremental and cache_file.exists() and existing_model is not None:
+        try:
+            cached = np.load(cache_file, allow_pickle=True)
+            cached_names = list(cached.get("feature_names", []))
+            if cached_names == existing_model.get("feature_names", []):
+                features = [dict(x) for x in cached["feature_dicts"]]
+                labels = cached["labels"]
+                sl_targets = cached["sl_targets"]
+                tp_targets = cached["tp_targets"]
+                loaded_from_cache = True
+        except Exception:
+            features = None
+
+    if features is None:
+        rows_df = _load_logs(data_dir)
+        encoder = None
+        if encoder_file is not None and encoder_file.exists():
+            with open(encoder_file) as f:
+                encoder = json.load(f)
+        features, labels, sl_targets, tp_targets = _extract_features(
+            rows_df.to_dict("records"),
+            use_sma=use_sma,
+            sma_window=sma_window,
+            use_rsi=use_rsi,
+            rsi_period=rsi_period,
+            use_macd=use_macd,
+            use_atr=use_atr,
+            atr_period=atr_period,
+            use_bollinger=use_bollinger,
+            boll_window=boll_window,
+            use_stochastic=use_stochastic,
+            use_adx=use_adx,
+            use_slippage=use_slippage,
+            use_volume=use_volume,
+            volatility=volatility_series,
+            use_higher_timeframe=use_higher_timeframe,
+            higher_timeframe=higher_timeframe,
+            corr_pairs=corr_pairs,
+            corr_window=corr_window,
+            extra_price_series=extra_price_series,
+            encoder=encoder,
+        )
+    else:
+        encoder = None
+        if encoder_file is not None and encoder_file.exists():
+            with open(encoder_file) as f:
+                encoder = json.load(f)
 
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
@@ -600,14 +632,6 @@ def train(
     tp_coef = []
     sl_inter = 0.0
     tp_inter = 0.0
-
-    existing_model = None
-    if incremental:
-        model_file = out_dir / "model.json"
-        if not model_file.exists():
-            raise FileNotFoundError(f"{model_file} not found for incremental training")
-        with open(model_file) as f:
-            existing_model = json.load(f)
 
     if existing_model is not None:
         vec = DictVectorizer(sparse=False)
@@ -677,6 +701,18 @@ def train(
 
     X_train_reg = vec.transform(feat_train_reg)
     X_val_reg = vec.transform(feat_val_reg) if feat_val_reg else np.empty((0, X_train_reg.shape[1]))
+
+    if cache_features and not loaded_from_cache:
+        feature_names_cache = vec.get_feature_names_out().tolist()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            cache_file,
+            feature_dicts=np.array(features, dtype=object),
+            labels=labels,
+            sl_targets=sl_targets,
+            tp_targets=tp_targets,
+            feature_names=np.array(feature_names_cache),
+        )
 
     if optuna_trials > 0 and HAS_OPTUNA:
         def _objective(trial):
@@ -1106,6 +1142,7 @@ def main():
     p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
     p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
     p.add_argument('--incremental', action='store_true', help='update existing model.json')
+    p.add_argument('--cache-features', action='store_true', help='reuse cached feature matrix')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--optuna-trials', type=int, default=0, help='number of Optuna trials for hyperparameter search')
@@ -1153,6 +1190,7 @@ def main():
         regress_sl_tp=args.regress_sl_tp,
         early_stop=args.early_stop,
         encoder_file=Path(args.encoder_file) if args.encoder_file else None,
+        cache_features=args.cache_features,
     )
 
 

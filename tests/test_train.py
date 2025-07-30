@@ -393,6 +393,30 @@ def test_incremental_train(tmp_path: Path):
     assert data.get("num_samples", 0) >= 4
 
 
+def test_feature_cache(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+
+    log_file = data_dir / "trades_cache.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, cache_features=True)
+
+    cache_file = out_dir / "feature_cache.npz"
+    assert cache_file.exists()
+
+    # remove logs to ensure training loads from cache
+    for f in data_dir.glob("*"):
+        f.unlink()
+
+    train(data_dir, out_dir, incremental=True, cache_features=True)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    assert data.get("num_samples", 0) > 0
+
+
 def test_hourly_thresholds(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
