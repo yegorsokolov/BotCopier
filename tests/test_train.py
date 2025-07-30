@@ -321,7 +321,7 @@ def test_train_nn(tmp_path: Path):
     log_file = data_dir / "trades_test.csv"
     _write_log(log_file)
 
-    train(data_dir, out_dir, model_type="nn")
+    train(data_dir, out_dir, model_type="nn", early_stop=True)
 
     model_file = out_dir / "model.json"
     assert model_file.exists()
@@ -341,7 +341,7 @@ def test_train_lstm(tmp_path: Path):
     log_file = data_dir / "trades_test.csv"
     _write_log(log_file)
 
-    train(data_dir, out_dir, model_type="lstm", sequence_length=3)
+    train(data_dir, out_dir, model_type="lstm", sequence_length=3, early_stop=True)
 
     model_file = out_dir / "model.json"
     assert model_file.exists()
@@ -361,7 +361,7 @@ def test_train_transformer(tmp_path: Path):
     log_file = data_dir / "trades_test.csv"
     _write_log(log_file)
 
-    train(data_dir, out_dir, model_type="transformer", sequence_length=3)
+    train(data_dir, out_dir, model_type="transformer", sequence_length=3, early_stop=True)
 
     model_file = out_dir / "model.json"
     assert model_file.exists()

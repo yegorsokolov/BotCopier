@@ -548,6 +548,7 @@ def train(
     corr_window: int = 5,
     extra_price_series=None,
     optuna_trials: int = 0,
+    early_stop: bool = False,
     encoder_file: Path | None = None,
 ):
     """Train a simple classifier model from the log directory."""
@@ -752,7 +753,14 @@ def train(
                 keras.layers.Dense(1, activation="sigmoid"),
             ])
             model_nn.compile(optimizer="adam", loss="binary_crossentropy")
-            model_nn.fit(X_train, y_train, epochs=50, verbose=0)
+            callbacks = [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)] if early_stop else None
+            model_nn.fit(
+                X_train,
+                y_train,
+                epochs=50,
+                verbose=0,
+                callbacks=callbacks,
+            )
             train_proba = model_nn.predict(X_train).reshape(-1)
             val_proba = (
                 model_nn.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
@@ -794,7 +802,14 @@ def train(
             keras.layers.Dense(1, activation="sigmoid"),
         ])
         model_nn.compile(optimizer="adam", loss="binary_crossentropy")
-        model_nn.fit(X_train_seq, y_train, epochs=50, verbose=0)
+        callbacks = [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)] if early_stop else None
+        model_nn.fit(
+            X_train_seq,
+            y_train,
+            epochs=50,
+            verbose=0,
+            callbacks=callbacks,
+        )
         train_proba = model_nn.predict(X_train_seq).reshape(-1)
         val_proba = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
         clf = model_nn
@@ -829,7 +844,14 @@ def train(
         out = keras.layers.Dense(1, activation="sigmoid")(pooled)
         model_nn = keras.Model(inp, out)
         model_nn.compile(optimizer="adam", loss="binary_crossentropy")
-        model_nn.fit(X_train_seq, y_train, epochs=50, verbose=0)
+        callbacks = [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)] if early_stop else None
+        model_nn.fit(
+            X_train_seq,
+            y_train,
+            epochs=50,
+            verbose=0,
+            callbacks=callbacks,
+        )
         train_proba = model_nn.predict(X_train_seq).reshape(-1)
         val_proba = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
         clf = model_nn
@@ -1036,6 +1058,7 @@ def main():
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--optuna-trials', type=int, default=0, help='number of Optuna trials for hyperparameter search')
     p.add_argument('--encoder-file', help='JSON file with pretrained encoder weights')
+    p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -1074,6 +1097,7 @@ def main():
         corr_pairs=corr_pairs,
         corr_window=args.corr_window,
         optuna_trials=args.optuna_trials,
+        early_stop=args.early_stop,
         encoder_file=Path(args.encoder_file) if args.encoder_file else None,
     )
 
