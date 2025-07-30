@@ -31,6 +31,8 @@ def _load_metrics(path: Path):
                     "trade_count": int(float(r.get("trade_count", 0) or 0)),
                     "drawdown": float(r.get("drawdown", 0) or 0),
                     "sharpe": float(r.get("sharpe", 0) or 0),
+                    "sortino": float(r.get("sortino", 0) or 0),
+                    "expectancy": float(r.get("expectancy", 0) or 0),
                     "file_write_errors": int(
                         float(r.get("file_write_errors") or r.get("write_errors") or 0)
                     ),
@@ -51,6 +53,8 @@ def _plot(rows, magic=None):
     win_rate = [r["win_rate"] for r in rows]
     drawdown = [r["drawdown"] for r in rows]
     sharpe = [r["sharpe"] for r in rows]
+    sortino = [r.get("sortino", 0) for r in rows]
+    expectancy = [r.get("expectancy", 0) for r in rows]
     write_err = [r["file_write_errors"] for r in rows]
     socket_err = [r["socket_errors"] for r in rows]
 
@@ -61,16 +65,22 @@ def _plot(rows, magic=None):
     ax2 = ax1.twinx()
     ax2.plot(times, drawdown, color="r", label="Drawdown")
     ax2.plot(times, sharpe, color="g", label="Sharpe")
-    ax2.set_ylabel("Drawdown / Sharpe")
+    ax2.plot(times, sortino, color="c", label="Sortino")
+    ax2.set_ylabel("Drawdown / Ratios")
 
     ax1.legend(loc="upper left")
     ax2.legend(loc="upper right")
 
     ax3.plot(times, write_err, label="File Write Errors", color="purple")
     ax3.plot(times, socket_err, label="Socket Errors", color="orange")
+    if any(expectancy):
+        ax3b = ax3.twinx()
+        ax3b.plot(times, expectancy, label="Expectancy", color="brown")
+        ax3b.set_ylabel("Expectancy")
+        ax3b.legend(loc="upper right")
+    ax3.legend(loc="upper left")
     ax3.set_ylabel("Error Count")
     ax3.set_xlabel("Time")
-    ax3.legend()
     plt.tight_layout()
     plt.show()
 

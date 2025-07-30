@@ -78,6 +78,8 @@ def test_metrics_collector(tmp_path: Path):
         "trade_count": 2,
         "drawdown": 0.1,
         "sharpe": 1.5,
+        "sortino": 1.2,
+        "expectancy": 0.7,
         "file_write_errors": 0,
         "socket_errors": 0,
     }
@@ -90,6 +92,8 @@ def test_metrics_collector(tmp_path: Path):
         data = json.load(resp)
     assert len(data) == 1
     assert data[0]["magic"] == "1"
+    assert "sortino" in data[0]
+    assert "expectancy" in data[0]
 
     stop_evt.set()
     t.join(timeout=2)
