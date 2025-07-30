@@ -494,3 +494,26 @@ def test_generate_volume_feature(tmp_path: Path):
     with open(generated[0]) as f:
         content = f.read()
     assert "iVolume(SymbolToTrade, 0, 0)" in content
+
+
+def test_manage_open_orders_included(tmp_path: Path):
+    model = {
+        "model_id": "manage",
+        "magic": 111,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["hour"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_manage_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "ManageOpenOrders()" in content

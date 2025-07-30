@@ -9,6 +9,8 @@ extern double MinLots = 0.01;
 extern double MaxLots = 0.1;
 extern string ModelFileName = "model.json";
 extern int ReloadModelInterval = 0; // seconds, 0=disabled
+extern double BreakEvenPips = 0;
+extern double TrailingPips = 0;
 
 double ModelCoefficients[] = {__COEFFICIENTS__};
 double ModelIntercept = __INTERCEPT__;
@@ -531,7 +533,10 @@ void OnTick()
       LastModelLoad = TimeCurrent();
    }
    if(HasOpenOrders())
+   {
+      ManageOpenOrders();
       return;
+   }
 
    double prob = GetProbability();
    if(EnableDebugLogging)
@@ -567,6 +572,46 @@ void OnTick()
 
    if(ticket < 0)
       Print("OrderSend error: ", GetLastError());
+}
+
+void ManageOpenOrders()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderMagicNumber() != MagicNumber || OrderSymbol() != SymbolToTrade)
+         continue;
+
+      bool isBuy = (OrderType() == OP_BUY);
+      double price = isBuy ? Bid : Ask;
+      double profitPips = (isBuy ? (price - OrderOpenPrice()) : (OrderOpenPrice() - price)) / Point;
+
+      double newSL = OrderStopLoss();
+      if(BreakEvenPips > 0 && profitPips >= BreakEvenPips)
+      {
+         double breakeven = OrderOpenPrice();
+         if(isBuy && (OrderStopLoss() < breakeven || OrderStopLoss() == 0))
+            newSL = breakeven;
+         if(!isBuy && (OrderStopLoss() > breakeven || OrderStopLoss() == 0))
+            newSL = breakeven;
+      }
+
+      if(TrailingPips > 0 && profitPips > TrailingPips)
+      {
+         double trail = isBuy ? price - TrailingPips * Point : price + TrailingPips * Point;
+         if(isBuy && trail > newSL)
+            newSL = trail;
+         if(!isBuy && (trail < newSL || newSL == 0))
+            newSL = trail;
+      }
+
+      if(newSL != OrderStopLoss())
+      {
+         if(!OrderModify(OrderTicket(), OrderOpenPrice(), NormalizeDouble(newSL, Digits), OrderTakeProfit(), 0, clrYellow))
+            Print("OrderModify error: ", GetLastError());
+      }
+   }
 }
 
 void OnDeinit(const int reason)
