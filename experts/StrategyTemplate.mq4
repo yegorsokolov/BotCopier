@@ -46,6 +46,13 @@ double FeatureMean[] = {__FEATURE_MEAN__};
 double FeatureStd[] = {__FEATURE_STD__};
 double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
 int FeatureHistorySize = 0;
+int CachedTimeframes[] = {__CACHE_TIMEFRAMES__};
+datetime CachedBarTimes[__CACHE_TF_COUNT__];
+double CachedSMA[__CACHE_TF_COUNT__];
+double CachedRSI[__CACHE_TF_COUNT__];
+double CachedMACD[__CACHE_TF_COUNT__];
+double CachedMACDSignal[__CACHE_TF_COUNT__];
+int LastCalcPeriod = 0;
 int EncoderWindow = __ENCODER_WINDOW__;
 int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
@@ -228,12 +235,47 @@ int GetRegime()
    return(best);
 }
 
+int TFIdx(int tf)
+{
+   for(int i=0; i<ArraySize(CachedTimeframes); i++)
+      if(CachedTimeframes[i] == tf)
+         return(i);
+   return(0);
+}
+
+void RefreshIndicatorCache()
+{
+   int curPeriod = Period();
+   if(curPeriod != LastCalcPeriod)
+   {
+      for(int i=0; i<ArraySize(CachedTimeframes); i++)
+         if(CachedTimeframes[i] == 0)
+            CachedBarTimes[i] = 0;
+      LastCalcPeriod = curPeriod;
+   }
+   for(int i=0; i<ArraySize(CachedTimeframes); i++)
+   {
+      int tf = CachedTimeframes[i];
+      int actual_tf = (tf == 0) ? curPeriod : tf;
+      datetime t = iTime(SymbolToTrade, actual_tf, 0);
+      if(t != CachedBarTimes[i])
+      {
+         CachedBarTimes[i] = t;
+         CachedSMA[i] = iMA(SymbolToTrade, actual_tf, 5, 0, MODE_SMA, PRICE_CLOSE, 0);
+         CachedRSI[i] = iRSI(SymbolToTrade, actual_tf, 14, PRICE_CLOSE, 0);
+         CachedMACD[i] = iMACD(SymbolToTrade, actual_tf, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0);
+         CachedMACDSignal[i] = iMACD(SymbolToTrade, actual_tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
+      }
+   }
+}
+
 double GetFeature(int index)
 {
    /* Return a simple set of features for the logistic model.
       Feature mapping is intentionally minimal and should be kept in
       sync with the Python training script.  Unknown indices default
       to zero. */
+   RefreshIndicatorCache();
    double val = 0.0;
    switch(index)
    {

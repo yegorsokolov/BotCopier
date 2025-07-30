@@ -393,6 +393,7 @@ def test_generate_higher_tf(tmp_path: Path):
     with open(generated[0]) as f:
         content = f.read()
     assert "PERIOD_H1" in content
+    assert "CachedSMA" in content
 
 
 def test_generate_scaling_arrays(tmp_path: Path):
