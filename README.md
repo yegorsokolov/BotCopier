@@ -185,7 +185,9 @@ Install the Python requirements and run `pytest` from the repository root. At a
 minimum `numpy`, `scikit-learn` and `pytest` are needed.  The `xgboost` and
 `lightgbm` packages are optional if you want to train XGBoost or LightGBM models.
 `stable-baselines3` can be
-installed to experiment with PPO or DQN agents:
+installed to experiment with PPO, DQN, A2C or DDPG agents. Continuous-action
+methods like DDPG require an environment using a `Box` action space – the
+included discrete environment must be adapted for such algorithms:
 
 ```bash
 pip install numpy scikit-learn pytest xgboost lightgbm stable-baselines3 shap

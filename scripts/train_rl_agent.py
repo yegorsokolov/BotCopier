@@ -203,7 +203,12 @@ def train(
                 return obs, reward, done, False, {}
 
         env = TradeEnv(states, rewards)
-        algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
+        algo_map = {
+            "ppo": sb3.PPO,
+            "dqn": sb3.DQN,
+            "a2c": sb3.A2C,
+            "ddpg": sb3.DDPG,
+        }
         algo_key = algo.lower()
         if algo_key not in algo_map:
             raise ValueError(f"Unsupported algorithm: {algo}")
@@ -361,7 +366,10 @@ def main() -> None:
     p.add_argument(
         "--algo",
         default="qlearn",
-        help="RL algorithm: qlearn (default), ppo or dqn if stable-baselines3 is installed",
+        help=(
+            "RL algorithm: qlearn (default), ppo, dqn, a2c or ddpg if stable-baselines3"
+            " is installed"
+        ),
     )
     p.add_argument("--start-model", help="path to initial model coefficients")
     args = p.parse_args()

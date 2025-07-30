@@ -169,7 +169,7 @@ def test_train_rl_agent_sb3(tmp_path: Path):
     log_file = data_dir / "trades_test.csv"
     _write_log(log_file)
 
-    train(data_dir, out_dir, algo="ppo", episodes=1)
+    train(data_dir, out_dir, algo="a2c", episodes=1)
 
     model_file = out_dir / "model.json"
     weight_file = out_dir / "model_weights.zip"
@@ -177,5 +177,5 @@ def test_train_rl_agent_sb3(tmp_path: Path):
     assert weight_file.exists()
     with open(model_file) as f:
         data = json.load(f)
-    assert data.get("algo") == "ppo"
+    assert data.get("algo") == "a2c"
     assert data.get("weights_file") == "model_weights.zip"
