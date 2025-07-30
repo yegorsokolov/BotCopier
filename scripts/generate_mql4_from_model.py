@@ -163,10 +163,10 @@ def generate(model_json: Path, out_dir: Path):
         'equity': 'AccountEquity()',
         'margin_level': 'AccountMarginLevel()',
         'day_of_week': 'TimeDayOfWeek(TimeCurrent())',
-        'sma': 'iMA(SymbolToTrade, 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0)',
-        'rsi': 'iRSI(SymbolToTrade, 0, 14, PRICE_CLOSE, 0)',
-        'macd': 'iMACD(SymbolToTrade, 0, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0)',
-        'macd_signal': 'iMACD(SymbolToTrade, 0, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0)',
+        'sma': 'CachedSMA[TFIdx(0)]',
+        'rsi': 'CachedRSI[TFIdx(0)]',
+        'macd': 'CachedMACD[TFIdx(0)]',
+        'macd_signal': 'CachedMACDSignal[TFIdx(0)]',
         'volatility': 'StdDevRecentTicks()',
         'atr': 'iATR(SymbolToTrade, 0, 14, 0)',
         'bollinger_upper': 'iBands(SymbolToTrade, 0, 20, 2, 0, PRICE_CLOSE, MODE_UPPER, 0)',
@@ -193,6 +193,7 @@ def generate(model_json: Path, out_dir: Path):
 
     import re
     cases = []
+    used_tfs = {'0'}
     for idx, name in enumerate(feature_names):
         expr = feature_map.get(name)
         if expr is None:
@@ -200,14 +201,15 @@ def generate(model_json: Path, out_dir: Path):
             if m:
                 ind, tf = m.group(1), m.group(2).upper()
                 tf_val = tf_const.get(tf, '0')
+                used_tfs.add(tf_val)
                 if ind == 'sma':
-                    expr = f'iMA(SymbolToTrade, {tf_val}, 5, 0, MODE_SMA, PRICE_CLOSE, 0)'
+                    expr = f'CachedSMA[TFIdx({tf_val})]'
                 elif ind == 'rsi':
-                    expr = f'iRSI(SymbolToTrade, {tf_val}, 14, PRICE_CLOSE, 0)'
+                    expr = f'CachedRSI[TFIdx({tf_val})]'
                 elif ind == 'macd':
-                    expr = f'iMACD(SymbolToTrade, {tf_val}, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0)'
+                    expr = f'CachedMACD[TFIdx({tf_val})]'
                 elif ind == 'macd_signal':
-                    expr = f'iMACD(SymbolToTrade, {tf_val}, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0)'
+                    expr = f'CachedMACDSignal[TFIdx({tf_val})]'
             elif name.startswith('ratio_'):
                 parts = name[6:].split('_')
                 if len(parts) == 2:
@@ -230,6 +232,22 @@ def generate(model_json: Path, out_dir: Path):
         case_block += "\n"
     output = output.replace('__FEATURE_CASES__', case_block)
     output = output.replace('__FEATURE_COUNT__', str(feature_count))
+
+    tf_order = [
+        '0',
+        'PERIOD_M1',
+        'PERIOD_M5',
+        'PERIOD_M15',
+        'PERIOD_M30',
+        'PERIOD_H1',
+        'PERIOD_H4',
+        'PERIOD_D1',
+        'PERIOD_W1',
+        'PERIOD_MN1',
+    ]
+    tf_list = [t for t in tf_order if t in used_tfs]
+    output = output.replace('__CACHE_TIMEFRAMES__', ', '.join(tf_list))
+    output = output.replace('__CACHE_TF_COUNT__', str(len(tf_list)))
 
     intercept = model.get('intercept')
     if intercept is None:
