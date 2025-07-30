@@ -95,6 +95,19 @@ one to the terminal's ``Files`` directory. An example cron entry running every
 Set ``ReloadModelInterval`` on the EA so it automatically reloads the published
 model when ``model.json`` changes.
 
+## Automatic Retraining
+
+The ``auto_retrain.py`` helper watches the most recent entries in
+``metrics.csv`` and triggers a new training run when the rolling win rate drops
+below a chosen threshold. After training completes the updated model is
+published to the terminal's ``Files`` directory.
+
+An example cron job running every 15 minutes:
+
+```cron
+*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4
+```
+
 ## Metrics Tracking
 
 During operation the EA records a summary line for each tracked model in
