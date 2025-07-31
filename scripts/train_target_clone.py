@@ -44,6 +44,10 @@ try:
     from lightgbm import LGBMClassifier
 except Exception:  # pragma: no cover - optional dependency
     LGBMClassifier = None
+try:
+    from catboost import CatBoostClassifier
+except Exception:  # pragma: no cover - optional dependency
+    CatBoostClassifier = None
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 
@@ -743,6 +747,18 @@ def train(
                     learning_rate=lr,
                     max_depth=depth,
                 )
+            elif model_type == "catboost":
+                if CatBoostClassifier is None:
+                    raise ImportError("catboost is not installed")
+                est = trial.suggest_int("n_estimators", 50, 300)
+                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                depth = trial.suggest_int("max_depth", 2, 8)
+                clf = CatBoostClassifier(
+                    iterations=est,
+                    learning_rate=lr,
+                    depth=depth,
+                    verbose=False,
+                )
             elif model_type == "nn":
                 h = trial.suggest_int("hidden_size", 4, 64)
                 if HAS_TF:
@@ -783,6 +799,10 @@ def train(
             n_estimators = int(best_trial.params["n_estimators"])
             learning_rate = float(best_trial.params["learning_rate"])
             max_depth = int(best_trial.params["max_depth"])
+        elif model_type == "catboost":
+            n_estimators = int(best_trial.params["n_estimators"])
+            learning_rate = float(best_trial.params["learning_rate"])
+            max_depth = int(best_trial.params["max_depth"])
         elif model_type == "nn":
             hidden_size = int(best_trial.params["hidden_size"])
 
@@ -811,6 +831,18 @@ def train(
             n_estimators=n_estimators,
             learning_rate=learning_rate,
             max_depth=max_depth,
+        )
+        clf.fit(X_train, y_train)
+        train_proba = clf.predict_proba(X_train)[:, 1]
+        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+    elif model_type == "catboost":
+        if CatBoostClassifier is None:
+            raise ImportError("catboost is not installed")
+        clf = CatBoostClassifier(
+            iterations=n_estimators,
+            learning_rate=learning_rate,
+            depth=max_depth,
+            verbose=False,
         )
         clf.fit(X_train, y_train)
         train_proba = clf.predict_proba(X_train)[:, 1]
@@ -1065,6 +1097,24 @@ def train(
             X_h = vec.transform([f])
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
+    elif model_type == "catboost":
+        # approximate boosting model with linear regression for export
+        logit_p = np.log(train_proba / (1.0 - train_proba + 1e-9))
+        A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
+        coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
+        model["coefficients"] = coef[1:].tolist()
+        model["intercept"] = float(coef[0])
+
+        feature_names = vec.get_feature_names_out().tolist()
+        base_feat = {name: 0.0 for name in feature_names}
+        lookup = []
+        for h in range(24):
+            f = base_feat.copy()
+            if "hour" in f:
+                f["hour"] = float(h)
+            X_h = vec.transform([f])
+            lookup.append(float(clf.predict_proba(X_h)[0, 1]))
+        model["probability_table"] = lookup
     elif model_type == "nn":
         if HAS_TF:
             weights = [w.tolist() for w in clf.get_weights()]
@@ -1135,12 +1185,16 @@ def main():
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
-    p.add_argument('--model-type', choices=['logreg', 'random_forest', 'xgboost', 'lgbm', 'nn', 'lstm', 'transformer'], default='logreg',
-                   help='classifier type')
+    p.add_argument(
+        '--model-type',
+        choices=['logreg', 'random_forest', 'xgboost', 'lgbm', 'catboost', 'nn', 'lstm', 'transformer'],
+        default='logreg',
+        help='classifier type',
+    )
     p.add_argument('--sequence-length', type=int, default=5, help='sequence length for LSTM/transformer models')
-    p.add_argument('--n-estimators', type=int, default=100, help='xgboost trees')
-    p.add_argument('--learning-rate', type=float, default=0.1, help='xgboost learning rate')
-    p.add_argument('--max-depth', type=int, default=3, help='xgboost tree depth')
+    p.add_argument('--n-estimators', type=int, default=100, help='number of boosting rounds')
+    p.add_argument('--learning-rate', type=float, default=0.1, help='learning rate for boosted trees')
+    p.add_argument('--max-depth', type=int, default=3, help='tree depth for boosting models')
     p.add_argument('--incremental', action='store_true', help='update existing model.json')
     p.add_argument('--cache-features', action='store_true', help='reuse cached feature matrix')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
