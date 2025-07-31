@@ -189,6 +189,22 @@ statistics from these files:
 python scripts/analyze_ticks.py observer_logs/ticks_EURUSD.csv
 ```
 
+## Strategy Backtesting
+
+Evaluate a generated strategy against historical tick data using
+``scripts/backtest_strategy.py``. The script extracts the ``MagicNumber`` and
+threshold from the MQ4 file, simulates trades on the tick series and writes a
+JSON report containing win rate, profit factor, drawdown and Sharpe ratio. When
+``--metrics-file`` is supplied the results are also appended to a
+``metrics.csv`` file for comparison with live trading:
+
+```bash
+python scripts/backtest_strategy.py experts/MyStrategy.mq4 \
+    observer_logs/ticks_EURUSD.csv --report backtest.json \
+    --metrics-file metrics.csv
+```
+
+
 ## Running Tests
 
 Install the Python requirements and run `pytest` from the repository root. At a
