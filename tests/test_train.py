@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import HAS_NUMPY, HAS_TF
-from scripts.train_target_clone import train, _load_logs
+from scripts.train_target_clone import train, _load_logs, _load_calendar
 
 pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for training tests")
 
@@ -258,6 +258,27 @@ def test_train_with_volatility(tmp_path: Path):
     with open(model_file) as f:
         data = json.load(f)
     assert "volatility" in data.get("feature_names", [])
+
+
+def test_train_with_calendar(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    cal_file = Path(__file__).with_name("sample_calendar.csv")
+    events = _load_calendar(cal_file)
+
+    train(data_dir, out_dir, calendar_events=events, event_window=60)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "event_flag" in feats
+    assert "event_impact" in feats
 
 
 def test_load_logs_with_metrics(tmp_path: Path):

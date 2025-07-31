@@ -301,6 +301,37 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
     return df_logs
 
 
+def _load_calendar(file: Path) -> list[tuple[datetime, float]]:
+    """Load calendar events from a CSV file.
+
+    The file is expected to have at least two columns: ``time`` and
+    ``impact``. ``time`` should be parseable by ``pandas.to_datetime``.
+
+    Parameters
+    ----------
+    file : Path
+        CSV file containing calendar events.
+
+    Returns
+    -------
+    list[tuple[datetime, float]]
+        Sorted list of ``(event_time, impact)`` tuples.
+    """
+
+    if not file.exists():
+        return []
+    df = pd.read_csv(file)
+    events: list[tuple[datetime, float]] = []
+    for _, row in df.iterrows():
+        t = pd.to_datetime(row.get("time"), utc=False, errors="coerce")
+        if pd.isna(t):
+            continue
+        impact = float(row.get("impact", 0.0) or 0.0)
+        events.append((t.to_pydatetime(), impact))
+    events.sort(key=lambda x: x[0])
+    return events
+
+
 def _extract_features(
     rows,
     use_sma=False,
@@ -323,6 +354,8 @@ def _extract_features(
     extra_price_series=None,
     corr_window: int = 5,
     encoder: dict | None = None,
+    calendar_events: list[tuple[datetime, float]] | None = None,
+    event_window: float = 60.0,
 ):
     feature_dicts = []
     labels = []
@@ -359,6 +392,7 @@ def _extract_features(
     enc_centers = (
         np.array(encoder.get("centers", []), dtype=float) if encoder else np.empty((0, 0))
     )
+    calendar_events = calendar_events or []
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
             continue
@@ -431,6 +465,17 @@ def _extract_features(
             "equity": account_equity,
             "margin_level": margin_level,
         }
+
+        if calendar_events is not None:
+            flag = 0.0
+            impact_val = 0.0
+            for ev_time, ev_imp in calendar_events:
+                if abs((t - ev_time).total_seconds()) <= event_window * 60.0:
+                    flag = 1.0
+                    if ev_imp > impact_val:
+                        impact_val = ev_imp
+            feat["event_flag"] = flag
+            feat["event_impact"] = impact_val
 
         if use_slippage:
             feat["slippage"] = slippage
@@ -565,6 +610,8 @@ def train(
     early_stop: bool = False,
     encoder_file: Path | None = None,
     cache_features: bool = False,
+    calendar_events: list[tuple[datetime, float]] | None = None,
+    event_window: float = 60.0,
 ):
     """Train a simple classifier model from the log directory."""
 
@@ -620,6 +667,8 @@ def train(
             corr_window=corr_window,
             extra_price_series=extra_price_series,
             encoder=encoder,
+            calendar_events=calendar_events,
+            event_window=event_window,
         )
     else:
         encoder = None
@@ -1047,6 +1096,11 @@ def train(
         "feature_mean": feature_mean.tolist(),
         "feature_std": feature_std.tolist(),
     }
+    if calendar_events:
+        model["calendar_events"] = [
+            [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+        ]
+        model["event_window"] = float(event_window)
     if encoder is not None:
         model["encoder_weights"] = encoder.get("weights")
         model["encoder_window"] = encoder.get("window")
@@ -1185,6 +1239,8 @@ def main():
         '--higher-timeframes',
         help='comma separated higher timeframes e.g. H1,H4',
     )
+    p.add_argument('--calendar-file', help='CSV file with columns time,impact for events')
+    p.add_argument('--event-window', type=float, default=60.0, help='minutes around events to flag')
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
@@ -1213,6 +1269,10 @@ def main():
             vol_data = json.load(f)
     else:
         vol_data = None
+    if args.calendar_file:
+        events = _load_calendar(Path(args.calendar_file))
+    else:
+        events = None
     if args.corr_symbols:
         corr_pairs = [tuple(p.split(':')) for p in args.corr_symbols.split(',')]
     else:
@@ -1251,6 +1311,8 @@ def main():
         early_stop=args.early_stop,
         encoder_file=Path(args.encoder_file) if args.encoder_file else None,
         cache_features=args.cache_features,
+        calendar_events=events,
+        event_window=args.event_window,
     )
 
 

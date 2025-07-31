@@ -46,6 +46,9 @@ double TransformerDenseWeights[] = {__TRANS_DENSE_W__};
 double TransformerDenseBias = __TRANS_DENSE_B__;
 double FeatureMean[] = {__FEATURE_MEAN__};
 double FeatureStd[] = {__FEATURE_STD__};
+datetime CalendarTimes[] = {__CALENDAR_TIMES__};
+double CalendarImpacts[] = {__CALENDAR_IMPACTS__};
+int EventWindowMinutes = __EVENT_WINDOW__;
 double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
 int FeatureHistorySize = 0;
 int CachedTimeframes[] = {__CACHE_TIMEFRAMES__};
@@ -194,6 +197,26 @@ double GetTPDistance()
             return(Ask - OrderTakeProfit());
       }
    return(0.0);
+}
+
+double GetCalendarFlag()
+{
+   datetime now = TimeCurrent();
+   for(int i=0; i<ArraySize(CalendarTimes); i++)
+      if(MathAbs(now - CalendarTimes[i]) <= EventWindowMinutes * 60)
+         return(1.0);
+   return(0.0);
+}
+
+double GetCalendarImpact()
+{
+   datetime now = TimeCurrent();
+   double maxImp = 0.0;
+   for(int i=0; i<ArraySize(CalendarTimes); i++)
+      if(MathAbs(now - CalendarTimes[i]) <= EventWindowMinutes * 60)
+         if(CalendarImpacts[i] > maxImp)
+            maxImp = CalendarImpacts[i];
+   return(maxImp);
 }
 
 double GetEncodedFeature(int idx)
