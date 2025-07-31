@@ -537,8 +537,7 @@ def test_higher_timeframe_features(tmp_path: Path):
         use_sma=True,
         use_rsi=True,
         use_macd=True,
-        use_higher_timeframe=True,
-        higher_timeframe="H1",
+        higher_timeframes=["H1"],
     )
 
     with open(out_dir / "model.json") as f:

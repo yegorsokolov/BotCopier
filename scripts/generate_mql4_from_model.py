@@ -194,22 +194,23 @@ def generate(model_json: Path, out_dir: Path):
     import re
     cases = []
     used_tfs = {'0'}
+    tf_pattern = re.compile(r'^(sma|rsi|macd|macd_signal)_([A-Za-z0-9]+)$')
+    indicator_expr = {
+        'sma': 'CachedSMA',
+        'rsi': 'CachedRSI',
+        'macd': 'CachedMACD',
+        'macd_signal': 'CachedMACDSignal',
+    }
     for idx, name in enumerate(feature_names):
         expr = feature_map.get(name)
         if expr is None:
-            m = re.match(r'^(sma|rsi|macd|macd_signal)_([A-Za-z0-9]+)$', name)
+            m = tf_pattern.match(name)
             if m:
-                ind, tf = m.group(1), m.group(2).upper()
+                ind, tf = m.groups()
+                tf = tf.upper()
                 tf_val = tf_const.get(tf, '0')
                 used_tfs.add(tf_val)
-                if ind == 'sma':
-                    expr = f'CachedSMA[TFIdx({tf_val})]'
-                elif ind == 'rsi':
-                    expr = f'CachedRSI[TFIdx({tf_val})]'
-                elif ind == 'macd':
-                    expr = f'CachedMACD[TFIdx({tf_val})]'
-                elif ind == 'macd_signal':
-                    expr = f'CachedMACDSignal[TFIdx({tf_val})]'
+                expr = f"{indicator_expr[ind]}[TFIdx({tf_val})]"
             elif name.startswith('ratio_'):
                 parts = name[6:].split('_')
                 if len(parts) == 2:

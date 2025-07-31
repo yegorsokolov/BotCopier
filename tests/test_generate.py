@@ -379,7 +379,7 @@ def test_generate_higher_tf(tmp_path: Path):
         "coefficients": [0.1, 0.2, 0.3, 0.4],
         "intercept": 0.0,
         "threshold": 0.5,
-        "feature_names": ["sma_H1", "rsi_H1", "macd_H1", "macd_signal_H1"],
+        "feature_names": ["sma_H1", "rsi_H4", "macd_H1", "macd_signal_H4"],
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
@@ -392,8 +392,10 @@ def test_generate_higher_tf(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert "PERIOD_H1" in content
+    assert "TFIdx(PERIOD_H1)" in content
+    assert "TFIdx(PERIOD_H4)" in content
     assert "CachedSMA" in content
+    assert "CachedRSI" in content
 
 
 def test_generate_scaling_arrays(tmp_path: Path):
