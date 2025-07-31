@@ -41,6 +41,13 @@ python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir 
 python generate_mql4_from_model.py models/model.json experts
 ```
 
+Multiple models can be supplied to build a simple ensemble. Feature names are
+merged and the generated EA averages the probabilities from each model:
+
+```bash
+python generate_mql4_from_model.py models/model_a.json models/model_b.json experts
+```
+
 Pass `--model-type catboost` to train a CatBoost model when the `catboost`
 package is installed.
 

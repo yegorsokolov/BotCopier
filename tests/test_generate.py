@@ -27,8 +27,8 @@ def test_generate(tmp_path: Path):
     with open(generated[0]) as f:
         content = f.read()
     assert "MagicNumber = 777" in content
-    assert "double ModelCoefficients[] = {0.1, -0.2};" in content
-    assert "double ModelIntercept = 0.05;" in content
+    assert "double ModelCoefficients[1][2] = {{0.1, -0.2}};" in content
+    assert "double ModelIntercepts[] = {0.05};" in content
     assert "double ModelThreshold = 0.6;" in content
     assert "TimeHour(TimeCurrent())" in content
     assert "MODE_SPREAD" in content
@@ -56,6 +56,40 @@ def test_sl_tp_features(tmp_path: Path):
         content = f.read()
     assert "GetSLDistance()" in content
     assert "GetTPDistance()" in content
+
+
+def test_generate_ensemble(tmp_path: Path):
+    m1 = {
+        "model_id": "m1",
+        "magic": 123,
+        "coefficients": [0.1, -0.2],
+        "intercept": 0.05,
+        "threshold": 0.5,
+        "feature_names": ["hour", "spread"],
+    }
+    m2 = {
+        "model_id": "m2",
+        "coefficients": [0.3, 0.4],
+        "intercept": -0.1,
+        "threshold": 0.5,
+        "feature_names": ["spread", "lots"],
+    }
+    f1 = tmp_path / "m1.json"
+    f2 = tmp_path / "m2.json"
+    with open(f1, "w") as f:
+        json.dump(m1, f)
+    with open(f2, "w") as f:
+        json.dump(m2, f)
+    out_dir = tmp_path / "out"
+    generate([f1, f2], out_dir)
+    generated = list(out_dir.glob("Generated_m1_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert "double ModelCoefficients[2][3]" in content
+    assert "double ModelIntercepts[] = {0.05, -0.1};" in content
+    assert "Lots" in content
+    assert "MODE_SPREAD" in content
+    assert "TimeHour(TimeCurrent())" in content
 
 
 def test_generate_sl_tp_coeffs(tmp_path: Path):

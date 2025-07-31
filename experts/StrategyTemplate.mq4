@@ -12,8 +12,9 @@ extern int ReloadModelInterval = 0; // seconds, 0=disabled
 extern double BreakEvenPips = 0;
 extern double TrailingPips = 0;
 
-double ModelCoefficients[] = {__COEFFICIENTS__};
-double ModelIntercept = __INTERCEPT__;
+int ModelCount = __MODEL_COUNT__;
+double ModelCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__COEFFICIENTS__};
+double ModelIntercepts[] = {__INTERCEPTS__};
 double ModelThreshold = __THRESHOLD__;
 double HourlyThresholds[] = {__HOURLY_THRESHOLDS__};
 double ProbabilityLookup[] = {__PROBABILITY_TABLE__};
@@ -109,17 +110,23 @@ void ExtractJsonArray(string json, string key, double &arr[])
 
 bool ParseModelJson(string json)
 {
-   ExtractJsonArray(json, "\"coefficients\"", ModelCoefficients);
+   double tmp[];
+   ExtractJsonArray(json, "\"coefficients\"", tmp);
+   int n = MathMin(ArraySize(tmp), ArrayRange(ModelCoefficients,1));
+   for(int i=0;i<n;i++)
+      ModelCoefficients[0][i] = tmp[i];
    ExtractJsonArray(json, "\"hourly_thresholds\"", HourlyThresholds);
    ExtractJsonArray(json, "\"probability_table\"", ProbabilityLookup);
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
    ExtractJsonArray(json, "\"feature_mean\"", FeatureMean);
    ExtractJsonArray(json, "\"feature_std\"", FeatureStd);
-   ModelIntercept = ExtractJsonNumber(json, "\"intercept\"");
+   if(ArraySize(ModelIntercepts)>0)
+      ModelIntercepts[0] = ExtractJsonNumber(json, "\"intercept\"");
    SLModelIntercept = ExtractJsonNumber(json, "\"sl_intercept\"");
    TPModelIntercept = ExtractJsonNumber(json, "\"tp_intercept\"");
    ModelThreshold = ExtractJsonNumber(json, "\"threshold\"");
+   ModelCount = 1;
    return(true);
 }
 
@@ -129,12 +136,13 @@ bool ParseModelCsv(string line)
    int cnt = StringSplit(StringTrimLeft(StringTrimRight(line)), ',', parts);
    if(cnt < 3)
       return(false);
-   ModelIntercept = StrToDouble(parts[0]);
+   if(ArraySize(ModelIntercepts)>0)
+      ModelIntercepts[0] = StrToDouble(parts[0]);
    ModelThreshold = StrToDouble(parts[1]);
-   int n = cnt - 2;
-   ArrayResize(ModelCoefficients, n);
+   int n = MathMin(cnt - 2, ArrayRange(ModelCoefficients,1));
    for(int i=0; i<n; i++)
-      ModelCoefficients[i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i+2])));
+      ModelCoefficients[0][i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i+2])));
+   ModelCount = 1;
    return(true);
 }
 
@@ -315,12 +323,15 @@ __FEATURE_CASES__      default:
 
 double ComputeLogisticScore()
 {
-   double z = ModelIntercept;
-   int n = ArraySize(ModelCoefficients);
-   for(int i=0; i<n; i++)
-      z += ModelCoefficients[i] * GetFeature(i);
-   // logistic function
-   return(1.0 / (1.0 + MathExp(-z)));
+   double total = 0.0;
+   for(int m=0; m<ModelCount; m++)
+   {
+      double z = ModelIntercepts[m];
+      for(int i=0; i<FeatureCount; i++)
+         z += ModelCoefficients[m][i] * GetFeature(i);
+      total += 1.0 / (1.0 + MathExp(-z));
+   }
+   return(total/ModelCount);
 }
 
 double ComputeNNScore()
@@ -565,7 +576,7 @@ void OnTick()
    if(EnableDebugLogging)
    {
       string feat_vals = "";
-      int n_feats = ArraySize(ModelCoefficients);
+      int n_feats = FeatureCount;
       if(n_feats == 0 && ModelHiddenSize > 0)
          n_feats = ArraySize(NNLayer1Weights) / ModelHiddenSize;
       for(int i=0; i<n_feats; i++)
