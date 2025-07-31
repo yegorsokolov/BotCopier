@@ -41,6 +41,9 @@ python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir 
 python generate_mql4_from_model.py models/model.json experts
 ```
 
+Pass `--model-type catboost` to train a CatBoost model when the `catboost`
+package is installed.
+
 Pass ``--regress-sl-tp`` to also fit linear models predicting stop loss and take
 profit distances. The coefficients are saved in ``model.json`` and generated
 strategies will automatically place orders with these predicted values.
@@ -182,15 +185,16 @@ python scripts/analyze_ticks.py observer_logs/ticks_EURUSD.csv
 ## Running Tests
 
 Install the Python requirements and run `pytest` from the repository root. At a
-minimum `numpy`, `scikit-learn` and `pytest` are needed.  The `xgboost` and
-`lightgbm` packages are optional if you want to train XGBoost or LightGBM models.
+minimum `numpy`, `scikit-learn` and `pytest` are needed.  The `xgboost`,
+`lightgbm` and `catboost` packages are optional if you want to train XGBoost,
+LightGBM or CatBoost models.
 `stable-baselines3` can be
 installed to experiment with PPO, DQN, A2C or DDPG agents. Continuous-action
 methods like DDPG require an environment using a `Box` action space – the
 included discrete environment must be adapted for such algorithms:
 
 ```bash
-pip install numpy scikit-learn pytest xgboost lightgbm stable-baselines3 shap
+pip install numpy scikit-learn pytest xgboost lightgbm catboost stable-baselines3 shap
 pytest
 ```
 

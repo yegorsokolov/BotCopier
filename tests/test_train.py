@@ -314,6 +314,26 @@ def test_train_lightgbm(tmp_path: Path):
     assert data.get("weighted") is False
 
 
+def test_train_catboost(tmp_path: Path):
+    pytest.importorskip("catboost")
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, model_type="catboost", n_estimators=10)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("model_type") == "catboost"
+    assert "coefficients" in data
+    assert len(data.get("probability_table", [])) == 24
+    assert data.get("weighted") is False
+
+
 def test_train_nn(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
