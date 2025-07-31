@@ -519,3 +519,29 @@ def test_manage_open_orders_included(tmp_path: Path):
     with open(generated[0]) as f:
         content = f.read()
     assert "ManageOpenOrders()" in content
+
+
+def test_calendar_features(tmp_path: Path):
+    model = {
+        "model_id": "cal",
+        "magic": 111,
+        "coefficients": [0.1, 0.2],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["event_flag", "event_impact"],
+        "calendar_events": [["2024-01-01T00:30:00", 1.0]],
+        "event_window": 60.0,
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_cal_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert "GetCalendarFlag()" in content
+    assert "GetCalendarImpact()" in content

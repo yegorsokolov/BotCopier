@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+from datetime import datetime
 
 
 def _fmt(value: float) -> str:
@@ -147,6 +148,21 @@ def generate(model_json: Path, out_dir: Path):
     std_str = ', '.join(_fmt(v) for v in feature_std)
     output = output.replace('__FEATURE_STD__', std_str)
 
+    cal_events = model.get('calendar_events', [])
+    if cal_events:
+        time_vals = ', '.join(
+            datetime.fromisoformat(t).strftime("D'%Y.%m.%d %H:%M'")
+            for t, _ in cal_events
+        )
+        impact_vals = ', '.join(_fmt(float(imp)) for _, imp in cal_events)
+    else:
+        time_vals = ''
+        impact_vals = ''
+    event_window = _fmt(model.get('event_window', 60.0))
+    output = output.replace('__CALENDAR_TIMES__', time_vals)
+    output = output.replace('__CALENDAR_IMPACTS__', impact_vals)
+    output = output.replace('__EVENT_WINDOW__', event_window)
+
     feature_names = model.get('feature_names', [])
     feature_count = len(feature_names)
 
@@ -177,6 +193,8 @@ def generate(model_json: Path, out_dir: Path):
         'adx': 'iADX(SymbolToTrade, 0, 14, PRICE_CLOSE, MODE_MAIN, 0)',
         'regime': 'GetRegime()',
         'volume': 'iVolume(SymbolToTrade, 0, 0)',
+        'event_flag': 'GetCalendarFlag()',
+        'event_impact': 'GetCalendarImpact()',
     }
 
     tf_const = {
@@ -264,12 +282,10 @@ def generate(model_json: Path, out_dir: Path):
     ts = model.get('trained_at')
     if ts:
         try:
-            from datetime import datetime
             ts = datetime.fromisoformat(ts).strftime('%Y%m%d_%H%M%S')
         except Exception:
             ts = None
     if not ts:
-        from datetime import datetime
         ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
     out_file = out_dir / f"Generated_{model.get('model_id', 'model')}_{ts}.mq4"
     with open(out_file, 'w') as f:
