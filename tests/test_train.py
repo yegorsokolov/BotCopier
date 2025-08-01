@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import HAS_NUMPY, HAS_TF
-from scripts.train_target_clone import train, _load_logs, _load_calendar
+from scripts.train_target_clone import train, _load_logs, _load_calendar, _extract_features
 
 pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for training tests")
 
@@ -481,14 +481,23 @@ def test_corr_features(tmp_path: Path):
     data_dir.mkdir()
     log_file = data_dir / "trades_corr.csv"
     _write_log(log_file)
+    extra = {"USDCHF": [0.9, 0.8]}
 
-    train(data_dir, out_dir, corr_pairs=[("EURUSD", "USDCHF")])
+    train(data_dir, out_dir, corr_pairs=[("EURUSD", "USDCHF")], extra_price_series=extra)
 
     with open(out_dir / "model.json") as f:
         data = json.load(f)
     feats = data.get("feature_names", [])
     assert "ratio_EURUSD_USDCHF" in feats
     assert "corr_EURUSD_USDCHF" in feats
+
+    df = _load_logs(data_dir)
+    feature_dicts, *_ = _extract_features(
+        df.to_dict("records"),
+        corr_pairs=[("EURUSD", "USDCHF")],
+        extra_price_series=extra,
+    )
+    assert feature_dicts[1]["ratio_EURUSD_USDCHF"] == pytest.approx(1.1000 / 0.9)
 
 
 def test_slippage_feature(tmp_path: Path):

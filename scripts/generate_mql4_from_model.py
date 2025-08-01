@@ -262,10 +262,7 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
             elif name.startswith('corr_'):
                 parts = name[5:].split('_')
                 if len(parts) == 2:
-                    expr = (
-                        f'iMA("{parts[0]}", 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0) - '
-                        f'iMA("{parts[1]}", 0, 5, 0, MODE_SMA, PRICE_CLOSE, 0)'
-                    )
+                    expr = f'PairCorrelation("{parts[0]}", "{parts[1]}")'
             elif name.startswith('ae') and name[2:].isdigit():
                 idx_ae = int(name[2:])
                 expr = f'GetEncodedFeature({idx_ae})'

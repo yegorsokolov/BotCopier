@@ -385,7 +385,8 @@ def _extract_features(
     tf_prev_price = {tf: None for tf in higher_timeframes}
     stoch_state = {}
     adx_state = {}
-    price_map = {sym: list(vals) for sym, vals in (extra_price_series or {}).items()}
+    extra_series = extra_price_series or {}
+    price_map = {sym: [] for sym in extra_series.keys()}
     enc_window = int(encoder.get("window")) if encoder else 0
     enc_weights = (
         np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
@@ -394,6 +395,7 @@ def _extract_features(
         np.array(encoder.get("centers", []), dtype=float) if encoder else np.empty((0, 0))
     )
     calendar_events = calendar_events or []
+    row_idx = 0
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
             continue
@@ -553,12 +555,18 @@ def _extract_features(
 
         prices.append(price)
         sym_prices.append(price)
+        for sym, series in extra_series.items():
+            if sym == symbol:
+                continue
+            if row_idx < len(series):
+                price_map.setdefault(sym, []).append(float(series[row_idx]))
 
         feature_dicts.append(feat)
         labels.append(label)
         sl_targets.append(sl_dist)
         tp_targets.append(tp_dist)
         hours.append(t.hour)
+        row_idx += 1
     return (
         feature_dicts,
         np.array(labels),
