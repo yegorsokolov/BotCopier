@@ -322,6 +322,26 @@ void RefreshIndicatorCache()
    }
 }
 
+double PairCorrelation(string sym1, string sym2, int window=5)
+{
+   double mean1 = iMA(sym1, 0, window, 0, MODE_SMA, PRICE_CLOSE, 1);
+   double mean2 = iMA(sym2, 0, window, 0, MODE_SMA, PRICE_CLOSE, 1);
+   double num = 0.0;
+   double den1 = 0.0;
+   double den2 = 0.0;
+   for(int i=1; i<=window; i++)
+   {
+      double d1 = iClose(sym1, 0, i) - mean1;
+      double d2 = iClose(sym2, 0, i) - mean2;
+      num += d1 * d2;
+      den1 += d1 * d1;
+      den2 += d2 * d2;
+   }
+   if(den1 <= 0 || den2 <= 0)
+      return(0.0);
+   return(num / MathSqrt(den1 * den2));
+}
+
 double GetFeature(int index)
 {
    /* Return a simple set of features for the logistic model.
