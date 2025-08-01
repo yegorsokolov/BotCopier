@@ -55,12 +55,16 @@ Pass ``--regress-sl-tp`` to also fit linear models predicting stop loss and take
 profit distances. The coefficients are saved in ``model.json`` and generated
 strategies will automatically place orders with these predicted values.
 
-Hyperparameters can be optimised automatically when `optuna` is installed:
+Hyperparameters can be optimised automatically when `optuna` is installed. The
+best trial's parameters and validation score are saved to `model.json`:
 
 ```bash
 pip install optuna
 python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir models --optuna-trials 50
 ```
+
+Optuna explores learning rate, tree depth or regularisation strength depending
+on the chosen model type.
 
 For ongoing training simply rerun the script with the ``--incremental`` flag and
 the latest log directory. The generated MQ4 file name will include the training
