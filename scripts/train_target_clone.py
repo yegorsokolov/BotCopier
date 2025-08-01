@@ -628,6 +628,8 @@ def train(
     event_window: float = 60.0,
 ):
     """Train a simple classifier model from the log directory."""
+    if optuna_trials > 0 and not HAS_OPTUNA:
+        raise ImportError("optuna is required for hyperparameter search")
 
     cache_file = out_dir / "feature_cache.npz"
 
@@ -1136,7 +1138,7 @@ def train(
             model["encoder_centers"] = encoder.get("centers")
     if best_trial is not None:
         model["optuna_best_params"] = best_trial.params
-        model["optuna_best_score"] = best_trial.value
+        model["optuna_best_score"] = float(best_trial.value)
     if hourly_thresholds is not None:
         model["hourly_thresholds"] = hourly_thresholds
 
