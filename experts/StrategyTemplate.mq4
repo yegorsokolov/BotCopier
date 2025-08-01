@@ -177,6 +177,26 @@ int OnInit()
 // Feature extraction utilities
 //----------------------------------------------------------------------
 
+double HourSin()
+{
+   return(MathSin(2.0 * 3.141592653589793 * TimeHour(TimeCurrent()) / 24.0));
+}
+
+double HourCos()
+{
+   return(MathCos(2.0 * 3.141592653589793 * TimeHour(TimeCurrent()) / 24.0));
+}
+
+double DowSin()
+{
+   return(MathSin(2.0 * 3.141592653589793 * TimeDayOfWeek(TimeCurrent()) / 7.0));
+}
+
+double DowCos()
+{
+   return(MathCos(2.0 * 3.141592653589793 * TimeDayOfWeek(TimeCurrent()) / 7.0));
+}
+
 double GetSLDistance()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)

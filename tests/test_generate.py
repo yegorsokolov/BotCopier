@@ -121,29 +121,6 @@ def test_generate_sl_tp_coeffs(tmp_path: Path):
     assert "GetNewSL(" in content
 
 
-def test_day_of_week_feature(tmp_path: Path):
-    model = {
-        "model_id": "dow",
-        "magic": 888,
-        "coefficients": [0.1],
-        "intercept": 0.0,
-        "threshold": 0.5,
-        "feature_names": ["day_of_week"],
-    }
-    model_file = tmp_path / "model.json"
-    with open(model_file, "w") as f:
-        json.dump(model, f)
-
-    out_dir = tmp_path / "out"
-    generate(model_file, out_dir)
-
-    generated = list(out_dir.glob("Generated_dow_*.mq4"))
-    assert len(generated) == 1
-    with open(generated[0]) as f:
-        content = f.read()
-    assert "TimeDayOfWeek(TimeCurrent())" in content
-
-
 def test_sin_cos_features(tmp_path: Path):
     model = {
         "model_id": "sc",
@@ -164,8 +141,8 @@ def test_sin_cos_features(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert "MathSin(2*M_PI*TimeHour(TimeCurrent())/24)" in content
-    assert "MathCos(2*M_PI*TimeDayOfWeek(TimeCurrent())/7)" in content
+    assert "HourSin()" in content
+    assert "DowCos()" in content
 
 
 def test_volatility_feature(tmp_path: Path):

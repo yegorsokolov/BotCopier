@@ -362,6 +362,7 @@ def _extract_features(
     sl_targets = []
     tp_targets = []
     prices = []
+    hours = []
     macd_state = {}
     higher_timeframes = [str(tf).upper() for tf in (higher_timeframes or [])]
     tf_map = {
@@ -451,8 +452,6 @@ def _extract_features(
 
         feat = {
             "symbol": symbol,
-            "hour": t.hour,
-            "day_of_week": t.weekday(),
             "hour_sin": hour_sin,
             "hour_cos": hour_cos,
             "dow_sin": dow_sin,
@@ -559,7 +558,14 @@ def _extract_features(
         labels.append(label)
         sl_targets.append(sl_dist)
         tp_targets.append(tp_dist)
-    return feature_dicts, np.array(labels), np.array(sl_targets), np.array(tp_targets)
+        hours.append(t.hour)
+    return (
+        feature_dicts,
+        np.array(labels),
+        np.array(sl_targets),
+        np.array(tp_targets),
+        np.array(hours, dtype=int),
+    )
 
 
 def _best_threshold(y_true, probas):
@@ -625,7 +631,7 @@ def train(
         with open(model_file) as f:
             existing_model = json.load(f)
 
-    features = labels = sl_targets = tp_targets = None
+    features = labels = sl_targets = tp_targets = hours = None
     loaded_from_cache = False
     if cache_features and incremental and cache_file.exists() and existing_model is not None:
         try:
@@ -636,6 +642,7 @@ def train(
                 labels = cached["labels"]
                 sl_targets = cached["sl_targets"]
                 tp_targets = cached["tp_targets"]
+                hours = cached.get("hours")
                 loaded_from_cache = True
         except Exception:
             features = None
@@ -646,7 +653,13 @@ def train(
         if encoder_file is not None and encoder_file.exists():
             with open(encoder_file) as f:
                 encoder = json.load(f)
-        features, labels, sl_targets, tp_targets = _extract_features(
+        (
+            features,
+            labels,
+            sl_targets,
+            tp_targets,
+            hours,
+        ) = _extract_features(
             rows_df.to_dict("records"),
             use_sma=use_sma,
             sma_window=sma_window,
@@ -701,6 +714,8 @@ def train(
         sl_val = np.array([])
         tp_train = tp_targets
         tp_val = np.array([])
+        hours_train = hours
+        hours_val = np.array([])
     else:
         tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
         # iterate through sequential splits and select the final one for validation
@@ -714,12 +729,16 @@ def train(
         sl_val = sl_targets[val_idx]
         tp_train = tp_targets[train_idx]
         tp_val = tp_targets[val_idx]
+        hours_train = hours[train_idx]
+        hours_val = hours[val_idx]
 
         # if the training split ended up with only one class, fall back to using
         # all data for training so the model can be fit
         if len(np.unique(y_train)) < 2:
             feat_train, y_train = features, labels
             feat_val, y_val = [], np.array([])
+            hours_train = hours
+            hours_val = np.array([])
 
     sample_weight = None
     if model_type == "logreg" and not grid_search:
@@ -765,6 +784,7 @@ def train(
             labels=labels,
             sl_targets=sl_targets,
             tp_targets=tp_targets,
+            hours=hours,
             feature_names=np.array(feature_names_cache),
         )
 
@@ -1049,10 +1069,10 @@ def train(
 
     hourly_thresholds = None
     if len(y_val) > 0:
-        hours_val = np.array([f.get("hour", 0) for f in feat_val], dtype=int)
+        hours_val_arr = np.array(hours_val, dtype=int)
         hourly_thresholds = []
         for h in range(24):
-            idx = np.where(hours_val == h)[0]
+            idx = np.where(hours_val_arr == h)[0]
             if len(idx) > 0:
                 t, _ = _best_threshold(y_val[idx], val_proba[idx])
             else:
@@ -1129,8 +1149,10 @@ def train(
         lookup = []
         for h in range(24):
             f = base_feat.copy()
-            if "hour" in f:
-                f["hour"] = float(h)
+            if "hour_sin" in f:
+                f["hour_sin"] = math.sin(2 * math.pi * h / 24)
+            if "hour_cos" in f:
+                f["hour_cos"] = math.cos(2 * math.pi * h / 24)
             X_h = vec.transform([f])
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
@@ -1147,8 +1169,10 @@ def train(
         lookup = []
         for h in range(24):
             f = base_feat.copy()
-            if "hour" in f:
-                f["hour"] = float(h)
+            if "hour_sin" in f:
+                f["hour_sin"] = math.sin(2 * math.pi * h / 24)
+            if "hour_cos" in f:
+                f["hour_cos"] = math.cos(2 * math.pi * h / 24)
             X_h = vec.transform([f])
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
@@ -1165,8 +1189,10 @@ def train(
         lookup = []
         for h in range(24):
             f = base_feat.copy()
-            if "hour" in f:
-                f["hour"] = float(h)
+            if "hour_sin" in f:
+                f["hour_sin"] = math.sin(2 * math.pi * h / 24)
+            if "hour_cos" in f:
+                f["hour_cos"] = math.cos(2 * math.pi * h / 24)
             X_h = vec.transform([f])
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
