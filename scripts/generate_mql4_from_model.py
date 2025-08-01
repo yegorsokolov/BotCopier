@@ -195,18 +195,16 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
     output = output.replace('__EVENT_WINDOW__', event_window)
 
     feature_map = {
-        'hour': 'TimeHour(TimeCurrent())',
-        'hour_sin': 'MathSin(2*M_PI*TimeHour(TimeCurrent())/24)',
-        'hour_cos': 'MathCos(2*M_PI*TimeHour(TimeCurrent())/24)',
-        'dow_sin': 'MathSin(2*M_PI*TimeDayOfWeek(TimeCurrent())/7)',
-        'dow_cos': 'MathCos(2*M_PI*TimeDayOfWeek(TimeCurrent())/7)',
+        'hour_sin': 'HourSin()',
+        'hour_cos': 'HourCos()',
+        'dow_sin': 'DowSin()',
+        'dow_cos': 'DowCos()',
         'spread': 'MarketInfo(SymbolToTrade, MODE_SPREAD)',
         'lots': 'Lots',
         'sl_dist': 'GetSLDistance()',
         'tp_dist': 'GetTPDistance()',
         'equity': 'AccountEquity()',
         'margin_level': 'AccountMarginLevel()',
-        'day_of_week': 'TimeDayOfWeek(TimeCurrent())',
         'sma': 'CachedSMA[TFIdx(0)]',
         'rsi': 'CachedRSI[TFIdx(0)]',
         'macd': 'CachedMACD[TFIdx(0)]',
