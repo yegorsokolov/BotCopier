@@ -172,12 +172,16 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
     output = output.replace('__ENCODER_CENTERS__', center_flat)
     output = output.replace('__ENCODER_CENTER_COUNT__', str(len(centers)))
 
-    feature_mean = base.get('feature_mean', [])
-    mean_str = ', '.join(_fmt(v) for v in feature_mean)
-    output = output.replace('__FEATURE_MEAN__', mean_str)
-    feature_std = base.get('feature_std', [])
-    std_str = ', '.join(_fmt(v) for v in feature_std)
-    output = output.replace('__FEATURE_STD__', std_str)
+    mean_map = {
+        f: m for f, m in zip(base.get('feature_names', []), base.get('feature_mean', []))
+    }
+    mean_vec = [_fmt(mean_map.get(f, 0.0)) for f in feature_names]
+    output = output.replace('__FEATURE_MEAN__', ', '.join(mean_vec))
+    std_map = {
+        f: s for f, s in zip(base.get('feature_names', []), base.get('feature_std', []))
+    }
+    std_vec = [_fmt(std_map.get(f, 1.0)) for f in feature_names]
+    output = output.replace('__FEATURE_STD__', ', '.join(std_vec))
 
     cal_events = base.get('calendar_events', [])
     if cal_events:
