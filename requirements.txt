@@ -1,0 +1,9 @@
+numpy
+pandas
+scikit-learn
+pytest
+
+# Optional extras
+xgboost; extra == "xgboost"
+optuna; extra == "optuna"
+stable-baselines3; extra == "rl"

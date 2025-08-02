@@ -5,14 +5,18 @@ __pycache__/
 *.pyd
 
 # MetaTrader build artifacts
-experts/*.ex4
+*.ex4
 
 # Log directories
+logs/
 observer_logs/
-logs/*
-!logs/metrics.csv
-!logs/trades_raw.csv
 *.log
 
 # Generated models
 models/best/
+
+# Temporary files
+*.tmp
+*.temp
+*~
+*.swp
