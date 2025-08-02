@@ -31,6 +31,7 @@ def retrain_if_needed(
     *,
     metrics_file: Optional[Path] = None,
     win_rate_threshold: float = 0.4,
+    sharpe_threshold: float = 0.0,
     incremental: bool = True,
 ) -> bool:
     metrics_path = metrics_file or (log_dir / "metrics.csv")
@@ -40,8 +41,12 @@ def retrain_if_needed(
     try:
         win_rate = float(row.get("win_rate", 0) or 0)
     except Exception:
-        return False
-    if win_rate >= win_rate_threshold:
+        win_rate = 0.0
+    try:
+        sharpe = float(row.get("sharpe") or row.get("sharpe_ratio") or 0)
+    except Exception:
+        sharpe = 0.0
+    if win_rate >= win_rate_threshold and sharpe >= sharpe_threshold:
         return False
 
     train(log_dir, out_dir, incremental=incremental)
@@ -63,6 +68,12 @@ def main() -> None:
         help="trigger retraining when win rate is below this value",
     )
     p.add_argument(
+        "--sharpe-threshold",
+        type=float,
+        default=0.0,
+        help="trigger retraining when Sharpe ratio is below this value",
+    )
+    p.add_argument(
         "--no-incremental",
         action="store_true",
         help="do not update an existing model incrementally",
@@ -75,6 +86,7 @@ def main() -> None:
         Path(args.files_dir),
         metrics_file=Path(args.metrics_file) if args.metrics_file else None,
         win_rate_threshold=args.win_rate_threshold,
+        sharpe_threshold=args.sharpe_threshold,
         incremental=not args.no_incremental,
     )
 
