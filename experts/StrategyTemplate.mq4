@@ -349,16 +349,16 @@ double GetFeature(int index)
       sync with the Python training script.  Unknown indices default
       to zero. */
    RefreshIndicatorCache();
-   double val = 0.0;
+   double raw = 0.0;
    switch(index)
    {
 __FEATURE_CASES__      default:
-         val = 0.0;
+         raw = 0.0;
          break;
    }
    if(index < ArraySize(FeatureMean) && index < ArraySize(FeatureStd) && FeatureStd[index] != 0)
-      val = (val - FeatureMean[index]) / FeatureStd[index];
-   return(val);
+      return((raw - FeatureMean[index]) / FeatureStd[index]);
+   return(raw);
 }
 
 double ComputeLogisticScore()

@@ -782,6 +782,11 @@ def train(
     else:
         X_val = np.empty((0, X_train.shape[1]))
 
+    # statistics for feature scaling
+    feature_mean = X_train.mean(axis=0)
+    feature_std = X_train.std(axis=0)
+    feature_std[feature_std == 0] = 1.0
+
     X_train_reg = vec.transform(feat_train_reg)
     X_val_reg = vec.transform(feat_val_reg) if feat_val_reg else np.empty((0, X_train_reg.shape[1]))
 
@@ -1088,12 +1093,6 @@ def train(
             else:
                 t = threshold
             hourly_thresholds.append(float(t))
-
-    # statistics for feature scaling
-    X_stats = vec.transform(feat_train)
-    feature_mean = X_stats.mean(axis=0)
-    feature_std = X_stats.std(axis=0)
-    feature_std[feature_std == 0] = 1.0
 
     # Compute SHAP feature importance on the training set
     try:
