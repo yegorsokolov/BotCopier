@@ -6,45 +6,25 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from publish_model import publish
+# Support both package and script execution
+try:  # pragma: no cover - fallback for script usage
+    from .publish_model import publish  # type: ignore
+except Exception:  # pragma: no cover
+    from publish_model import publish
 
 
 def _score_for_model(model_json: Path, metric: str) -> float:
-    """Return metric score for ``model_json``.
+    """Return ``metric`` from ``evaluation.json`` beside ``model_json``."""
 
-    The function looks for ``metric`` in the model file itself and then
-    in a couple of common report file names (``metrics.json`` or
-    ``<stem>_report.json``).  Missing metrics default to ``0``.
-    """
-
-    score = 0.0
+    eval_file = model_json.parent / "evaluation.json"
+    if not eval_file.exists():
+        return 0.0
     try:
-        with open(model_json) as f:
+        with open(eval_file) as f:
             data = json.load(f)
-        if metric in data:
-            return float(data[metric])
+        return float(data.get(metric, 0.0))
     except Exception:
-        return score
-
-    # Look for side-car report files
-    for name in (
-        "metrics.json",
-        "report.json",
-        f"{model_json.stem}_metrics.json",
-        f"{model_json.stem}_report.json",
-    ):
-        report = model_json.with_name(name)
-        if not report.exists():
-            continue
-        try:
-            with open(report) as f:
-                rdata = json.load(f)
-            if metric in rdata:
-                return float(rdata[metric])
-        except Exception:
-            continue
-
-    return score
+        return 0.0
 
 
 def promote(
@@ -63,7 +43,7 @@ def promote(
     best_dir.mkdir(parents=True, exist_ok=True)
 
     candidates = []
-    for m in models_dir.glob("model_*.json"):
+    for m in models_dir.rglob("model_*.json"):
         score = _score_for_model(m, metric)
         candidates.append((score, m))
 

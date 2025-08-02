@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
+import math
+
 
 def _parse_time(value: str) -> datetime:
     """Parse various timestamp formats used in logs."""
@@ -103,6 +105,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
     matches = 0
     gross_profit = 0.0
     gross_loss = 0.0
+    profits: List[float] = []
     used = set()
     for pred in predictions:
         best = None
@@ -122,23 +125,44 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
             used.add(best)
             matches += 1
             p = actual_trades[best]["profit"]
+            profits.append(p)
             if p >= 0:
                 gross_profit += p
             else:
                 gross_loss += -p
 
+    tp = matches
+    fp = len(predictions) - matches
+    fn = len(actual_trades) - matches
+    total = tp + fp + fn
+
+    accuracy = tp / total if total else 0.0
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+
     profit_factor = (gross_profit / gross_loss) if gross_loss else float("inf")
-    hit_rate = matches / len(predictions) if predictions else 0.0
-    coverage = matches / len(actual_trades) if actual_trades else 0.0
+
+    sharpe = 0.0
+    if len(profits) > 1:
+        mean = sum(profits) / len(profits)
+        variance = sum((p - mean) ** 2 for p in profits) / (len(profits) - 1)
+        std = math.sqrt(variance)
+        if std > 0:
+            sharpe = mean / std
 
     return {
         "predicted_events": len(predictions),
+        "actual_events": len(actual_trades),
         "matched_events": matches,
-        "hit_rate": hit_rate,
-        "coverage": coverage,
+        "hit_rate": precision,
+        "coverage": recall,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
         "profit_factor": profit_factor,
+        "sharpe_ratio": sharpe,
     }
 
 
@@ -165,22 +189,24 @@ def main() -> None:
         args.window,
     )
 
-    if args.json_out:
-        with open(args.json_out, "w") as f:
-            json.dump(stats, f, indent=2)
-        print(f"Wrote report to {args.json_out}")
+    out_path = args.json_out or Path(args.predicted_log).parent / "evaluation.json"
+    with open(out_path, "w") as f:
+        json.dump(stats, f, indent=2)
+    print(f"Wrote report to {out_path}")
 
     print("--- Evaluation Summary ---")
     print(f"Predicted events : {stats['predicted_events']}")
     print(
         f"Matched events   : {stats['matched_events']}"
-        f" ({stats['hit_rate']*100:.1f}% hit rate)"
+        f" ({stats['precision']*100:.1f}% precision)"
     )
-    print(f"Coverage         : {stats['coverage']*100:.1f}% of actual trades")
+    print(f"Recall           : {stats['recall']*100:.1f}% of actual trades")
+    print(f"Accuracy         : {stats['accuracy']*100:.1f}%")
     print(
         f"Profit Factor    : {stats['profit_factor']:.2f}"
         f" (gross P/L: {stats['gross_profit']-stats['gross_loss']:.2f})"
     )
+    print(f"Sharpe Ratio     : {stats['sharpe_ratio']:.2f}")
 
 
 if __name__ == '__main__':
