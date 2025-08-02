@@ -33,6 +33,26 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
 5. Attach `Observer_TBot` to a single chart and adjust the extern inputs as needed
    (magic numbers to observe, log directory, lot bounds, etc.).
 
+## Workflow
+
+1. Run `Observer_TBot` inside MetaTrader to capture trade activity in `logs/`.
+2. Train a model from the collected logs:
+   ```bash
+   python scripts/train_target_clone.py --data-dir logs --out-dir models
+   ```
+3. Generate an EA from the trained model:
+   ```bash
+   python scripts/generate_mql4_from_model.py models/model.json experts
+   ```
+4. Evaluate the model against new trades:
+   ```bash
+   python scripts/evaluate_predictions.py predictions.csv logs/trades.csv
+   ```
+5. Promote the top performing models:
+   ```bash
+   python scripts/promote_best_models.py models --dest models/best
+   ```
+
 ## External Training
 
 Exported logs can be processed by the Python scripts.  A typical workflow is:
