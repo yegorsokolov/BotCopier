@@ -436,6 +436,37 @@ def test_incremental_train(tmp_path: Path):
     assert data.get("num_samples", 0) >= 4
 
 
+def test_incremental_logreg_partial_fit(tmp_path: Path, monkeypatch):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+
+    log_file1 = data_dir / "trades_a.csv"
+    _write_log(log_file1)
+    train(data_dir, out_dir)
+
+    log_file2 = data_dir / "trades_b.csv"
+    _write_log(log_file2)
+
+    from scripts import train_target_clone as ttc
+
+    calls = {"partial": 0}
+    original_partial = ttc.SGDClassifier.partial_fit
+
+    def fake_partial(self, X, y, classes=None, sample_weight=None):
+        calls["partial"] += 1
+        return original_partial(self, X, y, classes=classes, sample_weight=sample_weight)
+
+    monkeypatch.setattr(ttc.SGDClassifier, "partial_fit", fake_partial)
+
+    train(data_dir, out_dir, incremental=True)
+
+    assert calls["partial"] > 0
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    assert data.get("classes") == [0, 1]
+
+
 def test_feature_cache(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
