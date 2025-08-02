@@ -417,8 +417,8 @@ def test_generate_scaling_arrays(tmp_path: Path):
         "intercept": 0.0,
         "threshold": 0.5,
         "feature_names": ["hour"],
-        "feature_mean": [12.0],
-        "feature_std": [3.0],
+        "mean": [12.0],
+        "std": [3.0],
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
