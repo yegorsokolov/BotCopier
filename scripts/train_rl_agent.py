@@ -174,11 +174,11 @@ def train(
     *,
     learning_rate: float = 0.1,
     epsilon: float = 0.1,
-    episodes: int = 10,
+    training_steps: int = 10,
     batch_size: int = 4,
     buffer_size: int = 100,
     update_freq: int = 1,
-    algo: str = "qlearn",
+    algo: str = "dqn",
     start_model: Path | None = None,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
@@ -247,38 +247,36 @@ def train(
         algo_map = {
             "ppo": sb3.PPO,
             "dqn": sb3.DQN,
-            "a2c": sb3.A2C,
-            "ddpg": sb3.DDPG,
         }
         algo_key = algo.lower()
         if algo_key not in algo_map:
             raise ValueError(f"Unsupported algorithm: {algo}")
         model_cls = algo_map[algo_key]
         model = model_cls("MlpPolicy", env, verbose=0)
-        model.learn(total_timesteps=episodes * len(actions))
+        model.learn(total_timesteps=training_steps)
 
-        preds = []
+        preds: List[int] = []
+        total_r = 0.0
         obs, _ = env.reset()
         for _ in range(len(actions)):
             act, _ = model.predict(obs, deterministic=True)
             preds.append(int(act))
-            obs, _, done, _, _ = env.step(int(act))
+            obs, reward, done, _, _ = env.step(int(act))
+            total_r += float(reward)
             if done:
                 break
         train_acc = float(np.mean(np.array(preds) == np.array(actions)))
         out_dir.mkdir(parents=True, exist_ok=True)
         weights_path = out_dir / "model_weights"
         model.save(str(weights_path))
-        episode_total = float(np.sum(rewards))
         model_info = {
             "model_id": "rl_agent_sb3",
             "algo": algo_key,
             "trained_at": datetime.utcnow().isoformat(),
             "feature_names": vec.get_feature_names_out().tolist(),
             "train_accuracy": train_acc,
-            "avg_reward": float(np.mean(rewards)),
-            "avg_reward_per_episode": episode_total,
-            "episode_rewards": [episode_total for _ in range(episodes)],
+            "avg_reward": float(total_r / max(1, len(actions))),
+            "training_steps": training_steps,
             "learning_rate": learning_rate,
             "epsilon": epsilon,
             "val_accuracy": float("nan"),
@@ -286,6 +284,12 @@ def train(
             "num_samples": len(actions),
             "weights_file": weights_path.with_suffix(".zip").name,
         }
+        if init_model_data is not None:
+            model_info["training_type"] = "supervised+rl"
+            model_info["init_model"] = start_model.name if start_model else None
+            model_info["init_model_id"] = init_model_data.get("model_id")
+        else:
+            model_info["training_type"] = "rl_only"
 
         with open(out_dir / "model.json", "w") as f:
             json.dump(model_info, f, indent=2)
@@ -322,7 +326,7 @@ def train(
 
     episode_rewards: List[float] = []  # average reward per step
     episode_totals: List[float] = []   # total reward per episode
-    for _ in range(episodes):
+    for _ in range(training_steps):
         total_r = 0.0
         buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
         for step, exp in enumerate(experiences):
@@ -374,6 +378,7 @@ def train(
         "avg_reward": float(np.mean(episode_rewards)),
         "avg_reward_per_episode": float(np.mean(episode_totals)),
         "episode_rewards": [float(r) for r in episode_rewards],
+        "training_steps": training_steps * len(experiences),
         "learning_rate": learning_rate,
         "epsilon": epsilon,
         "val_accuracy": float("nan"),
@@ -400,16 +405,16 @@ def main() -> None:
     p.add_argument("--out-dir", required=True)
     p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
     p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
-    p.add_argument("--episodes", type=int, default=10, help="training episodes")
+    p.add_argument("--training-steps", type=int, default=100, help="total training steps")
     p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
     p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
     p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
     p.add_argument(
         "--algo",
-        default="qlearn",
+        default="dqn",
         help=(
-            "RL algorithm: qlearn (default), ppo, dqn, a2c or ddpg if stable-baselines3"
-            " is installed"
+            "RL algorithm: dqn (default) or ppo if stable-baselines3 is installed."
+            " Pass qlearn to use a simple numpy implementation."
         ),
     )
     p.add_argument("--start-model", help="path to initial model coefficients")
@@ -419,7 +424,7 @@ def main() -> None:
         Path(args.out_dir),
         learning_rate=args.learning_rate,
         epsilon=args.epsilon,
-        episodes=args.episodes,
+        training_steps=args.training_steps,
         batch_size=args.batch_size,
         buffer_size=args.buffer_size,
         update_freq=args.update_freq,

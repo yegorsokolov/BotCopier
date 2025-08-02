@@ -94,6 +94,21 @@ subsequent runs can keep learning from where the last run left off.
 
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
+## Reinforcement Learning Fine-Tuning
+
+Supervised models can be further tuned with reinforcement learning. The
+``train_rl_agent.py`` helper loads an existing ``model.json`` and fine-tunes it
+against historical trade logs using a DQN or PPO agent from
+``stable-baselines3`` when available.
+
+```bash
+pip install stable-baselines3 pandas
+python scripts/train_rl_agent.py --data-dir logs --out-dir models --start-model models/model.json --algo ppo --training-steps 1000
+```
+
+The script writes an updated ``model.json`` containing the RL-enhanced weights
+along with ``training_steps`` and ``avg_reward`` metadata.
+
 ## Model Reloading
 
 Strategies built from ``StrategyTemplate.mq4`` can reload their parameters

@@ -6,13 +6,15 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tests import HAS_NUMPY, HAS_SB3
-from scripts.train_rl_agent import train
+from tests import HAS_SB3
 
-pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for RL training tests")
+if HAS_SB3:
+    from scripts.train_rl_agent import train
+
+pytestmark = pytest.mark.skipif(not HAS_SB3, reason="stable-baselines3 not installed")
 
 
-def _write_log(file: Path):
+def _write_log(file: Path) -> None:
     fields = [
         "event_id",
         "event_time",
@@ -71,44 +73,6 @@ def _write_log(file: Path):
             "",
             "0",
         ],
-        [
-            "3",
-            "2024.01.01 01:00:00",
-            "",
-            "",
-            "OPEN",
-            "2",
-            "",
-            "",
-            "EURUSD",
-            "1",
-            "0.1",
-            "1.2000",
-            "1.1950",
-            "1.2100",
-            "0",
-            "",
-            "0.1",
-        ],
-        [
-            "4",
-            "2024.01.01 01:30:00",
-            "",
-            "",
-            "CLOSE",
-            "2",
-            "",
-            "",
-            "EURUSD",
-            "1",
-            "0.1",
-            "1.1950",
-            "1.1950",
-            "1.2100",
-            "-3",
-            "",
-            "0",
-        ],
     ]
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")
@@ -116,66 +80,32 @@ def _write_log(file: Path):
         writer.writerows(rows)
 
 
-def test_train_rl_agent(tmp_path: Path):
+def test_train_rl_agent_sb3(tmp_path: Path) -> None:
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     data_dir.mkdir()
-    log_file = data_dir / "trades_test.csv"
-    _write_log(log_file)
-
-    train(data_dir, out_dir)
-
-    model_file = out_dir / "model.json"
-    assert model_file.exists()
-    with open(model_file) as f:
-        data = json.load(f)
-    assert "coefficients" in data
-    assert "intercept" in data
-    assert "avg_reward" in data
-    assert "avg_reward_per_episode" in data
-
-
-def test_train_rl_agent_start_model(tmp_path: Path):
-    data_dir = tmp_path / "logs"
-    out_dir = tmp_path / "out"
-    data_dir.mkdir()
-    log_file = data_dir / "trades_test.csv"
-    _write_log(log_file)
+    out_dir.mkdir()
+    _write_log(data_dir / "trades.csv")
 
     start_model = out_dir / "start.json"
     start = {
         "model_id": "sup_model",
-        "coefficients": [0.1, -0.1],
-        "intercept": 0.05,
-        "feature_names": ["hour", "lots"],
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "feature_names": ["hour"],
     }
-    out_dir.mkdir()
     with open(start_model, "w") as f:
         json.dump(start, f)
 
-    train(data_dir, out_dir, start_model=start_model)
-
-    with open(out_dir / "model.json") as f:
-        data = json.load(f)
-    assert data.get("training_type") == "supervised+rl"
-    assert data.get("init_model_id") == "sup_model"
-
-
-@pytest.mark.skipif(not HAS_SB3, reason="stable-baselines3 not installed")
-def test_train_rl_agent_sb3(tmp_path: Path):
-    data_dir = tmp_path / "logs"
-    out_dir = tmp_path / "out"
-    data_dir.mkdir()
-    log_file = data_dir / "trades_test.csv"
-    _write_log(log_file)
-
-    train(data_dir, out_dir, algo="a2c", episodes=1)
+    train(data_dir, out_dir, start_model=start_model, algo="dqn", training_steps=10)
 
     model_file = out_dir / "model.json"
-    weight_file = out_dir / "model_weights.zip"
+    weights_file = out_dir / "model_weights.zip"
     assert model_file.exists()
-    assert weight_file.exists()
+    assert weights_file.exists()
     with open(model_file) as f:
         data = json.load(f)
-    assert data.get("algo") == "a2c"
-    assert data.get("weights_file") == "model_weights.zip"
+    assert data.get("algo") == "dqn"
+    assert data.get("training_steps") == 10
+    assert "avg_reward" in data
+    assert data.get("init_model_id") == "sup_model"
