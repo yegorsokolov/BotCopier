@@ -35,6 +35,7 @@ string   trade_log_buffer[];
 int      NextEventId = 1;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
+const int LogSchemaVersion = 1;
 
 int MapGet(int key)
 {
@@ -421,8 +422,8 @@ void LogTrade(string action, int ticket, int magic, string source,
       }
    }
 
-   string json = StringFormat("{\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d}",
-      id,
+   string json = StringFormat("{\"schema_version\":%d,\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d}",
+      LogSchemaVersion, id,
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),

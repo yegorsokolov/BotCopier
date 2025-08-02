@@ -6,6 +6,10 @@ import socket
 from pathlib import Path
 import csv
 import json
+import logging
+
+
+EXPECTED_SCHEMA_VERSION = 1
 
 
 FIELDS = [
@@ -53,6 +57,13 @@ def _write_lines(conn: socket.socket, out_file: Path) -> None:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                schema = obj.get("schema_version")
+                if schema != EXPECTED_SCHEMA_VERSION:
+                    logging.warning(
+                        "Schema version %s does not match expected %s",
+                        schema,
+                        EXPECTED_SCHEMA_VERSION,
+                    )
                 row = [str(obj.get(field, "")) for field in FIELDS]
                 writer.writerow(row)
                 f.flush()
@@ -85,6 +96,8 @@ def main() -> None:
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--out", required=True, help="output CSV file")
     args = p.parse_args()
+
+    logging.basicConfig(level=logging.INFO)
 
     serve(args.host, args.port, Path(args.out))
 
