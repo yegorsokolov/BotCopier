@@ -1119,9 +1119,13 @@ def train(
     try:
         import shap  # type: ignore
 
-        explainer = shap.Explainer(clf, X_train)
-        shap_values = explainer(X_train)
-        importances = np.abs(shap_values.values).mean(axis=0)
+        if model_type == "logreg":
+            explainer = shap.LinearExplainer(clf, X_train)
+            shap_values = explainer.shap_values(X_train)
+        else:
+            explainer = shap.Explainer(clf, X_train)
+            shap_values = explainer(X_train).values
+        importances = np.abs(shap_values).mean(axis=0)
         feature_importance = dict(
             zip(vec.get_feature_names_out().tolist(), importances.tolist())
         )

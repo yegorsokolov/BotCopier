@@ -20,6 +20,7 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
   - `evaluate_predictions.py` – basic log evaluation utility.
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
   - `plot_metrics.py` – plot metric history using Matplotlib.
+  - `plot_feature_importance.py` – display SHAP feature importances saved in `model.json`.
 - `models/` – location for generated models.
 - `config.json` – example configuration file.
 
@@ -39,6 +40,13 @@ Exported logs can be processed by the Python scripts.  A typical workflow is:
 ```bash
 python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir models
 python generate_mql4_from_model.py models/model.json experts
+```
+
+The training step saves mean absolute SHAP values for each feature under
+`feature_importance` in `model.json`. Visualise these importances with:
+
+```bash
+python plot_feature_importance.py models/model.json
 ```
 
 Multiple models can be supplied to build a simple ensemble. Feature names are
