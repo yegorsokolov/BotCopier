@@ -1,106 +1,75 @@
 #!/usr/bin/env python3
-"""Simple socket listener that converts JSON messages to a CSV log."""
+"""Listen for JSON messages from the observer EA and append them to CSV logs.
 
-import argparse
-import socket
-from pathlib import Path
+The script expects newline-delimited JSON objects on ``stdin``. Each message
+must include a ``schema_version`` field matching the expected version and a
+``type`` field indicating either ``"event"`` or ``"metric"``. All remaining
+fields are written directly to the appropriate CSV file under ``logs/``.
+
+Set the ``SCHEMA_VERSION`` environment variable to override the default
+version.
+"""
+from __future__ import annotations
+
 import csv
 import json
-import logging
+import os
+import sys
+from pathlib import Path
+
+# Expected schema version for incoming messages. Can be overridden via env var.
+EXPECTED_SCHEMA_VERSION = os.environ.get("SCHEMA_VERSION", "1.0")
+
+# Mapping from message type to output CSV file.
+LOG_FILES = {
+    "event": Path("logs/trades_raw.csv"),
+    "metric": Path("logs/metrics.csv"),
+}
 
 
-EXPECTED_SCHEMA_VERSION = 1
+def append_csv(path: Path, record: dict) -> None:
+    """Append ``record`` to ``path`` writing a header row when the file is new."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_exists = path.exists()
+    with path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=record.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(record)
 
 
-FIELDS = [
-    "event_id",
-    "event_time",
-    "broker_time",
-    "local_time",
-    "action",
-    "ticket",
-    "magic",
-    "source",
-    "symbol",
-    "order_type",
-    "lots",
-    "price",
-    "sl",
-    "tp",
-    "profit",
-    "comment",
-    "remaining_lots",
-]
+def process_message(message: dict) -> None:
+    """Validate and route a message to the appropriate CSV file."""
+    schema = message.get("schema_version")
+    if schema != EXPECTED_SCHEMA_VERSION:
+        print(
+            f"Unsupported schema_version: {schema}; expected {EXPECTED_SCHEMA_VERSION}",
+            file=sys.stderr,
+        )
+        return
+
+    msg_type = message.get("type")
+    if msg_type not in LOG_FILES:
+        print(f"Unknown message type: {msg_type}", file=sys.stderr)
+        return
+
+    record = {k: v for k, v in message.items() if k not in {"schema_version", "type"}}
+    append_csv(LOG_FILES[msg_type], record)
 
 
-def _write_lines(conn: socket.socket, out_file: Path) -> None:
-    """Read newline-delimited JSON messages from ``conn`` and append rows."""
-
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_file, "a", newline="") as f:
-        writer = csv.writer(f, delimiter=";")
-        need_header = f.tell() == 0
-        if need_header:
-            writer.writerow(FIELDS)
-        buffer = b""
-        while True:
-            data = conn.recv(4096)
-            if not data:
-                break
-            buffer += data
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                line = line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                schema = obj.get("schema_version")
-                if schema != EXPECTED_SCHEMA_VERSION:
-                    logging.warning(
-                        "Schema version %s does not match expected %s",
-                        schema,
-                        EXPECTED_SCHEMA_VERSION,
-                    )
-                row = [str(obj.get(field, "")) for field in FIELDS]
-                writer.writerow(row)
-                f.flush()
-
-
-def listen_once(host: str, port: int, out_file: Path) -> None:
-    """Accept a single connection and process it until closed."""
-
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.bind((host, port))
-    srv.listen(1)
-    try:
-        conn, _ = srv.accept()
-        with conn:
-            _write_lines(conn, out_file)
-    finally:
-        srv.close()
-
-
-def serve(host: str, port: int, out_file: Path) -> None:
-    """Continually accept connections and append incoming lines."""
-
-    while True:
-        listen_once(host, port, out_file)
-
-
-def main() -> None:
-    p = argparse.ArgumentParser(description="Listen on socket and append to CSV")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=9000)
-    p.add_argument("--out", required=True, help="output CSV file")
-    args = p.parse_args()
-
-    logging.basicConfig(level=logging.INFO)
-
-    serve(args.host, args.port, Path(args.out))
+def main() -> int:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as exc:
+            print(f"Invalid JSON: {exc}", file=sys.stderr)
+            continue
+        process_message(message)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

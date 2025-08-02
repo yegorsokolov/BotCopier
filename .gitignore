@@ -9,7 +9,9 @@ experts/*.ex4
 
 # Log directories
 observer_logs/
-logs/
+logs/*
+!logs/metrics.csv
+!logs/trades_raw.csv
 *.log
 
 # Generated models

@@ -192,6 +192,28 @@ The collector exposes an HTTP endpoint returning the most recent metrics as JSON
 curl http://127.0.0.1:8080/metrics?limit=10
 ```
 
+To capture newline-delimited JSON from the EA directly, run the
+``stream_listener.py`` helper which writes trade events to
+``logs/trades_raw.csv`` and metrics to ``logs/metrics.csv``. Each message must
+include a matching ``schema_version`` field (default ``1.0`` or overridden via
+the ``SCHEMA_VERSION`` environment variable).
+
+After each trading session ``upload_logs.py`` can commit these CSV files and
+push them back to the repository. The script uses the ``GITHUB_TOKEN``
+environment variable for authentication.
+
+### Environment Variables
+
+* ``SCHEMA_VERSION`` – expected message schema version for ``stream_listener.py``.
+* ``GITHUB_TOKEN`` – personal access token with ``repo`` scope used by
+  ``upload_logs.py`` to push commits.
+
+### Cron Job Example
+
+```cron
+0 0 * * * cd /path/to/BotCopier && GITHUB_TOKEN=XXXX python scripts/upload_logs.py
+```
+
 ## Tick History Export
 
 Historical tick data can be exported for all symbols that appear in the account
