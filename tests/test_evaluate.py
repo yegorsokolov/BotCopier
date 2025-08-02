@@ -43,6 +43,11 @@ def test_evaluate(tmp_path: Path):
 
     assert stats["matched_events"] == 1
     assert stats["predicted_events"] == 1
+    assert stats["accuracy"] == 1.0
+    assert stats["precision"] == 1.0
+    assert stats["recall"] == 1.0
+    assert stats["profit_factor"] == float("inf")
+    assert stats["sharpe_ratio"] == 0.0
 
 
 def test_direction_mapping(tmp_path: Path):
