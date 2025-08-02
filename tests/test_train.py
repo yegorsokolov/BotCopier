@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -295,6 +296,53 @@ def test_load_logs_with_metrics(tmp_path: Path):
     assert "win_rate" in df.columns
     assert "spread" in df.columns
     assert "slippage" in df.columns
+
+
+def test_load_logs_filters_invalid_rows(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    data_dir.mkdir()
+    fields = [
+        "event_id",
+        "event_time",
+        "broker_time",
+        "local_time",
+        "action",
+        "ticket",
+        "magic",
+        "source",
+        "symbol",
+        "order_type",
+        "lots",
+        "price",
+        "sl",
+        "tp",
+        "profit",
+        "spread",
+        "comment",
+        "remaining_lots",
+        "slippage",
+        "volume",
+    ]
+    rows = [
+        ["1", "2024.01.01 00:00:00", "", "", "OPEN", "1", "", "", "EURUSD", "0", "0.1", "1.1000", "1.0950", "1.1100", "0", "2", "", "0.1", "0.0001", "100"],
+        ["1", "2024.01.01 00:05:00", "", "", "OPEN", "2", "", "", "EURUSD", "0", "0.1", "1.1000", "1.0950", "1.1100", "0", "2", "", "0.1", "0.0001", "100"],
+        ["3", "2024.01.01 01:00:00", "", "", "OPEN", "", "", "", "EURUSD", "0", "0.1", "1.1000", "1.0950", "1.1100", "0", "2", "", "0.1", "0.0001", "100"],
+        ["4", "2024.01.01 02:00:00", "", "", "", "4", "", "", "EURUSD", "0", "0.1", "1.1000", "1.0950", "1.1100", "0", "2", "", "0.1", "0.0001", "100"],
+        ["5", "2024.01.01 03:00:00", "", "", "OPEN", "5", "", "", "EURUSD", "0", "-0.1", "1.1000", "1.0950", "1.1100", "0", "2", "", "0.1", "0.0001", "100"],
+        ["6", "2024.01.01 04:00:00", "", "", "OPEN", "6", "", "", "EURUSD", "0", "0.1", "", "1.0950", "1.1100", "0", "2", "", "0.1", "0.0001", "100"],
+    ]
+    log_file = data_dir / "trades_test.csv"
+    with open(log_file, "w", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(fields)
+        writer.writerows(rows)
+
+    df = _load_logs(data_dir)
+    assert len(df) == 1
+    invalid_file = data_dir / "invalid_rows.csv"
+    assert invalid_file.exists()
+    invalid_df = pd.read_csv(invalid_file)
+    assert len(invalid_df) == 5
 
 
 def test_train_xgboost(tmp_path: Path):
