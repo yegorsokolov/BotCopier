@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 from typing import List, Optional
 import sqlite3
+import logging
 
 import pandas as pd
 
@@ -211,6 +212,47 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
         df_logs["action"] = df_logs["action"].fillna("").str.upper()
         df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
 
+    invalid_rows = pd.DataFrame(columns=df_logs.columns)
+    if "event_id" in df_logs.columns:
+        dup_mask = df_logs.duplicated(subset="event_id", keep="first")
+        if dup_mask.any():
+            invalid_rows = pd.concat([invalid_rows, df_logs[dup_mask]])
+            logging.warning("Dropping %s duplicate event_id rows", dup_mask.sum())
+        df_logs = df_logs[~dup_mask]
+
+    if set(["ticket", "action"]).issubset(df_logs.columns):
+        crit_mask = (
+            df_logs["ticket"].isna()
+            | (df_logs["ticket"].astype(str) == "")
+            | df_logs["action"].isna()
+            | (df_logs["action"].astype(str) == "")
+        )
+        if crit_mask.any():
+            invalid_rows = pd.concat([invalid_rows, df_logs[crit_mask]])
+            logging.warning("Dropping %s rows with missing ticket/action", crit_mask.sum())
+        df_logs = df_logs[~crit_mask]
+
+    if "lots" in df_logs.columns:
+        df_logs["lots"] = pd.to_numeric(df_logs["lots"], errors="coerce")
+    if "price" in df_logs.columns:
+        df_logs["price"] = pd.to_numeric(df_logs["price"], errors="coerce")
+    unreal_mask = pd.Series(False, index=df_logs.index)
+    if "lots" in df_logs.columns:
+        unreal_mask |= df_logs["lots"] < 0
+    if "price" in df_logs.columns:
+        unreal_mask |= df_logs["price"].isna()
+    if unreal_mask.any():
+        invalid_rows = pd.concat([invalid_rows, df_logs[unreal_mask]])
+        logging.warning("Dropping %s rows with negative lots or NaN price", unreal_mask.sum())
+    df_logs = df_logs[~unreal_mask]
+
+    if not invalid_rows.empty:
+        invalid_file = db_file.with_name("invalid_rows.csv")
+        try:
+            invalid_rows.to_csv(invalid_file, index=False)
+        except Exception:  # pragma: no cover - disk issues
+            pass
+
     return df_logs
 
 
@@ -277,6 +319,47 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
     valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     df_logs["action"] = df_logs["action"].fillna("").str.upper()
     df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
+
+    invalid_rows = pd.DataFrame(columns=df_logs.columns)
+    if "event_id" in df_logs.columns:
+        dup_mask = df_logs.duplicated(subset="event_id", keep="first")
+        if dup_mask.any():
+            invalid_rows = pd.concat([invalid_rows, df_logs[dup_mask]])
+            logging.warning("Dropping %s duplicate event_id rows", dup_mask.sum())
+        df_logs = df_logs[~dup_mask]
+
+    if set(["ticket", "action"]).issubset(df_logs.columns):
+        crit_mask = (
+            df_logs["ticket"].isna()
+            | (df_logs["ticket"].astype(str) == "")
+            | df_logs["action"].isna()
+            | (df_logs["action"].astype(str) == "")
+        )
+        if crit_mask.any():
+            invalid_rows = pd.concat([invalid_rows, df_logs[crit_mask]])
+            logging.warning("Dropping %s rows with missing ticket/action", crit_mask.sum())
+        df_logs = df_logs[~crit_mask]
+
+    if "lots" in df_logs.columns:
+        df_logs["lots"] = pd.to_numeric(df_logs["lots"], errors="coerce")
+    if "price" in df_logs.columns:
+        df_logs["price"] = pd.to_numeric(df_logs["price"], errors="coerce")
+    unreal_mask = pd.Series(False, index=df_logs.index)
+    if "lots" in df_logs.columns:
+        unreal_mask |= df_logs["lots"] < 0
+    if "price" in df_logs.columns:
+        unreal_mask |= df_logs["price"].isna()
+    if unreal_mask.any():
+        invalid_rows = pd.concat([invalid_rows, df_logs[unreal_mask]])
+        logging.warning("Dropping %s rows with negative lots or NaN price", unreal_mask.sum())
+    df_logs = df_logs[~unreal_mask]
+
+    if not invalid_rows.empty:
+        invalid_file = data_dir / "invalid_rows.csv"
+        try:
+            invalid_rows.to_csv(invalid_file, index=False)
+        except Exception:  # pragma: no cover - disk issues
+            pass
 
     metrics_file = data_dir / "metrics.csv"
     if metrics_file.exists():
