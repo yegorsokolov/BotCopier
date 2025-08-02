@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Plot metrics over time from metrics.csv."""
+"""Plot metrics over time from metrics.csv.
+
+Includes graphs for file write and socket send error counters emitted by the
+trading observer.
+"""
 
 import argparse
 import csv
