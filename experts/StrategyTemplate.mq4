@@ -616,17 +616,27 @@ void OnTick()
       return;
    }
 
-   double prob = GetProbability();
+   double feats[100];
+   for(int i=0; i<FeatureCount && i<100; i++)
+      feats[i] = GetFeature(i);
+
+   double prob_sum = 0.0;
+   for(int m=0; m<ModelCount; m++)
+   {
+      double z = ModelIntercepts[m];
+      for(int i=0; i<FeatureCount; i++)
+         z += ModelCoefficients[m][i] * feats[i];
+      prob_sum += 1.0 / (1.0 + MathExp(-z));
+   }
+   double prob = prob_sum / MathMax(ModelCount,1);
+
    if(EnableDebugLogging)
    {
       string feat_vals = "";
-      int n_feats = FeatureCount;
-      if(n_feats == 0 && ModelHiddenSize > 0)
-         n_feats = ArraySize(NNLayer1Weights) / ModelHiddenSize;
-      for(int i=0; i<n_feats; i++)
+      for(int i=0; i<FeatureCount; i++)
       {
          if(i>0) feat_vals += ",";
-         feat_vals += DoubleToString(GetFeature(i), 2);
+         feat_vals += DoubleToString(feats[i], 2);
       }
       Print("Features: [" + feat_vals + "] prob=" + DoubleToString(prob, 4));
    }

@@ -556,3 +556,38 @@ def test_calendar_features(tmp_path: Path):
         content = f.read()
     assert "GetCalendarFlag()" in content
     assert "GetCalendarImpact()" in content
+
+
+def test_on_tick_logistic_inference(tmp_path: Path):
+    model = {
+        "model_id": "logi",
+        "magic": 42,
+        "coefficients": [0.1, -0.2],
+        "intercept": 0.05,
+        "threshold": 0.6,
+        "feature_names": ["hour", "spread"],
+        "mean": [12.0, 1.5],
+        "std": [3.0, 0.5],
+        "sl_coefficients": [0.2, 0.3],
+        "sl_intercept": 0.01,
+        "tp_coefficients": [0.4, 0.5],
+        "tp_intercept": 0.02,
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_logi_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert "double ModelCoefficients[1][2] = {{0.1, -0.2}};" in content
+    assert "double FeatureMean[] = {12, 1.5};" in content
+    assert "double FeatureStd[] = {3, 0.5};" in content
+    assert "double z = ModelIntercepts[m];" in content
+    assert "1.0 / (1.0 + MathExp(-z))" in content
+    assert "if(prob > thr)" in content
+    assert "GetNewSL(true)" in content
+    assert "GetNewTP(true)" in content
