@@ -79,6 +79,11 @@ Pass ``--cache-features`` to reuse the previously extracted feature matrix when
 running incrementally. This avoids reprocessing large log files as long as the
 configured features match the cached ``feature_names``.
 
+When ``--incremental`` is used with the default ``logreg`` model, training
+updates the existing classifier in place by calling ``partial_fit`` on batches
+of new samples. The class vector ``[0, 1]`` is stored in ``model.json`` so
+subsequent runs can keep learning from where the last run left off.
+
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
 ## Model Reloading

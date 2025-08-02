@@ -19,7 +19,7 @@ import pandas as pd
 
 import numpy as np
 from sklearn.feature_extraction import DictVectorizer
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neural_network import MLPClassifier
 
@@ -1051,14 +1051,35 @@ def train(
             gs.fit(X_train, y_train)
             clf = gs.best_estimator_
         else:
-            clf = LogisticRegression(max_iter=200, C=logreg_C, warm_start=existing_model is not None)
-            if existing_model is not None:
-                clf.classes_ = np.array([0, 1])
-                clf.coef_ = np.array([existing_model.get("coefficients", [])])
-                clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
-            clf.fit(X_train, y_train, sample_weight=sample_weight)
-            train_proba = clf.predict_proba(X_train)[:, 1]
-            val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            if incremental:
+                clf = SGDClassifier(loss="log_loss", alpha=1.0 / logreg_C)
+                if existing_model is not None:
+                    clf.classes_ = np.array(existing_model.get("classes", [0, 1]))
+                    clf.coef_ = np.array([existing_model.get("coefficients", [])])
+                    clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
+                classes = getattr(clf, "classes_", np.array([0, 1]))
+                batch_size = 1000
+                for start in range(0, X_train.shape[0], batch_size):
+                    end = start + batch_size
+                    sw = sample_weight[start:end] if sample_weight is not None else None
+                    clf.partial_fit(
+                        X_train[start:end], y_train[start:end], classes=classes, sample_weight=sw
+                    )
+                train_proba = clf.predict_proba(X_train)[:, 1]
+                val_proba = (
+                    clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+                )
+            else:
+                clf = LogisticRegression(max_iter=200, C=logreg_C, warm_start=existing_model is not None)
+                if existing_model is not None:
+                    clf.classes_ = np.array(existing_model.get("classes", [0, 1]))
+                    clf.coef_ = np.array([existing_model.get("coefficients", [])])
+                    clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
+                clf.fit(X_train, y_train, sample_weight=sample_weight)
+                train_proba = clf.predict_proba(X_train)[:, 1]
+                val_proba = (
+                    clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+                )
 
     if regress_sl_tp:
         from sklearn.linear_model import LinearRegression
@@ -1144,6 +1165,7 @@ def train(
     if model_type == "logreg":
         model["coefficients"] = clf.coef_[0].tolist()
         model["intercept"] = float(clf.intercept_[0])
+        model["classes"] = [int(c) for c in clf.classes_]
     elif model_type == "xgboost":
         # approximate tree ensemble with linear model for MQL4 export
         logit_p = np.log(train_proba / (1.0 - train_proba + 1e-9))
