@@ -145,13 +145,14 @@ def _write_log_many(file: Path, count: int = 10):
 def _write_metrics(file: Path):
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")
-        writer.writerow(["time", "magic", "win_rate", "avg_profit", "trade_count"])
+        writer.writerow(["time", "magic", "win_rate", "avg_profit", "trade_count", "sharpe"])
         writer.writerow([
             "2024.01.02 00:00",
             "0",
             "0.5",
             "1.0",
             "2",
+            "0.1",
         ])
 
 
