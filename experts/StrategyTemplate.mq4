@@ -119,8 +119,12 @@ bool ParseModelJson(string json)
    ExtractJsonArray(json, "\"probability_table\"", ProbabilityLookup);
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
-   ExtractJsonArray(json, "\"feature_mean\"", FeatureMean);
-   ExtractJsonArray(json, "\"feature_std\"", FeatureStd);
+   ExtractJsonArray(json, "\"mean\"", FeatureMean);
+   if(ArraySize(FeatureMean)==0)
+      ExtractJsonArray(json, "\"feature_mean\"", FeatureMean);
+   ExtractJsonArray(json, "\"std\"", FeatureStd);
+   if(ArraySize(FeatureStd)==0)
+      ExtractJsonArray(json, "\"feature_std\"", FeatureStd);
    if(ArraySize(ModelIntercepts)>0)
       ModelIntercepts[0] = ExtractJsonNumber(json, "\"intercept\"");
    SLModelIntercept = ExtractJsonNumber(json, "\"sl_intercept\"");

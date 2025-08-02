@@ -811,9 +811,8 @@ def train(
         hours_val = np.array([])
     else:
         tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
-        # iterate through sequential splits and select the final one for validation
-        for train_idx, val_idx in tscv.split(features):
-            pass
+        # select the final chronological split for validation
+        train_idx, val_idx = list(tscv.split(features))[-1]
         feat_train = [features[i] for i in train_idx]
         feat_val = [features[i] for i in val_idx]
         y_train = labels[train_idx]
@@ -1230,8 +1229,8 @@ def train(
         "accuracy": val_acc,
         "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
         "feature_importance": feature_importance,
-        "feature_mean": feature_mean.tolist(),
-        "feature_std": feature_std.tolist(),
+        "mean": feature_mean.tolist(),
+        "std": feature_std.tolist(),
     }
     if calendar_events:
         model["calendar_events"] = [

@@ -182,8 +182,8 @@ def test_train(tmp_path: Path):
     assert "equity" in data.get("feature_names", [])
     assert "margin_level" in data.get("feature_names", [])
     assert data.get("weighted") is True
-    assert "feature_mean" in data
-    assert "feature_std" in data
+    assert "mean" in data
+    assert "std" in data
 
     init_file = out_dir / "policy_init.json"
     assert init_file.exists()
