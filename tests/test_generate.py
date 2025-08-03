@@ -29,6 +29,8 @@ def test_generate(tmp_path: Path):
     assert "MagicNumber = 777" in content
     assert "double ModelCoefficients[1][2] = {{0.1, -0.2}};" in content
     assert "double ModelIntercepts[] = {0.05};" in content
+    assert "double CalibrationCoef = 1" in content
+    assert "double CalibrationIntercept = 0" in content
     assert "double ModelThreshold = 0.6;" in content
     assert "TimeHour(TimeCurrent())" in content
     assert "MODE_SPREAD" in content
