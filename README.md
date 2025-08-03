@@ -161,13 +161,18 @@ model when ``model.json`` changes.
 
 The ``auto_retrain.py`` helper watches the most recent entries in
 ``metrics.csv`` and triggers a new training run when the rolling win rate or
-Sharpe ratio drops below configurable thresholds. After training completes the
-updated model is published to the terminal's ``Files`` directory.
+Sharpe ratio drops below configurable thresholds. It can also monitor data
+drift by comparing the win rate distribution of a reference metrics file
+against the latest metrics using the population stability index (PSI) or
+Kolmogorov–Smirnov (KS) statistic. When either statistic exceeds configured
+limits the model is retrained even if win rate remains acceptable. After
+training completes the updated model is published to the terminal's ``Files``
+directory.
 
 An example cron job running every 15 minutes:
 
 ```cron
-*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --sharpe-threshold 0.0
+*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --sharpe-threshold 0.0 --training-metrics /path/to/training_metrics.csv --psi-threshold 0.2
 ```
 
 ## Metrics Tracking
