@@ -6,7 +6,7 @@ import asyncio
 import json
 import sqlite3
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from asyncio import StreamReader, StreamWriter, Queue
 from aiohttp import web
 
@@ -25,7 +25,11 @@ FIELDS = [
 ]
 
 
-async def _writer_task(db_file: Path, queue: Queue) -> None:
+async def _writer_task(
+    db_file: Path,
+    queue: Queue,
+    prom_updater: Callable[[dict], None] | None = None,
+) -> None:
     db_file.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_file)
     cols = ",".join(FIELDS)
@@ -41,6 +45,8 @@ async def _writer_task(db_file: Path, queue: Queue) -> None:
                 break
             conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
             conn.commit()
+            if prom_updater is not None:
+                prom_updater(row)
             queue.task_done()
     finally:
         conn.close()
@@ -63,11 +69,59 @@ async def _handle_conn(reader: StreamReader, writer: StreamWriter, queue: Queue)
         await writer.wait_closed()
 
 
-def serve(host: str, port: int, db_file: Path, http_port: Optional[int] = None) -> None:
+def serve(
+    host: str,
+    port: int,
+    db_file: Path,
+    http_port: Optional[int] = None,
+    prometheus_port: Optional[int] = None,
+) -> None:
     async def _run() -> None:
         queue: Queue = Queue()
+        prom_updater: Callable[[dict], None]
+
+        if prometheus_port is not None:
+            from prometheus_client import Counter, Gauge, start_http_server
+
+            win_rate_g = Gauge("bot_win_rate", "Win rate")
+            drawdown_g = Gauge("bot_drawdown", "Drawdown")
+            file_err_c = Counter(
+                "bot_file_write_errors_total", "File write error count"
+            )
+            socket_err_c = Counter(
+                "bot_socket_errors_total", "Socket error count"
+            )
+
+            start_http_server(prometheus_port)
+
+            def _prom_updater(row: dict) -> None:
+                if (v := row.get("win_rate")) is not None:
+                    try:
+                        win_rate_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("drawdown")) is not None:
+                    try:
+                        drawdown_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("file_write_errors")) is not None:
+                    try:
+                        file_err_c.inc(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("socket_errors")) is not None:
+                    try:
+                        socket_err_c.inc(float(v))
+                    except (TypeError, ValueError):
+                        pass
+
+            prom_updater = _prom_updater
+        else:
+            prom_updater = lambda _row: None
+
         server = await asyncio.start_server(lambda r, w: _handle_conn(r, w, queue), host, port)
-        writer_task = asyncio.create_task(_writer_task(db_file, queue))
+        writer_task = asyncio.create_task(_writer_task(db_file, queue, prom_updater))
 
         async def metrics_handler(request: web.Request) -> web.Response:
             limit_param = request.query.get("limit", "100")
@@ -114,9 +168,20 @@ def main() -> None:
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--db", required=True, help="output SQLite file")
     p.add_argument("--http-port", type=int, help="serve metrics via HTTP on this port")
+    p.add_argument(
+        "--prometheus-port",
+        type=int,
+        help="expose Prometheus metrics on this port",
+    )
     args = p.parse_args()
 
-    serve(args.host, args.port, Path(args.db), args.http_port)
+    serve(
+        args.host,
+        args.port,
+        Path(args.db),
+        args.http_port,
+        args.prometheus_port,
+    )
 
 
 if __name__ == "__main__":
