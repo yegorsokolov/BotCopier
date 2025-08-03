@@ -70,6 +70,11 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
     output = output.replace('__INTERCEPTS__', ', '.join(intercepts))
     output = output.replace('__MODEL_COUNT__', str(len(models)))
 
+    cal_coef = _fmt(base.get('calibration_coef', 1.0))
+    cal_inter = _fmt(base.get('calibration_intercept', 0.0))
+    output = output.replace('__CAL_COEF__', cal_coef)
+    output = output.replace('__CAL_INTERCEPT__', cal_inter)
+
     prob_table = base.get('probability_table', [])
     prob_str = ', '.join(_fmt(p) for p in prob_table)
     output = output.replace('__PROBABILITY_TABLE__', prob_str)

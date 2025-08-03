@@ -21,8 +21,9 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.neural_network import MLPClassifier
+from sklearn.calibration import CalibratedClassifierCV
 
 try:
     import optuna  # type: ignore
@@ -733,6 +734,8 @@ def train(
     cache_features: bool = False,
     calendar_events: list[tuple[datetime, float]] | None = None,
     event_window: float = 60.0,
+    calibration: str | None = None,
+    stack_models: list[str] | None = None,
 ):
     """Train a simple classifier model from the log directory."""
     if optuna_trials > 0 and not HAS_OPTUNA:
@@ -997,11 +1000,32 @@ def train(
         elif model_type == "nn":
             hidden_size = int(best_trial.params["hidden_size"])
 
-    if model_type == "random_forest":
+    if stack_models:
+        estimators = []
+        for mt in stack_models:
+            if mt == "logreg":
+                estimators.append(("logreg", LogisticRegression(max_iter=200)))
+            elif mt == "random_forest":
+                estimators.append(("rf", RandomForestClassifier(n_estimators=100, random_state=42)))
+            elif mt == "xgboost" and XGBClassifier is not None:
+                estimators.append(("xgb", XGBClassifier(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth, eval_metric="logloss", use_label_encoder=False)))
+            elif mt == "lgbm" and LGBMClassifier is not None:
+                estimators.append(("lgbm", LGBMClassifier(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth)))
+            elif mt == "catboost" and CatBoostClassifier is not None:
+                estimators.append(("cat", CatBoostClassifier(iterations=n_estimators, learning_rate=learning_rate, depth=max_depth, verbose=False)))
+            elif mt == "nn":
+                estimators.append(("nn", MLPClassifier(hidden_layer_sizes=(8,), max_iter=500, random_state=42)))
+        final_est = LogisticRegression(max_iter=200)
+        clf = StackingClassifier(estimators=estimators, final_estimator=final_est, stack_method="predict_proba")
+        clf.fit(X_train, y_train)
+        train_proba_raw = clf.predict_proba(X_train)[:, 1]
+        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        model_type = "stack"
+    elif model_type == "random_forest":
         clf = RandomForestClassifier(n_estimators=100, random_state=42)
         clf.fit(X_train, y_train)
-        train_proba = clf.predict_proba(X_train)[:, 1]
-        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        train_proba_raw = clf.predict_proba(X_train)[:, 1]
+        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     elif model_type == "xgboost":
         if XGBClassifier is None:
             raise ImportError("xgboost is not installed")
@@ -1013,8 +1037,8 @@ def train(
             use_label_encoder=False,
         )
         clf.fit(X_train, y_train)
-        train_proba = clf.predict_proba(X_train)[:, 1]
-        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        train_proba_raw = clf.predict_proba(X_train)[:, 1]
+        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     elif model_type == "lgbm":
         if LGBMClassifier is None:
             raise ImportError("lightgbm is not installed")
@@ -1024,8 +1048,8 @@ def train(
             max_depth=max_depth,
         )
         clf.fit(X_train, y_train)
-        train_proba = clf.predict_proba(X_train)[:, 1]
-        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        train_proba_raw = clf.predict_proba(X_train)[:, 1]
+        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     elif model_type == "catboost":
         if CatBoostClassifier is None:
             raise ImportError("catboost is not installed")
@@ -1036,8 +1060,8 @@ def train(
             verbose=False,
         )
         clf.fit(X_train, y_train)
-        train_proba = clf.predict_proba(X_train)[:, 1]
-        val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        train_proba_raw = clf.predict_proba(X_train)[:, 1]
+        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     elif model_type == "nn":
         if HAS_TF:
             model_nn = keras.Sequential([
@@ -1054,16 +1078,16 @@ def train(
                 verbose=0,
                 callbacks=callbacks,
             )
-            train_proba = model_nn.predict(X_train).reshape(-1)
-            val_proba = (
+            train_proba_raw = model_nn.predict(X_train).reshape(-1)
+            val_proba_raw = (
                 model_nn.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
             )
             clf = model_nn
         else:
             clf = MLPClassifier(hidden_layer_sizes=(hidden_size,), max_iter=500, random_state=42)
             clf.fit(X_train, y_train)
-            train_proba = clf.predict_proba(X_train)[:, 1]
-            val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     elif model_type == "lstm":
         if not HAS_TF:
             raise ImportError("TensorFlow is required for LSTM model")
@@ -1103,8 +1127,8 @@ def train(
             verbose=0,
             callbacks=callbacks,
         )
-        train_proba = model_nn.predict(X_train_seq).reshape(-1)
-        val_proba = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
+        train_proba_raw = model_nn.predict(X_train_seq).reshape(-1)
+        val_proba_raw = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
         clf = model_nn
     elif model_type == "transformer":
         if not HAS_TF:
@@ -1145,8 +1169,8 @@ def train(
             verbose=0,
             callbacks=callbacks,
         )
-        train_proba = model_nn.predict(X_train_seq).reshape(-1)
-        val_proba = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
+        train_proba_raw = model_nn.predict(X_train_seq).reshape(-1)
+        val_proba_raw = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
         clf = model_nn
     else:
         if grid_search:
@@ -1171,8 +1195,8 @@ def train(
                     clf.partial_fit(
                         X_train[start:end], y_train[start:end], classes=classes, sample_weight=sw
                     )
-                train_proba = clf.predict_proba(X_train)[:, 1]
-                val_proba = (
+                train_proba_raw = clf.predict_proba(X_train)[:, 1]
+                val_proba_raw = (
                     clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
                 )
             else:
@@ -1182,10 +1206,25 @@ def train(
                     clf.coef_ = np.array([existing_model.get("coefficients", [])])
                     clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
                 clf.fit(X_train, y_train, sample_weight=sample_weight)
-                train_proba = clf.predict_proba(X_train)[:, 1]
-                val_proba = (
+                train_proba_raw = clf.predict_proba(X_train)[:, 1]
+                val_proba_raw = (
                     clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
                 )
+
+    train_proba = train_proba_raw
+    val_proba = val_proba_raw
+    cal_coef = 1.0
+    cal_inter = 0.0
+    if calibration is not None and len(y_val) > 0:
+        calibrator = CalibratedClassifierCV(clf, cv="prefit", method=calibration)
+        calibrator.fit(X_val, y_val)
+        train_proba = calibrator.predict_proba(X_train)[:, 1]
+        val_proba = calibrator.predict_proba(X_val)[:, 1]
+        if calibration == "sigmoid":
+            cal_lr = calibrator.calibrated_classifiers_[0].calibrator
+            cal_coef = float(cal_lr.coef_[0][0])
+            cal_inter = float(cal_lr.intercept_[0])
+    
 
     if regress_sl_tp:
         from sklearn.linear_model import LinearRegression
@@ -1271,6 +1310,13 @@ def train(
         model["optuna_best_score"] = float(best_trial.value)
     if hourly_thresholds is not None:
         model["hourly_thresholds"] = hourly_thresholds
+    if calibration is not None:
+        model["calibration_method"] = calibration
+        if calibration == "sigmoid":
+            model["calibration_coef"] = cal_coef
+            model["calibration_intercept"] = cal_inter
+    if stack_models:
+        model["stack_models"] = stack_models
 
     if model_type == "logreg":
         model["coefficients"] = clf.coef_[0].tolist()
@@ -1278,7 +1324,7 @@ def train(
         model["classes"] = [int(c) for c in clf.classes_]
     elif model_type == "xgboost":
         # approximate tree ensemble with linear model for MQL4 export
-        logit_p = np.log(train_proba / (1.0 - train_proba + 1e-9))
+        logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
         A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
         coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
         model["coefficients"] = coef[1:].tolist()
@@ -1299,7 +1345,7 @@ def train(
         model["probability_table"] = lookup
     elif model_type == "lgbm":
         # approximate boosting model with linear regression for export
-        logit_p = np.log(train_proba / (1.0 - train_proba + 1e-9))
+        logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
         A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
         coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
         model["coefficients"] = coef[1:].tolist()
@@ -1319,7 +1365,7 @@ def train(
         model["probability_table"] = lookup
     elif model_type == "catboost":
         # approximate boosting model with linear regression for export
-        logit_p = np.log(train_proba / (1.0 - train_proba + 1e-9))
+        logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
         A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
         coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
         model["coefficients"] = coef[1:].tolist()
@@ -1337,6 +1383,12 @@ def train(
             X_h = vec.transform([f])
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
+    elif model_type == "stack":
+        logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
+        A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
+        coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
+        model["coefficients"] = coef[1:].tolist()
+        model["intercept"] = float(coef[0])
     elif model_type == "nn":
         if HAS_TF:
             weights = [w.tolist() for w in clf.get_weights()]
@@ -1429,6 +1481,8 @@ def main():
     p.add_argument('--encoder-file', help='JSON file with pretrained encoder weights')
     p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
+    p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
+    p.add_argument('--stack', help='comma separated list of model types to stack')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -1480,6 +1534,8 @@ def main():
         cache_features=args.cache_features,
         calendar_events=events,
         event_window=args.event_window,
+        calibration=args.calibration,
+        stack_models=[s.strip() for s in args.stack.split(',')] if args.stack else None,
     )
 
 

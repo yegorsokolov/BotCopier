@@ -15,6 +15,8 @@ extern double TrailingPips = 0;
 int ModelCount = __MODEL_COUNT__;
 double ModelCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__COEFFICIENTS__};
 double ModelIntercepts[] = {__INTERCEPTS__};
+double CalibrationCoef = __CAL_COEF__;
+double CalibrationIntercept = __CAL_INTERCEPT__;
 double ModelThreshold = __THRESHOLD__;
 double HourlyThresholds[] = {__HOURLY_THRESHOLDS__};
 double ProbabilityLookup[] = {__PROBABILITY_TABLE__};
@@ -125,8 +127,11 @@ bool ParseModelJson(string json)
    ExtractJsonArray(json, "\"std\"", FeatureStd);
    if(ArraySize(FeatureStd)==0)
       ExtractJsonArray(json, "\"feature_std\"", FeatureStd);
-   if(ArraySize(ModelIntercepts)>0)
+  if(ArraySize(ModelIntercepts)>0)
       ModelIntercepts[0] = ExtractJsonNumber(json, "\"intercept\"");
+   CalibrationCoef = ExtractJsonNumber(json, "\"calibration_coef\"");
+   if(CalibrationCoef==0) CalibrationCoef = 1;
+   CalibrationIntercept = ExtractJsonNumber(json, "\"calibration_intercept\"");
    SLModelIntercept = ExtractJsonNumber(json, "\"sl_intercept\"");
    TPModelIntercept = ExtractJsonNumber(json, "\"tp_intercept\"");
    ModelThreshold = ExtractJsonNumber(json, "\"threshold\"");
@@ -373,6 +378,7 @@ double ComputeLogisticScore()
       double z = ModelIntercepts[m];
       for(int i=0; i<FeatureCount; i++)
          z += ModelCoefficients[m][i] * GetFeature(i);
+      z = CalibrationCoef*z + CalibrationIntercept;
       total += 1.0 / (1.0 + MathExp(-z));
    }
    return(total/ModelCount);
