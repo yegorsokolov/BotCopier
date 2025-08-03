@@ -11,10 +11,12 @@ version.
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import os
 import sys
+import zlib
 from pathlib import Path
 
 # Expected schema version for incoming messages. Can be overridden via env var.
@@ -58,16 +60,46 @@ def process_message(message: dict) -> None:
 
 
 def main() -> int:
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError as exc:
-            print(f"Invalid JSON: {exc}", file=sys.stderr)
-            continue
-        process_message(message)
+    p = argparse.ArgumentParser(description="Process observer stream logs")
+    p.add_argument(
+        "--binary",
+        action="store_true",
+        help="expect length-prefixed gzipped JSON records",
+    )
+    args = p.parse_args()
+
+    if args.binary:
+        buf = sys.stdin.buffer
+        while True:
+            header = buf.read(4)
+            if len(header) < 4:
+                break
+            length = int.from_bytes(header, "little")
+            payload = buf.read(length)
+            if len(payload) < length:
+                break
+            try:
+                line = zlib.decompress(payload).decode("utf-8")
+            except Exception as exc:
+                print(f"Invalid compressed payload: {exc}", file=sys.stderr)
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(f"Invalid JSON: {exc}", file=sys.stderr)
+                continue
+            process_message(message)
+    else:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError as exc:
+                print(f"Invalid JSON: {exc}", file=sys.stderr)
+                continue
+            process_message(message)
     return 0
 
 

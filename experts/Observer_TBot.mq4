@@ -16,6 +16,7 @@ extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
 extern bool   EnableSocketLogging           = false;
+extern bool   UseBinarySocketLogging        = false;
 extern string LogSocketHost                 = "127.0.0.1";
 extern int    LogSocketPort                 = 9000;
 extern int    LogBufferSize                 = 10;
@@ -407,20 +408,54 @@ void SendJson(string json)
 {
    if(log_socket==INVALID_HANDLE)
       return;
-   uchar bytes[];
-   StringToCharArray(json+"\n", bytes);
-   if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
+   if(UseBinarySocketLogging)
    {
-      SocketErrors++;
-      SocketClose(log_socket);
-      log_socket = INVALID_HANDLE;
-      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-      next_socket_attempt = now + socket_backoff;
-      socket_backoff = MathMin(socket_backoff*2, 3600);
+      uchar raw[];
+      StringToCharArray(json, raw, 0, WHOLE_ARRAY, CP_UTF8);
+      ArrayResize(raw, ArraySize(raw)-1);
+      uchar zipped[];
+      if(!CryptEncode(CRYPT_ARCHIVE_ZIP, raw, zipped))
+         return;
+      int len = ArraySize(zipped);
+      uchar bytes[];
+      ArrayResize(bytes, len+4);
+      bytes[0] = (uchar)(len & 0xFF);
+      bytes[1] = (uchar)((len >> 8) & 0xFF);
+      bytes[2] = (uchar)((len >> 16) & 0xFF);
+      bytes[3] = (uchar)((len >> 24) & 0xFF);
+      for(int i=0; i<len; i++)
+         bytes[4+i] = zipped[i];
+      if(SocketSend(log_socket, bytes, len+4)==-1)
+      {
+         SocketErrors++;
+         SocketClose(log_socket);
+         log_socket = INVALID_HANDLE;
+         datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+         next_socket_attempt = now + socket_backoff;
+         socket_backoff = MathMin(socket_backoff*2, 3600);
+      }
+      else
+      {
+         socket_backoff = 1;
+      }
    }
    else
    {
-      socket_backoff = 1;
+      uchar bytes[];
+      StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
+      if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
+      {
+         SocketErrors++;
+         SocketClose(log_socket);
+         log_socket = INVALID_HANDLE;
+         datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+         next_socket_attempt = now + socket_backoff;
+         socket_backoff = MathMin(socket_backoff*2, 3600);
+      }
+      else
+      {
+         socket_backoff = 1;
+      }
    }
 }
 
