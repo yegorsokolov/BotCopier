@@ -1,0 +1,43 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "schemaVersion": 38,
+  "title": "Bot Metrics",
+  "uid": "bot-metrics",
+  "version": 0,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Win Rate",
+      "id": 1,
+      "targets": [
+        {"expr": "bot_win_rate"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Drawdown",
+      "id": 2,
+      "targets": [
+        {"expr": "bot_drawdown"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "File Write Errors",
+      "id": 3,
+      "targets": [
+        {"expr": "bot_file_write_errors_total"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Socket Errors",
+      "id": 4,
+      "targets": [
+        {"expr": "bot_socket_errors_total"}
+      ]
+    }
+  ]
+}
