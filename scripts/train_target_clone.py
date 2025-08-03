@@ -201,11 +201,16 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
 
     conn = sqlite3.connect(db_file)
     try:
-        df_logs = pd.read_sql_query("SELECT * FROM logs", conn, parse_dates=["event_time"])
+        df_logs = pd.read_sql_query("SELECT * FROM logs", conn, parse_dates=["event_time", "open_time"])
     finally:
         conn.close()
 
     df_logs.columns = [c.lower() for c in df_logs.columns]
+
+    if "open_time" in df_logs.columns:
+        df_logs["trade_duration"] = (
+            pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
+        ).dt.total_seconds().fillna(0)
 
     valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     if "action" in df_logs.columns:
@@ -296,17 +301,29 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         "remaining_lots",
         "slippage",
         "volume",
+        "open_time",
     ]
 
     dfs: List[pd.DataFrame] = []
     for log_file in sorted(data_dir.glob("trades_*.csv")):
-        df = pd.read_csv(
-            log_file,
-            sep=";",
-            names=fields,
-            header=0,
-            parse_dates=["event_time"],
-        )
+        try:
+            df = pd.read_csv(
+                log_file,
+                sep=";",
+                names=fields,
+                header=0,
+                parse_dates=["event_time", "open_time"],
+            )
+        except pd.errors.ParserError:
+            legacy_fields = fields[:-1]
+            df = pd.read_csv(
+                log_file,
+                sep=";",
+                names=legacy_fields,
+                header=0,
+                parse_dates=["event_time"],
+            )
+            df["open_time"] = pd.NaT
         dfs.append(df)
 
     if dfs:
@@ -315,6 +332,13 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         df_logs = pd.DataFrame(columns=fields)
 
     df_logs.columns = [c.lower() for c in df_logs.columns]
+
+    if "open_time" in df_logs.columns:
+        df_logs["trade_duration"] = (
+            pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
+        ).dt.total_seconds().fillna(0)
+    else:
+        df_logs["trade_duration"] = 0.0
 
     valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     df_logs["action"] = df_logs["action"].fillna("").str.upper()
