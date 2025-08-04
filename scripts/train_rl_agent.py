@@ -55,7 +55,7 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
     ]
 
     dfs: List[pd.DataFrame] = []
-    for log_file in sorted(data_dir.glob("trades_*.csv")):
+    for log_file in sorted(data_dir.glob("trades*.csv")):
         df = pd.read_csv(
             log_file,
             sep=";",
@@ -165,6 +165,46 @@ def _extract_feature(row: Dict) -> Dict:
 
 
 # -------------------------------
+# Dataset helpers
+# -------------------------------
+
+def _build_dataset(
+    data_dir: Path,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, DictVectorizer]:
+    """Return (states, actions, rewards, next_states, vectorizer).
+
+    The dataset is constructed purely from the trade logs without any
+    environment interaction.  Each trade becomes a state-action-reward
+    tuple and the next state is simply the next trade's state.
+    """
+
+    rows_df = _load_logs(data_dir)
+    trades = _pair_trades(rows_df.to_dict("records"))
+    if not trades:
+        raise ValueError(f"No training data found in {data_dir}")
+
+    feats: List[Dict] = []
+    actions: List[int] = []
+    rewards: List[float] = []
+    for t in trades:
+        o = t["open"]
+        feats.append(_extract_feature(o))
+        actions.append(0 if int(float(o.get("order_type", 0))) == 0 else 1)
+        rewards.append(float(t["profit"]))
+
+    vec = DictVectorizer(sparse=False)
+    states = vec.fit_transform(feats).astype(np.float32)
+    actions_arr = np.asarray(actions, dtype=int)
+    rewards_arr = np.asarray(rewards, dtype=float)
+    if len(states) > 1:
+        next_states = np.vstack([states[1:], states[-1:]])
+    else:  # pragma: no cover - single trade edge case
+        next_states = states.copy()
+
+    return states, actions_arr, rewards_arr, next_states, vec
+
+
+# -------------------------------
 # RL Training
 # -------------------------------
 
@@ -182,24 +222,7 @@ def train(
     start_model: Path | None = None,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
-
-    rows_df = _load_logs(data_dir)
-    trades = _pair_trades(rows_df.to_dict("records"))
-
-    if not trades:
-        raise ValueError(f"No training data found in {data_dir}")
-
-    feats: List[Dict] = []
-    actions: List[int] = []
-    rewards: List[float] = []
-    for t in trades:
-        o = t["open"]
-        feats.append(_extract_feature(o))
-        actions.append(0 if int(float(o.get("order_type", 0))) == 0 else 1)
-        rewards.append(float(t["profit"]))
-
-    vec = DictVectorizer(sparse=False)
-    states = vec.fit_transform(feats)
+    states, actions, rewards, next_states, vec = _build_dataset(data_dir)
     n_features = states.shape[1]
 
     init_model_data = None
@@ -210,7 +233,15 @@ def train(
         except Exception:
             init_model_data = None
 
-    if algo != "qlearn":
+    algo_key = algo.lower()
+
+    # precompute experience tuples for offline algorithms
+    experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = [
+        (states[i], int(actions[i]), float(rewards[i]), next_states[i])
+        for i in range(len(actions))
+    ]
+
+    if algo_key in {"ppo", "dqn"}:
         if not HAS_SB3:
             raise ImportError("stable_baselines3 is not installed")
 
@@ -244,13 +275,7 @@ def train(
                 return obs, reward, done, False, {}
 
         env = TradeEnv(states, rewards)
-        algo_map = {
-            "ppo": sb3.PPO,
-            "dqn": sb3.DQN,
-        }
-        algo_key = algo.lower()
-        if algo_key not in algo_map:
-            raise ValueError(f"Unsupported algorithm: {algo}")
+        algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
         model_cls = algo_map[algo_key]
         model = model_cls("MlpPolicy", env, verbose=0)
         model.learn(total_timesteps=training_steps)
@@ -298,12 +323,8 @@ def train(
         print(f"Weights written to {weights_path.with_suffix('.zip')}")
         return
 
-    # prepare experience tuples (state, action, reward, next_state)
-    experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = []
-    for i in range(len(actions)):
-        s = states[i]
-        ns = states[i + 1] if i + 1 < len(actions) else states[i]
-        experiences.append((s, actions[i], rewards[i], ns))
+    if algo_key not in {"qlearn", "cql"}:
+        raise ValueError(f"Unsupported algorithm: {algo}")
 
     weights = np.zeros((2, n_features))
     intercepts = np.zeros(2)
@@ -324,37 +345,57 @@ def train(
                 intercepts = np.array([bias / 2.0, -bias / 2.0], dtype=float)
     gamma = 0.9
 
-    episode_rewards: List[float] = []  # average reward per step
-    episode_totals: List[float] = []   # total reward per episode
-    for _ in range(training_steps):
-        total_r = 0.0
-        buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
-        for step, exp in enumerate(experiences):
-            s, a, r, ns = exp
-            total_r += r
-            if len(buffer) >= buffer_size:
-                buffer.pop(0)
-            # add with initial priority weight of 1.0
-            buffer.append((s, a, r, ns, 1.0))
+    if algo_key == "cql":
+        alpha = 0.01  # conservative penalty strength
+        for _ in range(training_steps):
+            for s, a, r, ns in experiences:
+                q_next0 = intercepts[0] + np.dot(weights[0], ns)
+                q_next1 = intercepts[1] + np.dot(weights[1], ns)
+                q_target = r + gamma * max(q_next0, q_next1)
+                q_current = intercepts[a] + np.dot(weights[a], s)
+                td_err = q_target - q_current
+                weights[a] += learning_rate * td_err * s
+                intercepts[a] += learning_rate * td_err
+                # conservative update for all actions
+                for act in (0, 1):
+                    q_val = intercepts[act] + np.dot(weights[act], s)
+                    weights[act] -= learning_rate * alpha * q_val * s
+                    intercepts[act] -= learning_rate * alpha * q_val
+        training_type = "offline_rl"
+        episode_rewards = [float(np.mean(rewards))]
+        episode_totals = [float(np.sum(rewards))]
+    else:  # qlearn
+        episode_rewards: List[float] = []  # average reward per step
+        episode_totals: List[float] = []   # total reward per episode
+        for _ in range(training_steps):
+            total_r = 0.0
+            buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
+            for step, exp in enumerate(experiences):
+                s, a, r, ns = exp
+                total_r += r
+                if len(buffer) >= buffer_size:
+                    buffer.pop(0)
+                # add with initial priority weight of 1.0
+                buffer.append((s, a, r, ns, 1.0))
 
-            if step % update_freq == 0 and len(buffer) >= batch_size:
-                weights_arr = np.array([b[4] for b in buffer], dtype=float)
-                prob = weights_arr / weights_arr.sum()
-                batch_idx = np.random.choice(len(buffer), size=batch_size, p=prob)
-                for idx in batch_idx:
-                    bs, ba, br, bns, bw = buffer[idx]
-                    q_next0 = intercepts[0] + np.dot(weights[0], bns)
-                    q_next1 = intercepts[1] + np.dot(weights[1], bns)
-                    q_target = br + gamma * max(q_next0, q_next1)
-                    q_current = intercepts[ba] + np.dot(weights[ba], bs)
-                    td_err = q_target - q_current
-                    weights[ba] += learning_rate * td_err * bs
-                    intercepts[ba] += learning_rate * td_err
-                    # update priority weight based on TD error
-                    buffer[idx] = (bs, ba, br, bns, float(abs(td_err)) + 1e-6)
-        episode_rewards.append(total_r / len(experiences))
-        episode_totals.append(total_r)
-
+                if step % update_freq == 0 and len(buffer) >= batch_size:
+                    weights_arr = np.array([b[4] for b in buffer], dtype=float)
+                    prob = weights_arr / weights_arr.sum()
+                    batch_idx = np.random.choice(len(buffer), size=batch_size, p=prob)
+                    for idx in batch_idx:
+                        bs, ba, br, bns, bw = buffer[idx]
+                        q_next0 = intercepts[0] + np.dot(weights[0], bns)
+                        q_next1 = intercepts[1] + np.dot(weights[1], bns)
+                        q_target = br + gamma * max(q_next0, q_next1)
+                        q_current = intercepts[ba] + np.dot(weights[ba], bs)
+                        td_err = q_target - q_current
+                        weights[ba] += learning_rate * td_err * bs
+                        intercepts[ba] += learning_rate * td_err
+                        # update priority weight based on TD error
+                        buffer[idx] = (bs, ba, br, bns, float(abs(td_err)) + 1e-6)
+            episode_rewards.append(total_r / len(experiences))
+            episode_totals.append(total_r)
+        training_type = "rl_only" if init_model_data is None else "supervised+rl"
     preds: List[int] = []
     for s in states:
         if np.random.rand() < epsilon:
@@ -369,6 +410,7 @@ def train(
     model = {
         "model_id": "rl_agent",
         "trained_at": datetime.utcnow().isoformat(),
+        "algo": algo_key,
         "feature_names": vec.get_feature_names_out().tolist(),
         "coefficients": (weights[0] - weights[1]).tolist(),
         "intercept": float(intercepts[0] - intercepts[1]),
@@ -385,13 +427,10 @@ def train(
         "accuracy": float("nan"),
         "num_samples": len(actions),
     }
-
-    if init_model_data is not None:
+    model["training_type"] = training_type
+    if training_type != "offline_rl" and init_model_data is not None:
         model["init_model"] = start_model.name if start_model is not None else None
         model["init_model_id"] = init_model_data.get("model_id")
-        model["training_type"] = "supervised+rl"
-    else:
-        model["training_type"] = "rl_only"
 
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f, indent=2)
@@ -414,7 +453,8 @@ def main() -> None:
         default="dqn",
         help=(
             "RL algorithm: dqn (default) or ppo if stable-baselines3 is installed."
-            " Pass qlearn to use a simple numpy implementation."
+            " Pass qlearn for a simple numpy implementation or cql for offline"
+            " conservative Q-learning."
         ),
     )
     p.add_argument("--start-model", help="path to initial model coefficients")
