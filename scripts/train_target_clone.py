@@ -212,6 +212,11 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
         df_logs["trade_duration"] = (
             pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
         ).dt.total_seconds().fillna(0)
+    for col in ["book_bid_vol", "book_ask_vol", "book_imbalance"]:
+        if col not in df_logs.columns:
+            df_logs[col] = 0.0
+        else:
+            df_logs[col] = pd.to_numeric(df_logs[col], errors="coerce").fillna(0.0)
 
     valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     if "action" in df_logs.columns:
@@ -303,6 +308,9 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         "slippage",
         "volume",
         "open_time",
+        "book_bid_vol",
+        "book_ask_vol",
+        "book_imbalance",
     ]
 
     dfs: List[pd.DataFrame] = []
@@ -315,16 +323,28 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
                 header=0,
                 parse_dates=["event_time", "open_time"],
             )
-        except pd.errors.ParserError:
-            legacy_fields = fields[:-1]
-            df = pd.read_csv(
-                log_file,
-                sep=";",
-                names=legacy_fields,
-                header=0,
-                parse_dates=["event_time"],
-            )
-            df["open_time"] = pd.NaT
+        except (pd.errors.ParserError, ValueError):
+            legacy_fields = fields[:-3]
+            try:
+                df = pd.read_csv(
+                    log_file,
+                    sep=";",
+                    names=legacy_fields,
+                    header=0,
+                    parse_dates=["event_time", "open_time"],
+                )
+                df["book_bid_vol"] = df["book_ask_vol"] = df["book_imbalance"] = 0.0
+            except (pd.errors.ParserError, ValueError):
+                legacy_fields = fields[:-4]
+                df = pd.read_csv(
+                    log_file,
+                    sep=";",
+                    names=legacy_fields,
+                    header=0,
+                    parse_dates=["event_time"],
+                )
+                df["open_time"] = pd.NaT
+                df["book_bid_vol"] = df["book_ask_vol"] = df["book_imbalance"] = 0.0
         dfs.append(df)
 
     if dfs:
@@ -340,6 +360,9 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         ).dt.total_seconds().fillna(0)
     else:
         df_logs["trade_duration"] = 0.0
+
+    for col in ["book_bid_vol", "book_ask_vol", "book_imbalance"]:
+        df_logs[col] = pd.to_numeric(df_logs.get(col, 0.0), errors="coerce").fillna(0.0)
 
     valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     df_logs["action"] = df_logs["action"].fillna("").str.upper()
@@ -573,6 +596,9 @@ def _extract_features(
             "spread": spread,
             "equity": account_equity,
             "margin_level": margin_level,
+            "book_bid_vol": float(r.get("book_bid_vol", 0) or 0),
+            "book_ask_vol": float(r.get("book_ask_vol", 0) or 0),
+            "book_imbalance": float(r.get("book_imbalance", 0) or 0),
         }
 
         if calendar_events is not None:

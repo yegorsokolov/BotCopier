@@ -32,6 +32,10 @@ def _write_sample_log(file: Path):
         "remaining_lots",
         "slippage",
         "volume",
+        "open_time",
+        "book_bid_vol",
+        "book_ask_vol",
+        "book_imbalance",
     ]
     rows = [
         [
@@ -55,6 +59,10 @@ def _write_sample_log(file: Path):
             "0.1",
             "0.0001",
             "100",
+            "",
+            "0",
+            "0",
+            "0",
         ],
         [
             "2",
@@ -77,6 +85,10 @@ def _write_sample_log(file: Path):
             "0.1",
             "0.0002",
             "200",
+            "",
+            "0",
+            "0",
+            "0",
         ],
     ]
     with open(file, "w", newline="") as f:

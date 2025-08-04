@@ -61,6 +61,10 @@ double CachedRSI[__CACHE_TF_COUNT__];
 double CachedMACD[__CACHE_TF_COUNT__];
 double CachedMACDSignal[__CACHE_TF_COUNT__];
 int LastCalcPeriod = 0;
+double CachedBookBidVol = 0.0;
+double CachedBookAskVol = 0.0;
+double CachedBookImbalance = 0.0;
+datetime CachedBookTime = 0;
 int EncoderWindow = __ENCODER_WINDOW__;
 int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
@@ -179,6 +183,7 @@ int OnInit()
    LastModelLoad = TimeCurrent();
    if(!ok)
       Print("Using built-in model parameters");
+   MarketBookAdd(SymbolToTrade);
    return(INIT_SUCCEEDED);
 }
 
@@ -329,6 +334,49 @@ void RefreshIndicatorCache()
          CachedMACDSignal[i] = iMACD(SymbolToTrade, actual_tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
       }
    }
+}
+
+void RefreshBookCache()
+{
+   datetime t = TimeCurrent();
+   if(t != CachedBookTime)
+   {
+      MqlBookInfo book[];
+      double bid = 0.0;
+      double ask = 0.0;
+      if(MarketBookGet(SymbolToTrade, book))
+      {
+         for(int i=0; i<ArraySize(book); i++)
+         {
+            if(book[i].type==BOOK_TYPE_BUY)
+               bid += book[i].volume;
+            else if(book[i].type==BOOK_TYPE_SELL)
+               ask += book[i].volume;
+         }
+      }
+      CachedBookBidVol = bid;
+      CachedBookAskVol = ask;
+      CachedBookImbalance = (bid+ask>0) ? (bid-ask)/(bid+ask) : 0.0;
+      CachedBookTime = t;
+   }
+}
+
+double BookBidVol()
+{
+   RefreshBookCache();
+   return(CachedBookBidVol);
+}
+
+double BookAskVol()
+{
+   RefreshBookCache();
+   return(CachedBookAskVol);
+}
+
+double BookImbalance()
+{
+   RefreshBookCache();
+   return(CachedBookImbalance);
 }
 
 double PairCorrelation(string sym1, string sym2, int window=5)
@@ -710,4 +758,5 @@ void ManageOpenOrders()
 
 void OnDeinit(const int reason)
 {
+   MarketBookRelease(SymbolToTrade);
 }

@@ -229,6 +229,9 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
         'volume': 'iVolume(SymbolToTrade, 0, 0)',
         'event_flag': 'GetCalendarFlag()',
         'event_impact': 'GetCalendarImpact()',
+        'book_bid_vol': 'BookBidVol()',
+        'book_ask_vol': 'BookAskVol()',
+        'book_imbalance': 'BookImbalance()',
     }
 
     tf_const = {
