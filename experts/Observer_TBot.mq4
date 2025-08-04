@@ -21,6 +21,7 @@ extern string LogSocketHost                 = "127.0.0.1";
 extern int    LogSocketPort                 = 9000;
 extern int    LogBufferSize                 = 10;
 extern bool   StreamMetricsOnly            = false;
+extern string CommitHash                   = "";
 
 int timer_handle;
 
@@ -494,6 +495,38 @@ void SendJson(string json)
    }
 }
 
+string FileNameFromPath(string path)
+{
+   int pos = StringLen(path)-1;
+   while(pos>=0)
+   {
+      ushort ch = StringGetChar(path, pos);
+      if(ch=='\\' || ch=='/')
+         break;
+      pos--;
+   }
+   return(StringSubstr(path, pos+1));
+}
+
+bool ComputeFileSHA256(string filename, string &hash)
+{
+   int h = FileOpen(filename, FILE_READ|FILE_BIN|FILE_SHARE_READ);
+   if(h==INVALID_HANDLE)
+      return(false);
+   int size = (int)FileSize(h);
+   uchar data[];
+   ArrayResize(data, size);
+   FileReadArray(h, data, 0, size);
+   FileClose(h);
+   uchar result[];
+   if(!CryptEncode(CRYPT_HASH_SHA256, data, result))
+      return(false);
+   hash = "";
+   for(int i=0; i<ArraySize(result); i++)
+      hash += StringFormat("%02x", result[i]);
+   return(true);
+}
+
 void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
               double sl, double tp, double profit, double profit_after,
@@ -558,23 +591,66 @@ void ExportLogs(datetime ts)
    int in_h = FileOpen(src, FILE_CSV|FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE, ';');
    if(in_h==INVALID_HANDLE)
       return;
+   string header = "";
+   string lines[];
+   datetime start_time = 0;
+   datetime end_time = 0;
+   if(!FileIsEnding(in_h))
+      header = FileReadString(in_h);
+   string parts[];
+   while(!FileIsEnding(in_h))
+   {
+      string line = FileReadString(in_h);
+      if(StringLen(line)==0)
+         continue;
+      int n = ArraySize(lines);
+      ArrayResize(lines, n+1);
+      lines[n] = line;
+      int cnt = StringSplit(line, ';', parts);
+      if(cnt>1)
+      {
+         datetime ev = StringToTime(parts[1]);
+         if(start_time==0)
+            start_time = ev;
+         end_time = ev;
+      }
+   }
+   FileClose(in_h);
    int out_h = FileOpen(dest, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
    if(out_h!=INVALID_HANDLE)
    {
-      while(!FileIsEnding(in_h))
+      string meta = StringFormat("{\"schema_version\":%d,\"commit\":\"%s\",\"start_time\":\"%s\",\"end_time\":\"%s\"}",
+                               LogSchemaVersion, CommitHash,
+                               TimeToString(start_time, TIME_DATE|TIME_SECONDS),
+                               TimeToString(end_time, TIME_DATE|TIME_SECONDS));
+      int _wr = FileWrite(out_h, meta);
+      if(_wr <= 0) FileWriteErrors++;
+      _wr = FileWrite(out_h, header);
+      if(_wr <= 0) FileWriteErrors++;
+      for(int i=0; i<ArraySize(lines); i++)
       {
-         string line = FileReadString(in_h);
-         if(StringLen(line)>0)
-         {
-            int _wr = FileWrite(out_h, line);
-            if(_wr <= 0)
-               FileWriteErrors++;
-         }
+         _wr = FileWrite(out_h, lines[i]);
+         if(_wr <= 0) FileWriteErrors++;
       }
       FileClose(out_h);
    }
-  FileClose(in_h);
- FileDelete(src);
+   FileDelete(src);
+
+   string checksum;
+   if(ComputeFileSHA256(dest, checksum))
+   {
+      string manifest = dest + ".manifest.json";
+      int mh = FileOpen(manifest, FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE);
+      if(mh!=INVALID_HANDLE)
+      {
+         string fname = FileNameFromPath(dest);
+         string mjson = StringFormat("{\"file\":\"%s\",\"checksum\":\"%s\",\"commit\":\"%s\"}",
+                                    fname, checksum, CommitHash);
+         int _wr = FileWrite(mh, mjson);
+         if(_wr <= 0) FileWriteErrors++;
+         FileClose(mh);
+      }
+   }
 }
 
 void WriteMetrics(datetime ts)
