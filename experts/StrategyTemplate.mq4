@@ -13,13 +13,15 @@ extern double BreakEvenPips = 0;
 extern double TrailingPips = 0;
 
 int ModelCount = __MODEL_COUNT__;
+int SessionStarts[] = {__SESSION_STARTS__};
+int SessionEnds[] = {__SESSION_ENDS__};
 double ModelCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__COEFFICIENTS__};
 double ModelIntercepts[] = {__INTERCEPTS__};
 double CalibrationCoef = __CAL_COEF__;
 double CalibrationIntercept = __CAL_INTERCEPT__;
 double ModelThreshold = __THRESHOLD__;
 double HourlyThresholds[] = {__HOURLY_THRESHOLDS__};
-double ProbabilityLookup[] = {__PROBABILITY_TABLE__};
+double ProbabilityLookup[__MODEL_COUNT__][24] = {__PROBABILITY_TABLE__};
 double SLModelCoefficients[] = {__SL_COEFFICIENTS__};
 double SLModelIntercept = __SL_INTERCEPT__;
 double TPModelCoefficients[] = {__TP_COEFFICIENTS__};
@@ -122,7 +124,11 @@ bool ParseModelJson(string json)
    for(int i=0;i<n;i++)
       ModelCoefficients[0][i] = tmp[i];
    ExtractJsonArray(json, "\"hourly_thresholds\"", HourlyThresholds);
-   ExtractJsonArray(json, "\"probability_table\"", ProbabilityLookup);
+   double prob_tmp[];
+   ExtractJsonArray(json, "\"probability_table\"", prob_tmp);
+   if(ArraySize(prob_tmp) == 24 && ArrayRange(ProbabilityLookup,0) > 0)
+      for(int i=0;i<24;i++)
+         ProbabilityLookup[0][i] = prob_tmp[i];
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
    ExtractJsonArray(json, "\"mean\"", FeatureMean);
@@ -417,26 +423,29 @@ __FEATURE_CASES__      default:
       return((raw - FeatureMean[index]) / FeatureStd[index]);
    return(raw);
 }
-
-double ComputeLogisticScore()
+int GetSessionIndex()
 {
-   double total = 0.0;
-   for(int m=0; m<ModelCount; m++)
-   {
-      double z = ModelIntercepts[m];
-      for(int i=0; i<FeatureCount; i++)
-         z += ModelCoefficients[m][i] * GetFeature(i);
-      z = CalibrationCoef*z + CalibrationIntercept;
-      total += 1.0 / (1.0 + MathExp(-z));
-   }
-   return(total/ModelCount);
+   int h = TimeHour(TimeCurrent());
+   for(int i=0; i<ArraySize(SessionStarts); i++)
+      if(h >= SessionStarts[i] && h < SessionEnds[i])
+         return(i);
+   return(0);
+}
+
+double ComputeLogisticScoreSession(int m)
+{
+   double z = ModelIntercepts[m];
+   for(int i=0; i<FeatureCount; i++)
+      z += ModelCoefficients[m][i] * GetFeature(i);
+   z = CalibrationCoef*z + CalibrationIntercept;
+   return(1.0 / (1.0 + MathExp(-z)));
 }
 
 double ComputeNNScore()
 {
    int hidden = ModelHiddenSize;
    if(hidden <= 0)
-      return(ComputeLogisticScore());
+      return(ComputeLogisticScoreSession(GetSessionIndex()));
    int inputCount = ArraySize(NNLayer1Weights) / hidden;
    double z = NNLayer2Bias;
    for(int j=0; j<hidden; j++)
@@ -587,15 +596,16 @@ double ComputeTransformerScore()
 double GetProbability()
 {
    UpdateFeatureHistory();
-   if(ArraySize(ProbabilityLookup) == 24)
-      return(ProbabilityLookup[TimeHour(TimeCurrent())]);
+   int sess = GetSessionIndex();
+   if(ArrayRange(ProbabilityLookup,0) == ModelCount && ArrayRange(ProbabilityLookup,1) == 24)
+      return(ProbabilityLookup[sess][TimeHour(TimeCurrent())]);
    if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
       return(ComputeTransformerScore());
    if(LSTMSequenceLength > 0 && ArraySize(LSTMDenseWeights) > 0)
       return(ComputeLSTMScore());
    if(ArraySize(NNLayer1Weights) > 0)
       return(ComputeNNScore());
-   return(ComputeLogisticScore());
+   return(ComputeLogisticScoreSession(sess));
 }
 
 double GetTradeLots(double prob)
