@@ -74,7 +74,7 @@ def test_load_logs_from_db(tmp_path: Path):
     conn.commit()
     conn.close()
 
-    df = _load_logs(db_file)
+    df, _, _ = _load_logs(db_file)
     assert not df.empty
     assert "symbol" in df.columns
     assert "slippage" in df.columns

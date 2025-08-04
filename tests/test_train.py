@@ -1,7 +1,8 @@
 import csv
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
+import hashlib
 
 import pandas as pd
 import pytest
@@ -163,6 +164,9 @@ def test_train(tmp_path: Path):
     data_dir.mkdir()
     log_file = data_dir / "trades_test.csv"
     _write_log(log_file)
+    checksum = hashlib.sha256(log_file.read_bytes()).hexdigest()
+    manifest = log_file.with_suffix(".manifest.json")
+    manifest.write_text(json.dumps({"file": log_file.name, "checksum": checksum, "commit": "abc123"}))
 
     train(data_dir, out_dir)
 
@@ -184,6 +188,8 @@ def test_train(tmp_path: Path):
     assert data.get("weighted") is True
     assert "mean" in data
     assert "std" in data
+    assert data.get("data_commit") == "abc123"
+    assert data.get("data_checksum") == checksum
 
     init_file = out_dir / "policy_init.json"
     assert init_file.exists()
@@ -292,10 +298,24 @@ def test_load_logs_with_metrics(tmp_path: Path):
     metrics_file = data_dir / "metrics.csv"
     _write_metrics(metrics_file)
 
-    df = _load_logs(data_dir)
+    df, _, _ = _load_logs(data_dir)
     assert "win_rate" in df.columns
     assert "spread" in df.columns
     assert "slippage" in df.columns
+
+
+def test_load_logs_reads_manifest(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+    checksum = hashlib.sha256(log_file.read_bytes()).hexdigest()
+    manifest = log_file.with_suffix(".manifest.json")
+    manifest.write_text(json.dumps({"file": log_file.name, "checksum": checksum, "commit": "def"}))
+
+    _, commits, checksums = _load_logs(data_dir)
+    assert commits == ["def"]
+    assert checksums == [checksum]
 
 
 def test_load_logs_filters_invalid_rows(tmp_path: Path):
@@ -337,7 +357,7 @@ def test_load_logs_filters_invalid_rows(tmp_path: Path):
         writer.writerow(fields)
         writer.writerows(rows)
 
-    df = _load_logs(data_dir)
+    df, _, _ = _load_logs(data_dir)
     assert len(df) == 1
     invalid_file = data_dir / "invalid_rows.csv"
     assert invalid_file.exists()
@@ -571,7 +591,7 @@ def test_corr_features(tmp_path: Path):
     assert "ratio_EURUSD_USDCHF" in feats
     assert "corr_EURUSD_USDCHF" in feats
 
-    df = _load_logs(data_dir)
+    df, _, _ = _load_logs(data_dir)
     feature_dicts, *_ = _extract_features(
         df.to_dict("records"),
         corr_pairs=[("EURUSD", "USDCHF")],
@@ -602,7 +622,7 @@ def test_volume_feature(tmp_path: Path):
     log_file = data_dir / "trades_vol.csv"
     _write_log(log_file)
 
-    df = _load_logs(data_dir)
+    df, _, _ = _load_logs(data_dir)
     assert "volume" in df.columns
     assert int(df["volume"].iloc[0]) == 100
 

@@ -267,7 +267,7 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
     return df_logs
 
 
-def _load_logs(data_dir: Path) -> pd.DataFrame:
+def _load_logs(data_dir: Path) -> tuple[pd.DataFrame, list[str], list[str]]:
     """Load log rows from ``data_dir``.
 
     ``MODIFY`` entries are retained alongside ``OPEN`` and ``CLOSE``.
@@ -279,12 +279,14 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
 
     Returns
     -------
-    pandas.DataFrame
-        Parsed rows as a DataFrame.
+    tuple[pandas.DataFrame, list[str], list[str]]
+        Parsed rows as a DataFrame along with commit hashes and checksums
+        collected from accompanying manifest files.
     """
 
     if data_dir.suffix == ".db":
-        return _load_logs_db(data_dir)
+        df = _load_logs_db(data_dir)
+        return df, [], []
 
     fields = [
         "event_id",
@@ -314,6 +316,8 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
     ]
 
     dfs: List[pd.DataFrame] = []
+    data_commits: list[str] = []
+    data_checksums: list[str] = []
     for log_file in sorted(data_dir.glob("trades_*.csv")):
         try:
             df = pd.read_csv(
@@ -346,6 +350,19 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
                 df["open_time"] = pd.NaT
                 df["book_bid_vol"] = df["book_ask_vol"] = df["book_imbalance"] = 0.0
         dfs.append(df)
+        manifest_file = log_file.with_suffix(".manifest.json")
+        if manifest_file.exists():
+            try:
+                with open(manifest_file) as mf:
+                    meta = json.load(mf)
+                commit = meta.get("commit")
+                checksum = meta.get("checksum")
+                if commit:
+                    data_commits.append(str(commit))
+                if checksum:
+                    data_checksums.append(str(checksum))
+            except Exception:
+                pass
 
     if dfs:
         df_logs = pd.concat(dfs, ignore_index=True)
@@ -429,7 +446,7 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
                 df_logs = df_logs.merge(df_metrics, how="left", left_on="magic", right_on="model_id")
                 df_logs = df_logs.drop(columns=["model_id"])
 
-    return df_logs
+    return df_logs, data_commits, data_checksums
 
 
 def _load_calendar(file: Path) -> list[tuple[datetime, float]]:
@@ -779,6 +796,8 @@ def train(
 
     features = labels = sl_targets = tp_targets = hours = None
     loaded_from_cache = False
+    data_commits: list[str] = []
+    data_checksums: list[str] = []
     if cache_features and incremental and cache_file.exists() and existing_model is not None:
         try:
             cached = np.load(cache_file, allow_pickle=True)
@@ -794,7 +813,7 @@ def train(
             features = None
 
     if features is None:
-        rows_df = _load_logs(data_dir)
+        rows_df, data_commits, data_checksums = _load_logs(data_dir)
         encoder = None
         if encoder_file is not None and encoder_file.exists():
             with open(encoder_file) as f:
@@ -1321,6 +1340,10 @@ def train(
         "mean": feature_mean.tolist(),
         "std": feature_std.tolist(),
     }
+    if data_commits:
+        model["data_commit"] = ",".join(sorted(set(data_commits)))
+    if data_checksums:
+        model["data_checksum"] = ",".join(sorted(set(data_checksums)))
     if calendar_events:
         model["calendar_events"] = [
             [dt.isoformat(), float(imp)] for dt, imp in calendar_events
