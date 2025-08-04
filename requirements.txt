@@ -4,6 +4,8 @@ scikit-learn
 pytest
 aiohttp
 prometheus_client
+opentelemetry-sdk
+opentelemetry-exporter-otlp
 
 # Optional extras
 xgboost; extra == "xgboost"

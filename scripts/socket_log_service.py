@@ -5,9 +5,17 @@ import argparse
 import asyncio
 import csv
 import json
+import os
 import zlib
 from pathlib import Path
 from asyncio import StreamReader, StreamWriter, Queue
+
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import format_span_id, format_trace_id
 
 FIELDS = [
     "event_id",
@@ -27,8 +35,16 @@ FIELDS = [
     "profit",
     "comment",
     "remaining_lots",
+    "trace_id",
+    "span_id",
 ]
 
+resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "socket_log_service")})
+provider = TracerProvider(resource=resource)
+if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
 
 async def _writer_task(out_file: Path, queue: Queue) -> None:
     """Write rows from ``queue`` to ``out_file``."""
@@ -73,19 +89,27 @@ async def _handle_conn(
                     obj = json.loads(data)
                 except Exception:
                     continue
-                row = [str(obj.get(field, "")) for field in FIELDS]
-                await queue.put(row)
+                with tracer.start_as_current_span("log_event") as span:
+                    ctx = span.get_span_context()
+                    obj.setdefault("trace_id", format_trace_id(ctx.trace_id))
+                    obj.setdefault("span_id", format_span_id(ctx.span_id))
+                    row = [str(obj.get(field, "")) for field in FIELDS]
+                    await queue.put(row)
         else:
             while data := await reader.readline():
-                line = data.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                row = [str(obj.get(field, "")) for field in FIELDS]
-                await queue.put(row)
+                with tracer.start_as_current_span("log_event") as span:
+                    line = data.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ctx = span.get_span_context()
+                    obj.setdefault("trace_id", format_trace_id(ctx.trace_id))
+                    obj.setdefault("span_id", format_span_id(ctx.span_id))
+                    row = [str(obj.get(field, "")) for field in FIELDS]
+                    await queue.put(row)
     finally:
         writer.close()
         await writer.wait_closed()
