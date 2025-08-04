@@ -37,7 +37,7 @@ string   trade_log_buffer[];
 int      NextEventId = 1;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
-const int LogSchemaVersion = 2;
+const int LogSchemaVersion = 3;
 
 int MapGet(int key)
 {
@@ -75,6 +75,26 @@ bool Contains(int &arr[], int value)
    return(false);
 }
 
+void GetBookVolumes(string symbol, double &bid_vol, double &ask_vol, double &imbalance)
+{
+   bid_vol = 0.0;
+   ask_vol = 0.0;
+   imbalance = 0.0;
+   MqlBookInfo book[];
+   if(MarketBookGet(symbol, book))
+   {
+      for(int i=0; i<ArraySize(book); i++)
+      {
+         if(book[i].type==BOOK_TYPE_BUY)
+            bid_vol += book[i].volume;
+         else if(book[i].type==BOOK_TYPE_SELL)
+            ask_vol += book[i].volume;
+      }
+      if(bid_vol + ask_vol > 0)
+         imbalance = (bid_vol - ask_vol) / (bid_vol + ask_vol);
+   }
+}
+
 int OnInit()
 {
    EventSetTimer(1);
@@ -104,7 +124,7 @@ int OnInit()
          FileSeek(trade_log_handle, 0, SEEK_END);
          if(need_header)
          {
-            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time";
+            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance";
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
@@ -255,9 +275,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    if(entry==DEAL_ENTRY_IN || entry==DEAL_ENTRY_INOUT)
    {
+      double bid_vol, ask_vol, book_imb;
+      GetBookVolumes(symbol, bid_vol, ask_vol, book_imb);
       LogTrade("OPEN", ticket, magic, "mt4", symbol, order_type,
                lots, price, sl, tp, 0.0, profit_after, MarketInfo(symbol, MODE_SPREAD),
-               remaining, now, comment, slippage, iVolume(symbol, 0, 0), 0);
+               remaining, now, comment, slippage, iVolume(symbol, 0, 0), 0,
+               bid_vol, ask_vol, book_imb);
       if(!IsTracked(ticket))
          AddTicket(ticket);
       else if(entry==DEAL_ENTRY_INOUT && remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
@@ -265,10 +288,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          double cur_price = OrderOpenPrice();
          double cur_sl    = OrderStopLoss();
          double cur_tp    = OrderTakeProfit();
+         double bid_vol2, ask_vol2, book_imb2;
+         GetBookVolumes(symbol, bid_vol2, ask_vol2, book_imb2);
          LogTrade("MODIFY", ticket, magic, "mt4", symbol, order_type,
                   0.0, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   MarketInfo(symbol, MODE_SPREAD), remaining, now, comment, 0.0,
-                  iVolume(symbol, 0, 0), 0);
+                  iVolume(symbol, 0, 0), 0, bid_vol2, ask_vol2, book_imb2);
       }
    }
    else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
@@ -278,9 +303,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          open_time = OrderOpenTime();
       else if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
          open_time = OrderOpenTime();
+      double bid_vol3, ask_vol3, book_imb3;
+      GetBookVolumes(symbol, bid_vol3, ask_vol3, book_imb3);
       LogTrade("CLOSE", ticket, magic, "mt4", symbol, order_type,
                lots, price, sl, tp, profit, profit_after, MarketInfo(symbol, MODE_SPREAD),
-               remaining, now, comment, slippage, iVolume(symbol, 0, 0), open_time);
+               remaining, now, comment, slippage, iVolume(symbol, 0, 0), open_time,
+               bid_vol3, ask_vol3, book_imb3);
       if(IsTracked(ticket) && remaining==0.0)
          RemoveTicket(ticket);
       else if(remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
@@ -288,10 +316,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          double cur_price = OrderOpenPrice();
          double cur_sl    = OrderStopLoss();
          double cur_tp    = OrderTakeProfit();
+         double bid_vol4, ask_vol4, book_imb4;
+         GetBookVolumes(symbol, bid_vol4, ask_vol4, book_imb4);
          LogTrade("MODIFY", ticket, magic, "mt4", symbol, order_type,
                   0.0, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   MarketInfo(symbol, MODE_SPREAD), remaining, now, comment, 0.0,
-                  iVolume(symbol, 0, 0), 0);
+                  iVolume(symbol, 0, 0), 0, bid_vol4, ask_vol4, book_imb4);
       }
    }
 }
@@ -318,11 +348,13 @@ void OnTick()
       if(!IsTracked(ticket))
       {
          double profit_after = AccountBalance() + AccountProfit();
+         double bid_vol, ask_vol, book_imb;
+         GetBookVolumes(OrderSymbol(), bid_vol, ask_vol, book_imb);
          LogTrade("OPEN", ticket, OrderMagicNumber(), "mt4", OrderSymbol(), OrderType(),
                   OrderLots(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
                   0.0, profit_after, MarketInfo(OrderSymbol(), MODE_SPREAD),
                   OrderLots(), now, OrderComment(), 0.0,
-                  iVolume(OrderSymbol(), 0, 0), 0);
+                  iVolume(OrderSymbol(), 0, 0), 0, bid_vol, ask_vol, book_imb);
          AddTicket(ticket);
       }
    }
@@ -338,12 +370,15 @@ void OnTick()
          if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
          {
              double profit_after2 = AccountBalance() + AccountProfit();
+             double bid_vol, ask_vol, book_imb;
+             GetBookVolumes(OrderSymbol(), bid_vol, ask_vol, book_imb);
              LogTrade("CLOSE", ticket, OrderMagicNumber(), "mt4", OrderSymbol(),
                        OrderType(), OrderLots(), OrderClosePrice(), OrderStopLoss(),
                        OrderTakeProfit(), OrderProfit()+OrderSwap()+OrderCommission(),
                        profit_after2, MarketInfo(OrderSymbol(), MODE_SPREAD),
                        0.0, now, OrderComment(), 0.0,
-                       iVolume(OrderSymbol(), 0, 0), OrderOpenTime());
+                       iVolume(OrderSymbol(), 0, 0), OrderOpenTime(),
+                       bid_vol, ask_vol, book_imb);
          }
          RemoveTicket(ticket);
          t--; // adjust index after removal
@@ -463,18 +498,22 @@ void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
               double sl, double tp, double profit, double profit_after,
               double spread, double remaining, datetime time_event, string comment,
-              double slippage, double volume, datetime open_time)
+              double slippage, double volume, datetime open_time,
+              double book_bid_vol, double book_ask_vol, double book_imbalance)
 {
    int id = NextEventId++;
    string open_time_str = "";
    if(action=="CLOSE" && open_time>0)
       open_time_str = TimeToString(open_time, TIME_DATE|TIME_SECONDS);
-   string line = StringFormat("%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%d;%s;%.2f;%.5f;%d;%s",
+   string line = StringFormat(
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%d;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f",
       id,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
-      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp, profit, profit_after, spread, comment, remaining, slippage, (int)volume, open_time_str);
+      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp,
+      profit, profit_after, spread, comment, remaining, slippage, (int)volume,
+      open_time_str, book_bid_vol, book_ask_vol, book_imbalance);
 
    if(!EnableSocketLogging)
    {
@@ -496,16 +535,19 @@ void LogTrade(string action, int ticket, int magic, string source,
       }
    }
 
-   string json = StringFormat("{\"schema_version\":%d,\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"profit_after_trade\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d,\"open_time\":\"%s\"}",
+   string json = StringFormat(
+      "{\"schema_version\":%d,\"event_id\":%d,\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"profit_after_trade\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d,\"open_time\":\"%s\",\"book_bid_vol\":%.2f,\"book_ask_vol\":%.2f,\"book_imbalance\":%.5f}",
       LogSchemaVersion, id,
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
-      lots, price, sl, tp, profit, profit_after, spread, EscapeJson(comment), remaining, slippage, (int)volume, EscapeJson(open_time_str));
+      lots, price, sl, tp, profit, profit_after, spread, EscapeJson(comment), remaining,
+      slippage, (int)volume, EscapeJson(open_time_str), book_bid_vol, book_ask_vol, book_imbalance);
 
    SendJson(json);
 }
+
 
 void ExportLogs(datetime ts)
 {
