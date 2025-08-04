@@ -856,6 +856,66 @@ def train(
 
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
+    # ------------------------------------------------------------------
+    # Session based training
+    # ------------------------------------------------------------------
+    vec = DictVectorizer(sparse=False)
+    X_all = vec.fit_transform(features)
+    y_all = np.array(labels)
+    hours_all = np.array(hours)
+
+    # normalization statistics shared across sessions
+    mean_vals = X_all.mean(axis=0)
+    std_vals = X_all.std(axis=0)
+    std_vals[std_vals == 0] = 1.0
+    X_all = (X_all - mean_vals) / std_vals
+
+    session_ranges = [(0, 7), (7, 13), (13, 24)]
+    session_models = []
+    for start, end in session_ranges:
+        mask = (hours_all >= start) & (hours_all < end)
+        if mask.sum() < 2 or len(np.unique(y_all[mask])) < 2:
+            continue
+        clf = LogisticRegression(max_iter=1000)
+        clf.fit(X_all[mask], y_all[mask])
+        prob_table = []
+        feature_names = vec.get_feature_names_out().tolist()
+        base_feat = {name: 0.0 for name in feature_names}
+        for h in range(24):
+            f = base_feat.copy()
+            if "hour_sin" in f:
+                f["hour_sin"] = math.sin(2 * math.pi * h / 24)
+            if "hour_cos" in f:
+                f["hour_cos"] = math.cos(2 * math.pi * h / 24)
+            X_h = vec.transform([f])
+            X_h = (X_h - mean_vals) / std_vals
+            prob_table.append(float(clf.predict_proba(X_h)[0, 1]))
+        session_models.append(
+            {
+                "feature_names": feature_names,
+                "coefficients": clf.coef_[0].tolist(),
+                "intercept": float(clf.intercept_[0]),
+                "probability_table": prob_table,
+                "session_range": [int(start), int(end)],
+            }
+        )
+
+    model = {
+        "model_id": "target_clone",
+        "feature_names": vec.get_feature_names_out().tolist(),
+        "mean": mean_vals.tolist(),
+        "std": std_vals.tolist(),
+        "threshold": 0.5,
+        "val_accuracy": 0.0,
+        "session_models": session_models,
+    }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model, f, indent=2)
+
+    print(f"Model written to {out_dir / 'model.json'}")
+    return
 
     hidden_size = 8
     logreg_C = 1.0

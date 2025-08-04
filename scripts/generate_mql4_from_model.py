@@ -22,7 +22,16 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
     models: List[dict] = []
     for mj in model_jsons:
         with open(mj) as f:
-            models.append(json.load(f))
+            data = json.load(f)
+        sessions = data.get('session_models')
+        if sessions:
+            base_info = {k: v for k, v in data.items() if k != 'session_models'}
+            for sm in sessions:
+                m = base_info.copy()
+                m.update(sm)
+                models.append(m)
+        else:
+            models.append(data)
     base = models[0]
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(template_path) as f:
@@ -74,10 +83,20 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
     cal_inter = _fmt(base.get('calibration_intercept', 0.0))
     output = output.replace('__CAL_COEF__', cal_coef)
     output = output.replace('__CAL_INTERCEPT__', cal_inter)
-
-    prob_table = base.get('probability_table', [])
-    prob_str = ', '.join(_fmt(p) for p in prob_table)
-    output = output.replace('__PROBABILITY_TABLE__', prob_str)
+    session_starts: List[str] = []
+    session_ends: List[str] = []
+    prob_rows: List[str] = []
+    for m in models:
+        rng = m.get('session_range', [0, 24])
+        session_starts.append(str(int(rng[0])))
+        session_ends.append(str(int(rng[1])))
+        pt = m.get('probability_table', [0.0] * 24)
+        if len(pt) < 24:
+            pt = list(pt) + [0.0] * (24 - len(pt))
+        prob_rows.append('{' + ', '.join(_fmt(p) for p in pt) + '}')
+    output = output.replace('__SESSION_STARTS__', ', '.join(session_starts))
+    output = output.replace('__SESSION_ENDS__', ', '.join(session_ends))
+    output = output.replace('__PROBABILITY_TABLE__', ', '.join(prob_rows))
 
     hourly_thr = base.get('hourly_thresholds', [])
     thr_str = ', '.join(_fmt(t) for t in hourly_thr)
