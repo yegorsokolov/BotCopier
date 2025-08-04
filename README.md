@@ -83,6 +83,11 @@ Pass ``--regress-sl-tp`` to also fit linear models predicting stop loss and take
 profit distances. The coefficients are saved in ``model.json`` and generated
 strategies will automatically place orders with these predicted values.
 
+To automatically drop weak predictors, provide ``--prune-threshold``. Features
+whose mean absolute SHAP value falls below this threshold are removed and the
+classifier is refit on the reduced set. A warning is emitted when pruning
+eliminates more than the fraction specified via ``--prune-warn``.
+
 Hyperparameters can be optimised automatically when `optuna` is installed. The
 best trial's parameters and validation score are saved to `model.json`:
 

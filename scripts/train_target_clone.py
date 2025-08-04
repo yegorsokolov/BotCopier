@@ -779,6 +779,8 @@ def train(
     event_window: float = 60.0,
     calibration: str | None = None,
     stack_models: list[str] | None = None,
+    prune_threshold: float = 0.0,
+    prune_warn: float = 0.5,
 ):
     """Train a simple classifier model from the log directory."""
     if optuna_trials > 0 and not HAS_OPTUNA:
@@ -856,67 +858,6 @@ def train(
 
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
-    # ------------------------------------------------------------------
-    # Session based training
-    # ------------------------------------------------------------------
-    vec = DictVectorizer(sparse=False)
-    X_all = vec.fit_transform(features)
-    y_all = np.array(labels)
-    hours_all = np.array(hours)
-
-    # normalization statistics shared across sessions
-    mean_vals = X_all.mean(axis=0)
-    std_vals = X_all.std(axis=0)
-    std_vals[std_vals == 0] = 1.0
-    X_all = (X_all - mean_vals) / std_vals
-
-    session_ranges = [(0, 7), (7, 13), (13, 24)]
-    session_models = []
-    for start, end in session_ranges:
-        mask = (hours_all >= start) & (hours_all < end)
-        if mask.sum() < 2 or len(np.unique(y_all[mask])) < 2:
-            continue
-        clf = LogisticRegression(max_iter=1000)
-        clf.fit(X_all[mask], y_all[mask])
-        prob_table = []
-        feature_names = vec.get_feature_names_out().tolist()
-        base_feat = {name: 0.0 for name in feature_names}
-        for h in range(24):
-            f = base_feat.copy()
-            if "hour_sin" in f:
-                f["hour_sin"] = math.sin(2 * math.pi * h / 24)
-            if "hour_cos" in f:
-                f["hour_cos"] = math.cos(2 * math.pi * h / 24)
-            X_h = vec.transform([f])
-            X_h = (X_h - mean_vals) / std_vals
-            prob_table.append(float(clf.predict_proba(X_h)[0, 1]))
-        session_models.append(
-            {
-                "feature_names": feature_names,
-                "coefficients": clf.coef_[0].tolist(),
-                "intercept": float(clf.intercept_[0]),
-                "probability_table": prob_table,
-                "session_range": [int(start), int(end)],
-            }
-        )
-
-    model = {
-        "model_id": "target_clone",
-        "feature_names": vec.get_feature_names_out().tolist(),
-        "mean": mean_vals.tolist(),
-        "std": std_vals.tolist(),
-        "threshold": 0.5,
-        "val_accuracy": 0.0,
-        "session_models": session_models,
-    }
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / "model.json", "w") as f:
-        json.dump(model, f, indent=2)
-
-    print(f"Model written to {out_dir / 'model.json'}")
-    return
-
     hidden_size = 8
     logreg_C = 1.0
     best_trial = None
@@ -1366,6 +1307,8 @@ def train(
             hourly_thresholds.append(float(t))
 
     # Compute SHAP feature importance on the training set
+    feature_names = vec.get_feature_names_out().tolist()
+    keep_idx = list(range(len(feature_names)))
     try:
         import shap  # type: ignore
 
@@ -1376,18 +1319,79 @@ def train(
             explainer = shap.Explainer(clf, X_train)
             shap_values = explainer(X_train).values
         importances = np.abs(shap_values).mean(axis=0)
-        feature_importance = dict(
-            zip(vec.get_feature_names_out().tolist(), importances.tolist())
-        )
+        feature_importance = dict(zip(feature_names, importances.tolist()))
     except Exception:  # pragma: no cover - shap optional
+        importances = np.array([])
         feature_importance = {}
+
+    if prune_threshold > 0.0 and feature_importance:
+        keep_idx = [i for i, name in enumerate(feature_names) if feature_importance.get(name, 0.0) >= prune_threshold]
+        removed_ratio = 1 - len(keep_idx) / len(feature_names)
+        if removed_ratio > prune_warn:
+            logging.warning("Pruning removed %.1f%% of features", removed_ratio * 100)
+        if len(keep_idx) < len(feature_names):
+            X_train = X_train[:, keep_idx]
+            if X_val.shape[0] > 0:
+                X_val = X_val[:, keep_idx]
+            X_train_reg = X_train_reg[:, keep_idx]
+            if X_val_reg.shape[0] > 0:
+                X_val_reg = X_val_reg[:, keep_idx]
+            feature_mean = feature_mean[keep_idx]
+            feature_std = feature_std[keep_idx]
+            feature_names = [feature_names[i] for i in keep_idx]
+
+            clf.fit(X_train, y_train, sample_weight=sample_weight)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+            train_proba = train_proba_raw
+            val_proba = val_proba_raw
+            if calibration is not None and len(y_val) > 0:
+                calibrator = CalibratedClassifierCV(clf, cv="prefit", method=calibration)
+                calibrator.fit(X_val, y_val)
+                train_proba = calibrator.predict_proba(X_train)[:, 1]
+                val_proba = calibrator.predict_proba(X_val)[:, 1]
+                if calibration == "sigmoid":
+                    cal_lr = calibrator.calibrated_classifiers_[0].calibrator
+                    cal_coef = float(cal_lr.coef_[0][0])
+                    cal_inter = float(cal_lr.intercept_[0])
+            if regress_sl_tp:
+                reg_sl.fit(X_train_reg, sl_train)
+                reg_tp.fit(X_train_reg, tp_train)
+                sl_coef = reg_sl.coef_
+                sl_inter = reg_sl.intercept_
+                tp_coef = reg_tp.coef_
+                tp_inter = reg_tp.intercept_
+            if len(y_val) > 0:
+                threshold, _ = _best_threshold(y_val, val_proba)
+                val_preds = (val_proba >= threshold).astype(int)
+                val_acc = float(accuracy_score(y_val, val_preds))
+            else:
+                threshold = 0.5
+                val_acc = float("nan")
+            train_preds = (train_proba >= threshold).astype(int)
+            train_acc = float(accuracy_score(y_train, train_preds))
+
+            try:
+                if model_type == "logreg":
+                    explainer = shap.LinearExplainer(clf, X_train)
+                    shap_values = explainer.shap_values(X_train)
+                else:
+                    explainer = shap.Explainer(clf, X_train)
+                    shap_values = explainer(X_train).values
+                importances = np.abs(shap_values).mean(axis=0)
+                feature_importance = dict(zip(feature_names, importances.tolist()))
+            except Exception:  # pragma: no cover
+                feature_importance = {}
+
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = {
         "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
         "trained_at": datetime.utcnow().isoformat(),
-        "feature_names": vec.get_feature_names_out().tolist(),
+        "feature_names": feature_names,
         "model_type": model_type,
         "weighted": sample_weight is not None,
         "train_accuracy": train_acc,
@@ -1440,7 +1444,6 @@ def train(
         model["intercept"] = float(coef[0])
 
         # lookup probabilities per trading hour for simple export
-        feature_names = vec.get_feature_names_out().tolist()
         base_feat = {name: 0.0 for name in feature_names}
         lookup = []
         for h in range(24):
@@ -1449,7 +1452,7 @@ def train(
                 f["hour_sin"] = math.sin(2 * math.pi * h / 24)
             if "hour_cos" in f:
                 f["hour_cos"] = math.cos(2 * math.pi * h / 24)
-            X_h = vec.transform([f])
+            X_h = vec.transform([f])[:, keep_idx]
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
     elif model_type == "lgbm":
@@ -1460,7 +1463,6 @@ def train(
         model["coefficients"] = coef[1:].tolist()
         model["intercept"] = float(coef[0])
 
-        feature_names = vec.get_feature_names_out().tolist()
         base_feat = {name: 0.0 for name in feature_names}
         lookup = []
         for h in range(24):
@@ -1469,7 +1471,7 @@ def train(
                 f["hour_sin"] = math.sin(2 * math.pi * h / 24)
             if "hour_cos" in f:
                 f["hour_cos"] = math.cos(2 * math.pi * h / 24)
-            X_h = vec.transform([f])
+            X_h = vec.transform([f])[:, keep_idx]
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
     elif model_type == "catboost":
@@ -1480,7 +1482,6 @@ def train(
         model["coefficients"] = coef[1:].tolist()
         model["intercept"] = float(coef[0])
 
-        feature_names = vec.get_feature_names_out().tolist()
         base_feat = {name: 0.0 for name in feature_names}
         lookup = []
         for h in range(24):
@@ -1489,7 +1490,7 @@ def train(
                 f["hour_sin"] = math.sin(2 * math.pi * h / 24)
             if "hour_cos" in f:
                 f["hour_cos"] = math.cos(2 * math.pi * h / 24)
-            X_h = vec.transform([f])
+            X_h = vec.transform([f])[:, keep_idx]
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
     elif model_type == "stack":
@@ -1592,6 +1593,8 @@ def main():
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
     p.add_argument('--stack', help='comma separated list of model types to stack')
+    p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
+    p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -1645,6 +1648,8 @@ def main():
         event_window=args.event_window,
         calibration=args.calibration,
         stack_models=[s.strip() for s in args.stack.split(',')] if args.stack else None,
+        prune_threshold=args.prune_threshold,
+        prune_warn=args.prune_warn,
     )
 
 
