@@ -4,11 +4,19 @@
 import argparse
 import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Callable, Optional
 from asyncio import StreamReader, StreamWriter, Queue
 from aiohttp import web
+
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import format_span_id, format_trace_id
 
 FIELDS = [
     "time",
@@ -22,7 +30,16 @@ FIELDS = [
     "expectancy",
     "file_write_errors",
     "socket_errors",
+    "trace_id",
+    "span_id",
 ]
+
+resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "metrics_collector")})
+provider = TracerProvider(resource=resource)
+if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
 
 
 async def _writer_task(
@@ -55,15 +72,19 @@ async def _writer_task(
 async def _handle_conn(reader: StreamReader, writer: StreamWriter, queue: Queue) -> None:
     try:
         while data := await reader.readline():
-            line = data.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("type") == "metrics":
-                await queue.put(obj)
+            with tracer.start_as_current_span("metrics_message") as span:
+                line = data.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "metrics":
+                    ctx = span.get_span_context()
+                    obj.setdefault("trace_id", format_trace_id(ctx.trace_id))
+                    obj.setdefault("span_id", format_span_id(ctx.span_id))
+                    await queue.put(obj)
     finally:
         writer.close()
         await writer.wait_closed()

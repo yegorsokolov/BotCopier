@@ -19,6 +19,13 @@ import sys
 import zlib
 from pathlib import Path
 
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import format_span_id, format_trace_id
+
 # Expected schema version for incoming messages. Can be overridden via env var.
 EXPECTED_SCHEMA_VERSION = os.environ.get("SCHEMA_VERSION", "1.0")
 
@@ -27,6 +34,14 @@ LOG_FILES = {
     "event": Path("logs/trades_raw.csv"),
     "metric": Path("logs/metrics.csv"),
 }
+
+
+resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "stream_listener")})
+provider = TracerProvider(resource=resource)
+if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
 
 
 def append_csv(path: Path, record: dict) -> None:
@@ -54,9 +69,14 @@ def process_message(message: dict) -> None:
     if msg_type not in LOG_FILES:
         print(f"Unknown message type: {msg_type}", file=sys.stderr)
         return
-
-    record = {k: v for k, v in message.items() if k not in {"schema_version", "type"}}
-    append_csv(LOG_FILES[msg_type], record)
+    with tracer.start_as_current_span(f"process_{msg_type}") as span:
+        record = {
+            k: v for k, v in message.items() if k not in {"schema_version", "type"}
+        }
+        ctx = span.get_span_context()
+        record.setdefault("trace_id", format_trace_id(ctx.trace_id))
+        record["span_id"] = format_span_id(ctx.span_id)
+        append_csv(LOG_FILES[msg_type], record)
 
 
 def main() -> int:

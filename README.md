@@ -257,6 +257,12 @@ To capture newline-delimited JSON from the EA directly, run the
 include a matching ``schema_version`` field (default ``1.0`` or overridden via
 the ``SCHEMA_VERSION`` environment variable).
 
+All helper scripts are instrumented with [OpenTelemetry](https://opentelemetry.io/)
+and export traces using the OTLP protocol.  Point
+``OTEL_EXPORTER_OTLP_ENDPOINT`` at a Jaeger or Zipkin collector to correlate
+events across components.  The ``trace_id`` of each trade event is also included
+in the ``LogTrade`` JSON emitted by the EA for end-to-end tracing.
+
 After each trading session ``upload_logs.py`` can commit these CSV files and
 push them back to the repository. The script uses the ``GITHUB_TOKEN``
 environment variable for authentication.
@@ -266,6 +272,10 @@ environment variable for authentication.
 * ``SCHEMA_VERSION`` – expected message schema version for ``stream_listener.py``.
 * ``GITHUB_TOKEN`` – personal access token with ``repo`` scope used by
   ``upload_logs.py`` to push commits.
+* ``OTEL_EXPORTER_OTLP_ENDPOINT`` – URL of the OTLP collector (Jaeger or Zipkin).
+* ``OTEL_EXPORTER_OTLP_HEADERS`` – optional headers for the OTLP exporter.
+* ``OTEL_EXPORTER_OTLP_CERTIFICATE`` – TLS certificate for secure OTLP.
+* ``OTEL_SERVICE_NAME`` – override the default service name reported in traces.
 
 ### Cron Job Example
 

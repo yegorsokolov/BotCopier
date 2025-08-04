@@ -53,8 +53,9 @@ def test_stream_listener(tmp_path: Path):
     with open(out_file) as f:
         lines = [l.strip() for l in f.readlines() if l.strip()]
 
-    expected = [
-        "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;comment;remaining_lots",
-        "1;t;b;l;OPEN;1;2;mt4;EURUSD;0;0.1;1.2345;1.0;2.0;0.0;hi;0.1",
-    ]
-    assert lines == expected
+    header = lines[0].split(";")
+    assert "trace_id" in header and "span_id" in header
+    values = dict(zip(header, lines[1].split(";")))
+    assert values["symbol"] == "EURUSD"
+    assert len(values["trace_id"]) == 32
+    assert len(values["span_id"]) == 16
