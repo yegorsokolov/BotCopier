@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import gzip
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -220,6 +221,7 @@ def train(
     update_freq: int = 1,
     algo: str = "dqn",
     start_model: Path | None = None,
+    compress_model: bool = False,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     states, actions, rewards, next_states, vec = _build_dataset(data_dir)
@@ -316,10 +318,12 @@ def train(
         else:
             model_info["training_type"] = "rl_only"
 
-        with open(out_dir / "model.json", "w") as f:
+        model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+        open_func = gzip.open if compress_model else open
+        with open_func(model_path, "wt") as f:
             json.dump(model_info, f, indent=2)
 
-        print(f"Model written to {out_dir / 'model.json'}")
+        print(f"Model written to {model_path}")
         print(f"Weights written to {weights_path.with_suffix('.zip')}")
         return
 
@@ -412,10 +416,10 @@ def train(
         "trained_at": datetime.utcnow().isoformat(),
         "algo": algo_key,
         "feature_names": vec.get_feature_names_out().tolist(),
-        "coefficients": (weights[0] - weights[1]).tolist(),
+        "coefficients": (weights[0] - weights[1]).astype(np.float32).tolist(),
         "intercept": float(intercepts[0] - intercepts[1]),
-        "q_weights": weights.tolist(),
-        "q_intercepts": intercepts.tolist(),
+        "q_weights": weights.astype(np.float32).tolist(),
+        "q_intercepts": intercepts.astype(np.float32).tolist(),
         "train_accuracy": train_acc,
         "avg_reward": float(np.mean(episode_rewards)),
         "avg_reward_per_episode": float(np.mean(episode_totals)),
@@ -432,10 +436,12 @@ def train(
         model["init_model"] = start_model.name if start_model is not None else None
         model["init_model_id"] = init_model_data.get("model_id")
 
-    with open(out_dir / "model.json", "w") as f:
+    model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+    open_func = gzip.open if compress_model else open
+    with open_func(model_path, "wt") as f:
         json.dump(model, f, indent=2)
 
-    print(f"Model written to {out_dir / 'model.json'}")
+    print(f"Model written to {model_path}")
 
 
 def main() -> None:
@@ -458,6 +464,7 @@ def main() -> None:
         ),
     )
     p.add_argument("--start-model", help="path to initial model coefficients")
+    p.add_argument("--compress-model", action="store_true", help="write model.json.gz")
     args = p.parse_args()
     train(
         Path(args.data_dir),
@@ -470,6 +477,7 @@ def main() -> None:
         update_freq=args.update_freq,
         algo=args.algo,
         start_model=Path(args.start_model) if args.start_model else None,
+        compress_model=args.compress_model,
     )
 
 

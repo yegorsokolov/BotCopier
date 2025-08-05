@@ -2,6 +2,7 @@ import csv
 import json
 from pathlib import Path
 import sys
+import gzip
 
 import pytest
 
@@ -90,3 +91,19 @@ def test_train_cql(tmp_path: Path) -> None:
         data = json.load(f)
     assert data.get("training_type") == "offline_rl"
     assert data.get("algo") == "cql"
+
+
+def test_train_cql_compress_model(tmp_path: Path) -> None:
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    out_dir.mkdir()
+    _write_log(data_dir / "trades_1.csv")
+
+    train(data_dir, out_dir, algo="cql", training_steps=5, compress_model=True)
+
+    model_file = out_dir / "model.json.gz"
+    assert model_file.exists()
+    with gzip.open(model_file, "rt") as f:
+        data = json.load(f)
+    assert data.get("training_type") == "offline_rl"

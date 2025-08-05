@@ -9,6 +9,7 @@ by other helper scripts.
 """
 import argparse
 import json
+import gzip
 from datetime import datetime
 import math
 from pathlib import Path
@@ -739,6 +740,7 @@ def _train_lite_mode(
     event_window: float = 60.0,
     encoder_file: Path | None = None,
     chunk_size: int = 50000,
+    compress_model: bool = False,
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
@@ -818,9 +820,9 @@ def _train_lite_mode(
         "accuracy": float("nan"),
         "num_samples": int(sample_count),
         "feature_importance": {},
-        "mean": scaler.mean_.tolist(),
-        "std": scaler.scale_.tolist(),
-        "coefficients": clf.coef_[0].tolist(),
+        "mean": scaler.mean_.astype(np.float32).tolist(),
+        "std": scaler.scale_.astype(np.float32).tolist(),
+        "coefficients": clf.coef_[0].astype(np.float32).tolist(),
         "intercept": float(clf.intercept_[0]),
         "classes": [int(c) for c in clf.classes_],
     }
@@ -835,8 +837,11 @@ def _train_lite_mode(
         model["event_window"] = float(event_window)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / "model.json", "w") as f:
+    model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+    open_func = gzip.open if compress_model else open
+    with open_func(model_path, "wt") as f:
         json.dump(model, f)
+    print(f"Model written to {model_path}")
 
 
 def train(
@@ -881,6 +886,7 @@ def train(
     prune_threshold: float = 0.0,
     prune_warn: float = 0.5,
     lite_mode: bool = False,
+    compress_model: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
     if lite_mode:
@@ -907,6 +913,7 @@ def train(
             calendar_events=calendar_events,
             event_window=event_window,
             encoder_file=encoder_file,
+            compress_model=compress_model,
         )
         return
     if optuna_trials > 0:
@@ -1795,8 +1802,8 @@ def train(
         "accuracy": val_acc,
         "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
         "feature_importance": feature_importance,
-        "mean": feature_mean.tolist(),
-        "std": feature_std.tolist(),
+        "mean": feature_mean.astype(np.float32).tolist(),
+        "std": feature_std.astype(np.float32).tolist(),
     }
     if data_commits:
         model["data_commit"] = ",".join(sorted(set(data_commits)))
@@ -1826,7 +1833,7 @@ def train(
         model["stack_models"] = stack_models
 
     if model_type == "logreg":
-        model["coefficients"] = clf.coef_[0].tolist()
+        model["coefficients"] = clf.coef_[0].astype(np.float32).tolist()
         model["intercept"] = float(clf.intercept_[0])
         model["classes"] = [int(c) for c in clf.classes_]
     elif model_type == "xgboost":
@@ -1834,7 +1841,7 @@ def train(
         logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
         A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
         coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
-        model["coefficients"] = coef[1:].tolist()
+        model["coefficients"] = coef[1:].astype(np.float32).tolist()
         model["intercept"] = float(coef[0])
 
         # lookup probabilities per trading hour for simple export
@@ -1854,7 +1861,7 @@ def train(
         logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
         A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
         coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
-        model["coefficients"] = coef[1:].tolist()
+        model["coefficients"] = coef[1:].astype(np.float32).tolist()
         model["intercept"] = float(coef[0])
 
         base_feat = {name: 0.0 for name in feature_names}
@@ -1873,7 +1880,7 @@ def train(
         logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
         A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
         coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
-        model["coefficients"] = coef[1:].tolist()
+        model["coefficients"] = coef[1:].astype(np.float32).tolist()
         model["intercept"] = float(coef[0])
 
         base_feat = {name: 0.0 for name in feature_names}
@@ -1891,7 +1898,7 @@ def train(
         logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
         A = np.hstack([np.ones((X_train.shape[0], 1)), X_train])
         coef = np.linalg.lstsq(A, logit_p, rcond=None)[0]
-        model["coefficients"] = coef[1:].tolist()
+        model["coefficients"] = coef[1:].astype(np.float32).tolist()
         model["intercept"] = float(coef[0])
     elif model_type == "nn":
         if hasattr(clf, "get_weights"):
@@ -1916,15 +1923,18 @@ def train(
         model["sequence_length"] = sequence_length
 
     if regress_sl_tp:
-        model["sl_coefficients"] = sl_coef.tolist()
+        model["sl_coefficients"] = sl_coef.astype(np.float32).tolist()
         model["sl_intercept"] = float(sl_inter)
-        model["tp_coefficients"] = tp_coef.tolist()
+        model["tp_coefficients"] = tp_coef.astype(np.float32).tolist()
         model["tp_intercept"] = float(tp_inter)
 
-    with open(out_dir / "model.json", "w") as f:
+    model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    open_func = gzip.open if compress_model else open
+    with open_func(model_path, "wt") as f:
         json.dump(model, f, indent=2)
 
-    print(f"Model written to {out_dir / 'model.json'}")
+    print(f"Model written to {model_path}")
 
     if "coefficients" in model and "intercept" in model:
         w = np.array(model["coefficients"], dtype=float)
@@ -1994,6 +2004,7 @@ def main():
     p.add_argument('--stack', help='comma separated list of model types to stack')
     p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
+    p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
     args = p.parse_args()
     if args.volatility_file:
         import json
@@ -2050,6 +2061,7 @@ def main():
         prune_threshold=args.prune_threshold,
         prune_warn=args.prune_warn,
         lite_mode=args.lite_mode,
+        compress_model=args.compress_model,
     )
 
 

@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 import hashlib
+import gzip
 
 import pandas as pd
 import pytest
@@ -705,3 +706,19 @@ def test_train_regress_sl_tp(tmp_path: Path):
         data = json.load(f)
     assert "sl_coefficients" in data
     assert "tp_coefficients" in data
+
+
+def test_train_compress_model(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, compress_model=True)
+
+    model_file = out_dir / "model.json.gz"
+    assert model_file.exists()
+    with gzip.open(model_file, "rt") as f:
+        data = json.load(f)
+    assert "coefficients" in data
