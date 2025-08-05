@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Iterable, List, Optional
 import sqlite3
 import logging
+import subprocess
+import sys
 
 import importlib.util
 
@@ -35,6 +37,33 @@ from sklearn.preprocessing import StandardScaler
 
 
 START_EVENT_ID = 0
+
+try:  # Optional dependency for RL refinement
+    import stable_baselines3  # type: ignore  # noqa: F401
+    HAS_SB3 = True
+except Exception:  # pragma: no cover - optional dependency
+    HAS_SB3 = False
+
+
+def _has_sufficient_ram(min_gb: float = 4.0) -> bool:
+    """Return True if the system has at least ``min_gb`` RAM."""
+    try:
+        return psutil.virtual_memory().total / (1024 ** 3) >= min_gb
+    except Exception:  # pragma: no cover - psutil errors
+        return False
+
+
+def _has_sufficient_gpu(min_gb: float = 1.0) -> bool:
+    """Return True if a CUDA GPU with ``min_gb`` memory is available."""
+    try:  # pragma: no cover - optional dependency
+        import torch
+
+        if torch.cuda.is_available():
+            mem = torch.cuda.get_device_properties(0).total_memory
+            return mem / (1024 ** 3) >= min_gb
+    except Exception:
+        pass
+    return False
 
 
 def detect_resources():
@@ -109,6 +138,17 @@ def _bollinger(values, window, dev=2.0):
     upper = sma + dev * std
     lower = sma - dev * std
     return float(upper), float(sma), float(lower)
+
+
+def _safe_float(val, default=0.0):
+    """Convert ``val`` to float, treating ``None``/NaN as ``default``."""
+    try:
+        f = float(val)
+        if math.isnan(f):
+            return default
+        return f
+    except Exception:
+        return default
 
 
 def _rsi(values, period):
@@ -599,11 +639,11 @@ def _extract_features(
         order_type = int(float(r.get("order_type", 0)))
         label = 1 if order_type == 0 else 0  # buy=1, sell=0
 
-        price = float(r.get("price", 0) or 0)
-        sl = float(r.get("sl", 0) or 0)
-        tp = float(r.get("tp", 0) or 0)
-        lots = float(r.get("lots", 0) or 0)
-        profit = float(r.get("profit", 0) or 0)
+        price = _safe_float(r.get("price", 0))
+        sl = _safe_float(r.get("sl", 0))
+        tp = _safe_float(r.get("tp", 0))
+        lots = _safe_float(r.get("lots", 0))
+        profit = _safe_float(r.get("profit", 0))
 
         for tf in higher_timeframes:
             tf_bin = int(t.timestamp() // tf_secs[tf])
@@ -622,10 +662,10 @@ def _extract_features(
         symbol = r.get("symbol", "")
         sym_prices = price_map.setdefault(symbol, [])
 
-        spread = float(r.get("spread", 0) or 0)
-        slippage = float(r.get("slippage", 0) or 0)
-        account_equity = float(r.get("equity", 0) or 0)
-        margin_level = float(r.get("margin_level", 0) or 0)
+        spread = _safe_float(r.get("spread", 0))
+        slippage = _safe_float(r.get("slippage", 0))
+        account_equity = _safe_float(r.get("equity", 0))
+        margin_level = _safe_float(r.get("margin_level", 0))
 
         hour_sin = math.sin(2 * math.pi * t.hour / 24)
         hour_cos = math.cos(2 * math.pi * t.hour / 24)
@@ -2034,6 +2074,60 @@ def train(
         model["sl_intercept"] = float(sl_inter)
         model["tp_coefficients"] = tp_coef.astype(np.float32).tolist()
         model["tp_intercept"] = float(tp_inter)
+
+    # Optional RL refinement
+    if (
+        HAS_SB3
+        and _has_sufficient_gpu()
+        and _has_sufficient_ram()
+        and "coefficients" in model
+        and "intercept" in model
+    ):
+        try:
+            temp_model = out_dir / "model_supervised.json"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            with open(temp_model, "w") as f_tmp:
+                json.dump(model, f_tmp)
+            rl_out = out_dir / "rl_tmp"
+            cmd = [
+                sys.executable,
+                str(Path(__file__).with_name("train_rl_agent.py")),
+                "--data-dir",
+                str(data_dir),
+                "--out-dir",
+                str(rl_out),
+                "--algo",
+                "qlearn",
+                "--training-steps",
+                "20",
+                "--start-model",
+                str(temp_model),
+            ]
+            if compress_model:
+                cmd.append("--compress-model")
+            subprocess.run(cmd, check=True)
+            rl_model_path = rl_out / (
+                "model.json.gz" if compress_model else "model.json"
+            )
+            open_rl = gzip.open if compress_model else open
+            with open_rl(rl_model_path, "rt") as f_rl:
+                rl_model = json.load(f_rl)
+            if "coefficients" in rl_model and "intercept" in rl_model:
+                model["coefficients"] = rl_model["coefficients"]
+                model["intercept"] = rl_model["intercept"]
+            if "q_weights" in rl_model:
+                model["q_weights"] = rl_model["q_weights"]
+            if "q_intercepts" in rl_model:
+                model["q_intercepts"] = rl_model["q_intercepts"]
+            model["rl_steps"] = rl_model.get("training_steps")
+            model["rl_reward"] = rl_model.get("avg_reward")
+        except Exception as exc:  # pragma: no cover - optional RL errors
+            logging.warning("RL refinement failed: %s", exc)
+        finally:
+            try:
+                temp_model.unlink()
+            except Exception:
+                pass
 
     model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
     out_dir.mkdir(parents=True, exist_ok=True)
