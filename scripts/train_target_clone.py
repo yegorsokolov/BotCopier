@@ -24,32 +24,6 @@ from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
-
-try:
-    import optuna  # type: ignore
-    HAS_OPTUNA = True
-except Exception:  # pragma: no cover - optional dependency
-    HAS_OPTUNA = False
-
-try:
-    import tensorflow as tf  # type: ignore
-    from tensorflow import keras  # type: ignore
-    HAS_TF = True
-except Exception:  # pragma: no cover - optional dependency
-    HAS_TF = False
-
-try:
-    from xgboost import XGBClassifier
-except Exception:  # pragma: no cover - optional dependency
-    XGBClassifier = None
-try:
-    from lightgbm import LGBMClassifier
-except Exception:  # pragma: no cover - optional dependency
-    LGBMClassifier = None
-try:
-    from catboost import CatBoostClassifier
-except Exception:  # pragma: no cover - optional dependency
-    CatBoostClassifier = None
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 
@@ -783,8 +757,14 @@ def train(
     prune_warn: float = 0.5,
 ):
     """Train a simple classifier model from the log directory."""
-    if optuna_trials > 0 and not HAS_OPTUNA:
-        raise ImportError("optuna is required for hyperparameter search")
+    if optuna_trials > 0:
+        try:
+            import optuna  # type: ignore
+        except Exception:  # pragma: no cover - optional dependency
+            logging.warning(
+                "optuna is not installed; skipping hyperparameter search"
+            )
+            optuna_trials = 0
 
     cache_file = out_dir / "feature_cache.npz"
 
@@ -958,67 +938,102 @@ def train(
             feature_names=np.array(feature_names_cache),
         )
 
-    if optuna_trials > 0 and HAS_OPTUNA:
+    if optuna_trials > 0:
         def _objective(trial):
             if model_type == "logreg":
                 c = trial.suggest_float("C", 1e-3, 10.0, log=True)
                 clf = LogisticRegression(max_iter=200, C=c)
+                clf.fit(X_train, y_train)
             elif model_type == "xgboost":
-                if XGBClassifier is None:
-                    raise ImportError("xgboost is not installed")
-                est = trial.suggest_int("n_estimators", 50, 300)
-                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-                depth = trial.suggest_int("max_depth", 2, 8)
-                clf = XGBClassifier(
-                    n_estimators=est,
-                    learning_rate=lr,
-                    max_depth=depth,
-                    eval_metric="logloss",
-                    use_label_encoder=False,
-                )
+                try:
+                    from xgboost import XGBClassifier  # type: ignore
+
+                    est = trial.suggest_int("n_estimators", 50, 300)
+                    lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                    depth = trial.suggest_int("max_depth", 2, 8)
+                    clf = XGBClassifier(
+                        n_estimators=est,
+                        learning_rate=lr,
+                        max_depth=depth,
+                        eval_metric="logloss",
+                        use_label_encoder=False,
+                    )
+                except Exception:
+                    logging.warning(
+                        "xgboost is not installed; using LogisticRegression instead"
+                    )
+                    clf = LogisticRegression(max_iter=200)
+                clf.fit(X_train, y_train)
             elif model_type == "lgbm":
-                if LGBMClassifier is None:
-                    raise ImportError("lightgbm is not installed")
-                est = trial.suggest_int("n_estimators", 50, 300)
-                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-                depth = trial.suggest_int("max_depth", 2, 8)
-                clf = LGBMClassifier(
-                    n_estimators=est,
-                    learning_rate=lr,
-                    max_depth=depth,
-                )
+                try:
+                    from lightgbm import LGBMClassifier  # type: ignore
+
+                    est = trial.suggest_int("n_estimators", 50, 300)
+                    lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                    depth = trial.suggest_int("max_depth", 2, 8)
+                    clf = LGBMClassifier(
+                        n_estimators=est,
+                        learning_rate=lr,
+                        max_depth=depth,
+                    )
+                except Exception:
+                    logging.warning(
+                        "lightgbm is not installed; using LogisticRegression instead"
+                    )
+                    clf = LogisticRegression(max_iter=200)
+                clf.fit(X_train, y_train)
             elif model_type == "catboost":
-                if CatBoostClassifier is None:
-                    raise ImportError("catboost is not installed")
-                est = trial.suggest_int("n_estimators", 50, 300)
-                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-                depth = trial.suggest_int("max_depth", 2, 8)
-                clf = CatBoostClassifier(
-                    iterations=est,
-                    learning_rate=lr,
-                    depth=depth,
-                    verbose=False,
-                )
+                try:
+                    from catboost import CatBoostClassifier  # type: ignore
+
+                    est = trial.suggest_int("n_estimators", 50, 300)
+                    lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                    depth = trial.suggest_int("max_depth", 2, 8)
+                    clf = CatBoostClassifier(
+                        iterations=est,
+                        learning_rate=lr,
+                        depth=depth,
+                        verbose=False,
+                    )
+                except Exception:
+                    logging.warning(
+                        "catboost is not installed; using LogisticRegression instead"
+                    )
+                    clf = LogisticRegression(max_iter=200)
+                clf.fit(X_train, y_train)
             elif model_type == "nn":
                 h = trial.suggest_int("hidden_size", 4, 64)
-                if HAS_TF:
-                    clf = keras.Sequential([
-                        keras.layers.Input(shape=(X_train.shape[1],)),
-                        keras.layers.Dense(h, activation="relu"),
-                        keras.layers.Dense(1, activation="sigmoid"),
-                    ])
+                try:
+                    from tensorflow import keras  # type: ignore
+
+                    clf = keras.Sequential(
+                        [
+                            keras.layers.Input(shape=(X_train.shape[1],)),
+                            keras.layers.Dense(h, activation="relu"),
+                            keras.layers.Dense(1, activation="sigmoid"),
+                        ]
+                    )
                     clf.compile(optimizer="adam", loss="binary_crossentropy")
                     clf.fit(X_train, y_train, epochs=50, verbose=0)
-                else:
-                    clf = MLPClassifier(hidden_layer_sizes=(h,), max_iter=500, random_state=42)
+                except Exception:
+                    logging.warning(
+                        "TensorFlow not available; using MLPClassifier instead"
+                    )
+                    clf = MLPClassifier(
+                        hidden_layer_sizes=(h,), max_iter=500, random_state=42
+                    )
                     clf.fit(X_train, y_train)
             else:
                 return 0.0
 
-            if model_type == "nn" and HAS_TF:
-                val_proba = clf.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
+            if hasattr(clf, "predict_proba"):
+                val_proba = (
+                    clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+                )
             else:
-                val_proba = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+                val_proba = (
+                    clf.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
+                )
 
             if len(y_val) > 0:
                 t, _ = _best_threshold(y_val, val_proba)
@@ -1053,14 +1068,70 @@ def train(
                 estimators.append(("logreg", LogisticRegression(max_iter=200)))
             elif mt == "random_forest":
                 estimators.append(("rf", RandomForestClassifier(n_estimators=100, random_state=42)))
-            elif mt == "xgboost" and XGBClassifier is not None:
-                estimators.append(("xgb", XGBClassifier(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth, eval_metric="logloss", use_label_encoder=False)))
-            elif mt == "lgbm" and LGBMClassifier is not None:
-                estimators.append(("lgbm", LGBMClassifier(n_estimators=n_estimators, learning_rate=learning_rate, max_depth=max_depth)))
-            elif mt == "catboost" and CatBoostClassifier is not None:
-                estimators.append(("cat", CatBoostClassifier(iterations=n_estimators, learning_rate=learning_rate, depth=max_depth, verbose=False)))
+            elif mt == "xgboost":
+                try:
+                    from xgboost import XGBClassifier  # type: ignore
+
+                    estimators.append(
+                        (
+                            "xgb",
+                            XGBClassifier(
+                                n_estimators=n_estimators,
+                                learning_rate=learning_rate,
+                                max_depth=max_depth,
+                                eval_metric="logloss",
+                                use_label_encoder=False,
+                            ),
+                        )
+                    )
+                except Exception:
+                    logging.warning(
+                        "xgboost is not installed; using LogisticRegression in stack"
+                    )
+                    estimators.append(("xgb", LogisticRegression(max_iter=200)))
+            elif mt == "lgbm":
+                try:
+                    from lightgbm import LGBMClassifier  # type: ignore
+
+                    estimators.append(
+                        (
+                            "lgbm",
+                            LGBMClassifier(
+                                n_estimators=n_estimators,
+                                learning_rate=learning_rate,
+                                max_depth=max_depth,
+                            ),
+                        )
+                    )
+                except Exception:
+                    logging.warning(
+                        "lightgbm is not installed; using LogisticRegression in stack"
+                    )
+                    estimators.append(("lgbm", LogisticRegression(max_iter=200)))
+            elif mt == "catboost":
+                try:
+                    from catboost import CatBoostClassifier  # type: ignore
+
+                    estimators.append(
+                        (
+                            "cat",
+                            CatBoostClassifier(
+                                iterations=n_estimators,
+                                learning_rate=learning_rate,
+                                depth=max_depth,
+                                verbose=False,
+                            ),
+                        )
+                    )
+                except Exception:
+                    logging.warning(
+                        "catboost is not installed; using LogisticRegression in stack"
+                    )
+                    estimators.append(("cat", LogisticRegression(max_iter=200)))
             elif mt == "nn":
-                estimators.append(("nn", MLPClassifier(hidden_layer_sizes=(8,), max_iter=500, random_state=42)))
+                estimators.append(
+                    ("nn", MLPClassifier(hidden_layer_sizes=(8,), max_iter=500, random_state=42))
+                )
         final_est = LogisticRegression(max_iter=200)
         clf = StackingClassifier(estimators=estimators, final_estimator=final_est, stack_method="predict_proba")
         clf.fit(X_train, y_train)
@@ -1073,50 +1144,100 @@ def train(
         train_proba_raw = clf.predict_proba(X_train)[:, 1]
         val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
     elif model_type == "xgboost":
-        if XGBClassifier is None:
-            raise ImportError("xgboost is not installed")
-        clf = XGBClassifier(
-            n_estimators=n_estimators,
-            learning_rate=learning_rate,
-            max_depth=max_depth,
-            eval_metric="logloss",
-            use_label_encoder=False,
-        )
-        clf.fit(X_train, y_train)
-        train_proba_raw = clf.predict_proba(X_train)[:, 1]
-        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        try:
+            from xgboost import XGBClassifier  # type: ignore
+
+            clf = XGBClassifier(
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
+                max_depth=max_depth,
+                eval_metric="logloss",
+                use_label_encoder=False,
+            )
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+        except Exception:
+            logging.warning(
+                "xgboost is not installed; using LogisticRegression instead"
+            )
+            clf = LogisticRegression(max_iter=200)
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+            model_type = "logreg"
     elif model_type == "lgbm":
-        if LGBMClassifier is None:
-            raise ImportError("lightgbm is not installed")
-        clf = LGBMClassifier(
-            n_estimators=n_estimators,
-            learning_rate=learning_rate,
-            max_depth=max_depth,
-        )
-        clf.fit(X_train, y_train)
-        train_proba_raw = clf.predict_proba(X_train)[:, 1]
-        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        try:
+            from lightgbm import LGBMClassifier  # type: ignore
+
+            clf = LGBMClassifier(
+                n_estimators=n_estimators,
+                learning_rate=learning_rate,
+                max_depth=max_depth,
+            )
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+        except Exception:
+            logging.warning(
+                "lightgbm is not installed; using LogisticRegression instead"
+            )
+            clf = LogisticRegression(max_iter=200)
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+            model_type = "logreg"
     elif model_type == "catboost":
-        if CatBoostClassifier is None:
-            raise ImportError("catboost is not installed")
-        clf = CatBoostClassifier(
-            iterations=n_estimators,
-            learning_rate=learning_rate,
-            depth=max_depth,
-            verbose=False,
-        )
-        clf.fit(X_train, y_train)
-        train_proba_raw = clf.predict_proba(X_train)[:, 1]
-        val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+        try:
+            from catboost import CatBoostClassifier  # type: ignore
+
+            clf = CatBoostClassifier(
+                iterations=n_estimators,
+                learning_rate=learning_rate,
+                depth=max_depth,
+                verbose=False,
+            )
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+        except Exception:
+            logging.warning(
+                "catboost is not installed; using LogisticRegression instead"
+            )
+            clf = LogisticRegression(max_iter=200)
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+            model_type = "logreg"
     elif model_type == "nn":
-        if HAS_TF:
-            model_nn = keras.Sequential([
-                keras.layers.Input(shape=(X_train.shape[1],)),
-                keras.layers.Dense(hidden_size, activation="relu"),
-                keras.layers.Dense(1, activation="sigmoid"),
-            ])
+        try:
+            from tensorflow import keras  # type: ignore
+
+            model_nn = keras.Sequential(
+                [
+                    keras.layers.Input(shape=(X_train.shape[1],)),
+                    keras.layers.Dense(hidden_size, activation="relu"),
+                    keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
             model_nn.compile(optimizer="adam", loss="binary_crossentropy")
-            callbacks = [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)] if early_stop else None
+            callbacks = (
+                [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)]
+                if early_stop
+                else None
+            )
             model_nn.fit(
                 X_train,
                 y_train,
@@ -1126,98 +1247,163 @@ def train(
             )
             train_proba_raw = model_nn.predict(X_train).reshape(-1)
             val_proba_raw = (
-                model_nn.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
+                model_nn.predict(X_val).reshape(-1)
+                if len(y_val) > 0
+                else np.empty(0)
             )
             clf = model_nn
-        else:
-            clf = MLPClassifier(hidden_layer_sizes=(hidden_size,), max_iter=500, random_state=42)
+        except Exception:
+            logging.warning(
+                "TensorFlow not available; using MLPClassifier instead"
+            )
+            clf = MLPClassifier(
+                hidden_layer_sizes=(hidden_size,), max_iter=500, random_state=42
+            )
             clf.fit(X_train, y_train)
             train_proba_raw = clf.predict_proba(X_train)[:, 1]
-            val_proba_raw = clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
     elif model_type == "lstm":
-        if not HAS_TF:
-            raise ImportError("TensorFlow is required for LSTM model")
-        seq_len = sequence_length
-        X_all = vec.fit_transform(features) if existing_model is None else vec.transform(features)
-        sequences = []
-        for i in range(len(X_all)):
-            start = max(0, i - seq_len + 1)
-            seq = X_all[start : i + 1]
-            if seq.shape[0] < seq_len:
-                pad = np.zeros((seq_len - seq.shape[0], X_all.shape[1]))
-                seq = np.vstack([pad, seq])
-            sequences.append(seq)
-        X_all_seq = np.array(sequences)
-        if len(labels) < 5 or len(np.unique(labels)) < 2:
-            X_train_seq, y_train = X_all_seq, labels
-            X_val_seq, y_val = np.empty((0, seq_len, X_all.shape[1])), np.array([])
-        else:
-            X_train_seq, X_val_seq, y_train, y_val = train_test_split(
-                X_all_seq,
-                labels,
-                test_size=0.2,
-                random_state=42,
-                stratify=labels,
+        try:
+            from tensorflow import keras  # type: ignore
+        except Exception:
+            logging.warning(
+                "TensorFlow is required for LSTM model; using LogisticRegression instead"
             )
-        model_nn = keras.Sequential([
-            keras.layers.Input(shape=(seq_len, X_all.shape[1])),
-            keras.layers.LSTM(8),
-            keras.layers.Dense(1, activation="sigmoid"),
-        ])
-        model_nn.compile(optimizer="adam", loss="binary_crossentropy")
-        callbacks = [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)] if early_stop else None
-        model_nn.fit(
-            X_train_seq,
-            y_train,
-            epochs=50,
-            verbose=0,
-            callbacks=callbacks,
-        )
-        train_proba_raw = model_nn.predict(X_train_seq).reshape(-1)
-        val_proba_raw = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
-        clf = model_nn
+            clf = LogisticRegression(max_iter=200)
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+            model_type = "logreg"
+        else:
+            seq_len = sequence_length
+            X_all = (
+                vec.fit_transform(features)
+                if existing_model is None
+                else vec.transform(features)
+            )
+            sequences = []
+            for i in range(len(X_all)):
+                start = max(0, i - seq_len + 1)
+                seq = X_all[start : i + 1]
+                if seq.shape[0] < seq_len:
+                    pad = np.zeros((seq_len - seq.shape[0], X_all.shape[1]))
+                    seq = np.vstack([pad, seq])
+                sequences.append(seq)
+            X_all_seq = np.array(sequences)
+            if len(labels) < 5 or len(np.unique(labels)) < 2:
+                X_train_seq, y_train = X_all_seq, labels
+                X_val_seq, y_val = (
+                    np.empty((0, seq_len, X_all.shape[1])),
+                    np.array([]),
+                )
+            else:
+                X_train_seq, X_val_seq, y_train, y_val = train_test_split(
+                    X_all_seq,
+                    labels,
+                    test_size=0.2,
+                    random_state=42,
+                    stratify=labels,
+                )
+            model_nn = keras.Sequential(
+                [
+                    keras.layers.Input(shape=(seq_len, X_all.shape[1])),
+                    keras.layers.LSTM(8),
+                    keras.layers.Dense(1, activation="sigmoid"),
+                ]
+            )
+            model_nn.compile(optimizer="adam", loss="binary_crossentropy")
+            callbacks = (
+                [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)]
+                if early_stop
+                else None
+            )
+            model_nn.fit(
+                X_train_seq,
+                y_train,
+                epochs=50,
+                verbose=0,
+                callbacks=callbacks,
+            )
+            train_proba_raw = model_nn.predict(X_train_seq).reshape(-1)
+            val_proba_raw = (
+                model_nn.predict(X_val_seq).reshape(-1)
+                if len(y_val) > 0
+                else np.empty(0)
+            )
+            clf = model_nn
     elif model_type == "transformer":
-        if not HAS_TF:
-            raise ImportError("TensorFlow is required for transformer model")
-        seq_len = sequence_length
-        X_all = vec.fit_transform(features) if existing_model is None else vec.transform(features)
-        sequences = []
-        for i in range(len(X_all)):
-            start = max(0, i - seq_len + 1)
-            seq = X_all[start : i + 1]
-            if seq.shape[0] < seq_len:
-                pad = np.zeros((seq_len - seq.shape[0], X_all.shape[1]))
-                seq = np.vstack([pad, seq])
-            sequences.append(seq)
-        X_all_seq = np.array(sequences)
-        if len(labels) < 5 or len(np.unique(labels)) < 2:
-            X_train_seq, y_train = X_all_seq, labels
-            X_val_seq, y_val = np.empty((0, seq_len, X_all.shape[1])), np.array([])
-        else:
-            X_train_seq, X_val_seq, y_train, y_val = train_test_split(
-                X_all_seq,
-                labels,
-                test_size=0.2,
-                random_state=42,
-                stratify=labels,
+        try:
+            from tensorflow import keras  # type: ignore
+        except Exception:
+            logging.warning(
+                "TensorFlow is required for transformer model; using LogisticRegression instead"
             )
-        inp = keras.layers.Input(shape=(seq_len, X_all.shape[1]))
-        att = keras.layers.MultiHeadAttention(num_heads=1, key_dim=X_all.shape[1])(inp, inp)
-        pooled = keras.layers.GlobalAveragePooling1D()(att)
-        out = keras.layers.Dense(1, activation="sigmoid")(pooled)
-        model_nn = keras.Model(inp, out)
-        model_nn.compile(optimizer="adam", loss="binary_crossentropy")
-        callbacks = [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)] if early_stop else None
-        model_nn.fit(
-            X_train_seq,
-            y_train,
-            epochs=50,
-            verbose=0,
-            callbacks=callbacks,
-        )
-        train_proba_raw = model_nn.predict(X_train_seq).reshape(-1)
-        val_proba_raw = model_nn.predict(X_val_seq).reshape(-1) if len(y_val) > 0 else np.empty(0)
-        clf = model_nn
+            clf = LogisticRegression(max_iter=200)
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+            model_type = "logreg"
+        else:
+            seq_len = sequence_length
+            X_all = (
+                vec.fit_transform(features)
+                if existing_model is None
+                else vec.transform(features)
+            )
+            sequences = []
+            for i in range(len(X_all)):
+                start = max(0, i - seq_len + 1)
+                seq = X_all[start : i + 1]
+                if seq.shape[0] < seq_len:
+                    pad = np.zeros((seq_len - seq.shape[0], X_all.shape[1]))
+                    seq = np.vstack([pad, seq])
+                sequences.append(seq)
+            X_all_seq = np.array(sequences)
+            if len(labels) < 5 or len(np.unique(labels)) < 2:
+                X_train_seq, y_train = X_all_seq, labels
+                X_val_seq, y_val = (
+                    np.empty((0, seq_len, X_all.shape[1])),
+                    np.array([]),
+                )
+            else:
+                X_train_seq, X_val_seq, y_train, y_val = train_test_split(
+                    X_all_seq,
+                    labels,
+                    test_size=0.2,
+                    random_state=42,
+                    stratify=labels,
+                )
+            inp = keras.layers.Input(shape=(seq_len, X_all.shape[1]))
+            att = keras.layers.MultiHeadAttention(num_heads=1, key_dim=X_all.shape[1])(inp, inp)
+            pooled = keras.layers.GlobalAveragePooling1D()(att)
+            out = keras.layers.Dense(1, activation="sigmoid")(pooled)
+            model_nn = keras.Model(inp, out)
+            model_nn.compile(optimizer="adam", loss="binary_crossentropy")
+            callbacks = (
+                [keras.callbacks.EarlyStopping(patience=5, restore_best_weights=True)]
+                if early_stop
+                else None
+            )
+            model_nn.fit(
+                X_train_seq,
+                y_train,
+                epochs=50,
+                verbose=0,
+                callbacks=callbacks,
+            )
+            train_proba_raw = model_nn.predict(X_train_seq).reshape(-1)
+            val_proba_raw = (
+                model_nn.predict(X_val_seq).reshape(-1)
+                if len(y_val) > 0
+                else np.empty(0)
+            )
+            clf = model_nn
     else:
         if grid_search:
             if c_values is None:
@@ -1500,7 +1686,7 @@ def train(
         model["coefficients"] = coef[1:].tolist()
         model["intercept"] = float(coef[0])
     elif model_type == "nn":
-        if HAS_TF:
+        if hasattr(clf, "get_weights"):
             weights = [w.tolist() for w in clf.get_weights()]
         else:
             weights = [

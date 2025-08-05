@@ -88,8 +88,9 @@ whose mean absolute SHAP value falls below this threshold are removed and the
 classifier is refit on the reduced set. A warning is emitted when pruning
 eliminates more than the fraction specified via ``--prune-warn``.
 
-Hyperparameters can be optimised automatically when `optuna` is installed. The
-best trial's parameters and validation score are saved to `model.json`:
+Hyperparameters can be optimised automatically when `optuna` is installed. If
+`optuna` is missing the script trains with default parameters and continues.
+The best trial's parameters and validation score are saved to `model.json`:
 
 ```bash
 pip install optuna
@@ -316,10 +317,10 @@ python scripts/backtest_strategy.py experts/MyStrategy.mq4 \
 ## Running Tests
 
 Install the Python requirements and run `pytest` from the repository root. At a
-minimum `numpy`, `scikit-learn` and `pytest` are needed.  The `xgboost`,
-`lightgbm` and `catboost` packages are optional if you want to train XGBoost,
-LightGBM or CatBoost models.
-`stable-baselines3` can be
+minimum `numpy`, `scikit-learn` and `pytest` are needed. The `xgboost`,
+`lightgbm`, `catboost` and TensorFlow packages are optional. When these
+libraries are unavailable the training scripts emit a warning and fall back to a
+lightweight classifier such as logistic regression. `stable-baselines3` can be
 installed to experiment with PPO, DQN, A2C or DDPG agents. Continuous-action
 methods like DDPG require an environment using a `Box` action space – the
 included discrete environment must be adapted for such algorithms:
