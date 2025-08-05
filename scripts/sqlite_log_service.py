@@ -24,9 +24,16 @@ FIELDS = [
     "sl",
     "tp",
     "profit",
+    "profit_after_trade",
+    "spread",
     "comment",
     "remaining_lots",
     "slippage",
+    "volume",
+    "open_time",
+    "book_bid_vol",
+    "book_ask_vol",
+    "book_imbalance",
 ]
 
 

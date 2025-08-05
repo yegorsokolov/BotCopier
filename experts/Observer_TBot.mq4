@@ -16,6 +16,7 @@ extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
 extern bool   EnableSocketLogging           = false;
+extern bool   EnableSqliteLogging           = false;
 extern bool   UseBinarySocketLogging        = false;
 extern string LogSocketHost                 = "127.0.0.1";
 extern int    LogSocketPort                 = 9000;
@@ -183,7 +184,7 @@ int OnInit()
       }
    }
 
-   if(EnableSocketLogging || StreamMetricsOnly)
+   if(EnableSocketLogging || EnableSqliteLogging || StreamMetricsOnly)
    {
       datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
       next_socket_attempt = now;
@@ -442,7 +443,7 @@ void OnTimer()
    FlushTradeBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
 
-   if((EnableSocketLogging || StreamMetricsOnly) && log_socket==INVALID_HANDLE && now >= next_socket_attempt)
+   if((EnableSocketLogging || EnableSqliteLogging || StreamMetricsOnly) && log_socket==INVALID_HANDLE && now >= next_socket_attempt)
    {
       log_socket = SocketCreate();
       if(log_socket!=INVALID_HANDLE)
