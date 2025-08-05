@@ -461,6 +461,29 @@ def test_generate_account_features(tmp_path: Path):
     assert "AccountMarginLevel()" in content
 
 
+def test_generate_lite_mode(tmp_path: Path):
+    model = {
+        "model_id": "lite",
+        "magic": 1,
+        "coefficients": [0.1, 0.2, 0.3],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["hour", "book_bid_vol", "book_ask_vol"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir, lite_mode=True)
+
+    generated = list(out_dir.glob("Generated_lite_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert content.count("BookBidVol()") == 1
+    assert content.count("BookAskVol()") == 1
+
+
 def test_generate_regime_feature(tmp_path: Path):
     model = {
         "model_id": "regime",
