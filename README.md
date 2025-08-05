@@ -118,6 +118,16 @@ updates the existing classifier in place by calling ``partial_fit`` on batches
 of new samples. The class vector ``[0, 1]`` is stored in ``model.json`` so
 subsequent runs can keep learning from where the last run left off.
 
+### Lite Mode
+
+Very large log datasets can exhaust memory when processed all at once. Use
+``--lite-mode`` to stream feature batches and train an ``SGDClassifier``
+incrementally via ``partial_fit``. Heavy extras such as higher time‑frame
+indicators and SHAP importance calculations are disabled to minimise resource
+usage. Peak memory consumption becomes roughly proportional to the batch size
+(``_load_logs`` reads 50k rows per batch by default). Batches of 10k–50k rows
+usually provide a good balance between memory usage and convergence speed.
+
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
 ## Reinforcement Learning Fine-Tuning

@@ -26,6 +26,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
 
 
 def _sma(values, window):
@@ -713,6 +714,131 @@ def _best_threshold(y_true, probas):
     return best_t, best_f1
 
 
+def _train_lite_mode(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    use_sma: bool = False,
+    sma_window: int = 5,
+    use_rsi: bool = False,
+    rsi_period: int = 14,
+    use_macd: bool = False,
+    use_atr: bool = False,
+    atr_period: int = 14,
+    use_bollinger: bool = False,
+    boll_window: int = 20,
+    use_stochastic: bool = False,
+    use_adx: bool = False,
+    use_slippage: bool = False,
+    use_volume: bool = False,
+    volatility_series=None,
+    corr_pairs=None,
+    corr_window: int = 5,
+    extra_price_series=None,
+    calendar_events: list[tuple[datetime, float]] | None = None,
+    event_window: float = 60.0,
+    encoder_file: Path | None = None,
+    chunk_size: int = 50000,
+) -> None:
+    """Stream features and train an SGD classifier incrementally."""
+
+    rows_iter, data_commits, data_checksums = _load_logs(
+        data_dir, lite_mode=True, chunk_size=chunk_size
+    )
+    encoder = None
+    if encoder_file is not None and encoder_file.exists():
+        with open(encoder_file) as f:
+            encoder = json.load(f)
+
+    vec = DictVectorizer(sparse=False)
+    scaler = StandardScaler()
+    clf = SGDClassifier(loss="log_loss")
+    first = True
+    sample_count = 0
+
+    for chunk in rows_iter:
+        (
+            f_chunk,
+            l_chunk,
+            _,
+            _,
+            _,
+        ) = _extract_features(
+            chunk.to_dict("records"),
+            use_sma=use_sma,
+            sma_window=sma_window,
+            use_rsi=use_rsi,
+            rsi_period=rsi_period,
+            use_macd=use_macd,
+            use_atr=use_atr,
+            atr_period=atr_period,
+            use_bollinger=use_bollinger,
+            boll_window=boll_window,
+            use_stochastic=use_stochastic,
+            use_adx=use_adx,
+            use_slippage=use_slippage,
+            use_volume=use_volume,
+            volatility=volatility_series,
+            higher_timeframes=None,
+            corr_pairs=corr_pairs,
+            corr_window=corr_window,
+            extra_price_series=extra_price_series,
+            encoder=encoder,
+            calendar_events=calendar_events,
+            event_window=event_window,
+        )
+        if not f_chunk:
+            continue
+        sample_count += len(l_chunk)
+        if first:
+            X = vec.fit_transform(f_chunk)
+            scaler.partial_fit(X)
+            X = scaler.transform(X)
+            clf.partial_fit(X, l_chunk, classes=np.array([0, 1]))
+            first = False
+        else:
+            X = vec.transform(f_chunk)
+            scaler.partial_fit(X)
+            X = scaler.transform(X)
+            clf.partial_fit(X, l_chunk)
+
+    if first:
+        raise ValueError(f"No training data found in {data_dir}")
+
+    feature_names = vec.get_feature_names_out().tolist()
+    model = {
+        "model_id": "target_clone",
+        "trained_at": datetime.utcnow().isoformat(),
+        "feature_names": feature_names,
+        "model_type": "logreg",
+        "weighted": False,
+        "train_accuracy": float("nan"),
+        "val_accuracy": float("nan"),
+        "threshold": 0.5,
+        "accuracy": float("nan"),
+        "num_samples": int(sample_count),
+        "feature_importance": {},
+        "mean": scaler.mean_.tolist(),
+        "std": scaler.scale_.tolist(),
+        "coefficients": clf.coef_[0].tolist(),
+        "intercept": float(clf.intercept_[0]),
+        "classes": [int(c) for c in clf.classes_],
+    }
+    if data_commits:
+        model["data_commit"] = ",".join(sorted(set(data_commits)))
+    if data_checksums:
+        model["data_checksum"] = ",".join(sorted(set(data_checksums)))
+    if calendar_events:
+        model["calendar_events"] = [
+            [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+        ]
+        model["event_window"] = float(event_window)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model, f)
+
+
 def train(
     data_dir: Path,
     out_dir: Path,
@@ -757,6 +883,32 @@ def train(
     lite_mode: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
+    if lite_mode:
+        _train_lite_mode(
+            data_dir,
+            out_dir,
+            use_sma=use_sma,
+            sma_window=sma_window,
+            use_rsi=use_rsi,
+            rsi_period=rsi_period,
+            use_macd=use_macd,
+            use_atr=use_atr,
+            atr_period=atr_period,
+            use_bollinger=use_bollinger,
+            boll_window=boll_window,
+            use_stochastic=use_stochastic,
+            use_adx=use_adx,
+            use_slippage=use_slippage,
+            use_volume=use_volume,
+            volatility_series=volatility_series,
+            corr_pairs=corr_pairs,
+            corr_window=corr_window,
+            extra_price_series=extra_price_series,
+            calendar_events=calendar_events,
+            event_window=event_window,
+            encoder_file=encoder_file,
+        )
+        return
     if optuna_trials > 0:
         try:
             import optuna  # type: ignore
@@ -1834,7 +1986,11 @@ def main():
     p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
-    p.add_argument('--lite-mode', action='store_true', help='process data in chunks to reduce memory usage')
+    p.add_argument(
+        '--lite-mode',
+        action='store_true',
+        help='stream feature batches with SGDClassifier.partial_fit and disable heavy extras'
+    )
     p.add_argument('--stack', help='comma separated list of model types to stack')
     p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
