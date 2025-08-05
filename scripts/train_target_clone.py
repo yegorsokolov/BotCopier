@@ -30,6 +30,9 @@ from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSp
 from sklearn.preprocessing import StandardScaler
 
 
+START_EVENT_ID = 0
+
+
 def _sma(values, window):
     """Simple moving average for the last ``window`` values."""
     if not values:
@@ -178,7 +181,12 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
 
     conn = sqlite3.connect(db_file)
     try:
-        df_logs = pd.read_sql_query("SELECT * FROM logs", conn, parse_dates=["event_time", "open_time"])
+        query = "SELECT * FROM logs"
+        params: tuple = ()
+        if START_EVENT_ID > 0:
+            query += " WHERE CAST(event_id AS INTEGER) > ?"
+            params = (START_EVENT_ID,)
+        df_logs = pd.read_sql_query(query, conn, params=params, parse_dates=["event_time", "open_time"])
     finally:
         conn.close()
 
@@ -1988,6 +1996,7 @@ def main():
     p.add_argument('--learning-rate', type=float, default=0.1, help='learning rate for boosted trees')
     p.add_argument('--max-depth', type=int, default=3, help='tree depth for boosting models')
     p.add_argument('--incremental', action='store_true', help='update existing model.json')
+    p.add_argument('--start-event-id', type=int, default=0, help='only load rows with event_id greater than this value from SQLite logs')
     p.add_argument('--cache-features', action='store_true', help='reuse cached feature matrix')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
@@ -2006,6 +2015,8 @@ def main():
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
     args = p.parse_args()
+    global START_EVENT_ID
+    START_EVENT_ID = args.start_event_id
     if args.volatility_file:
         import json
         with open(args.volatility_file) as f:
