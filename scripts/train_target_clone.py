@@ -12,7 +12,7 @@ import json
 from datetime import datetime
 import math
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional
 import sqlite3
 import logging
 
@@ -241,7 +241,12 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
     return df_logs
 
 
-def _load_logs(data_dir: Path) -> tuple[pd.DataFrame, list[str], list[str]]:
+def _load_logs(
+    data_dir: Path,
+    *,
+    lite_mode: bool = False,
+    chunk_size: int = 50000,
+) -> tuple[pd.DataFrame | Iterable[pd.DataFrame], list[str], list[str]]:
     """Load log rows from ``data_dir``.
 
     ``MODIFY`` entries are retained alongside ``OPEN`` and ``CLOSE``.
@@ -289,118 +294,12 @@ def _load_logs(data_dir: Path) -> tuple[pd.DataFrame, list[str], list[str]]:
         "book_imbalance",
     ]
 
-    dfs: List[pd.DataFrame] = []
     data_commits: list[str] = []
     data_checksums: list[str] = []
-    for log_file in sorted(data_dir.glob("trades_*.csv")):
-        try:
-            df = pd.read_csv(
-                log_file,
-                sep=";",
-                names=fields,
-                header=0,
-                parse_dates=["event_time", "open_time"],
-            )
-        except (pd.errors.ParserError, ValueError):
-            legacy_fields = fields[:-3]
-            try:
-                df = pd.read_csv(
-                    log_file,
-                    sep=";",
-                    names=legacy_fields,
-                    header=0,
-                    parse_dates=["event_time", "open_time"],
-                )
-                df["book_bid_vol"] = df["book_ask_vol"] = df["book_imbalance"] = 0.0
-            except (pd.errors.ParserError, ValueError):
-                legacy_fields = fields[:-4]
-                df = pd.read_csv(
-                    log_file,
-                    sep=";",
-                    names=legacy_fields,
-                    header=0,
-                    parse_dates=["event_time"],
-                )
-                df["open_time"] = pd.NaT
-                df["book_bid_vol"] = df["book_ask_vol"] = df["book_imbalance"] = 0.0
-        dfs.append(df)
-        manifest_file = log_file.with_suffix(".manifest.json")
-        if manifest_file.exists():
-            try:
-                with open(manifest_file) as mf:
-                    meta = json.load(mf)
-                commit = meta.get("commit")
-                checksum = meta.get("checksum")
-                if commit:
-                    data_commits.append(str(commit))
-                if checksum:
-                    data_checksums.append(str(checksum))
-            except Exception:
-                pass
-
-    if dfs:
-        df_logs = pd.concat(dfs, ignore_index=True)
-    else:
-        df_logs = pd.DataFrame(columns=fields)
-
-    df_logs.columns = [c.lower() for c in df_logs.columns]
-
-    if "open_time" in df_logs.columns:
-        df_logs["trade_duration"] = (
-            pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
-        ).dt.total_seconds().fillna(0)
-    else:
-        df_logs["trade_duration"] = 0.0
-
-    for col in ["book_bid_vol", "book_ask_vol", "book_imbalance"]:
-        df_logs[col] = pd.to_numeric(df_logs.get(col, 0.0), errors="coerce").fillna(0.0)
-
-    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
-    df_logs["action"] = df_logs["action"].fillna("").str.upper()
-    df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
-
-    invalid_rows = pd.DataFrame(columns=df_logs.columns)
-    if "event_id" in df_logs.columns:
-        dup_mask = df_logs.duplicated(subset="event_id", keep="first")
-        if dup_mask.any():
-            invalid_rows = pd.concat([invalid_rows, df_logs[dup_mask]])
-            logging.warning("Dropping %s duplicate event_id rows", dup_mask.sum())
-        df_logs = df_logs[~dup_mask]
-
-    if set(["ticket", "action"]).issubset(df_logs.columns):
-        crit_mask = (
-            df_logs["ticket"].isna()
-            | (df_logs["ticket"].astype(str) == "")
-            | df_logs["action"].isna()
-            | (df_logs["action"].astype(str) == "")
-        )
-        if crit_mask.any():
-            invalid_rows = pd.concat([invalid_rows, df_logs[crit_mask]])
-            logging.warning("Dropping %s rows with missing ticket/action", crit_mask.sum())
-        df_logs = df_logs[~crit_mask]
-
-    if "lots" in df_logs.columns:
-        df_logs["lots"] = pd.to_numeric(df_logs["lots"], errors="coerce")
-    if "price" in df_logs.columns:
-        df_logs["price"] = pd.to_numeric(df_logs["price"], errors="coerce")
-    unreal_mask = pd.Series(False, index=df_logs.index)
-    if "lots" in df_logs.columns:
-        unreal_mask |= df_logs["lots"] < 0
-    if "price" in df_logs.columns:
-        unreal_mask |= df_logs["price"].isna()
-    if unreal_mask.any():
-        invalid_rows = pd.concat([invalid_rows, df_logs[unreal_mask]])
-        logging.warning("Dropping %s rows with negative lots or NaN price", unreal_mask.sum())
-    df_logs = df_logs[~unreal_mask]
-
-    if not invalid_rows.empty:
-        invalid_file = data_dir / "invalid_rows.csv"
-        try:
-            invalid_rows.to_csv(invalid_file, index=False)
-        except Exception:  # pragma: no cover - disk issues
-            pass
 
     metrics_file = data_dir / "metrics.csv"
+    df_metrics = None
+    key_col: str | None = None
     if metrics_file.exists():
         df_metrics = pd.read_csv(metrics_file, sep=";")
         df_metrics.columns = [c.lower() for c in df_metrics.columns]
@@ -408,18 +307,118 @@ def _load_logs(data_dir: Path) -> tuple[pd.DataFrame, list[str], list[str]]:
             key_col = "magic"
         elif "model_id" in df_metrics.columns:
             key_col = "model_id"
-        else:
-            key_col = None
 
-        if key_col is not None:
-            df_metrics[key_col] = pd.to_numeric(df_metrics[key_col], errors="coerce").fillna(0).astype(int)
-            df_logs["magic"] = pd.to_numeric(df_logs["magic"], errors="coerce").fillna(0).astype(int)
-            if key_col == "magic":
-                df_logs = df_logs.merge(df_metrics, how="left", on="magic")
-            else:
-                df_logs = df_logs.merge(df_metrics, how="left", left_on="magic", right_on="model_id")
-                df_logs = df_logs.drop(columns=["model_id"])
+    invalid_file = data_dir / "invalid_rows.csv"
 
+    def iter_chunks():
+        seen_ids: set[str] = set()
+        invalid_rows: list[pd.DataFrame] = []
+        for log_file in sorted(data_dir.glob("trades_*.csv")):
+            reader = pd.read_csv(
+                log_file,
+                sep=";",
+                header=0,
+                dtype=str,
+                chunksize=chunk_size,
+                engine="python",
+            )
+            manifest_file = log_file.with_suffix(".manifest.json")
+            if manifest_file.exists():
+                try:
+                    with open(manifest_file) as mf:
+                        meta = json.load(mf)
+                    commit = meta.get("commit")
+                    checksum = meta.get("checksum")
+                    if commit:
+                        data_commits.append(str(commit))
+                    if checksum:
+                        data_checksums.append(str(checksum))
+                except Exception:
+                    pass
+            for chunk in reader:
+                chunk = chunk.reindex(columns=fields)
+                chunk.columns = [c.lower() for c in chunk.columns]
+                chunk["event_time"] = pd.to_datetime(chunk.get("event_time"), errors="coerce")
+                if "open_time" in chunk.columns:
+                    chunk["open_time"] = pd.to_datetime(chunk.get("open_time"), errors="coerce")
+                    chunk["trade_duration"] = (
+                        chunk["event_time"] - chunk["open_time"]
+                    ).dt.total_seconds().fillna(0)
+                else:
+                    chunk["trade_duration"] = 0.0
+                for col in ["book_bid_vol", "book_ask_vol", "book_imbalance"]:
+                    chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
+                valid_actions = {"OPEN", "CLOSE", "MODIFY"}
+                chunk["action"] = chunk["action"].fillna("").str.upper()
+                chunk = chunk[(chunk["action"] == "") | chunk["action"].isin(valid_actions)]
+                invalid = pd.DataFrame(columns=chunk.columns)
+                if "event_id" in chunk.columns:
+                    dup_mask = (
+                        chunk["event_id"].isin(seen_ids)
+                        | chunk.duplicated(subset="event_id", keep="first")
+                    )
+                    if dup_mask.any():
+                        invalid = pd.concat([invalid, chunk[dup_mask]])
+                        logging.warning(
+                            "Dropping %s duplicate event_id rows", dup_mask.sum()
+                        )
+                    seen_ids.update(chunk.loc[~dup_mask, "event_id"].tolist())
+                    chunk = chunk[~dup_mask]
+                if {"ticket", "action"}.issubset(chunk.columns):
+                    crit_mask = (
+                        chunk["ticket"].isna()
+                        | (chunk["ticket"].astype(str) == "")
+                        | chunk["action"].isna()
+                        | (chunk["action"].astype(str) == "")
+                    )
+                    if crit_mask.any():
+                        invalid = pd.concat([invalid, chunk[crit_mask]])
+                        logging.warning(
+                            "Dropping %s rows with missing ticket/action", crit_mask.sum()
+                        )
+                    chunk = chunk[~crit_mask]
+                if "lots" in chunk.columns:
+                    chunk["lots"] = pd.to_numeric(chunk["lots"], errors="coerce")
+                if "price" in chunk.columns:
+                    chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
+                unreal_mask = pd.Series(False, index=chunk.index)
+                if "lots" in chunk.columns:
+                    unreal_mask |= chunk["lots"] < 0
+                if "price" in chunk.columns:
+                    unreal_mask |= chunk["price"].isna()
+                if unreal_mask.any():
+                    invalid = pd.concat([invalid, chunk[unreal_mask]])
+                    logging.warning(
+                        "Dropping %s rows with negative lots or NaN price", unreal_mask.sum()
+                    )
+                chunk = chunk[~unreal_mask]
+                if df_metrics is not None and key_col is not None and "magic" in chunk.columns:
+                    chunk["magic"] = (
+                        pd.to_numeric(chunk["magic"], errors="coerce").fillna(0).astype(int)
+                    )
+                    if key_col == "magic":
+                        chunk = chunk.merge(df_metrics, how="left", on="magic")
+                    else:
+                        chunk = chunk.merge(
+                            df_metrics, how="left", left_on="magic", right_on="model_id"
+                        )
+                        chunk = chunk.drop(columns=["model_id"])
+                if not invalid.empty:
+                    invalid_rows.append(invalid)
+                yield chunk
+        if invalid_rows:
+            try:
+                pd.concat(invalid_rows, ignore_index=True).to_csv(invalid_file, index=False)
+            except Exception:  # pragma: no cover - disk issues
+                pass
+
+    if lite_mode:
+        return iter_chunks(), data_commits, data_checksums
+    dfs = list(iter_chunks())
+    if dfs:
+        df_logs = pd.concat(dfs, ignore_index=True)
+    else:
+        df_logs = pd.DataFrame(columns=[c.lower() for c in fields])
     return df_logs, data_commits, data_checksums
 
 
@@ -755,6 +754,7 @@ def train(
     stack_models: list[str] | None = None,
     prune_threshold: float = 0.0,
     prune_warn: float = 0.5,
+    lite_mode: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
     if optuna_trials > 0:
@@ -795,41 +795,97 @@ def train(
             features = None
 
     if features is None:
-        rows_df, data_commits, data_checksums = _load_logs(data_dir)
-        encoder = None
-        if encoder_file is not None and encoder_file.exists():
-            with open(encoder_file) as f:
-                encoder = json.load(f)
-        (
-            features,
-            labels,
-            sl_targets,
-            tp_targets,
-            hours,
-        ) = _extract_features(
-            rows_df.to_dict("records"),
-            use_sma=use_sma,
-            sma_window=sma_window,
-            use_rsi=use_rsi,
-            rsi_period=rsi_period,
-            use_macd=use_macd,
-            use_atr=use_atr,
-            atr_period=atr_period,
-            use_bollinger=use_bollinger,
-            boll_window=boll_window,
-            use_stochastic=use_stochastic,
-            use_adx=use_adx,
-            use_slippage=use_slippage,
-            use_volume=use_volume,
-            volatility=volatility_series,
-            higher_timeframes=higher_timeframes,
-            corr_pairs=corr_pairs,
-            corr_window=corr_window,
-            extra_price_series=extra_price_series,
-            encoder=encoder,
-            calendar_events=calendar_events,
-            event_window=event_window,
-        )
+        if lite_mode:
+            rows_iter, data_commits, data_checksums = _load_logs(
+                data_dir, lite_mode=True
+            )
+            encoder = None
+            if encoder_file is not None and encoder_file.exists():
+                with open(encoder_file) as f:
+                    encoder = json.load(f)
+            features = []
+            labels_list: list[np.ndarray] = []
+            sl_list: list[np.ndarray] = []
+            tp_list: list[np.ndarray] = []
+            hours_list: list[np.ndarray] = []
+            for chunk in rows_iter:
+                (
+                    f_chunk,
+                    l_chunk,
+                    sl_chunk,
+                    tp_chunk,
+                    h_chunk,
+                ) = _extract_features(
+                    chunk.to_dict("records"),
+                    use_sma=use_sma,
+                    sma_window=sma_window,
+                    use_rsi=use_rsi,
+                    rsi_period=rsi_period,
+                    use_macd=use_macd,
+                    use_atr=use_atr,
+                    atr_period=atr_period,
+                    use_bollinger=use_bollinger,
+                    boll_window=boll_window,
+                    use_stochastic=use_stochastic,
+                    use_adx=use_adx,
+                    use_slippage=use_slippage,
+                    use_volume=use_volume,
+                    volatility=volatility_series,
+                    higher_timeframes=higher_timeframes,
+                    corr_pairs=corr_pairs,
+                    corr_window=corr_window,
+                    extra_price_series=extra_price_series,
+                    encoder=encoder,
+                    calendar_events=calendar_events,
+                    event_window=event_window,
+                )
+                features.extend(f_chunk)
+                labels_list.append(l_chunk)
+                sl_list.append(sl_chunk)
+                tp_list.append(tp_chunk)
+                hours_list.append(h_chunk)
+            labels = np.concatenate(labels_list) if labels_list else np.array([])
+            sl_targets = np.concatenate(sl_list) if sl_list else np.array([])
+            tp_targets = np.concatenate(tp_list) if tp_list else np.array([])
+            hours = (
+                np.concatenate(hours_list) if hours_list else np.array([], dtype=int)
+            )
+        else:
+            rows_df, data_commits, data_checksums = _load_logs(data_dir)
+            encoder = None
+            if encoder_file is not None and encoder_file.exists():
+                with open(encoder_file) as f:
+                    encoder = json.load(f)
+            (
+                features,
+                labels,
+                sl_targets,
+                tp_targets,
+                hours,
+            ) = _extract_features(
+                rows_df.to_dict("records"),
+                use_sma=use_sma,
+                sma_window=sma_window,
+                use_rsi=use_rsi,
+                rsi_period=rsi_period,
+                use_macd=use_macd,
+                use_atr=use_atr,
+                atr_period=atr_period,
+                use_bollinger=use_bollinger,
+                boll_window=boll_window,
+                use_stochastic=use_stochastic,
+                use_adx=use_adx,
+                use_slippage=use_slippage,
+                use_volume=use_volume,
+                volatility=volatility_series,
+                higher_timeframes=higher_timeframes,
+                corr_pairs=corr_pairs,
+                corr_window=corr_window,
+                extra_price_series=extra_price_series,
+                encoder=encoder,
+                calendar_events=calendar_events,
+                event_window=event_window,
+            )
     else:
         encoder = None
         if encoder_file is not None and encoder_file.exists():
@@ -1778,6 +1834,7 @@ def main():
     p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
+    p.add_argument('--lite-mode', action='store_true', help='process data in chunks to reduce memory usage')
     p.add_argument('--stack', help='comma separated list of model types to stack')
     p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
@@ -1836,6 +1893,7 @@ def main():
         stack_models=[s.strip() for s in args.stack.split(',')] if args.stack else None,
         prune_threshold=args.prune_threshold,
         prune_warn=args.prune_warn,
+        lite_mode=args.lite_mode,
     )
 
 

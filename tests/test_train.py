@@ -444,6 +444,19 @@ def test_train_nn(tmp_path: Path):
     assert data.get("weighted") is False
 
 
+def test_train_lite_mode(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log_many(log_file, count=10)
+
+    train(data_dir, out_dir, lite_mode=True)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+
+
 @pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
 def test_train_lstm(tmp_path: Path):
     data_dir = tmp_path / "logs"
