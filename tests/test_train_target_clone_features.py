@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 from datetime import datetime
+import logging
 
 import pytest
 
@@ -140,3 +141,45 @@ def test_model_serialization(tmp_path: Path):
     assert "std" in data
     assert "threshold" in data
     assert "val_accuracy" in data
+
+
+def test_perf_budget_disables_heavy_features(caplog):
+    rows = [
+        {
+            "event_time": datetime(2024, 1, 1, 0, 0),
+            "action": "OPEN",
+            "symbol": "EURUSD",
+            "order_type": "0",
+            "lots": 0.1,
+            "price": 1.1000,
+            "sl": 1.0950,
+            "tp": 1.1100,
+            "profit": 0,
+            "spread": 2,
+        },
+        {
+            "event_time": datetime(2024, 1, 1, 0, 1),
+            "action": "OPEN",
+            "symbol": "EURUSD",
+            "order_type": "0",
+            "lots": 0.1,
+            "price": 1.1002,
+            "sl": 1.0950,
+            "tp": 1.1100,
+            "profit": 0,
+            "spread": 2,
+        },
+    ]
+    with caplog.at_level(logging.INFO):
+        feats, *_ = _extract_features(
+            rows,
+            use_atr=True,
+            use_bollinger=True,
+            use_stochastic=True,
+            use_adx=True,
+            higher_timeframes=["M5"],
+            perf_budget=1e-9,
+        )
+    enabled_msgs = [r.message for r in caplog.records if "Enabled features" in r.message]
+    assert enabled_msgs and "atr" not in enabled_msgs[-1]
+    assert "atr" not in feats[-1]

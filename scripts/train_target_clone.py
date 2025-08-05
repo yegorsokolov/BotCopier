@@ -12,6 +12,7 @@ import json
 import gzip
 from datetime import datetime
 import math
+import time
 from pathlib import Path
 from typing import Iterable, List, Optional
 import sqlite3
@@ -532,6 +533,7 @@ def _extract_features(
     encoder: dict | None = None,
     calendar_events: list[tuple[datetime, float]] | None = None,
     event_window: float = 60.0,
+    perf_budget: float | None = None,
 ):
     feature_dicts = []
     labels = []
@@ -572,6 +574,11 @@ def _extract_features(
     )
     calendar_events = calendar_events or []
     row_idx = 0
+
+    start_time = time.perf_counter()
+    psutil.cpu_percent(interval=None)
+    heavy_order = ["multi_tf", "use_adx", "use_stochastic", "use_bollinger", "use_atr"]
+
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
             continue
@@ -746,6 +753,53 @@ def _extract_features(
         tp_targets.append(tp_dist)
         hours.append(t.hour)
         row_idx += 1
+
+        if perf_budget is not None:
+            elapsed = time.perf_counter() - start_time
+            load = psutil.cpu_percent(interval=None)
+            while heavy_order and (
+                elapsed > perf_budget * row_idx or load > 90.0
+            ):
+                feat_name = heavy_order.pop(0)
+                if feat_name == "use_atr":
+                    use_atr = False
+                elif feat_name == "use_bollinger":
+                    use_bollinger = False
+                elif feat_name == "use_stochastic":
+                    use_stochastic = False
+                elif feat_name == "use_adx":
+                    use_adx = False
+                elif feat_name == "multi_tf":
+                    higher_timeframes = []
+                    tf_prices.clear()
+                    tf_macd_state.clear()
+                    tf_macd.clear()
+                    tf_macd_sig.clear()
+                    tf_last_bin.clear()
+                    tf_prev_price.clear()
+                logging.info("Disabling %s due to performance budget", feat_name)
+                elapsed = time.perf_counter() - start_time
+                load = psutil.cpu_percent(interval=None)
+
+    enabled_feats = []
+    if use_sma:
+        enabled_feats.append("sma")
+    if use_rsi:
+        enabled_feats.append("rsi")
+    if use_macd:
+        enabled_feats.append("macd")
+    if use_atr:
+        enabled_feats.append("atr")
+    if use_bollinger:
+        enabled_feats.append("bollinger")
+    if use_stochastic:
+        enabled_feats.append("stochastic")
+    if use_adx:
+        enabled_feats.append("adx")
+    if higher_timeframes:
+        enabled_feats.extend(f"tf_{tf}" for tf in higher_timeframes)
+    logging.info("Enabled features: %s", sorted(enabled_feats))
+
     return (
         feature_dicts,
         np.array(labels),
