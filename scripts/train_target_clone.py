@@ -17,9 +17,12 @@ from typing import Iterable, List, Optional
 import sqlite3
 import logging
 
+import importlib.util
+
 import pandas as pd
 
 import numpy as np
+import psutil
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
@@ -31,6 +34,48 @@ from sklearn.preprocessing import StandardScaler
 
 
 START_EVENT_ID = 0
+
+
+def detect_resources():
+    """Detect available resources and installed ML libraries."""
+    try:
+        mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+        cores = psutil.cpu_count(logical=False) or psutil.cpu_count()
+    except Exception:  # pragma: no cover - psutil errors
+        mem_gb = 0.0
+        cores = 0
+
+    lite_mode = mem_gb < 4 or (cores or 0) < 2
+
+    def has(mod: str) -> bool:
+        return importlib.util.find_spec(mod) is not None
+
+    model_type = "logreg"
+    if not lite_mode:
+        for mt, module in [
+            ("transformer", "transformers"),
+            ("lstm", "torch"),
+            ("catboost", "catboost"),
+            ("lgbm", "lightgbm"),
+            ("xgboost", "xgboost"),
+            ("random_forest", "sklearn"),
+        ]:
+            if has(module):
+                model_type = mt
+                break
+
+    use_optuna = (
+        not lite_mode
+        and has("optuna")
+        and mem_gb >= 8
+        and (cores or 0) >= 4
+    )
+    optuna_trials = 20 if use_optuna else 0
+    return {
+        "lite_mode": lite_mode,
+        "model_type": model_type,
+        "optuna_trials": optuna_trials,
+    }
 
 
 def _sma(values, window):
@@ -1985,12 +2030,6 @@ def main():
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
-    p.add_argument(
-        '--model-type',
-        choices=['logreg', 'random_forest', 'xgboost', 'lgbm', 'catboost', 'nn', 'lstm', 'transformer'],
-        default='logreg',
-        help='classifier type',
-    )
     p.add_argument('--sequence-length', type=int, default=5, help='sequence length for LSTM/transformer models')
     p.add_argument('--n-estimators', type=int, default=100, help='number of boosting rounds')
     p.add_argument('--learning-rate', type=float, default=0.1, help='learning rate for boosted trees')
@@ -2005,11 +2044,6 @@ def main():
     p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
-    p.add_argument(
-        '--lite-mode',
-        action='store_true',
-        help='stream feature batches with SGDClassifier.partial_fit and disable heavy extras'
-    )
     p.add_argument('--stack', help='comma separated list of model types to stack')
     p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
@@ -2035,6 +2069,12 @@ def main():
         higher_tfs = [tf.strip() for tf in args.higher_timeframes.split(',') if tf.strip()]
     else:
         higher_tfs = None
+    resources = detect_resources()
+    lite_mode = resources["lite_mode"]
+    model_type = resources["model_type"]
+    optuna_trials = (
+        0 if lite_mode else (args.optuna_trials or resources["optuna_trials"])
+    )
     train(
         Path(args.data_dir),
         Path(args.out_dir),
@@ -2052,7 +2092,7 @@ def main():
         volatility_series=vol_data,
         grid_search=args.grid_search,
         c_values=args.c_values,
-        model_type=args.model_type,
+        model_type=model_type,
         n_estimators=args.n_estimators,
         learning_rate=args.learning_rate,
         max_depth=args.max_depth,
@@ -2060,7 +2100,7 @@ def main():
         sequence_length=args.sequence_length,
         corr_pairs=corr_pairs,
         corr_window=args.corr_window,
-        optuna_trials=args.optuna_trials,
+        optuna_trials=optuna_trials,
         regress_sl_tp=args.regress_sl_tp,
         early_stop=args.early_stop,
         encoder_file=Path(args.encoder_file) if args.encoder_file else None,
@@ -2071,7 +2111,7 @@ def main():
         stack_models=[s.strip() for s in args.stack.split(',')] if args.stack else None,
         prune_threshold=args.prune_threshold,
         prune_warn=args.prune_warn,
-        lite_mode=args.lite_mode,
+        lite_mode=lite_mode,
         compress_model=args.compress_model,
     )
 

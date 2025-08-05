@@ -1,6 +1,7 @@
 numpy
 pandas
 scikit-learn
+psutil
 pytest
 aiohttp
 prometheus_client
