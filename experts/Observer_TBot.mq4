@@ -15,8 +15,6 @@ extern string LogDirectoryName              = "observer_logs";
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
-extern bool   EnableSocketLogging           = false;
-extern bool   EnableSqliteLogging           = false;
 extern bool   UseBinarySocketLogging        = false;
 extern string LogSocketHost                 = "127.0.0.1";
 extern int    LogSocketPort                 = 9000;
@@ -34,7 +32,8 @@ int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
-int      log_socket = INVALID_HANDLE;
+int      log_db_handle    = INVALID_HANDLE;
+int      log_socket       = INVALID_HANDLE;
 datetime next_socket_attempt = 0;
 int      socket_backoff = 1;
 string   trade_log_buffer[];
@@ -42,6 +41,15 @@ int      NextEventId = 1;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
 const int LogSchemaVersion = 3;
+
+enum LogBackend
+{
+   LOG_BACKEND_SOCKET = 0,
+   LOG_BACKEND_SQLITE = 1,
+   LOG_BACKEND_CSV    = 2
+};
+
+int CurrentBackend = LOG_BACKEND_CSV;
 
 string   book_symbols[];
 double   book_bid_cache[];
@@ -166,48 +174,52 @@ int OnInit()
    for(int j=0; j<sym_cnt; j++)
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
-   if(!EnableSocketLogging)
-   {
-      string log_fname = LogDirectoryName + "\\trades_raw.csv";
-      trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-      if(trade_log_handle!=INVALID_HANDLE)
-      {
-         bool need_header = (FileSize(trade_log_handle)==0);
-         FileSeek(trade_log_handle, 0, SEEK_END);
-         if(need_header)
-         {
-            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance";
-            int _wr = FileWrite(trade_log_handle, header);
-            if(_wr <= 0)
-               FileWriteErrors++;
-         }
-      }
-   }
+   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   next_socket_attempt = now;
+   socket_backoff = 1;
 
-   if(EnableSocketLogging || EnableSqliteLogging || StreamMetricsOnly)
+   // Try socket backend first
+   log_socket = SocketCreate();
+   if(log_socket!=INVALID_HANDLE && SocketConnect(log_socket, LogSocketHost, LogSocketPort, 1000))
    {
-      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-      next_socket_attempt = now;
-      socket_backoff = 1;
-      log_socket = SocketCreate();
+      CurrentBackend = LOG_BACKEND_SOCKET;
+      Print("Using socket log backend");
+   }
+   else
+   {
       if(log_socket!=INVALID_HANDLE)
+         SocketClose(log_socket);
+      log_socket = INVALID_HANDLE;
+
+      // Fallback to SQLite
+      string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
+      log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
+      if(log_db_handle!=INVALID_HANDLE)
       {
-         if(!SocketConnect(log_socket, LogSocketHost, LogSocketPort, 1000))
-         {
-            if(EnableDebugLogging)
-               Print("Socket connection failed: ", GetLastError());
-            SocketClose(log_socket);
-            log_socket = INVALID_HANDLE;
-            next_socket_attempt = now + socket_backoff;
-         }
-         else if(EnableDebugLogging)
-         {
-            Print("Socket connected to ", LogSocketHost, ":", LogSocketPort);
-         }
+         string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL)";
+         DatabaseExecute(log_db_handle, create_sql);
+         CurrentBackend = LOG_BACKEND_SQLITE;
+         Print("Using SQLite log backend");
       }
-      else if(EnableDebugLogging)
+      else
       {
-         Print("Socket creation failed: ", GetLastError());
+         // Final fallback to CSV
+         string log_fname = LogDirectoryName + "\\trades_raw.csv";
+         trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+         if(trade_log_handle!=INVALID_HANDLE)
+         {
+            bool need_header = (FileSize(trade_log_handle)==0);
+            FileSeek(trade_log_handle, 0, SEEK_END);
+            if(need_header)
+            {
+               string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance";
+               int _wr = FileWrite(trade_log_handle, header);
+               if(_wr <= 0)
+                  FileWriteErrors++;
+            }
+         }
+         CurrentBackend = LOG_BACKEND_CSV;
+         Print("Using CSV log backend");
       }
    }
 
@@ -230,6 +242,11 @@ void OnDeinit(const int reason)
          Print("Closing log socket");
       SocketClose(log_socket);
       log_socket = INVALID_HANDLE;
+   }
+   if(log_db_handle!=INVALID_HANDLE)
+   {
+      DatabaseClose(log_db_handle);
+      log_db_handle = INVALID_HANDLE;
    }
 }
 
@@ -443,7 +460,7 @@ void OnTimer()
    FlushTradeBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
 
-   if((EnableSocketLogging || EnableSqliteLogging || StreamMetricsOnly) && log_socket==INVALID_HANDLE && now >= next_socket_attempt)
+   if((CurrentBackend==LOG_BACKEND_SOCKET || StreamMetricsOnly) && log_socket==INVALID_HANDLE && now >= next_socket_attempt)
    {
       log_socket = SocketCreate();
       if(log_socket!=INVALID_HANDLE)
@@ -578,6 +595,11 @@ bool ComputeFileSHA256(string filename, string &hash)
    return(true);
 }
 
+string SqlEscape(string s)
+{
+   return(StringReplace(s, "'", "''"));
+}
+
 void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
               double sl, double tp, double profit, double profit_after,
@@ -599,7 +621,7 @@ void LogTrade(string action, int ticket, int magic, string source,
       profit, profit_after, spread, comment, remaining, slippage, (int)volume,
       open_time_str, book_bid_vol, book_ask_vol, book_imbalance);
 
-   if(!EnableSocketLogging)
+   if(CurrentBackend==LOG_BACKEND_CSV)
    {
       if(trade_log_handle==INVALID_HANDLE)
          return;
@@ -616,6 +638,22 @@ void LogTrade(string action, int ticket, int magic, string source,
          int n = ArraySize(trade_log_buffer);
          ArrayResize(trade_log_buffer, n+1);
          trade_log_buffer[n] = line;
+      }
+   }
+   else if(CurrentBackend==LOG_BACKEND_SQLITE)
+   {
+      if(log_db_handle!=INVALID_HANDLE)
+      {
+         string sql = StringFormat(
+            "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f)",
+            id,
+            SqlEscape(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
+            SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
+            SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
+            SqlEscape(action), ticket, magic, SqlEscape(source), SqlEscape(symbol), order_type,
+            lots, price, sl, tp, profit, profit_after, spread, SqlEscape(comment), remaining,
+            slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance);
+         DatabaseExecute(log_db_handle, sql);
       }
    }
 
@@ -914,7 +952,7 @@ void ManageMetrics(datetime ts)
 
 void FlushTradeBuffer()
 {
-   if(EnableSocketLogging)
+   if(CurrentBackend!=LOG_BACKEND_CSV)
       return;
    if(trade_log_handle==INVALID_HANDLE)
       return;

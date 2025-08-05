@@ -209,10 +209,12 @@ Metrics entries older than the number of days specified by `MetricsDaysToKeep` (
 
 ## Real-time Streaming
 
-When `EnableSocketLogging` is enabled the observer EA emits each trade event and
-periodic metric summary as newline separated JSON over a TCP socket. Run the
-``socket_log_service.py`` helper to capture these messages into a CSV file. The
-service now uses ``asyncio`` to handle multiple connections concurrently:
+On start-up the observer EA tries to stream each trade event and periodic
+metric summary over a TCP socket. If the socket server cannot be reached it
+falls back to writing a SQLite database ``trades_raw.sqlite`` and finally to a
+CSV file ``trades_raw.csv``. A log message indicates which backend was chosen.
+Run the ``socket_log_service.py`` helper to capture socket messages into a CSV
+file. The service now uses ``asyncio`` to handle multiple connections concurrently:
 
 ```bash
 python scripts/socket_log_service.py --out stream.csv
