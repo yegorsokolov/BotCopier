@@ -3,12 +3,14 @@
 
 import argparse
 import json
+import gzip
 from pathlib import Path
 
 
 def publish(model_json: Path, files_dir: Path) -> None:
-    """Copy minimal model fields to ``files_dir/model.json``."""
-    with open(model_json) as f:
+    """Copy minimal model fields to ``files_dir/model.json`` or ``model.json.gz``."""
+    open_func = gzip.open if str(model_json).endswith('.gz') else open
+    with open_func(model_json, 'rt') as f:
         data = json.load(f)
 
     out = {
@@ -20,8 +22,9 @@ def publish(model_json: Path, files_dir: Path) -> None:
     }
 
     files_dir.mkdir(parents=True, exist_ok=True)
-    dest = files_dir / "model.json"
-    with open(dest, "w") as f:
+    dest = files_dir / model_json.name
+    open_func_out = gzip.open if dest.suffix == '.gz' else open
+    with open_func_out(dest, 'wt') as f:
         json.dump(out, f, indent=2)
     print(f"Model parameters written to {dest}")
 

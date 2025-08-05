@@ -167,17 +167,38 @@ bool ParseModelCsv(string line)
 
 bool LoadModel()
 {
-   int h = FileOpen(ModelFileName, FILE_READ|FILE_TXT|FILE_COMMON);
+   string lower = StringToLower(ModelFileName);
+   bool is_gz = StringFind(lower, ".gz") >= 0;
+   int mode = FILE_READ|FILE_COMMON|(is_gz ? FILE_BIN : FILE_TXT);
+   int h = FileOpen(ModelFileName, mode);
    if(h == INVALID_HANDLE)
    {
       Print("Model load failed: ", GetLastError());
       return(false);
    }
    string content = "";
-   while(!FileIsEnding(h))
-      content += FileReadString(h);
-   FileClose(h);
-   if(StringFind(StringToLower(ModelFileName), ".json") >= 0)
+   if(is_gz)
+   {
+      int size = FileSize(h);
+      uchar data[];
+      ArrayResize(data, size);
+      FileReadArray(h, data, 0, size);
+      FileClose(h);
+      uchar raw[];
+      if(!CryptDecode(CRYPT_ARCHIVE_GZIP, data, raw))
+      {
+         Print("Gzip decode failed");
+         return(false);
+      }
+      content = CharArrayToString(raw, 0, WHOLE_ARRAY, CP_UTF8);
+   }
+   else
+   {
+      while(!FileIsEnding(h))
+         content += FileReadString(h);
+      FileClose(h);
+   }
+   if(StringFind(lower, ".json") >= 0)
       return(ParseModelJson(content));
    else
       return(ParseModelCsv(content));

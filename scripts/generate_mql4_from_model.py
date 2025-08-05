@@ -2,6 +2,7 @@
 """Render MQL4 strategy file from model description."""
 import argparse
 import json
+import gzip
 from pathlib import Path
 from datetime import datetime
 from typing import Iterable, List, Union
@@ -21,7 +22,8 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
         model_jsons = [model_jsons]
     models: List[dict] = []
     for mj in model_jsons:
-        with open(mj) as f:
+        open_func = gzip.open if str(mj).endswith('.gz') else open
+        with open_func(mj, 'rt') as f:
             data = json.load(f)
         sessions = data.get('session_models')
         if sessions:
