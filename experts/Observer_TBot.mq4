@@ -23,6 +23,7 @@ extern int    LogBufferSize                 = 10;
 extern bool   StreamMetricsOnly            = false;
 extern string CommitHash                   = "";
 extern string TraceId                      = "";
+extern int    BookRefreshSeconds           = 5;
 
 int timer_handle;
 
@@ -40,6 +41,22 @@ int      NextEventId = 1;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
 const int LogSchemaVersion = 3;
+
+string   book_symbols[];
+double   book_bid_cache[];
+double   book_ask_cache[];
+double   book_imb_cache[];
+datetime book_last_refresh[];
+
+int FindBookIndex(string symbol)
+{
+   for(int i=0; i<ArraySize(book_symbols); i++)
+   {
+      if(book_symbols[i] == symbol)
+         return(i);
+   }
+   return(-1);
+}
 
 int MapGet(int key)
 {
@@ -79,21 +96,53 @@ bool Contains(int &arr[], int value)
 
 void GetBookVolumes(string symbol, double &bid_vol, double &ask_vol, double &imbalance)
 {
-   bid_vol = 0.0;
-   ask_vol = 0.0;
-   imbalance = 0.0;
+   int idx = FindBookIndex(symbol);
+   if(idx < 0)
+   {
+      int sz = ArraySize(book_symbols);
+      ArrayResize(book_symbols, sz+1);
+      ArrayResize(book_bid_cache, sz+1);
+      ArrayResize(book_ask_cache, sz+1);
+      ArrayResize(book_imb_cache, sz+1);
+      ArrayResize(book_last_refresh, sz+1);
+      idx = sz;
+      book_symbols[idx] = symbol;
+      book_bid_cache[idx] = 0.0;
+      book_ask_cache[idx] = 0.0;
+      book_imb_cache[idx] = 0.0;
+      book_last_refresh[idx] = 0;
+   }
+
+   bid_vol = book_bid_cache[idx];
+   ask_vol = book_ask_cache[idx];
+   imbalance = book_imb_cache[idx];
+
+   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   if(now - book_last_refresh[idx] < BookRefreshSeconds)
+      return;
+
    MqlBookInfo book[];
+   double b = 0.0;
+   double a = 0.0;
    if(MarketBookGet(symbol, book))
    {
       for(int i=0; i<ArraySize(book); i++)
       {
          if(book[i].type==BOOK_TYPE_BUY)
-            bid_vol += book[i].volume;
+            b += book[i].volume;
          else if(book[i].type==BOOK_TYPE_SELL)
-            ask_vol += book[i].volume;
+            a += book[i].volume;
       }
-      if(bid_vol + ask_vol > 0)
-         imbalance = (bid_vol - ask_vol) / (bid_vol + ask_vol);
+      double imb = 0.0;
+      if(b + a > 0)
+         imb = (b - a) / (b + a);
+      bid_vol = b;
+      ask_vol = a;
+      imbalance = imb;
+      book_bid_cache[idx] = b;
+      book_ask_cache[idx] = a;
+      book_imb_cache[idx] = imb;
+      book_last_refresh[idx] = now;
    }
 }
 

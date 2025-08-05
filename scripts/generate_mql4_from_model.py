@@ -17,7 +17,7 @@ template_path = (
 )
 
 
-def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
+def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode: bool = False):
     if isinstance(model_jsons, (str, Path)):
         model_jsons = [model_jsons]
     models: List[dict] = []
@@ -255,6 +255,11 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path):
         'book_imbalance': 'BookImbalance()',
     }
 
+    if lite_mode:
+        feature_map['book_bid_vol'] = '0.0'
+        feature_map['book_ask_vol'] = '0.0'
+        feature_map['book_imbalance'] = '0.0'
+
     tf_const = {
         'M1': 'PERIOD_M1',
         'M5': 'PERIOD_M5',
@@ -343,8 +348,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('model_json', nargs='+')
     p.add_argument('out_dir')
+    p.add_argument('--lite-mode', action='store_true')
     args = p.parse_args()
-    generate([Path(m) for m in args.model_json], Path(args.out_dir))
+    generate([Path(m) for m in args.model_json], Path(args.out_dir), lite_mode=args.lite_mode)
 
 
 if __name__ == '__main__':
