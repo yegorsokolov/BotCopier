@@ -11,6 +11,12 @@ extern string ModelFileName = "model.json";
 extern int ReloadModelInterval = 0; // seconds, 0=disabled
 extern double BreakEvenPips = 0;
 extern double TrailingPips = 0;
+extern bool   EnableDecisionLogging = true;
+extern bool   DecisionLogToSocket = false;
+extern string DecisionLogFile = "decisions.csv";
+extern string DecisionLogSocketHost = "127.0.0.1";
+extern int    DecisionLogSocketPort = 9001;
+extern string ModelVersion = "";
 
 int ModelCount = __MODEL_COUNT__;
 int SessionStarts[] = {__SESSION_STARTS__};
@@ -73,6 +79,9 @@ double EncoderWeights[] = {__ENCODER_WEIGHTS__};
 int EncoderCenterCount = __ENCODER_CENTER_COUNT__;
 double EncoderCenters[] = {__ENCODER_CENTERS__};
 datetime LastModelLoad = 0;
+int      DecisionLogHandle = INVALID_HANDLE;
+int      DecisionSocket = INVALID_HANDLE;
+int      NextDecisionId = 1;
 
 //----------------------------------------------------------------------
 // Model loading utilities
@@ -211,6 +220,36 @@ int OnInit()
    if(!ok)
       Print("Using built-in model parameters");
    MarketBookAdd(SymbolToTrade);
+   if(EnableDecisionLogging)
+   {
+      if(DecisionLogToSocket)
+      {
+         DecisionSocket = SocketCreate();
+         if(DecisionSocket != INVALID_HANDLE)
+         {
+            if(!SocketConnect(DecisionSocket, DecisionLogSocketHost, DecisionLogSocketPort, 1000))
+            {
+               Print("Decision log socket connect failed: ", GetLastError());
+               SocketClose(DecisionSocket);
+               DecisionSocket = INVALID_HANDLE;
+            }
+         }
+         else
+            Print("Decision log socket creation failed: ", GetLastError());
+      }
+      else
+      {
+         DecisionLogHandle = FileOpen(DecisionLogFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+         if(DecisionLogHandle != INVALID_HANDLE)
+         {
+            if(FileSize(DecisionLogHandle) == 0)
+               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;features");
+            FileSeek(DecisionLogHandle, 0, SEEK_END);
+         }
+         else
+            Print("Decision log open failed: ", GetLastError());
+      }
+   }
    return(INIT_SUCCEEDED);
 }
 
@@ -661,6 +700,33 @@ double PredictTPDistance()
    return(z);
 }
 
+void LogDecision(double &feats[], double prob, string action)
+{
+   if(!EnableDecisionLogging)
+      return;
+   string feat_vals = "";
+   for(int i=0; i<FeatureCount; i++)
+   {
+      if(i>0) feat_vals += ",";
+      feat_vals += DoubleToString(feats[i], 5);
+   }
+   datetime now = TimeCurrent();
+   if(DecisionLogHandle != INVALID_HANDLE)
+   {
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, feat_vals);
+      FileFlush(DecisionLogHandle);
+   }
+   if(DecisionSocket != INVALID_HANDLE)
+   {
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"features\":[%s]}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, feat_vals);
+      uchar bytes[];
+      StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
+      SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
+   }
+   NextDecisionId++;
+}
+
 double GetNewSL(bool isBuy)
 {
    double d = PredictSLDistance();
@@ -730,6 +796,8 @@ void OnTick()
    double tradeLots = GetTradeLots(prob);
    int ticket;
    double thr = GetTradeThreshold();
+   string action = (prob > thr) ? "buy" : "sell";
+   LogDecision(feats, prob, action);
    if(prob > thr)
    {
       ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3,
@@ -789,5 +857,9 @@ void ManageOpenOrders()
 
 void OnDeinit(const int reason)
 {
+   if(DecisionLogHandle != INVALID_HANDLE)
+      FileClose(DecisionLogHandle);
+   if(DecisionSocket != INVALID_HANDLE)
+      SocketClose(DecisionSocket);
    MarketBookRelease(SymbolToTrade);
 }
