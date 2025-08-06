@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 import hashlib
 import gzip
+import sqlite3
+import subprocess
 
 import pandas as pd
 import pytest
@@ -722,3 +724,137 @@ def test_train_compress_model(tmp_path: Path):
     with gzip.open(model_file, "rt") as f:
         data = json.load(f)
     assert "coefficients" in data
+
+
+def test_resume_training(tmp_path: Path):
+    db_file = tmp_path / "logs.db"
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    rows1 = [
+        {
+            "event_id": "1",
+            "event_time": "2024-01-01 00:00:00",
+            "action": "OPEN",
+            "ticket": "1",
+            "symbol": "EURUSD",
+            "order_type": "0",
+            "lots": "0.1",
+            "price": "1.1000",
+            "sl": "1.0950",
+            "tp": "1.1100",
+            "profit": "0",
+            "spread": "2",
+            "comment": "",
+            "remaining_lots": "0.1",
+            "slippage": "0.0001",
+            "volume": "100",
+            "open_time": "",
+            "book_bid_vol": "0",
+            "book_ask_vol": "0",
+            "book_imbalance": "0",
+        },
+        {
+            "event_id": "2",
+            "event_time": "2024-01-01 01:00:00",
+            "action": "OPEN",
+            "ticket": "2",
+            "symbol": "EURUSD",
+            "order_type": "1",
+            "lots": "0.1",
+            "price": "1.2000",
+            "sl": "1.1950",
+            "tp": "1.2100",
+            "profit": "0",
+            "spread": "3",
+            "comment": "",
+            "remaining_lots": "0.1",
+            "slippage": "0.0002",
+            "volume": "200",
+            "open_time": "",
+            "book_bid_vol": "0",
+            "book_ask_vol": "0",
+            "book_imbalance": "0",
+        },
+    ]
+    df1 = pd.DataFrame(rows1)
+    conn = sqlite3.connect(db_file)
+    df1.to_sql("logs", conn, index=False)
+    conn.close()
+
+    train(db_file, out_dir)
+
+    model_file = out_dir / "model.json"
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("last_event_id") == 2
+
+    rows2 = [
+        {
+            "event_id": "3",
+            "event_time": "2024-01-01 02:00:00",
+            "action": "OPEN",
+            "ticket": "3",
+            "symbol": "EURUSD",
+            "order_type": "0",
+            "lots": "0.1",
+            "price": "1.1300",
+            "sl": "1.1250",
+            "tp": "1.1400",
+            "profit": "0",
+            "spread": "2",
+            "comment": "",
+            "remaining_lots": "0.1",
+            "slippage": "0.0001",
+            "volume": "150",
+            "open_time": "",
+            "book_bid_vol": "0",
+            "book_ask_vol": "0",
+            "book_imbalance": "0",
+        },
+        {
+            "event_id": "4",
+            "event_time": "2024-01-01 03:00:00",
+            "action": "OPEN",
+            "ticket": "4",
+            "symbol": "EURUSD",
+            "order_type": "1",
+            "lots": "0.1",
+            "price": "1.1400",
+            "sl": "1.1350",
+            "tp": "1.1500",
+            "profit": "0",
+            "spread": "3",
+            "comment": "",
+            "remaining_lots": "0.1",
+            "slippage": "0.0002",
+            "volume": "250",
+            "open_time": "",
+            "book_bid_vol": "0",
+            "book_ask_vol": "0",
+            "book_imbalance": "0",
+        },
+    ]
+    df2 = pd.DataFrame(rows2)
+    conn = sqlite3.connect(db_file)
+    df2.to_sql("logs", conn, if_exists="append", index=False)
+    conn.close()
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "train_target_clone.py"
+    subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--data-dir",
+            str(db_file),
+            "--out-dir",
+            str(out_dir),
+            "--resume",
+        ],
+        check=True,
+    )
+
+    with open(model_file) as f:
+        data2 = json.load(f)
+    assert data2.get("last_event_id") == 4
+    assert data2.get("num_samples") == 2
