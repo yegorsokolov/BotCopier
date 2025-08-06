@@ -11,7 +11,7 @@ extern bool   EnableLiveCloneMode           = false;
 extern int    MaxModelsToRetain             = 3;
 extern int    MetricsRollingDays            = 7;
 extern int    MetricsDaysToKeep             = 30;
-extern string LogDirectoryName              = "observer_logs";
+extern string LogDirectoryName              = "observer_logs"; // resume event_id from existing logs, start at 1 if none
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
@@ -223,6 +223,18 @@ int OnInit()
       {
          string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL)";
          DatabaseExecute(log_db_handle, create_sql);
+         // Resume event id from existing records
+         int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
+         if(stmt!=INVALID_HANDLE)
+         {
+            if(DatabaseRead(stmt))
+            {
+               int last_id = (int)DatabaseGetInteger(stmt, 0);
+               if(last_id > 0)
+                  NextEventId = last_id + 1;
+            }
+            DatabaseFinalize(stmt);
+         }
          CurrentBackend = LOG_BACKEND_SQLITE;
          Print("Using SQLite log backend");
       }
@@ -234,7 +246,29 @@ int OnInit()
          if(trade_log_handle!=INVALID_HANDLE)
          {
             bool need_header = (FileSize(trade_log_handle)==0);
-            FileSeek(trade_log_handle, 0, SEEK_END);
+            int last_id = 0;
+            if(!need_header)
+            {
+               FileSeek(trade_log_handle, 0, SEEK_SET);
+               while(!FileIsEnding(trade_log_handle))
+               {
+                  string field = FileReadString(trade_log_handle);
+                  if(field=="event_id")
+                  {
+                     while(!FileIsLineEnding(trade_log_handle) && !FileIsEnding(trade_log_handle))
+                        FileReadString(trade_log_handle);
+                     continue;
+                  }
+                  int id = (int)StringToInteger(field);
+                  if(id > last_id)
+                     last_id = id;
+                  while(!FileIsLineEnding(trade_log_handle) && !FileIsEnding(trade_log_handle))
+                     FileReadString(trade_log_handle);
+               }
+               FileSeek(trade_log_handle, 0, SEEK_END);
+            }
+            if(last_id > 0)
+               NextEventId = last_id + 1;
             if(need_header)
             {
                string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance";
