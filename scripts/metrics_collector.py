@@ -30,6 +30,7 @@ FIELDS = [
     "expectancy",
     "file_write_errors",
     "socket_errors",
+    "book_refresh_seconds",
     "trace_id",
     "span_id",
 ]

@@ -42,6 +42,9 @@ int      FileWriteErrors = 0;
 int      SocketErrors = 0;
 const int LogSchemaVersion = 3;
 
+double   CpuLoad = 0.0;
+int      CachedBookRefreshSeconds = 0;
+
 enum LogBackend
 {
    LOG_BACKEND_SOCKET = 0,
@@ -83,6 +86,27 @@ void MapRemove(int key)
    int pos = ticket_map.Search(key);
    if(pos >= 0)
       ticket_map.Delete(pos);
+}
+
+double GetCpuLoad()
+{
+   return(CpuLoad);
+}
+
+void UpdateCpuLoad(uint elapsed_ms)
+{
+   static double avg = 0.0;
+   static int count = 0;
+   if(count < 100)
+      count++;
+   avg = (avg*(count-1) + elapsed_ms) / count;
+   CpuLoad = MathMin(avg / 200.0, 1.0);
+   int interval = BookRefreshSeconds;
+   if(CpuLoad < 0.25)
+      interval = (int)MathMax(1.0, BookRefreshSeconds * 0.5);
+   else if(CpuLoad > 0.75)
+      interval = (int)(BookRefreshSeconds * 2.0);
+   CachedBookRefreshSeconds = interval;
 }
 
 bool Contains(int &arr[], int value)
@@ -127,7 +151,7 @@ void GetBookVolumes(string symbol, double &bid_vol, double &ask_vol, double &imb
    imbalance = book_imb_cache[idx];
 
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-   if(now - book_last_refresh[idx] < BookRefreshSeconds)
+   if(now - book_last_refresh[idx] < CachedBookRefreshSeconds)
       return;
 
    MqlBookInfo book[];
@@ -177,6 +201,7 @@ int OnInit()
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_socket_attempt = now;
    socket_backoff = 1;
+   CachedBookRefreshSeconds = BookRefreshSeconds;
 
    // Try socket backend first
    log_socket = SocketCreate();
@@ -397,6 +422,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
 void OnTick()
 {
+   uint tick_start = GetTickCount();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    int current[];
    int cur_idx = 0;
@@ -453,6 +479,8 @@ void OnTick()
          t--; // adjust index after removal
       }
    }
+   uint elapsed = GetTickCount() - tick_start;
+   UpdateCpuLoad(elapsed);
 }
 
 void OnTimer()
@@ -754,7 +782,7 @@ void WriteMetrics(datetime ts)
          h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
          if(h==INVALID_HANDLE)
             return;
-         int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors");
+         int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds");
          if(_wr <= 0)
             FileWriteErrors++;
       }
@@ -826,7 +854,7 @@ void WriteMetrics(datetime ts)
       double sortino = stddev_neg>0 ? (sum_profit/trades)/stddev_neg : 0.0;
       double expectancy = (avg_profit * win_rate) - (avg_loss * (1.0 - win_rate));
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -834,10 +862,10 @@ void WriteMetrics(datetime ts)
             FileWriteErrors++;
       }
 
-       string json = StringFormat("{\"schema_version\":%d,\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"file_write_errors\":%d,\"socket_errors\":%d}",
+       string json = StringFormat("{\"schema_version\":%d,\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"file_write_errors\":%d,\"socket_errors\":%d,\"book_refresh_seconds\":%d}",
          LogSchemaVersion,
          EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe,
-         FileWriteErrors, SocketErrors);
+         FileWriteErrors, SocketErrors, CachedBookRefreshSeconds);
        SendJson(json);
    }
 
