@@ -549,6 +549,27 @@ def _load_calendar(file: Path) -> list[tuple[datetime, float]]:
     return events
 
 
+def _read_last_event_id(out_dir: Path) -> int:
+    """Read ``last_event_id`` from an existing model file in ``out_dir``."""
+    json_path = out_dir / "model.json"
+    gz_path = out_dir / "model.json.gz"
+    model_file: Path | None = None
+    open_func = open
+    if gz_path.exists():
+        model_file = gz_path
+        open_func = gzip.open
+    elif json_path.exists():
+        model_file = json_path
+    if model_file is None:
+        return 0
+    try:
+        with open_func(model_file, "rt") as f:
+            data = json.load(f)
+        return int(data.get("last_event_id", 0))
+    except Exception:
+        return 0
+
+
 def _extract_features(
     rows,
     use_sma=False,
@@ -894,6 +915,7 @@ def _train_lite_mode(
     rows_iter, data_commits, data_checksums = _load_logs(
         data_dir, lite_mode=True, chunk_size=chunk_size
     )
+    last_event_id = 0
     encoder = None
     if encoder_file is not None and encoder_file.exists():
         with open(encoder_file) as f:
@@ -906,6 +928,10 @@ def _train_lite_mode(
     sample_count = 0
 
     for chunk in rows_iter:
+        if "event_id" in chunk.columns:
+            max_id = pd.to_numeric(chunk["event_id"], errors="coerce").max()
+            if not pd.isna(max_id):
+                last_event_id = max(last_event_id, int(max_id))
         (
             f_chunk,
             l_chunk,
@@ -972,6 +998,7 @@ def _train_lite_mode(
         "coefficients": clf.coef_[0].astype(np.float32).tolist(),
         "intercept": float(clf.intercept_[0]),
         "classes": [int(c) for c in clf.classes_],
+        "last_event_id": int(last_event_id),
     }
     if data_commits:
         model["data_commit"] = ",".join(sorted(set(data_commits)))
@@ -1075,12 +1102,14 @@ def train(
     cache_file = out_dir / "feature_cache.npz"
 
     existing_model = None
+    last_event_id = 0
     if incremental:
         model_file = out_dir / "model.json"
         if not model_file.exists():
             raise FileNotFoundError(f"{model_file} not found for incremental training")
         with open(model_file) as f:
             existing_model = json.load(f)
+            last_event_id = int(existing_model.get("last_event_id", 0))
 
     features = labels = sl_targets = tp_targets = hours = None
     loaded_from_cache = False
@@ -1158,6 +1187,10 @@ def train(
             )
         else:
             rows_df, data_commits, data_checksums = _load_logs(data_dir)
+            if "event_id" in rows_df.columns:
+                max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
+                if not pd.isna(max_id):
+                    last_event_id = max(last_event_id, int(max_id))
             encoder = None
             if encoder_file is not None and encoder_file.exists():
                 with open(encoder_file) as f:
@@ -1197,6 +1230,12 @@ def train(
         if encoder_file is not None and encoder_file.exists():
             with open(encoder_file) as f:
                 encoder = json.load(f)
+        if loaded_from_cache:
+            rows_df, _, _ = _load_logs(data_dir)
+            if "event_id" in rows_df.columns:
+                max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
+                if not pd.isna(max_id):
+                    last_event_id = max(last_event_id, int(max_id))
 
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
@@ -1948,6 +1987,7 @@ def train(
         # main accuracy metric is validation performance when available
         "accuracy": val_acc,
         "num_samples": int(labels.shape[0]) + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
+        "last_event_id": int(last_event_id),
         "feature_importance": feature_importance,
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
@@ -2184,6 +2224,7 @@ def main():
     p.add_argument('--max-depth', type=int, default=3, help='tree depth for boosting models')
     p.add_argument('--incremental', action='store_true', help='update existing model.json')
     p.add_argument('--start-event-id', type=int, default=0, help='only load rows with event_id greater than this value from SQLite logs')
+    p.add_argument('--resume', action='store_true', help='resume from last processed event_id in existing model.json')
     p.add_argument('--cache-features', action='store_true', help='reuse cached feature matrix')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
@@ -2198,7 +2239,10 @@ def main():
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
     args = p.parse_args()
     global START_EVENT_ID
-    START_EVENT_ID = args.start_event_id
+    if args.resume:
+        START_EVENT_ID = _read_last_event_id(Path(args.out_dir))
+    else:
+        START_EVENT_ID = args.start_event_id
     if args.volatility_file:
         import json
         with open(args.volatility_file) as f:
