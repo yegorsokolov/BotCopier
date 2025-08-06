@@ -22,8 +22,27 @@ def test_stream_listener(tmp_path: Path):
     t.start()
     time.sleep(0.1)
 
-    msg = {
+    decision_msg = {
         "event_id": 1,
+        "event_time": "t",
+        "broker_time": "b",
+        "local_time": "l",
+        "action": "DECISION",
+        "ticket": 0,
+        "magic": 0,
+        "source": "mt4",
+        "symbol": "EURUSD",
+        "order_type": 0,
+        "lots": 0.0,
+        "price": 0.0,
+        "sl": 0.0,
+        "tp": 0.0,
+        "profit": 0.0,
+        "comment": "",
+        "remaining_lots": 0.0,
+    }
+    trade_msg = {
+        "event_id": 2,
         "event_time": "t",
         "broker_time": "b",
         "local_time": "l",
@@ -40,11 +59,13 @@ def test_stream_listener(tmp_path: Path):
         "profit": 0.0,
         "comment": "hi",
         "remaining_lots": 0.1,
+        "decision_id": 1,
     }
 
     client = socket.socket()
     client.connect((host, port))
-    client.sendall(json.dumps(msg).encode() + b"\n")
+    client.sendall(json.dumps(decision_msg).encode() + b"\n")
+    client.sendall(json.dumps(trade_msg).encode() + b"\n")
     client.close()
 
     t.join(timeout=2)
@@ -54,8 +75,10 @@ def test_stream_listener(tmp_path: Path):
         lines = [l.strip() for l in f.readlines() if l.strip()]
 
     header = lines[0].split(";")
+    assert "decision_id" in header
     assert "trace_id" in header and "span_id" in header
-    values = dict(zip(header, lines[1].split(";")))
-    assert values["symbol"] == "EURUSD"
-    assert len(values["trace_id"]) == 32
-    assert len(values["span_id"]) == 16
+    rows = [dict(zip(header, l.split(";"))) for l in lines[1:]]
+    assert rows[1]["symbol"] == "EURUSD"
+    assert rows[1]["decision_id"] == rows[0]["event_id"]
+    assert len(rows[1]["trace_id"]) == 32
+    assert len(rows[1]["span_id"]) == 16

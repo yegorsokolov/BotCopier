@@ -797,18 +797,20 @@ void OnTick()
    int ticket;
    double thr = GetTradeThreshold();
    string action = (prob > thr) ? "buy" : "sell";
+   int decision_id = NextDecisionId;
    LogDecision(feats, prob, action);
+   string order_comment = StringFormat("model|decision_id=%d", decision_id);
    if(prob > thr)
    {
       ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3,
                          GetNewSL(true), GetNewTP(true),
-                         "model", MagicNumber, 0, clrBlue);
+                         order_comment, MagicNumber, 0, clrBlue);
    }
    else
    {
       ticket = OrderSend(SymbolToTrade, OP_SELL, tradeLots, Bid, 3,
                          GetNewSL(false), GetNewTP(false),
-                         "model", MagicNumber, 0, clrRed);
+                         order_comment, MagicNumber, 0, clrRed);
    }
 
    if(ticket < 0)

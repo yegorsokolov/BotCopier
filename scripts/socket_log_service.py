@@ -35,6 +35,7 @@ FIELDS = [
     "profit",
     "comment",
     "remaining_lots",
+    "decision_id",
     "trace_id",
     "span_id",
 ]

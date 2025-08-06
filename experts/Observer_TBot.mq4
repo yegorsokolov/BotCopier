@@ -271,7 +271,7 @@ int OnInit()
                NextEventId = last_id + 1;
             if(need_header)
             {
-               string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance";
+               string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;decision_id";
                int _wr = FileWrite(trade_log_handle, header);
                if(_wr <= 0)
                   FileWriteErrors++;
@@ -670,18 +670,33 @@ void LogTrade(string action, int ticket, int magic, string source,
               double book_bid_vol, double book_ask_vol, double book_imbalance)
 {
    int id = NextEventId++;
+   int decision_id = 0;
+   int pos = StringFind(comment, "decision_id=");
+   if(pos >= 0)
+   {
+      int start = pos + StringLen("decision_id=");
+      int end = start;
+      while(end < StringLen(comment))
+      {
+         string ch = StringMid(comment, end, 1);
+         if(ch < "0" || ch > "9")
+            break;
+         end++;
+      }
+      decision_id = (int)StringToInteger(StringSubstr(comment, start, end-start));
+   }
    string open_time_str = "";
    if(action=="CLOSE" && open_time>0)
       open_time_str = TimeToString(open_time, TIME_DATE|TIME_SECONDS);
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%d;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%d;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%d",
       id,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp,
       profit, profit_after, spread, comment, remaining, slippage, (int)volume,
-      open_time_str, book_bid_vol, book_ask_vol, book_imbalance);
+      open_time_str, book_bid_vol, book_ask_vol, book_imbalance, decision_id);
 
    if(CurrentBackend==LOG_BACKEND_CSV)
    {
@@ -720,14 +735,14 @@ void LogTrade(string action, int ticket, int magic, string source,
    }
 
    string json = StringFormat(
-      "{\"schema_version\":%d,\"event_id\":%d,\"trace_id\":\"%s\",\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"profit_after_trade\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d,\"open_time\":\"%s\",\"book_bid_vol\":%.2f,\"book_ask_vol\":%.2f,\"book_imbalance\":%.5f}",
+      "{\"schema_version\":%d,\"event_id\":%d,\"trace_id\":\"%s\",\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"profit_after_trade\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d,\"open_time\":\"%s\",\"book_bid_vol\":%.2f,\"book_ask_vol\":%.2f,\"book_imbalance\":%.5f,\"decision_id\":%d}",
       LogSchemaVersion, id, EscapeJson(TraceId),
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
       lots, price, sl, tp, profit, profit_after, spread, EscapeJson(comment), remaining,
-      slippage, (int)volume, EscapeJson(open_time_str), book_bid_vol, book_ask_vol, book_imbalance);
+      slippage, (int)volume, EscapeJson(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, decision_id);
 
    SendJson(json);
 }
