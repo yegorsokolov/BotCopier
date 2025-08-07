@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import zlib
+import gzip
 from pathlib import Path
 from asyncio import StreamReader, StreamWriter, Queue
 
@@ -51,7 +52,8 @@ async def _writer_task(out_file: Path, queue: Queue) -> None:
     """Write rows from ``queue`` to ``out_file``."""
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_file, "a", newline="") as f:
+    open_func = gzip.open if out_file.suffix == ".gz" else open
+    with open_func(out_file, "at", newline="") as f:
         writer = csv.writer(f, delimiter=";")
         if f.tell() == 0:
             writer.writerow(FIELDS)

@@ -777,7 +777,12 @@ void ExportLogs(datetime ts)
    string src = LogDirectoryName + "\\trades_raw.csv";
    if(!FileIsExist(src))
       return;
-   string dest = LogDirectoryName + "\\trades_" + TimeToString(ts, TIME_DATE|TIME_MINUTES) + ".csv";
+   string ts_str = TimeToString(ts, TIME_DATE|TIME_MINUTES);
+   ts_str = StringReplace(ts_str, ".", "-");
+   ts_str = StringReplace(ts_str, ":", "");
+   ts_str = StringReplace(ts_str, " ", "_");
+   int last_id = NextEventId - 1;
+   string dest = LogDirectoryName + "\\" + ts_str + "_" + IntegerToString(last_id) + ".csv";
    int in_h = FileOpen(src, FILE_CSV|FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE, ';');
    if(in_h==INVALID_HANDLE)
       return;
@@ -825,6 +830,30 @@ void ExportLogs(datetime ts)
       FileClose(out_h);
    }
    FileDelete(src);
+
+   // Compress the rotated file and remove the original
+   int rh = FileOpen(dest, FILE_READ|FILE_BIN);
+   if(rh!=INVALID_HANDLE)
+   {
+      int size = (int)FileSize(rh);
+      uchar raw[];
+      ArrayResize(raw, size);
+      FileReadArray(rh, raw, 0, size);
+      FileClose(rh);
+      uchar zipped[];
+      if(CryptEncode(CRYPT_ARCHIVE_GZIP, raw, zipped))
+      {
+         string gz_dest = dest + ".gz";
+         int zh = FileOpen(gz_dest, FILE_WRITE|FILE_BIN);
+         if(zh!=INVALID_HANDLE)
+         {
+            FileWriteArray(zh, zipped, 0, WHOLE_ARRAY);
+            FileClose(zh);
+            FileDelete(dest);
+            dest = gz_dest;
+         }
+      }
+   }
 
    string checksum;
    if(ComputeFileSHA256(dest, checksum))
