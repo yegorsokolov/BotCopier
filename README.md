@@ -207,6 +207,14 @@ Logs are written to the directory specified by the EA parameter `LogDirectoryNam
 Trade events are stored in a small in-memory buffer before being flushed to `trades_raw.csv` on each timer tick or when the buffer reaches `LogBufferSize` lines.  Set `EnableDebugLogging` to `true` to enable verbose output and force immediate writes for easier debugging.
 Metrics entries older than the number of days specified by `MetricsDaysToKeep` (default 30) are removed automatically during log export.
 
+### Run Metadata
+
+On start-up the observer EA writes `run_info.json` in the directory specified by `LogDirectoryName`.  The file records the `CommitHash` input, model version, broker, list of tracked symbols and the MT4 build.
+
+The `scripts/stream_listener.py` helper writes a corresponding `run_info.json` under `logs/` the first time it processes a message.  It captures the host operating system, Python version and available Python libraries.
+
+After completing a trial run commit both `run_info.json` files along with the generated logs so the environment can be reproduced later.
+
 ## Real-time Streaming
 
 On start-up the observer EA tries to stream each trade event and periodic

@@ -17,6 +17,8 @@ import json
 import os
 import sys
 import zlib
+import platform
+import pkgutil
 from pathlib import Path
 
 from opentelemetry import trace
@@ -34,6 +36,9 @@ LOG_FILES = {
     "event": Path("logs/trades_raw.csv"),
     "metric": Path("logs/metrics.csv"),
 }
+
+RUN_INFO_PATH = Path("logs/run_info.json")
+run_info_written = False
 
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "stream_listener")})
@@ -69,6 +74,17 @@ def process_message(message: dict) -> None:
     if msg_type not in LOG_FILES:
         print(f"Unknown message type: {msg_type}", file=sys.stderr)
         return
+    global run_info_written
+    if not run_info_written:
+        info = {
+            "os": platform.platform(),
+            "python_version": platform.python_version(),
+            "libraries": sorted(m.name for m in pkgutil.iter_modules()),
+        }
+        RUN_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with RUN_INFO_PATH.open("w") as f:
+            json.dump(info, f, indent=2)
+        run_info_written = True
     with tracer.start_as_current_span(f"process_{msg_type}") as span:
         record = {
             k: v for k, v in message.items() if k not in {"schema_version", "type"}

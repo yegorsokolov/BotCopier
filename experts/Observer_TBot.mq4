@@ -21,6 +21,7 @@ extern int    LogSocketPort                 = 9000;
 extern int    LogBufferSize                 = 10;
 extern bool   StreamMetricsOnly            = false;
 extern string CommitHash                   = "";
+extern string ModelVersion                 = "";
 extern string TraceId                      = "";
 extern int    BookRefreshSeconds           = 5;
 
@@ -197,6 +198,29 @@ int OnInit()
    ArrayResize(track_symbols, sym_cnt);
    for(int j=0; j<sym_cnt; j++)
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
+
+   DirectoryCreate(LogDirectoryName);
+   string symbols_json = "[";
+   for(int k=0; k<ArraySize(track_symbols); k++)
+   {
+      if(k>0)
+         symbols_json += ",";
+      symbols_json += "\"" + track_symbols[k] + "\"";
+   }
+   symbols_json += "]";
+   string run_info = "{";
+   run_info += "\"commit_hash\":\"" + CommitHash + "\",";
+   run_info += "\"model_version\":\"" + ModelVersion + "\",";
+   run_info += "\"broker\":\"" + AccountInfoString(ACCOUNT_COMPANY) + "\",";
+   run_info += "\"symbols\":" + symbols_json + ",";
+   run_info += "\"mt4_build\":" + IntegerToString((int)TerminalInfoInteger(TERMINAL_BUILD));
+   run_info += "}";
+   int info_handle = FileOpen(LogDirectoryName + "\\run_info.json", FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ);
+   if(info_handle!=INVALID_HANDLE)
+   {
+      FileWriteString(info_handle, run_info);
+      FileClose(info_handle);
+   }
 
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_socket_attempt = now;
