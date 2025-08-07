@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Service that listens for JSON log events and appends them to a CSV file."""
+"""Service that listens for protobuf log events and appends them to a CSV file."""
 
 import argparse
 import asyncio
 import csv
-import json
 import os
-import zlib
 import gzip
 from pathlib import Path
 from asyncio import StreamReader, StreamWriter, Queue
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -17,6 +18,10 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
+
+from google.protobuf.json_format import MessageToDict
+
+from proto import observer_pb2
 
 FIELDS = [
     "event_id",
@@ -88,10 +93,13 @@ async def _handle_conn(
                 except asyncio.IncompleteReadError:
                     break
                 try:
-                    data = zlib.decompress(payload).decode("utf-8")
-                    obj = json.loads(data)
+                    msg = observer_pb2.ObserverMessage.FromString(payload)
                 except Exception:
                     continue
+                kind = msg.WhichOneof("payload")
+                if kind != "event":
+                    continue
+                obj = MessageToDict(msg.event, preserving_proto_field_name=True)
                 with tracer.start_as_current_span("log_event") as span:
                     ctx = span.get_span_context()
                     obj.setdefault("trace_id", format_trace_id(ctx.trace_id))
@@ -100,14 +108,17 @@ async def _handle_conn(
                     await queue.put(row)
         else:
             while data := await reader.readline():
+                if not data:
+                    break
+                try:
+                    msg = observer_pb2.ObserverMessage.FromString(data.strip())
+                except Exception:
+                    continue
+                kind = msg.WhichOneof("payload")
+                if kind != "event":
+                    continue
+                obj = MessageToDict(msg.event, preserving_proto_field_name=True)
                 with tracer.start_as_current_span("log_event") as span:
-                    line = data.decode("utf-8", errors="replace").strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
                     ctx = span.get_span_context()
                     obj.setdefault("trace_id", format_trace_id(ctx.trace_id))
                     obj.setdefault("span_id", format_span_id(ctx.span_id))
@@ -168,7 +179,7 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--out", required=True, help="output CSV file")
-    p.add_argument("--binary", action="store_true", help="expect length-prefixed gzipped JSON")
+    p.add_argument("--binary", action="store_true", help="expect length-prefixed protobuf")
     args = p.parse_args()
 
     serve(args.host, args.port, Path(args.out), binary=args.binary)

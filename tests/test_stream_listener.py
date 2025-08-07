@@ -1,13 +1,13 @@
 import socket
 import threading
 import time
-import json
 import gzip
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.socket_log_service import listen_once
+from proto import observer_pb2, trade_event_pb2
 
 
 def test_stream_listener(tmp_path: Path):
@@ -19,54 +19,59 @@ def test_stream_listener(tmp_path: Path):
 
     out_file = tmp_path / "out.csv.gz"
 
-    t = threading.Thread(target=listen_once, args=(host, port, out_file))
+    t = threading.Thread(target=listen_once, args=(host, port, out_file), kwargs={"binary": True})
     t.start()
     time.sleep(0.1)
 
-    decision_msg = {
-        "event_id": 1,
-        "event_time": "t",
-        "broker_time": "b",
-        "local_time": "l",
-        "action": "DECISION",
-        "ticket": 0,
-        "magic": 0,
-        "source": "mt4",
-        "symbol": "EURUSD",
-        "order_type": 0,
-        "lots": 0.0,
-        "price": 0.0,
-        "sl": 0.0,
-        "tp": 0.0,
-        "profit": 0.0,
-        "comment": "",
-        "remaining_lots": 0.0,
-    }
-    trade_msg = {
-        "event_id": 2,
-        "event_time": "t",
-        "broker_time": "b",
-        "local_time": "l",
-        "action": "OPEN",
-        "ticket": 1,
-        "magic": 2,
-        "source": "mt4",
-        "symbol": "EURUSD",
-        "order_type": 0,
-        "lots": 0.1,
-        "price": 1.2345,
-        "sl": 1.0,
-        "tp": 2.0,
-        "profit": 0.0,
-        "comment": "hi",
-        "remaining_lots": 0.1,
-        "decision_id": 1,
-    }
+    decision_event = trade_event_pb2.TradeEvent(
+        event_id=1,
+        event_time="t",
+        broker_time="b",
+        local_time="l",
+        action="DECISION",
+        ticket=0,
+        magic=0,
+        source="mt4",
+        symbol="EURUSD",
+        order_type=0,
+        lots=0.0,
+        price=0.0,
+        sl=0.0,
+        tp=0.0,
+        profit=0.0,
+        comment="",
+        remaining_lots=0.0,
+    )
+    trade_event = trade_event_pb2.TradeEvent(
+        event_id=2,
+        event_time="t",
+        broker_time="b",
+        local_time="l",
+        action="OPEN",
+        ticket=1,
+        magic=2,
+        source="mt4",
+        symbol="EURUSD",
+        order_type=0,
+        lots=0.1,
+        price=1.2345,
+        sl=1.0,
+        tp=2.0,
+        profit=0.0,
+        comment="hi",
+        remaining_lots=0.1,
+        decision_id=1,
+    )
+
+    env1 = observer_pb2.ObserverMessage(schema_version="1.0", event=decision_event)
+    env2 = observer_pb2.ObserverMessage(schema_version="1.0", event=trade_event)
+    pkt1 = env1.SerializeToString()
+    pkt2 = env2.SerializeToString()
 
     client = socket.socket()
     client.connect((host, port))
-    client.sendall(json.dumps(decision_msg).encode() + b"\n")
-    client.sendall(json.dumps(trade_msg).encode() + b"\n")
+    client.sendall(len(pkt1).to_bytes(4, "little") + pkt1)
+    client.sendall(len(pkt2).to_bytes(4, "little") + pkt2)
     client.close()
 
     t.join(timeout=2)

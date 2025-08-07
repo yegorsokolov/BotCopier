@@ -1,0 +1,13 @@
+syntax = "proto3";
+package tbot;
+
+import "trade_event.proto";
+import "metrics.proto";
+
+message ObserverMessage {
+  string schema_version = 1;
+  oneof payload {
+    TradeEvent event = 2;
+    Metrics metric = 3;
+  }
+}

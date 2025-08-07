@@ -2,6 +2,11 @@
 #include "model_interface.mqh"
 #include <Arrays/ArrayInt.mqh>
 
+#import "observer_proto.dll"
+int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, int spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, int decision_id, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, uchar &out[]);
+#import
+
 extern string TargetMagicNumbers = "12345,23456";
 extern int    LearningExportIntervalMinutes = 15;
 extern int    PredictionWindowSeconds       = 60;
@@ -594,58 +599,31 @@ string EscapeJson(string s)
    return(s);
 }
 
-void SendJson(string json)
+void SendProto(uchar &payload[])
 {
    if(log_socket==INVALID_HANDLE)
       return;
-   if(UseBinarySocketLogging)
+   int len = ArraySize(payload);
+   uchar bytes[];
+   ArrayResize(bytes, len+4);
+   bytes[0] = (uchar)(len & 0xFF);
+   bytes[1] = (uchar)((len >> 8) & 0xFF);
+   bytes[2] = (uchar)((len >> 16) & 0xFF);
+   bytes[3] = (uchar)((len >> 24) & 0xFF);
+   for(int i=0; i<len; i++)
+      bytes[4+i] = payload[i];
+   if(SocketSend(log_socket, bytes, len+4)==-1)
    {
-      uchar raw[];
-      StringToCharArray(json, raw, 0, WHOLE_ARRAY, CP_UTF8);
-      ArrayResize(raw, ArraySize(raw)-1);
-      uchar zipped[];
-      if(!CryptEncode(CRYPT_ARCHIVE_ZIP, raw, zipped))
-         return;
-      int len = ArraySize(zipped);
-      uchar bytes[];
-      ArrayResize(bytes, len+4);
-      bytes[0] = (uchar)(len & 0xFF);
-      bytes[1] = (uchar)((len >> 8) & 0xFF);
-      bytes[2] = (uchar)((len >> 16) & 0xFF);
-      bytes[3] = (uchar)((len >> 24) & 0xFF);
-      for(int i=0; i<len; i++)
-         bytes[4+i] = zipped[i];
-      if(SocketSend(log_socket, bytes, len+4)==-1)
-      {
-         SocketErrors++;
-         SocketClose(log_socket);
-         log_socket = INVALID_HANDLE;
-         datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-         next_socket_attempt = now + socket_backoff;
-         socket_backoff = MathMin(socket_backoff*2, 3600);
-      }
-      else
-      {
-         socket_backoff = 1;
-      }
+      SocketErrors++;
+      SocketClose(log_socket);
+      log_socket = INVALID_HANDLE;
+      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+      next_socket_attempt = now + socket_backoff;
+      socket_backoff = MathMin(socket_backoff*2, 3600);
    }
    else
    {
-      uchar bytes[];
-      StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
-      if(SocketSend(log_socket, bytes, ArraySize(bytes)-1)==-1)
-      {
-         SocketErrors++;
-         SocketClose(log_socket);
-         log_socket = INVALID_HANDLE;
-         datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-         next_socket_attempt = now + socket_backoff;
-         socket_backoff = MathMin(socket_backoff*2, 3600);
-      }
-      else
-      {
-         socket_backoff = 1;
-      }
+      socket_backoff = 1;
    }
 }
 
@@ -767,17 +745,17 @@ void LogTrade(string action, int ticket, int magic, string source,
       }
    }
 
-   string json = StringFormat(
-      "{\"schema_version\":%d,\"event_id\":%d,\"trace_id\":\"%s\",\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"profit_after_trade\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d,\"open_time\":\"%s\",\"book_bid_vol\":%.2f,\"book_ask_vol\":%.2f,\"book_imbalance\":%.5f,\"sl_hit_dist\":%.5f,\"tp_hit_dist\":%.5f,\"decision_id\":%d}",
-      LogSchemaVersion, id, EscapeJson(TraceId),
-      EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
-      EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
-      EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
-      EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
-      lots, price, sl, tp, profit, profit_after, spread, EscapeJson(comment), remaining,
-      slippage, (int)volume, EscapeJson(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id);
-
-   SendJson(json);
+   uchar payload[];
+   int len = SerializeTradeEvent(
+      LogSchemaVersion, id, TraceId,
+      TimeToString(time_event, TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
+      action, ticket, magic, source, symbol, order_type,
+      lots, price, sl, tp, profit, profit_after, spread, comment, remaining,
+      slippage, (int)volume, open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, payload);
+   if(len>0)
+      SendProto(payload);
 }
 
 
@@ -973,11 +951,13 @@ void WriteMetrics(datetime ts)
             FileWriteErrors++;
       }
 
-       string json = StringFormat("{\"schema_version\":%d,\"type\":\"metrics\",\"time\":\"%s\",\"magic\":%d,\"win_rate\":%.3f,\"avg_profit\":%.2f,\"trade_count\":%d,\"drawdown\":%.2f,\"sharpe\":%.3f,\"file_write_errors\":%d,\"socket_errors\":%d,\"book_refresh_seconds\":%d}",
+       uchar payload[];
+       int len = SerializeMetrics(
          LogSchemaVersion,
-         EscapeJson(TimeToString(ts, TIME_DATE|TIME_MINUTES)), magic, win_rate, avg_profit, trades, max_dd, sharpe,
-         FileWriteErrors, SocketErrors, CachedBookRefreshSeconds);
-       SendJson(json);
+         TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, payload);
+       if(len>0)
+         SendProto(payload);
    }
 
    if(h!=INVALID_HANDLE)
