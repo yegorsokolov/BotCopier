@@ -378,6 +378,10 @@ def _load_logs(
         "price",
         "sl",
         "tp",
+        "sl_dist",
+        "tp_dist",
+        "sl_hit_dist",
+        "tp_hit_dist",
         "profit",
         "spread",
         "comment",
@@ -693,8 +697,10 @@ def _extract_features(
         dow_sin = math.sin(2 * math.pi * t.weekday() / 7)
         dow_cos = math.cos(2 * math.pi * t.weekday() / 7)
 
-        sl_dist = sl - price
-        tp_dist = tp - price
+        sl_dist = _safe_float(r.get("sl_dist", sl - price))
+        tp_dist = _safe_float(r.get("tp_dist", tp - price))
+        sl_hit = _safe_float(r.get("sl_hit_dist", 0.0))
+        tp_hit = _safe_float(r.get("tp_hit_dist", 0.0))
 
         feat = {
             "symbol": symbol,
@@ -706,6 +712,8 @@ def _extract_features(
             "profit": profit,
             "sl_dist": sl_dist,
             "tp_dist": tp_dist,
+            "sl_hit_dist": sl_hit,
+            "tp_hit_dist": tp_hit,
             "spread": spread,
             "equity": account_equity,
             "margin_level": margin_level,

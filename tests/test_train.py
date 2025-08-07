@@ -39,6 +39,8 @@ def _write_log(file: Path):
         "remaining_lots",
         "slippage",
         "volume",
+        "sl_hit_dist",
+        "tp_hit_dist",
     ]
     rows = [
         [
@@ -62,6 +64,8 @@ def _write_log(file: Path):
             "0.1",
             "0.0001",
             "100",
+            "0",
+            "0",
         ],
         [
             "2",
@@ -84,6 +88,8 @@ def _write_log(file: Path):
             "0.1",
             "0.0002",
             "200",
+            "0",
+            "0",
         ],
     ]
     with open(file, "w", newline="") as f:
@@ -114,6 +120,8 @@ def _write_log_many(file: Path, count: int = 10):
         "remaining_lots",
         "slippage",
         "volume",
+        "sl_hit_dist",
+        "tp_hit_dist",
     ]
     rows = []
     for i in range(count):
@@ -140,6 +148,8 @@ def _write_log_many(file: Path, count: int = 10):
             "0.1",
             "0.0001",
             str(100 + i),
+            "0",
+            "0",
         ])
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")

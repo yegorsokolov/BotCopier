@@ -34,6 +34,8 @@ FIELDS = [
     "book_bid_vol",
     "book_ask_vol",
     "book_imbalance",
+    "sl_hit_dist",
+    "tp_hit_dist",
     "decision_id",
 ]
 
