@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Listen for JSON messages from the observer EA and append them to CSV logs.
+"""Listen for protobuf messages from the observer EA and append them to CSV logs.
 
-The script expects newline-delimited JSON objects on ``stdin``. Each message
-must include a ``schema_version`` field matching the expected version and a
-``type`` field indicating either ``"event"`` or ``"metric"``. All remaining
-fields are written directly to the appropriate CSV file under ``logs/``.
-
-Set the ``SCHEMA_VERSION`` environment variable to override the default
-version.
+Messages are expected to be length-prefixed ``ObserverMessage`` protobufs. Each
+envelope carries a ``schema_version`` and either a ``TradeEvent`` or ``Metrics``
+payload. Records are written directly to the appropriate CSV file under
+``logs/``. Set the ``SCHEMA_VERSION`` environment variable to override the
+default version.
 """
 from __future__ import annotations
 
@@ -16,10 +14,11 @@ import csv
 import json
 import os
 import sys
-import zlib
 import platform
 import pkgutil
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -27,6 +26,10 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
+
+from google.protobuf.json_format import MessageToDict
+
+from proto import observer_pb2
 
 # Expected schema version for incoming messages. Can be overridden via env var.
 EXPECTED_SCHEMA_VERSION = os.environ.get("SCHEMA_VERSION", "1.0")
@@ -60,19 +63,18 @@ def append_csv(path: Path, record: dict) -> None:
         writer.writerow(record)
 
 
-def process_message(message: dict) -> None:
+def process_message(envelope: observer_pb2.ObserverMessage) -> None:
     """Validate and route a message to the appropriate CSV file."""
-    schema = message.get("schema_version")
-    if schema != EXPECTED_SCHEMA_VERSION:
+    if envelope.schema_version != EXPECTED_SCHEMA_VERSION:
         print(
-            f"Unsupported schema_version: {schema}; expected {EXPECTED_SCHEMA_VERSION}",
+            f"Unsupported schema_version: {envelope.schema_version}; expected {EXPECTED_SCHEMA_VERSION}",
             file=sys.stderr,
         )
         return
 
-    msg_type = message.get("type")
-    if msg_type not in LOG_FILES:
-        print(f"Unknown message type: {msg_type}", file=sys.stderr)
+    kind = envelope.WhichOneof("payload")
+    if kind not in LOG_FILES:
+        print(f"Unknown message type: {kind}", file=sys.stderr)
         return
     global run_info_written
     if not run_info_written:
@@ -85,14 +87,15 @@ def process_message(message: dict) -> None:
         with RUN_INFO_PATH.open("w") as f:
             json.dump(info, f, indent=2)
         run_info_written = True
-    with tracer.start_as_current_span(f"process_{msg_type}") as span:
-        record = {
-            k: v for k, v in message.items() if k not in {"schema_version", "type"}
-        }
+    with tracer.start_as_current_span(f"process_{kind}") as span:
+        if kind == "event":
+            record = MessageToDict(envelope.event, preserving_proto_field_name=True)
+        else:
+            record = MessageToDict(envelope.metric, preserving_proto_field_name=True)
         ctx = span.get_span_context()
         record.setdefault("trace_id", format_trace_id(ctx.trace_id))
         record["span_id"] = format_span_id(ctx.span_id)
-        append_csv(LOG_FILES[msg_type], record)
+        append_csv(LOG_FILES[kind], record)
 
 
 def main() -> int:
@@ -100,7 +103,7 @@ def main() -> int:
     p.add_argument(
         "--binary",
         action="store_true",
-        help="expect length-prefixed gzipped JSON records",
+        help="expect length-prefixed protobuf records",
     )
     args = p.parse_args()
 
@@ -115,27 +118,28 @@ def main() -> int:
             if len(payload) < length:
                 break
             try:
-                line = zlib.decompress(payload).decode("utf-8")
+                envelope = observer_pb2.ObserverMessage.FromString(payload)
             except Exception as exc:
-                print(f"Invalid compressed payload: {exc}", file=sys.stderr)
+                print(f"Invalid protobuf: {exc}", file=sys.stderr)
                 continue
-            try:
-                message = json.loads(line)
-            except json.JSONDecodeError as exc:
-                print(f"Invalid JSON: {exc}", file=sys.stderr)
-                continue
-            process_message(message)
+            process_message(envelope)
     else:
-        for line in sys.stdin:
-            line = line.strip()
-            if not line:
-                continue
+        # Treat stdin as a stream of delimited protobuf messages.
+        data = sys.stdin.buffer.read()
+        offset = 0
+        while offset < len(data):
+            if offset + 4 > len(data):
+                break
+            length = int.from_bytes(data[offset : offset + 4], "little")
+            offset += 4
+            payload = data[offset : offset + length]
+            offset += length
             try:
-                message = json.loads(line)
-            except json.JSONDecodeError as exc:
-                print(f"Invalid JSON: {exc}", file=sys.stderr)
+                envelope = observer_pb2.ObserverMessage.FromString(payload)
+            except Exception as exc:
+                print(f"Invalid protobuf: {exc}", file=sys.stderr)
                 continue
-            process_message(message)
+            process_message(envelope)
     return 0
 
 

@@ -1,0 +1,33 @@
+syntax = "proto3";
+package tbot;
+
+message TradeEvent {
+  int32 event_id = 1;
+  string event_time = 2;
+  string broker_time = 3;
+  string local_time = 4;
+  string action = 5;
+  int32 ticket = 6;
+  int32 magic = 7;
+  string source = 8;
+  string symbol = 9;
+  int32 order_type = 10;
+  double lots = 11;
+  double price = 12;
+  double sl = 13;
+  double tp = 14;
+  double profit = 15;
+  double profit_after_trade = 16;
+  int32 spread = 17;
+  string comment = 18;
+  double remaining_lots = 19;
+  double slippage = 20;
+  int32 volume = 21;
+  string open_time = 22;
+  double book_bid_vol = 23;
+  double book_ask_vol = 24;
+  double book_imbalance = 25;
+  double sl_hit_dist = 26;
+  double tp_hit_dist = 27;
+  int32 decision_id = 28;
+}

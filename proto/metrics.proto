@@ -1,0 +1,15 @@
+syntax = "proto3";
+package tbot;
+
+message Metrics {
+  string time = 1;
+  int32 magic = 2;
+  double win_rate = 3;
+  double avg_profit = 4;
+  int32 trade_count = 5;
+  double drawdown = 6;
+  double sharpe = 7;
+  int32 file_write_errors = 8;
+  int32 socket_errors = 9;
+  int32 book_refresh_seconds = 10;
+}
