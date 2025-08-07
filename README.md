@@ -175,21 +175,48 @@ model when ``model.json`` changes.
 
 ## Automatic Retraining
 
-The ``auto_retrain.py`` helper watches the most recent entries in
-``metrics.csv`` and triggers a new training run when the rolling win rate or
-Sharpe ratio drops below configurable thresholds. It can also monitor data
-drift by comparing the win rate distribution of a reference metrics file
-against the latest metrics using the population stability index (PSI) or
-Kolmogorov–Smirnov (KS) statistic. When either statistic exceeds configured
-limits the model is retrained even if win rate remains acceptable. After
-training completes the updated model is published to the terminal's ``Files``
-directory.
+The ``auto_retrain.py`` helper monitors the latest metrics produced by the
+observer.  When the win rate falls below a threshold or drawdown exceeds a
+limit, the script trains a new model with ``train_target_clone.py`` using only
+events after the previously processed ``last_event_id``.  The marker is stored
+alongside the trained model so subsequent runs continue from the most recent
+data.  After training it validates the model with ``backtest_strategy.py`` and
+publishes the updated ``model.json`` only if the backtest shows an improvement
+over the live metrics.
 
-An example cron job running every 15 minutes:
+Example cron job running every 15 minutes:
 
 ```cron
-*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --sharpe-threshold 0.0 --training-metrics /path/to/training_metrics.csv --psi-threshold 0.2
+*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2
 ```
+
+Example systemd service and timer:
+
+```ini
+# /etc/systemd/system/botcopier-auto-retrain.service
+[Unit]
+Description=BotCopier auto retrain
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2
+```
+
+```ini
+# /etc/systemd/system/botcopier-auto-retrain.timer
+[Unit]
+Description=Run BotCopier auto retrain every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=botcopier-auto-retrain.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable with ``systemctl enable --now botcopier-auto-retrain.timer``.
 
 ## Metrics Tracking
 
