@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Summarize trading and metric logs.
+
+Reads ``logs/trades_raw.csv`` and ``logs/metrics.csv`` computing
+win rate, Sharpe ratio, average hold time, slippage statistics and
+model prediction accuracy.  A JSON summary is written and a one-line
+CSV summary is appended to ``logs/summaries.csv``.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+
+
+def _compute_summary(trades: pd.DataFrame, metrics: pd.DataFrame) -> dict:
+    summary: dict[str, float] = {}
+
+    if not trades.empty and "profit" in trades.columns:
+        profits = trades["profit"].astype(float)
+        summary["win_rate"] = float((profits > 0).mean())
+        std = profits.std(ddof=0)
+        summary["sharpe"] = (
+            float(profits.mean() / std * (len(profits) ** 0.5)) if std > 0 else 0.0
+        )
+    else:
+        summary["win_rate"] = 0.0
+        summary["sharpe"] = 0.0
+
+    if {"entry_time", "exit_time"}.issubset(trades.columns):
+        entry = pd.to_datetime(trades["entry_time"])
+        exit_ = pd.to_datetime(trades["exit_time"])
+        hold = (exit_ - entry).dt.total_seconds().dropna()
+        summary["avg_hold_time"] = float(hold.mean()) if not hold.empty else 0.0
+    else:
+        summary["avg_hold_time"] = 0.0
+
+    if "slippage" in trades.columns:
+        slip = trades["slippage"].astype(float)
+        summary["slippage_mean"] = float(slip.mean())
+        summary["slippage_std"] = float(slip.std(ddof=0))
+    else:
+        summary["slippage_mean"] = 0.0
+        summary["slippage_std"] = 0.0
+
+    if "decision_id" in trades.columns and {
+        "decision_id",
+        "prediction",
+    }.issubset(metrics.columns):
+        merged = trades[["decision_id", "profit"]].merge(
+            metrics[["decision_id", "prediction"]], on="decision_id", how="inner"
+        )
+        if not merged.empty:
+            merged["actual"] = (merged["profit"].astype(float) > 0).astype(int)
+            merged["pred"] = (
+                (merged["prediction"].astype(float) > 0.5).astype(int)
+                if merged["prediction"].dtype != int
+                else merged["prediction"].astype(int)
+            )
+            summary["prediction_accuracy"] = float(
+                (merged["actual"] == merged["pred"]).mean()
+            )
+        else:
+            summary["prediction_accuracy"] = 0.0
+    else:
+        summary["prediction_accuracy"] = 0.0
+
+    return summary
+
+
+def _write_outputs(summary: dict, summary_file: Path, summaries_file: Path) -> None:
+    summary_file.parent.mkdir(parents=True, exist_ok=True)
+    with summary_file.open("w") as f:
+        json.dump(summary, f, indent=2)
+
+    summaries_file.parent.mkdir(parents=True, exist_ok=True)
+    row = {"time": datetime.now(timezone.utc).isoformat(), **summary}
+    exists = summaries_file.exists()
+    with summaries_file.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if not exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Summarize trade logs")
+    p.add_argument("--trades-file", default="logs/trades_raw.csv")
+    p.add_argument("--metrics-file", default="logs/metrics.csv")
+    p.add_argument("--summary-file", default="session_summary.json")
+    p.add_argument("--summaries-file", default="logs/summaries.csv")
+    args = p.parse_args(argv)
+
+    trades = pd.read_csv(Path(args.trades_file))
+    metrics = pd.read_csv(Path(args.metrics_file))
+    summary = _compute_summary(trades, metrics)
+    _write_outputs(summary, Path(args.summary_file), Path(args.summaries_file))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entry point
+    raise SystemExit(main())
