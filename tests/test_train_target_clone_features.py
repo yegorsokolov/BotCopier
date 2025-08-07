@@ -37,6 +37,8 @@ def _write_sample_log(file: Path):
         "book_bid_vol",
         "book_ask_vol",
         "book_imbalance",
+        "sl_hit_dist",
+        "tp_hit_dist",
     ]
     rows = [
         [
@@ -64,6 +66,8 @@ def _write_sample_log(file: Path):
             "0",
             "0",
             "0",
+            "0",
+            "0",
         ],
         [
             "2",
@@ -87,6 +91,8 @@ def _write_sample_log(file: Path):
             "0.0002",
             "200",
             "",
+            "0",
+            "0",
             "0",
             "0",
             "0",
@@ -122,6 +128,8 @@ def test_feature_extraction_basic():
     assert "spread" in feats[0]
     assert "slippage" in feats[0]
     assert "equity" in feats[0] and "margin_level" in feats[0]
+    assert "sl_dist" in feats[0] and "tp_dist" in feats[0]
+    assert "sl_hit_dist" in feats[0] and "tp_hit_dist" in feats[0]
 
 
 def test_model_serialization(tmp_path: Path):

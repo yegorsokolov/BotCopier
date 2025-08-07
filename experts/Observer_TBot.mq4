@@ -712,15 +712,24 @@ void LogTrade(string action, int ticket, int magic, string source,
    string open_time_str = "";
    if(action=="CLOSE" && open_time>0)
       open_time_str = TimeToString(open_time, TIME_DATE|TIME_SECONDS);
+   double sl_hit_dist = 0.0;
+   double tp_hit_dist = 0.0;
+   if(action=="CLOSE")
+   {
+      if(sl!=0.0)
+         sl_hit_dist = MathAbs(price - sl);
+      if(tp!=0.0)
+         tp_hit_dist = MathAbs(price - tp);
+   }
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%d;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%d",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%d;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d",
       id,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp,
       profit, profit_after, spread, comment, remaining, slippage, (int)volume,
-      open_time_str, book_bid_vol, book_ask_vol, book_imbalance, decision_id);
+      open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id);
 
    if(CurrentBackend==LOG_BACKEND_CSV)
    {
@@ -746,27 +755,27 @@ void LogTrade(string action, int ticket, int magic, string source,
       if(log_db_handle!=INVALID_HANDLE)
       {
          string sql = StringFormat(
-            "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f)",
+            "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f)",
             id,
             SqlEscape(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
             SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
             SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
             SqlEscape(action), ticket, magic, SqlEscape(source), SqlEscape(symbol), order_type,
             lots, price, sl, tp, profit, profit_after, spread, SqlEscape(comment), remaining,
-            slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance);
+            slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist);
          DatabaseExecute(log_db_handle, sql);
       }
    }
 
    string json = StringFormat(
-      "{\"schema_version\":%d,\"event_id\":%d,\"trace_id\":\"%s\",\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"profit_after_trade\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d,\"open_time\":\"%s\",\"book_bid_vol\":%.2f,\"book_ask_vol\":%.2f,\"book_imbalance\":%.5f,\"decision_id\":%d}",
+      "{\"schema_version\":%d,\"event_id\":%d,\"trace_id\":\"%s\",\"event_time\":\"%s\",\"broker_time\":\"%s\",\"local_time\":\"%s\",\"action\":\"%s\",\"ticket\":%d,\"magic\":%d,\"source\":\"%s\",\"symbol\":\"%s\",\"order_type\":%d,\"lots\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"profit_after_trade\":%.2f,\"spread\":%d,\"comment\":\"%s\",\"remaining_lots\":%.2f,\"slippage\":%.5f,\"volume\":%d,\"open_time\":\"%s\",\"book_bid_vol\":%.2f,\"book_ask_vol\":%.2f,\"book_imbalance\":%.5f,\"sl_hit_dist\":%.5f,\"tp_hit_dist\":%.5f,\"decision_id\":%d}",
       LogSchemaVersion, id, EscapeJson(TraceId),
       EscapeJson(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
       EscapeJson(action), ticket, magic, EscapeJson(source), EscapeJson(symbol), order_type,
       lots, price, sl, tp, profit, profit_after, spread, EscapeJson(comment), remaining,
-      slippage, (int)volume, EscapeJson(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, decision_id);
+      slippage, (int)volume, EscapeJson(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id);
 
    SendJson(json);
 }

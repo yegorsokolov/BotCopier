@@ -704,6 +704,8 @@ void LogDecision(double &feats[], double prob, string action)
 {
    if(!EnableDecisionLogging)
       return;
+   double sl_dist = PredictSLDistance();
+   double tp_dist = PredictTPDistance();
    string feat_vals = "";
    for(int i=0; i<FeatureCount; i++)
    {
@@ -713,13 +715,13 @@ void LogDecision(double &feats[], double prob, string action)
    datetime now = TimeCurrent();
    if(DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, feat_vals);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
       FileFlush(DecisionLogHandle);
    }
    if(DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"features\":[%s]}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, feat_vals);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"features\":[%s]}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
