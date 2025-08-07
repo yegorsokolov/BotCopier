@@ -1,64 +1,68 @@
 import csv
+import json
 from pathlib import Path
-import sys
 
+import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from scripts.auto_retrain import retrain_if_needed
 
 
-def _write_metrics(file: Path, win_rate, sharpe: float = 0.0) -> None:
-    win_rates = win_rate if isinstance(win_rate, list) else [win_rate]
+def _write_metrics(file: Path, win_rate: float, drawdown: float) -> None:
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")
-        writer.writerow([
-            "time",
-            "magic",
-            "win_rate",
-            "avg_profit",
-            "trade_count",
-            "sharpe",
-        ])
-        for wr in win_rates:
-            writer.writerow(["2024.01.01 00:00", "0", str(wr), "1.0", "10", str(sharpe)])
+        writer.writerow(
+            ["time", "magic", "win_rate", "avg_profit", "trade_count", "drawdown", "sharpe"]
+        )
+        writer.writerow(["2024.01.01 00:00", "0", str(win_rate), "1.0", "10", str(drawdown), "0.0"])
 
 
 def test_retrain_trigger(monkeypatch, tmp_path: Path):
     log_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     files_dir = tmp_path / "files"
-    log_dir.mkdir()
-    out_dir.mkdir()
-    files_dir.mkdir()
+    for d in [log_dir, out_dir, files_dir]:
+        d.mkdir()
     metrics_file = log_dir / "metrics.csv"
-    _write_metrics(metrics_file, 0.3)
+    _write_metrics(metrics_file, 0.3, 0.1)
+    last_id_file = out_dir / "last_event_id"
+    last_id_file.write_text("5")
 
     called = {}
+    import scripts.train_target_clone as tc
 
     def fake_train(ld, od, incremental=True):
-        called["train"] = (ld, od, incremental)
+        called["train"] = (ld, od, incremental, tc.START_EVENT_ID)
+        (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
 
     def fake_publish(mf, fd):
         called["publish"] = (mf, fd)
 
-    monkeypatch.setattr("scripts.auto_retrain.train", fake_train)
-    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    def fake_backtest(params_file, tick_file):
+        called["backtest"] = (params_file, tick_file)
+        return {"win_rate": 0.8, "drawdown": 0.05}
 
-    result = retrain_if_needed(log_dir, out_dir, files_dir, win_rate_threshold=0.4)
+    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
+    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
+
+    result = retrain_if_needed(log_dir, out_dir, files_dir)
 
     assert result is True
-    assert called.get("train") == (log_dir, out_dir, True)
+    assert called.get("train") == (log_dir, out_dir, True, 5)
     assert called.get("publish") == (out_dir / "model.json", files_dir)
+    assert called.get("backtest") == (out_dir / "model.json", log_dir / "trades_raw.csv")
+    assert last_id_file.read_text() == "8"
 
 
 def test_retrain_not_triggered(monkeypatch, tmp_path: Path):
     log_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     files_dir = tmp_path / "files"
-    log_dir.mkdir()
-    out_dir.mkdir()
-    files_dir.mkdir()
+    for d in [log_dir, out_dir, files_dir]:
+        d.mkdir()
     metrics_file = log_dir / "metrics.csv"
-    _write_metrics(metrics_file, 0.7)
+    _write_metrics(metrics_file, 0.7, 0.1)
 
     called = {}
 
@@ -68,82 +72,49 @@ def test_retrain_not_triggered(monkeypatch, tmp_path: Path):
     def fake_publish(*args, **kwargs):
         called["publish"] = True
 
-    monkeypatch.setattr("scripts.auto_retrain.train", fake_train)
-    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    def fake_backtest(*args, **kwargs):
+        called["backtest"] = True
+        return {"win_rate": 0.7, "drawdown": 0.1}
 
-    result = retrain_if_needed(log_dir, out_dir, files_dir, win_rate_threshold=0.4)
+    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
+    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
+
+    result = retrain_if_needed(log_dir, out_dir, files_dir)
 
     assert result is False
-    assert "train" not in called
-    assert "publish" not in called
+    assert called == {}
 
 
-def test_retrain_trigger_sharpe(monkeypatch, tmp_path: Path):
+def test_retrain_no_improvement(monkeypatch, tmp_path: Path):
     log_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     files_dir = tmp_path / "files"
-    log_dir.mkdir()
-    out_dir.mkdir()
-    files_dir.mkdir()
+    for d in [log_dir, out_dir, files_dir]:
+        d.mkdir()
     metrics_file = log_dir / "metrics.csv"
-    _write_metrics(metrics_file, 0.7, -0.2)
+    _write_metrics(metrics_file, 0.3, 0.1)
 
     called = {}
 
     def fake_train(ld, od, incremental=True):
-        called["train"] = (ld, od, incremental)
+        called["train"] = True
+        (od / "model.json").write_text(json.dumps({"last_event_id": 1}))
 
-    def fake_publish(mf, fd):
-        called["publish"] = (mf, fd)
+    def fake_publish(*args, **kwargs):
+        called["publish"] = True
 
-    monkeypatch.setattr("scripts.auto_retrain.train", fake_train)
+    def fake_backtest(params_file, tick_file):
+        called["backtest"] = True
+        return {"win_rate": 0.2, "drawdown": 0.2}
+
+    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
     monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
 
-    result = retrain_if_needed(
-        log_dir,
-        out_dir,
-        files_dir,
-        win_rate_threshold=0.4,
-        sharpe_threshold=0.0,
-    )
+    result = retrain_if_needed(log_dir, out_dir, files_dir)
 
-    assert result is True
-    assert called.get("train") == (log_dir, out_dir, True)
-    assert called.get("publish") == (out_dir / "model.json", files_dir)
-
-
-def test_retrain_trigger_drift(monkeypatch, tmp_path: Path):
-    log_dir = tmp_path / "logs"
-    out_dir = tmp_path / "out"
-    files_dir = tmp_path / "files"
-    log_dir.mkdir()
-    out_dir.mkdir()
-    files_dir.mkdir()
-    metrics_file = log_dir / "metrics.csv"
-    baseline_file = tmp_path / "baseline.csv"
-    _write_metrics(baseline_file, [0.4, 0.42, 0.43, 0.45])
-    _write_metrics(metrics_file, [0.8, 0.85, 0.9, 0.87])
-
-    called = {}
-
-    def fake_train(ld, od, incremental=True):
-        called["train"] = (ld, od, incremental)
-
-    def fake_publish(mf, fd):
-        called["publish"] = (mf, fd)
-
-    monkeypatch.setattr("scripts.auto_retrain.train", fake_train)
-    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
-
-    result = retrain_if_needed(
-        log_dir,
-        out_dir,
-        files_dir,
-        win_rate_threshold=0.2,
-        ref_metrics_file=baseline_file,
-        psi_threshold=0.1,
-    )
-
-    assert result is True
-    assert called.get("train") == (log_dir, out_dir, True)
-    assert called.get("publish") == (out_dir / "model.json", files_dir)
+    assert result is False
+    assert called.get("train") is True
+    assert called.get("publish") is None
+    assert called.get("backtest") is True
