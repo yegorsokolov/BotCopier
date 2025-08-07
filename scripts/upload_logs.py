@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Commit generated log files and push them to GitHub.
 
-The script adds ``logs/trades_raw.csv`` and ``logs/metrics.csv`` to the Git
-repository, commits them if they have changed and pushes the new commit to the
-``origin`` remote. Authentication is performed using the ``GITHUB_TOKEN``
-environment variable which must contain a personal access token with permission
-to push to the repository.
+The script adds any ``*.csv.gz`` files under ``logs/`` to the Git repository,
+commits them if they have changed and pushes the new commit to the ``origin``
+remote. Authentication is performed using the ``GITHUB_TOKEN`` environment
+variable which must contain a personal access token with permission to push to
+the repository.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOG_FILES = [REPO_ROOT / "logs" / "trades_raw.csv", REPO_ROOT / "logs" / "metrics.csv"]
+LOG_DIR = REPO_ROOT / "logs"
 
 
 def run(cmd: list[str]) -> None:
@@ -29,7 +29,8 @@ def main() -> int:
         print("GITHUB_TOKEN environment variable is required", file=sys.stderr)
         return 1
 
-    existing = [str(p) for p in LOG_FILES if p.exists()]
+    logs = sorted(LOG_DIR.glob("*.csv.gz"))
+    existing = [str(p) for p in logs if p.exists()]
     if not existing:
         print("No log files found", file=sys.stderr)
         return 0
@@ -42,7 +43,7 @@ def main() -> int:
         print("No changes to commit")
         return 0
 
-    commit_message = f"Update trading logs {dt.datetime.utcnow().isoformat()}"
+    commit_message = f"upload logs {dt.date.today().isoformat()}"
     run(["git", "commit", "-m", commit_message])
 
     origin_url = subprocess.check_output(

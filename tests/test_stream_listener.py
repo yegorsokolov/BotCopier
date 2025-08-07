@@ -2,6 +2,7 @@ import socket
 import threading
 import time
 import json
+import gzip
 from pathlib import Path
 import sys
 
@@ -16,7 +17,7 @@ def test_stream_listener(tmp_path: Path):
     port = srv_sock.getsockname()[1]
     srv_sock.close()
 
-    out_file = tmp_path / "out.csv"
+    out_file = tmp_path / "out.csv.gz"
 
     t = threading.Thread(target=listen_once, args=(host, port, out_file))
     t.start()
@@ -71,7 +72,7 @@ def test_stream_listener(tmp_path: Path):
     t.join(timeout=2)
     assert not t.is_alive()
 
-    with open(out_file) as f:
+    with gzip.open(out_file, "rt") as f:
         lines = [l.strip() for l in f.readlines() if l.strip()]
 
     header = lines[0].split(";")
