@@ -913,6 +913,7 @@ def _train_lite_mode(
     encoder_file: Path | None = None,
     chunk_size: int = 50000,
     compress_model: bool = False,
+    regime_model: dict | None = None,
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
@@ -928,6 +929,16 @@ def _train_lite_mode(
     vec = DictVectorizer(sparse=False)
     scaler = StandardScaler()
     clf = SGDClassifier(loss="log_loss")
+    if regime_model is not None:
+        vec_reg = DictVectorizer(sparse=False)
+        vec_reg.fit([{n: 0.0} for n in regime_model.get("feature_names", [])])
+        reg_mean = np.array(regime_model.get("mean", []), dtype=float)
+        reg_std = np.array(regime_model.get("std", []), dtype=float)
+        reg_std[reg_std == 0] = 1.0
+        reg_centers = np.array(regime_model.get("centers", []), dtype=float)
+    else:
+        vec_reg = None
+        reg_mean = reg_std = reg_centers = None
     first = True
     sample_count = 0
 
@@ -967,6 +978,13 @@ def _train_lite_mode(
         )
         if not f_chunk:
             continue
+        if vec_reg is not None and f_chunk:
+            Xr = vec_reg.transform(f_chunk)
+            Xr = (Xr - reg_mean) / reg_std
+            dists = ((Xr[:, None, :] - reg_centers[None, :, :]) ** 2).sum(axis=2)
+            rids = dists.argmin(axis=1)
+            for i, r in enumerate(rids):
+                f_chunk[i][f"regime_{int(r)}"] = 1.0
         sample_count += len(l_chunk)
         if first:
             X = vec.fit_transform(f_chunk)
@@ -1003,6 +1021,9 @@ def _train_lite_mode(
         "classes": [int(c) for c in clf.classes_],
         "last_event_id": int(last_event_id),
     }
+    if regime_model is not None and reg_centers is not None:
+        model["regime_centers"] = reg_centers.astype(float).tolist()
+        model["regime_feature_names"] = regime_model.get("feature_names", [])
     if data_commits:
         model["data_commit"] = ",".join(sorted(set(data_commits)))
     if data_checksums:
@@ -1063,9 +1084,14 @@ def train(
     prune_warn: float = 0.5,
     lite_mode: bool = False,
     compress_model: bool = False,
+    regime_model_file: Path | None = None,
 ):
     """Train a simple classifier model from the log directory."""
     if lite_mode:
+        regime_model = None
+        if regime_model_file and regime_model_file.exists():
+            with open(regime_model_file) as f:
+                regime_model = json.load(f)
         _train_lite_mode(
             data_dir,
             out_dir,
@@ -1089,6 +1115,7 @@ def train(
             event_window=event_window,
             encoder_file=encoder_file,
             compress_model=compress_model,
+            regime_model=regime_model,
         )
         return
     if optuna_trials > 0:
@@ -1238,6 +1265,24 @@ def train(
 
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
+    regime_info = None
+    reg_centers = None
+    if regime_model_file and regime_model_file.exists():
+        with open(regime_model_file) as f:
+            regime_info = json.load(f)
+        vec_reg = DictVectorizer(sparse=False)
+        vec_reg.fit([{n: 0.0} for n in regime_info.get("feature_names", [])])
+        Xr = vec_reg.transform(features)
+        reg_mean = np.array(regime_info.get("mean", []), dtype=float)
+        reg_std = np.array(regime_info.get("std", []), dtype=float)
+        reg_std[reg_std == 0] = 1.0
+        Xr = (Xr - reg_mean) / reg_std
+        reg_centers = np.array(regime_info.get("centers", []), dtype=float)
+        if reg_centers.size:
+            dists = ((Xr[:, None, :] - reg_centers[None, :, :]) ** 2).sum(axis=2)
+            regimes = dists.argmin(axis=1)
+            for i, r in enumerate(regimes):
+                features[i][f"regime_{int(r)}"] = 1.0
     hidden_size = 8
     logreg_C = 1.0
     best_trial = None
@@ -1991,6 +2036,9 @@ def train(
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
     }
+    if regime_info is not None and reg_centers is not None:
+        model["regime_centers"] = reg_centers.astype(float).tolist()
+        model["regime_feature_names"] = regime_info.get("feature_names", [])
     if data_commits:
         model["data_commit"] = ",".join(sorted(set(data_commits)))
     if data_checksums:
@@ -2244,6 +2292,7 @@ def main():
     p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
+    p.add_argument('--regime-model', help='JSON file with precomputed regime centers')
     args = p.parse_args()
     global START_EVENT_ID
     if args.resume:
@@ -2311,6 +2360,7 @@ def main():
         prune_warn=args.prune_warn,
         lite_mode=lite_mode,
         compress_model=args.compress_model,
+        regime_model_file=Path(args.regime_model) if args.regime_model else None,
     )
 
 

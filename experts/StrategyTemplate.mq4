@@ -78,6 +78,10 @@ int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
 int EncoderCenterCount = __ENCODER_CENTER_COUNT__;
 double EncoderCenters[] = {__ENCODER_CENTERS__};
+int RegimeCount = __REGIME_COUNT__;
+int RegimeFeatureCount = __REGIME_FEATURE_COUNT__;
+double RegimeCenters[__REGIME_COUNT__][__REGIME_FEATURE_COUNT__] = {__REGIME_CENTERS__};
+int RegimeFeatureIdx[] = {__REGIME_FEATURE_IDX__};
 datetime LastModelLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
@@ -343,20 +347,17 @@ double GetEncodedFeature(int idx)
 
 int GetRegime()
 {
-   if(EncoderCenterCount <= 0)
-      return(0);
-   double enc[100];
-   for(int i=0; i<EncoderDim && i<100; i++)
-      enc[i] = GetEncodedFeature(i);
+   double feats[100];
+   for(int i=0; i<RegimeFeatureCount && i<100; i++)
+      feats[i] = GetFeature(RegimeFeatureIdx[i]);
    int best = 0;
    double bestDist = 0.0;
-   for(int c=0; c<EncoderCenterCount; c++)
+   for(int c=0; c<RegimeCount; c++)
    {
       double d = 0.0;
-      int base = c * EncoderDim;
-      for(int j=0; j<EncoderDim; j++)
+      for(int j=0; j<RegimeFeatureCount; j++)
       {
-         double diff = enc[j] - EncoderCenters[base + j];
+         double diff = feats[j] - RegimeCenters[c][j];
          d += diff * diff;
       }
       if(c == 0 || d < bestDist)
