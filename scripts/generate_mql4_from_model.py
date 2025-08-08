@@ -198,6 +198,16 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode:
     output = output.replace('__ENCODER_CENTERS__', center_flat)
     output = output.replace('__ENCODER_CENTER_COUNT__', str(len(centers)))
 
+    reg_centers = base.get('regime_centers', [])
+    reg_feat_names = base.get('regime_feature_names', [])
+    reg_feat_idx = [feature_names.index(f) for f in reg_feat_names if f in feature_names]
+    reg_center_flat = ', '.join('{' + ', '.join(_fmt(v) for v in c) + '}' for c in reg_centers) if reg_centers else '{0}'
+    reg_feat_idx_str = ', '.join(str(i) for i in reg_feat_idx) if reg_feat_idx else '0'
+    output = output.replace('__REGIME_CENTERS__', reg_center_flat)
+    output = output.replace('__REGIME_COUNT__', str(len(reg_centers) or 1))
+    output = output.replace('__REGIME_FEATURE_COUNT__', str(len(reg_feat_idx) or 1))
+    output = output.replace('__REGIME_FEATURE_IDX__', reg_feat_idx_str)
+
     mean_vals = base.get('mean', base.get('feature_mean', []))
     std_vals = base.get('std', base.get('feature_std', []))
 
@@ -246,7 +256,6 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode:
         'stochastic_k': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_MAIN, 0)',
         'stochastic_d': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 0)',
         'adx': 'iADX(SymbolToTrade, 0, 14, PRICE_CLOSE, MODE_MAIN, 0)',
-        'regime': 'GetRegime()',
         'volume': 'iVolume(SymbolToTrade, 0, 0)',
         'event_flag': 'GetCalendarFlag()',
         'event_impact': 'GetCalendarImpact()',
@@ -292,6 +301,11 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode:
                 tf_val = tf_const.get(tf, '0')
                 used_tfs.add(tf_val)
                 expr = f"{indicator_expr[ind]}[TFIdx({tf_val})]"
+            elif name.startswith('regime_') and name[7:].isdigit():
+                rid = int(name.split('_')[1])
+                expr = f'(GetRegime() == {rid} ? 1.0 : 0.0)'
+            elif name == 'regime':
+                expr = 'GetRegime()'
             elif name.startswith('ratio_'):
                 parts = name[6:].split('_')
                 if len(parts) == 2:
