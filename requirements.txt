@@ -8,6 +8,7 @@ prometheus_client
 opentelemetry-sdk
 opentelemetry-exporter-otlp
 protobuf
+grpcio
 
 # Optional extras
 xgboost; extra == "xgboost"

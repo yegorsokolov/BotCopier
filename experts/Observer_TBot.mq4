@@ -7,6 +7,11 @@ int SerializeTradeEvent(int schema_version, int event_id, string trace_id, strin
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, uchar &out[]);
 #import
 
+#import "grpc_client.dll"
+bool LogTrade(string host, int port, uchar &payload[], int len);
+bool LogMetrics(string host, int port, uchar &payload[], int len);
+#import
+
 extern string TargetMagicNumbers = "12345,23456";
 extern int    LearningExportIntervalMinutes = 15;
 extern int    PredictionWindowSeconds       = 60;
@@ -20,11 +25,8 @@ extern string LogDirectoryName              = "observer_logs"; // resume event_i
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
-extern bool   UseBinarySocketLogging        = false;
-extern string LogSocketHost                 = "127.0.0.1";
-extern int    LogSocketPort                 = 9000;
-extern int    LogBufferSize                 = 10;
-extern bool   StreamMetricsOnly            = false;
+extern string GrpcHost                      = "127.0.0.1";
+extern int    GrpcPort                      = 50051;
 extern string CommitHash                   = "";
 extern string ModelVersion                 = "";
 extern string TraceId                      = "";
@@ -39,13 +41,10 @@ string   track_symbols[];
 datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
 int      log_db_handle    = INVALID_HANDLE;
-int      log_socket       = INVALID_HANDLE;
-datetime next_socket_attempt = 0;
-int      socket_backoff = 1;
 string   trade_log_buffer[];
 int      NextEventId = 1;
 int      FileWriteErrors = 0;
-int      SocketErrors = 0;
+int      GrpcErrors = 0;
 const int LogSchemaVersion = 3;
 
 double   CpuLoad = 0.0;
@@ -53,9 +52,8 @@ int      CachedBookRefreshSeconds = 0;
 
 enum LogBackend
 {
-   LOG_BACKEND_SOCKET = 0,
-   LOG_BACKEND_SQLITE = 1,
-   LOG_BACKEND_CSV    = 2
+   LOG_BACKEND_SQLITE = 0,
+   LOG_BACKEND_CSV    = 1
 };
 
 int CurrentBackend = LOG_BACKEND_CSV;
@@ -227,88 +225,71 @@ int OnInit()
       FileClose(info_handle);
    }
 
-   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-   next_socket_attempt = now;
-   socket_backoff = 1;
    CachedBookRefreshSeconds = BookRefreshSeconds;
 
-   // Try socket backend first
-   log_socket = SocketCreate();
-   if(log_socket!=INVALID_HANDLE && SocketConnect(log_socket, LogSocketHost, LogSocketPort, 1000))
+   // Prefer SQLite backend, fall back to CSV
+   string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
+   log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
+   if(log_db_handle!=INVALID_HANDLE)
    {
-      CurrentBackend = LOG_BACKEND_SOCKET;
-      Print("Using socket log backend");
+      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL)";
+      DatabaseExecute(log_db_handle, create_sql);
+      // Resume event id from existing records
+      int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
+      if(stmt!=INVALID_HANDLE)
+      {
+         if(DatabaseRead(stmt))
+         {
+            int last_id = (int)DatabaseGetInteger(stmt, 0);
+            if(last_id > 0)
+               NextEventId = last_id + 1;
+         }
+         DatabaseFinalize(stmt);
+      }
+      CurrentBackend = LOG_BACKEND_SQLITE;
+      Print("Using SQLite log backend");
    }
    else
    {
-      if(log_socket!=INVALID_HANDLE)
-         SocketClose(log_socket);
-      log_socket = INVALID_HANDLE;
-
-      // Fallback to SQLite
-      string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
-      log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
-      if(log_db_handle!=INVALID_HANDLE)
+      // Final fallback to CSV
+      string log_fname = LogDirectoryName + "\\trades_raw.csv";
+      trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+      if(trade_log_handle!=INVALID_HANDLE)
       {
-         string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL)";
-         DatabaseExecute(log_db_handle, create_sql);
-         // Resume event id from existing records
-         int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
-         if(stmt!=INVALID_HANDLE)
+         bool need_header = (FileSize(trade_log_handle)==0);
+         int last_id = 0;
+         if(!need_header)
          {
-            if(DatabaseRead(stmt))
+            FileSeek(trade_log_handle, 0, SEEK_SET);
+            while(!FileIsEnding(trade_log_handle))
             {
-               int last_id = (int)DatabaseGetInteger(stmt, 0);
-               if(last_id > 0)
-                  NextEventId = last_id + 1;
-            }
-            DatabaseFinalize(stmt);
-         }
-         CurrentBackend = LOG_BACKEND_SQLITE;
-         Print("Using SQLite log backend");
-      }
-      else
-      {
-         // Final fallback to CSV
-         string log_fname = LogDirectoryName + "\\trades_raw.csv";
-         trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-         if(trade_log_handle!=INVALID_HANDLE)
-         {
-            bool need_header = (FileSize(trade_log_handle)==0);
-            int last_id = 0;
-            if(!need_header)
-            {
-               FileSeek(trade_log_handle, 0, SEEK_SET);
-               while(!FileIsEnding(trade_log_handle))
+               string field = FileReadString(trade_log_handle);
+               if(field=="event_id")
                {
-                  string field = FileReadString(trade_log_handle);
-                  if(field=="event_id")
-                  {
-                     while(!FileIsLineEnding(trade_log_handle) && !FileIsEnding(trade_log_handle))
-                        FileReadString(trade_log_handle);
-                     continue;
-                  }
-                  int id = (int)StringToInteger(field);
-                  if(id > last_id)
-                     last_id = id;
                   while(!FileIsLineEnding(trade_log_handle) && !FileIsEnding(trade_log_handle))
                      FileReadString(trade_log_handle);
+                  continue;
                }
-               FileSeek(trade_log_handle, 0, SEEK_END);
+               int id = (int)StringToInteger(field);
+               if(id > last_id)
+                  last_id = id;
+               while(!FileIsLineEnding(trade_log_handle) && !FileIsEnding(trade_log_handle))
+                  FileReadString(trade_log_handle);
             }
-            if(last_id > 0)
-               NextEventId = last_id + 1;
-            if(need_header)
-            {
-               string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;decision_id";
-               int _wr = FileWrite(trade_log_handle, header);
-               if(_wr <= 0)
-                  FileWriteErrors++;
-            }
+            FileSeek(trade_log_handle, 0, SEEK_END);
          }
-         CurrentBackend = LOG_BACKEND_CSV;
-         Print("Using CSV log backend");
+         if(last_id > 0)
+            NextEventId = last_id + 1;
+         if(need_header)
+         {
+            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;decision_id";
+            int _wr = FileWrite(trade_log_handle, header);
+            if(_wr <= 0)
+               FileWriteErrors++;
+         }
       }
+      CurrentBackend = LOG_BACKEND_CSV;
+      Print("Using CSV log backend");
    }
 
    last_export = UseBrokerTime ? TimeCurrent() : TimeLocal();
@@ -323,13 +304,6 @@ void OnDeinit(const int reason)
    {
       FileClose(trade_log_handle);
       trade_log_handle = INVALID_HANDLE;
-   }
-   if(log_socket!=INVALID_HANDLE)
-   {
-      if(EnableDebugLogging)
-         Print("Closing log socket");
-      SocketClose(log_socket);
-      log_socket = INVALID_HANDLE;
    }
    if(log_db_handle!=INVALID_HANDLE)
    {
@@ -546,36 +520,6 @@ void OnTimer()
    FlushTradeBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
 
-   if((CurrentBackend==LOG_BACKEND_SOCKET || StreamMetricsOnly) && log_socket==INVALID_HANDLE && now >= next_socket_attempt)
-   {
-      log_socket = SocketCreate();
-      if(log_socket!=INVALID_HANDLE)
-      {
-         if(!SocketConnect(log_socket, LogSocketHost, LogSocketPort, 1000))
-         {
-            if(EnableDebugLogging)
-               Print("Socket reconnection failed: ", GetLastError());
-            SocketClose(log_socket);
-            log_socket = INVALID_HANDLE;
-            next_socket_attempt = now + socket_backoff;
-            socket_backoff = MathMin(socket_backoff*2, 3600);
-         }
-         else
-         {
-            if(EnableDebugLogging)
-               Print("Socket reconnected to ", LogSocketHost, ":", LogSocketPort);
-            socket_backoff = 1;
-            next_socket_attempt = now;
-         }
-      }
-      else
-      {
-         if(EnableDebugLogging)
-            Print("Socket creation failed: ", GetLastError());
-         next_socket_attempt = now + socket_backoff;
-         socket_backoff = MathMin(socket_backoff*2, 3600);
-      }
-   }
    if(now - last_export < LearningExportIntervalMinutes*60)
       return;
 
@@ -594,31 +538,29 @@ string EscapeJson(string s)
    return(s);
 }
 
-void SendProto(uchar &payload[])
+bool GrpcAvailable = true;
+
+void SendTrade(uchar &payload[])
 {
-   if(log_socket==INVALID_HANDLE)
+   if(!GrpcAvailable)
       return;
    int len = ArraySize(payload);
-   uchar bytes[];
-   ArrayResize(bytes, len+4);
-   bytes[0] = (uchar)(len & 0xFF);
-   bytes[1] = (uchar)((len >> 8) & 0xFF);
-   bytes[2] = (uchar)((len >> 16) & 0xFF);
-   bytes[3] = (uchar)((len >> 24) & 0xFF);
-   for(int i=0; i<len; i++)
-      bytes[4+i] = payload[i];
-   if(SocketSend(log_socket, bytes, len+4)==-1)
+   if(!LogTrade(GrpcHost, GrpcPort, payload, len))
    {
-      SocketErrors++;
-      SocketClose(log_socket);
-      log_socket = INVALID_HANDLE;
-      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-      next_socket_attempt = now + socket_backoff;
-      socket_backoff = MathMin(socket_backoff*2, 3600);
+      GrpcErrors++;
+      GrpcAvailable = false;
    }
-   else
+}
+
+void SendMetrics(uchar &payload[])
+{
+   if(!GrpcAvailable)
+      return;
+   int len = ArraySize(payload);
+   if(!LogMetrics(GrpcHost, GrpcPort, payload, len))
    {
-      socket_backoff = 1;
+      GrpcErrors++;
+      GrpcAvailable = false;
    }
 }
 
@@ -753,7 +695,7 @@ void LogTrade(string action, int ticket, int magic, string source,
       lots, price, sl, tp, profit, profit_after, spread, comment, remaining,
       slippage, (int)volume, open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, payload);
    if(len>0)
-      SendProto(payload);
+      SendTrade(payload);
 }
 
 
@@ -860,23 +802,20 @@ void ExportLogs(datetime ts)
 void WriteMetrics(datetime ts)
 {
    int h = INVALID_HANDLE;
-   if(!StreamMetricsOnly)
+   string fname = LogDirectoryName + "\\metrics.csv";
+   h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+   if(h==INVALID_HANDLE)
    {
-      string fname = LogDirectoryName + "\\metrics.csv";
-      h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+      h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
       if(h==INVALID_HANDLE)
-      {
-         h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
-         if(h==INVALID_HANDLE)
-            return;
-         int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds");
-         if(_wr <= 0)
-            FileWriteErrors++;
-      }
-      else
-      {
-         FileSeek(h, 0, SEEK_END);
-      }
+         return;
+      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds");
+      if(_wr <= 0)
+         FileWriteErrors++;
+   }
+   else
+   {
+      FileSeek(h, 0, SEEK_END);
    }
 
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
@@ -941,7 +880,7 @@ void WriteMetrics(datetime ts)
       double sortino = stddev_neg>0 ? (sum_profit/trades)/stddev_neg : 0.0;
       double expectancy = (avg_profit * win_rate) - (avg_loss * (1.0 - win_rate));
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, GrpcErrors, CachedBookRefreshSeconds);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -953,9 +892,9 @@ void WriteMetrics(datetime ts)
        int len = SerializeMetrics(
          LogSchemaVersion,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, payload);
+         trades, max_dd, sharpe, FileWriteErrors, GrpcErrors, CachedBookRefreshSeconds, payload);
        if(len>0)
-         SendProto(payload);
+         SendMetrics(payload);
    }
 
    if(h!=INVALID_HANDLE)
