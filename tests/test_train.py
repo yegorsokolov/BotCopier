@@ -196,6 +196,7 @@ def test_train(tmp_path: Path):
     assert "dow_sin" in data.get("feature_names", [])
     assert "dow_cos" in data.get("feature_names", [])
     assert "spread" in data.get("feature_names", [])
+    assert "slippage" in data.get("feature_names", [])
     assert "equity" in data.get("feature_names", [])
     assert "margin_level" in data.get("feature_names", [])
     assert data.get("weighted") is True
@@ -633,7 +634,7 @@ def test_slippage_feature(tmp_path: Path):
     log_file = data_dir / "trades_slip.csv"
     _write_log(log_file)
 
-    train(data_dir, out_dir, use_slippage=True)
+    train(data_dir, out_dir)
 
     with open(out_dir / "model.json") as f:
         data = json.load(f)

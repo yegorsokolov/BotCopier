@@ -587,7 +587,6 @@ def _extract_features(
     boll_window=20,
     use_stochastic=False,
     use_adx=False,
-    use_slippage=False,
     use_volume=False,
     volatility=None,
     higher_timeframes=None,
@@ -715,6 +714,7 @@ def _extract_features(
             "sl_hit_dist": sl_hit,
             "tp_hit_dist": tp_hit,
             "spread": spread,
+            "slippage": slippage,
             "equity": account_equity,
             "margin_level": margin_level,
             "book_bid_vol": float(r.get("book_bid_vol", 0) or 0),
@@ -732,9 +732,6 @@ def _extract_features(
                         impact_val = ev_imp
             feat["event_flag"] = flag
             feat["event_impact"] = impact_val
-
-        if use_slippage:
-            feat["slippage"] = slippage
 
         if use_volume:
             feat["volume"] = float(r.get("volume", 0) or 0)
@@ -906,7 +903,6 @@ def _train_lite_mode(
     boll_window: int = 20,
     use_stochastic: bool = False,
     use_adx: bool = False,
-    use_slippage: bool = False,
     use_volume: bool = False,
     volatility_series=None,
     corr_pairs=None,
@@ -959,7 +955,6 @@ def _train_lite_mode(
             boll_window=boll_window,
             use_stochastic=use_stochastic,
             use_adx=use_adx,
-            use_slippage=use_slippage,
             use_volume=use_volume,
             volatility=volatility_series,
             higher_timeframes=None,
@@ -1041,7 +1036,6 @@ def train(
     boll_window: int = 20,
     use_stochastic: bool = False,
     use_adx: bool = False,
-    use_slippage: bool = False,
     use_volume: bool = False,
     volatility_series=None,
     higher_timeframes: list[str] | None = None,
@@ -1086,7 +1080,6 @@ def train(
             boll_window=boll_window,
             use_stochastic=use_stochastic,
             use_adx=use_adx,
-            use_slippage=use_slippage,
             use_volume=use_volume,
             volatility_series=volatility_series,
             corr_pairs=corr_pairs,
@@ -1171,7 +1164,6 @@ def train(
                     boll_window=boll_window,
                     use_stochastic=use_stochastic,
                     use_adx=use_adx,
-                    use_slippage=use_slippage,
                     use_volume=use_volume,
                     volatility=volatility_series,
                     higher_timeframes=higher_timeframes,
@@ -1222,7 +1214,6 @@ def train(
                 boll_window=boll_window,
                 use_stochastic=use_stochastic,
                 use_adx=use_adx,
-                use_slippage=use_slippage,
                 use_volume=use_volume,
                 volatility=volatility_series,
                 higher_timeframes=higher_timeframes,
@@ -2216,7 +2207,6 @@ def main():
     p.add_argument('--use-bollinger', action='store_true', help='include Bollinger Bands feature')
     p.add_argument('--use-stochastic', action='store_true', help='include Stochastic Oscillator feature')
     p.add_argument('--use-adx', action='store_true', help='include ADX feature')
-    p.add_argument('--use-slippage', action='store_true', help='include slippage feature')
     p.add_argument(
         '--higher-timeframes',
         help='comma separated higher timeframes e.g. H1,H4',
@@ -2287,7 +2277,6 @@ def main():
         use_bollinger=args.use_bollinger,
         use_stochastic=args.use_stochastic,
         use_adx=args.use_adx,
-        use_slippage=args.use_slippage,
         higher_timeframes=higher_tfs,
         volatility_series=vol_data,
         grid_search=args.grid_search,

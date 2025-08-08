@@ -3,7 +3,7 @@
 #include <Arrays/ArrayInt.mqh>
 
 #import "observer_proto.dll"
-int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, int spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, int decision_id, uchar &out[]);
+int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, int decision_id, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, uchar &out[]);
 #import
 
@@ -417,9 +417,6 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    string comment    = HistoryDealGetString(trans.deal, DEAL_COMMENT);
    int    ticket     = (int)trans.order;
 
-   double slippage = 0.0;
-   if(entry==DEAL_ENTRY_IN || entry==DEAL_ENTRY_OUT)
-      slippage = res.price - req.price;
 
    if(!MagicMatches(magic) || !SymbolMatches(symbol))
       return;
@@ -435,8 +432,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       double bid_vol, ask_vol, book_imb;
       GetBookVolumes(symbol, bid_vol, ask_vol, book_imb);
       LogTrade("OPEN", ticket, magic, "mt4", symbol, order_type,
-               lots, price, sl, tp, 0.0, profit_after, MarketInfo(symbol, MODE_SPREAD),
-               remaining, now, comment, slippage, iVolume(symbol, 0, 0), 0,
+               lots, price, req.price, sl, tp, 0.0, profit_after,
+               remaining, now, comment, iVolume(symbol, 0, 0), 0,
                bid_vol, ask_vol, book_imb);
       if(!IsTracked(ticket))
          AddTicket(ticket);
@@ -448,9 +445,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          double bid_vol2, ask_vol2, book_imb2;
          GetBookVolumes(symbol, bid_vol2, ask_vol2, book_imb2);
          LogTrade("MODIFY", ticket, magic, "mt4", symbol, order_type,
-                  0.0, cur_price, cur_sl, cur_tp, 0.0, profit_after,
-                  MarketInfo(symbol, MODE_SPREAD), remaining, now, comment, 0.0,
-                  iVolume(symbol, 0, 0), 0, bid_vol2, ask_vol2, book_imb2);
+                  0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
+                  remaining, now, comment, iVolume(symbol, 0, 0), 0,
+                  bid_vol2, ask_vol2, book_imb2);
       }
    }
    else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
@@ -463,8 +460,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       double bid_vol3, ask_vol3, book_imb3;
       GetBookVolumes(symbol, bid_vol3, ask_vol3, book_imb3);
       LogTrade("CLOSE", ticket, magic, "mt4", symbol, order_type,
-               lots, price, sl, tp, profit, profit_after, MarketInfo(symbol, MODE_SPREAD),
-               remaining, now, comment, slippage, iVolume(symbol, 0, 0), open_time,
+               lots, price, req.price, sl, tp, profit, profit_after,
+               remaining, now, comment, iVolume(symbol, 0, 0), open_time,
                bid_vol3, ask_vol3, book_imb3);
       if(IsTracked(ticket) && remaining==0.0)
          RemoveTicket(ticket);
@@ -476,9 +473,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          double bid_vol4, ask_vol4, book_imb4;
          GetBookVolumes(symbol, bid_vol4, ask_vol4, book_imb4);
          LogTrade("MODIFY", ticket, magic, "mt4", symbol, order_type,
-                  0.0, cur_price, cur_sl, cur_tp, 0.0, profit_after,
-                  MarketInfo(symbol, MODE_SPREAD), remaining, now, comment, 0.0,
-                  iVolume(symbol, 0, 0), 0, bid_vol4, ask_vol4, book_imb4);
+                  0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
+                  remaining, now, comment, iVolume(symbol, 0, 0), 0,
+                  bid_vol4, ask_vol4, book_imb4);
       }
    }
 }
@@ -509,9 +506,8 @@ void OnTick()
          double bid_vol, ask_vol, book_imb;
          GetBookVolumes(OrderSymbol(), bid_vol, ask_vol, book_imb);
          LogTrade("OPEN", ticket, OrderMagicNumber(), "mt4", OrderSymbol(), OrderType(),
-                  OrderLots(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
-                  0.0, profit_after, MarketInfo(OrderSymbol(), MODE_SPREAD),
-                  OrderLots(), now, OrderComment(), 0.0,
+                  OrderLots(), OrderOpenPrice(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
+                  0.0, profit_after, OrderLots(), now, OrderComment(),
                   iVolume(OrderSymbol(), 0, 0), 0, bid_vol, ask_vol, book_imb);
          AddTicket(ticket);
       }
@@ -531,10 +527,9 @@ void OnTick()
              double bid_vol, ask_vol, book_imb;
              GetBookVolumes(OrderSymbol(), bid_vol, ask_vol, book_imb);
              LogTrade("CLOSE", ticket, OrderMagicNumber(), "mt4", OrderSymbol(),
-                       OrderType(), OrderLots(), OrderClosePrice(), OrderStopLoss(),
+                       OrderType(), OrderLots(), OrderClosePrice(), OrderClosePrice(), OrderStopLoss(),
                        OrderTakeProfit(), OrderProfit()+OrderSwap()+OrderCommission(),
-                       profit_after2, MarketInfo(OrderSymbol(), MODE_SPREAD),
-                       0.0, now, OrderComment(), 0.0,
+                       profit_after2, 0.0, now, OrderComment(),
                        iVolume(OrderSymbol(), 0, 0), OrderOpenTime(),
                        bid_vol, ask_vol, book_imb);
          }
@@ -666,9 +661,9 @@ string SqlEscape(string s)
 
 void LogTrade(string action, int ticket, int magic, string source,
               string symbol, int order_type, double lots, double price,
-              double sl, double tp, double profit, double profit_after,
-              double spread, double remaining, datetime time_event, string comment,
-              double slippage, double volume, datetime open_time,
+              double req_price, double sl, double tp, double profit,
+              double profit_after, double remaining, datetime time_event,
+              string comment, double volume, datetime open_time,
               double book_bid_vol, double book_ask_vol, double book_imbalance)
 {
    int id = NextEventId++;
@@ -699,8 +694,11 @@ void LogTrade(string action, int ticket, int magic, string source,
       if(tp!=0.0)
          tp_hit_dist = MathAbs(price - tp);
    }
+   double spread = MarketInfo(symbol, MODE_ASK) - MarketInfo(symbol, MODE_BID);
+   double slippage = price - req_price;
+
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%d;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d",
       id,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
