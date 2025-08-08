@@ -21,6 +21,7 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
   - `plot_metrics.py` – plot metric history using Matplotlib.
   - `plot_feature_importance.py` – display SHAP feature importances saved in `model.json`.
+  - `grpc_log_service.py` – gRPC server receiving trade and metric logs.
 - `models/` – location for generated models.
 - `config.json` – example configuration file.
 
@@ -247,14 +248,15 @@ After completing a trial run commit both `run_info.json` files along with the ge
 ## Real-time Streaming
 
 On start-up the observer EA tries to stream each trade event and periodic
-metric summary over a TCP socket. If the socket server cannot be reached it
+metric summary over gRPC. If the channel cannot be reached it
 falls back to writing a SQLite database ``trades_raw.sqlite`` and finally to a
-CSV file ``trades_raw.csv``. A log message indicates which backend was chosen.
-Run the ``socket_log_service.py`` helper to capture socket messages into a CSV
-file. The service now uses ``asyncio`` to handle multiple connections concurrently:
+CSV file ``trades_raw.csv``. Configure the destination via the ``GrpcHost``
+and ``GrpcPort`` inputs (default ``127.0.0.1:50051``).
+
+Run the ``grpc_log_service.py`` helper to capture RPC messages into CSV files:
 
 ```bash
-python scripts/socket_log_service.py --out stream.csv
+python scripts/grpc_log_service.py --trade-out trades.csv --metrics-out metrics.csv
 ```
 
 For persistent storage you can instead log directly to a SQLite database using ``sqlite_log_service.py``:
