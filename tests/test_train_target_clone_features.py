@@ -122,7 +122,7 @@ def test_feature_extraction_basic():
             "margin_level": 150,
         }
     ]
-    feats, *_ = _extract_features(rows, use_slippage=True)
+    feats, *_ = _extract_features(rows)
     assert "hour_sin" in feats[0] and "hour_cos" in feats[0]
     assert "dow_sin" in feats[0] and "dow_cos" in feats[0]
     assert "spread" in feats[0]
@@ -138,7 +138,7 @@ def test_model_serialization(tmp_path: Path):
     data_dir.mkdir()
     _write_sample_log(data_dir / "trades_sample.csv")
 
-    train(data_dir, out_dir, use_slippage=True)
+    train(data_dir, out_dir)
 
     model_file = out_dir / "model.json"
     assert model_file.exists()
@@ -149,6 +149,8 @@ def test_model_serialization(tmp_path: Path):
     assert "std" in data
     assert "threshold" in data
     assert "val_accuracy" in data
+    assert "spread" in data.get("feature_names", [])
+    assert "slippage" in data.get("feature_names", [])
 
 
 def test_perf_budget_disables_heavy_features(caplog):

@@ -18,7 +18,7 @@ message TradeEvent {
   double tp = 14;
   double profit = 15;
   double profit_after_trade = 16;
-  int32 spread = 17;
+  double spread = 17;
   string comment = 18;
   double remaining_lots = 19;
   double slippage = 20;
