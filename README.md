@@ -88,13 +88,15 @@ whose mean absolute SHAP value falls below this threshold are removed and the
 classifier is refit on the reduced set. A warning is emitted when pruning
 eliminates more than the fraction specified via ``--prune-warn``.
 
-Hyperparameters can be optimised automatically when `optuna` is installed. If
-`optuna` is missing the script trains with default parameters and continues.
-The best trial's parameters and validation score are saved to `model.json`:
+Hyperparameters, model type, decision threshold and feature selection can be
+optimised automatically when `optuna` is installed. If `optuna` is missing the
+script trains with default parameters and continues. The best trial's
+parameters and validation score are saved to `model.json` along with a summary
+of the study:
 
 ```bash
 pip install optuna
-python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir models --optuna-trials 50
+python scripts/train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir models --optuna-trials 50
 ```
 
 Optuna explores learning rate, tree depth or regularisation strength depending

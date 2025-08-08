@@ -1241,6 +1241,7 @@ def train(
     hidden_size = 8
     logreg_C = 1.0
     best_trial = None
+    study = None
     sl_coef = []
     tp_coef = []
     sl_inter = 0.0
@@ -1317,16 +1318,14 @@ def train(
     else:
         X_val = np.empty((0, X_train.shape[1]))
 
-    # statistics for feature scaling
-    feature_mean = X_train.mean(axis=0)
-    feature_std = X_train.std(axis=0)
-    feature_std[feature_std == 0] = 1.0
-
+    feature_names = vec.get_feature_names_out().tolist()
     X_train_reg = vec.transform(feat_train_reg)
-    X_val_reg = vec.transform(feat_val_reg) if feat_val_reg else np.empty((0, X_train_reg.shape[1]))
+    X_val_reg = (
+        vec.transform(feat_val_reg) if feat_val_reg else np.empty((0, X_train_reg.shape[1]))
+    )
 
     if cache_features and not loaded_from_cache:
-        feature_names_cache = vec.get_feature_names_out().tolist()
+        feature_names_cache = feature_names
         out_dir.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             cache_file,
@@ -1338,128 +1337,123 @@ def train(
             feature_names=np.array(feature_names_cache),
         )
 
+    optuna_threshold = None
     if optuna_trials > 0:
+        available_models = ["logreg", "random_forest", "xgboost", "nn"]
+        try:
+            import importlib.util
+
+            if importlib.util.find_spec("xgboost") is None:
+                available_models.remove("xgboost")
+        except Exception:
+            if "xgboost" in available_models:
+                available_models.remove("xgboost")
+
         def _objective(trial):
-            if model_type == "logreg":
+            model_choice = trial.suggest_categorical("model_type", available_models)
+            max_feats = min(len(feature_names), 10)
+            sel_idx = []
+            for i, name in enumerate(feature_names[:max_feats]):
+                if trial.suggest_categorical(f"f_{name}", [True, False]):
+                    sel_idx.append(i)
+            if not sel_idx:
+                sel_idx = list(range(max_feats))
+            sel_idx += list(range(max_feats, len(feature_names)))
+            X_tr = X_train[:, sel_idx]
+            X_v = X_val[:, sel_idx]
+            if model_choice == "logreg":
                 c = trial.suggest_float("C", 1e-3, 10.0, log=True)
                 clf = LogisticRegression(max_iter=200, C=c)
-                clf.fit(X_train, y_train)
-            elif model_type == "xgboost":
-                try:
-                    from xgboost import XGBClassifier  # type: ignore
+                clf.fit(X_tr, y_train)
+            elif model_choice == "random_forest":
+                est = trial.suggest_int("n_estimators", 50, 200)
+                depth = trial.suggest_int("max_depth", 2, 8)
+                clf = RandomForestClassifier(n_estimators=est, max_depth=depth, random_state=42)
+                clf.fit(X_tr, y_train)
+            elif model_choice == "xgboost":
+                from xgboost import XGBClassifier  # type: ignore
 
-                    est = trial.suggest_int("n_estimators", 50, 300)
-                    lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-                    depth = trial.suggest_int("max_depth", 2, 8)
-                    clf = XGBClassifier(
-                        n_estimators=est,
-                        learning_rate=lr,
-                        max_depth=depth,
-                        eval_metric="logloss",
-                        use_label_encoder=False,
-                    )
-                except Exception:
-                    logging.warning(
-                        "xgboost is not installed; using LogisticRegression instead"
-                    )
-                    clf = LogisticRegression(max_iter=200)
-                clf.fit(X_train, y_train)
-            elif model_type == "lgbm":
-                try:
-                    from lightgbm import LGBMClassifier  # type: ignore
-
-                    est = trial.suggest_int("n_estimators", 50, 300)
-                    lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-                    depth = trial.suggest_int("max_depth", 2, 8)
-                    clf = LGBMClassifier(
-                        n_estimators=est,
-                        learning_rate=lr,
-                        max_depth=depth,
-                    )
-                except Exception:
-                    logging.warning(
-                        "lightgbm is not installed; using LogisticRegression instead"
-                    )
-                    clf = LogisticRegression(max_iter=200)
-                clf.fit(X_train, y_train)
-            elif model_type == "catboost":
-                try:
-                    from catboost import CatBoostClassifier  # type: ignore
-
-                    est = trial.suggest_int("n_estimators", 50, 300)
-                    lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
-                    depth = trial.suggest_int("max_depth", 2, 8)
-                    clf = CatBoostClassifier(
-                        iterations=est,
-                        learning_rate=lr,
-                        depth=depth,
-                        verbose=False,
-                    )
-                except Exception:
-                    logging.warning(
-                        "catboost is not installed; using LogisticRegression instead"
-                    )
-                    clf = LogisticRegression(max_iter=200)
-                clf.fit(X_train, y_train)
-            elif model_type == "nn":
+                est = trial.suggest_int("n_estimators", 50, 300)
+                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                depth = trial.suggest_int("max_depth", 2, 8)
+                clf = XGBClassifier(
+                    n_estimators=est,
+                    learning_rate=lr,
+                    max_depth=depth,
+                    eval_metric="logloss",
+                    use_label_encoder=False,
+                )
+                clf.fit(X_tr, y_train)
+            else:
                 h = trial.suggest_int("hidden_size", 4, 64)
                 try:
                     from tensorflow import keras  # type: ignore
 
                     clf = keras.Sequential(
                         [
-                            keras.layers.Input(shape=(X_train.shape[1],)),
+                            keras.layers.Input(shape=(X_tr.shape[1],)),
                             keras.layers.Dense(h, activation="relu"),
                             keras.layers.Dense(1, activation="sigmoid"),
                         ]
                     )
                     clf.compile(optimizer="adam", loss="binary_crossentropy")
-                    clf.fit(X_train, y_train, epochs=50, verbose=0)
+                    clf.fit(X_tr, y_train, epochs=50, verbose=0)
                 except Exception:
-                    logging.warning(
-                        "TensorFlow not available; using MLPClassifier instead"
-                    )
                     clf = MLPClassifier(
                         hidden_layer_sizes=(h,), max_iter=500, random_state=42
                     )
-                    clf.fit(X_train, y_train)
-            else:
-                return 0.0
+                    clf.fit(X_tr, y_train)
 
             if hasattr(clf, "predict_proba"):
-                val_proba = (
-                    clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
-                )
+                val_proba = clf.predict_proba(X_v)[:, 1] if len(y_val) > 0 else np.empty(0)
             else:
-                val_proba = (
-                    clf.predict(X_val).reshape(-1) if len(y_val) > 0 else np.empty(0)
-                )
+                val_proba = clf.predict(X_v).reshape(-1) if len(y_val) > 0 else np.empty(0)
 
+            thr = trial.suggest_float("threshold", 0.3, 0.7)
+            trial.set_user_attr("features", [feature_names[i] for i in sel_idx])
             if len(y_val) > 0:
-                t, _ = _best_threshold(y_val, val_proba)
-                preds = (val_proba >= t).astype(int)
+                preds = (val_proba >= thr).astype(int)
                 return accuracy_score(y_val, preds)
             return 0.0
 
-        study = optuna.create_study(direction="maximize")
+        study = optuna.create_study(
+            direction="maximize", sampler=optuna.samplers.TPESampler(seed=42)
+        )
         study.optimize(_objective, n_trials=optuna_trials)
         best_trial = study.best_trial
-        if model_type == "logreg":
+        model_type = best_trial.params.get("model_type", model_type)
+        optuna_threshold = float(best_trial.params.get("threshold", 0.5))
+        max_feats = min(len(feature_names), 10)
+        sel_idx = [
+            i
+            for i, name in enumerate(feature_names[:max_feats])
+            if best_trial.params.get(f"f_{name}", True)
+        ]
+        if not sel_idx:
+            sel_idx = list(range(max_feats))
+        sel_idx += list(range(max_feats, len(feature_names)))
+        selected_indices = sel_idx
+        X_train = X_train[:, sel_idx]
+        X_val = X_val[:, sel_idx]
+        X_train_reg = X_train_reg[:, sel_idx]
+        X_val_reg = X_val_reg[:, sel_idx]
+        feature_names = [feature_names[i] for i in sel_idx]
+        if model_type == "logreg" and "C" in best_trial.params:
             logreg_C = float(best_trial.params["C"])
+        elif model_type == "random_forest":
+            n_estimators = int(best_trial.params["n_estimators"])
+            max_depth = int(best_trial.params["max_depth"])
         elif model_type == "xgboost":
-            n_estimators = int(best_trial.params["n_estimators"])
-            learning_rate = float(best_trial.params["learning_rate"])
-            max_depth = int(best_trial.params["max_depth"])
-        elif model_type == "lgbm":
-            n_estimators = int(best_trial.params["n_estimators"])
-            learning_rate = float(best_trial.params["learning_rate"])
-            max_depth = int(best_trial.params["max_depth"])
-        elif model_type == "catboost":
             n_estimators = int(best_trial.params["n_estimators"])
             learning_rate = float(best_trial.params["learning_rate"])
             max_depth = int(best_trial.params["max_depth"])
         elif model_type == "nn":
             hidden_size = int(best_trial.params["hidden_size"])
+
+    # statistics for feature scaling
+    feature_mean = X_train.mean(axis=0)
+    feature_std = X_train.std(axis=0)
+    feature_std[feature_std == 0] = 1.0
 
     if stack_models:
         estimators = []
@@ -1871,11 +1865,14 @@ def train(
         tp_inter = reg_tp.intercept_
 
     if len(y_val) > 0:
-        threshold, _ = _best_threshold(y_val, val_proba)
+        if optuna_threshold is not None:
+            threshold = optuna_threshold
+        else:
+            threshold, _ = _best_threshold(y_val, val_proba)
         val_preds = (val_proba >= threshold).astype(int)
         val_acc = float(accuracy_score(y_val, val_preds))
     else:
-        threshold = 0.5
+        threshold = optuna_threshold if optuna_threshold is not None else 0.5
         val_acc = float("nan")
     train_preds = (train_proba >= threshold).astype(int)
     train_acc = float(accuracy_score(y_train, train_preds))
@@ -1893,7 +1890,6 @@ def train(
             hourly_thresholds.append(float(t))
 
     # Compute SHAP feature importance on the training set
-    feature_names = vec.get_feature_names_out().tolist()
     keep_idx = list(range(len(feature_names)))
     try:
         import shap  # type: ignore
@@ -1925,6 +1921,7 @@ def train(
             feature_mean = feature_mean[keep_idx]
             feature_std = feature_std[keep_idx]
             feature_names = [feature_names[i] for i in keep_idx]
+            selected_indices = [selected_indices[i] for i in keep_idx]
 
             clf.fit(X_train, y_train, sample_weight=sample_weight)
             train_proba_raw = clf.predict_proba(X_train)[:, 1]
@@ -1950,11 +1947,14 @@ def train(
                 tp_coef = reg_tp.coef_
                 tp_inter = reg_tp.intercept_
             if len(y_val) > 0:
-                threshold, _ = _best_threshold(y_val, val_proba)
+                if optuna_threshold is not None:
+                    threshold = optuna_threshold
+                else:
+                    threshold, _ = _best_threshold(y_val, val_proba)
                 val_preds = (val_proba >= threshold).astype(int)
                 val_acc = float(accuracy_score(y_val, val_preds))
             else:
-                threshold = 0.5
+                threshold = optuna_threshold if optuna_threshold is not None else 0.5
                 val_acc = float("nan")
             train_preds = (train_proba >= threshold).astype(int)
             train_acc = float(accuracy_score(y_train, train_preds))
@@ -2005,9 +2005,13 @@ def train(
         model["encoder_window"] = encoder.get("window")
         if "centers" in encoder:
             model["encoder_centers"] = encoder.get("centers")
-    if best_trial is not None:
+    if best_trial is not None and study is not None:
         model["optuna_best_params"] = best_trial.params
         model["optuna_best_score"] = float(best_trial.value)
+        model["optuna_study"] = {"n_trials": len(study.trials)}
+        model["optuna_trials"] = [
+            {"params": t.params, "value": float(t.value)} for t in study.trials
+        ]
     if hourly_thresholds is not None:
         model["hourly_thresholds"] = hourly_thresholds
     if calibration is not None:
@@ -2039,7 +2043,7 @@ def train(
                 f["hour_sin"] = math.sin(2 * math.pi * h / 24)
             if "hour_cos" in f:
                 f["hour_cos"] = math.cos(2 * math.pi * h / 24)
-            X_h = vec.transform([f])[:, keep_idx]
+            X_h = vec.transform([f])[:, selected_indices]
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
     elif model_type == "lgbm":
@@ -2058,7 +2062,7 @@ def train(
                 f["hour_sin"] = math.sin(2 * math.pi * h / 24)
             if "hour_cos" in f:
                 f["hour_cos"] = math.cos(2 * math.pi * h / 24)
-            X_h = vec.transform([f])[:, keep_idx]
+            X_h = vec.transform([f])[:, selected_indices]
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
     elif model_type == "catboost":
@@ -2077,7 +2081,7 @@ def train(
                 f["hour_sin"] = math.sin(2 * math.pi * h / 24)
             if "hour_cos" in f:
                 f["hour_cos"] = math.cos(2 * math.pi * h / 24)
-            X_h = vec.transform([f])[:, keep_idx]
+            X_h = vec.transform([f])[:, selected_indices]
             lookup.append(float(clf.predict_proba(X_h)[0, 1]))
         model["probability_table"] = lookup
     elif model_type == "stack":
@@ -2226,7 +2230,12 @@ def main():
     p.add_argument('--cache-features', action='store_true', help='reuse cached feature matrix')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
-    p.add_argument('--optuna-trials', type=int, default=0, help='number of Optuna trials for hyperparameter search')
+    p.add_argument(
+        '--optuna-trials',
+        type=int,
+        default=0,
+        help='number of Optuna trials to tune model type, threshold and features',
+    )
     p.add_argument('--encoder-file', help='JSON file with pretrained encoder weights')
     p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
