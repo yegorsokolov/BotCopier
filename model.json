@@ -1,0 +1,13 @@
+{
+  "hierarchy": {
+    "type": "options",
+    "meta_controller": {
+      "algorithm": "PPO",
+      "parameters": {}
+    },
+    "sub_policies": {
+      "0": {"algorithm": "PPO", "parameters": {}},
+      "1": {"algorithm": "PPO", "parameters": {}}
+    }
+  }
+}
