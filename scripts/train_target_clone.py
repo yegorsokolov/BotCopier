@@ -41,6 +41,15 @@ from sklearn.preprocessing import StandardScaler
 
 import requests
 
+try:
+    import torch
+    from torch import nn
+    _HAS_TORCH = True
+except Exception:  # pragma: no cover - optional dependency
+    torch = None
+    nn = None
+    _HAS_TORCH = False
+
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -128,6 +137,38 @@ def _has_sufficient_gpu(min_gb: float = 1.0) -> bool:
     except Exception:
         pass
     return False
+
+
+class ContrastiveEncoder(nn.Module):
+    """Simple linear encoder used for contrastive pretraining."""
+
+    def __init__(self, window: int, dim: int):
+        super().__init__()
+        self.layer = nn.Linear(window, dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple
+        return self.layer(x)
+
+
+def _load_contrastive_encoder(path: Path) -> ContrastiveEncoder:
+    if not _HAS_TORCH:
+        raise ImportError("PyTorch is required for --use-encoder")
+    state = torch.load(path, map_location="cpu")
+    window = int(state.get("window", 0))
+    dim = int(state.get("dim", 0))
+    model = ContrastiveEncoder(window, dim)
+    model.load_state_dict(state["state_dict"])
+    model.eval()
+    return model
+
+
+def _encode_features(model: ContrastiveEncoder | None, X: np.ndarray) -> np.ndarray:
+    if model is None or X.size == 0 or not _HAS_TORCH:
+        return X
+    with torch.no_grad():
+        t = torch.from_numpy(X.astype("float32"))
+        out = model(t).cpu().numpy()
+    return out
 
 
 def detect_resources():
@@ -1139,12 +1180,14 @@ def _train_lite_mode(
             X = vec.fit_transform(f_chunk)
             scaler.partial_fit(X)
             X = scaler.transform(X)
+            X = _encode_features(enc_model, X)
             clf.partial_fit(X, l_chunk, classes=np.array([0, 1]))
             first = False
         else:
             X = vec.transform(f_chunk)
             scaler.partial_fit(X)
             X = scaler.transform(X)
+            X = _encode_features(enc_model, X)
             clf.partial_fit(X, l_chunk)
 
     if first:
@@ -1239,6 +1282,7 @@ def train(
     regime_model_file: Path | None = None,
     moe: bool = False,
     flight_uri: str | None = None,
+    use_encoder: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
     if lite_mode:
@@ -1280,8 +1324,14 @@ def train(
                 "optuna is not installed; skipping hyperparameter search"
             )
             optuna_trials = 0
-
     cache_file = out_dir / "feature_cache.npz"
+    enc_model: ContrastiveEncoder | None = None
+    if use_encoder:
+        try:
+            enc_model = _load_contrastive_encoder(Path("encoder.pt"))
+        except Exception as exc:
+            logging.warning("failed to load encoder: %s", exc)
+            enc_model = None
 
     existing_model = None
     last_event_id = 0
@@ -1548,12 +1598,16 @@ def train(
         X_val = vec.transform(feat_val_clf)
     else:
         X_val = np.empty((0, X_train.shape[1]))
+    X_train = _encode_features(enc_model, X_train)
+    X_val = _encode_features(enc_model, X_val)
 
     feature_names = vec.get_feature_names_out().tolist()
     X_train_reg = vec.transform(feat_train_reg)
     X_val_reg = (
         vec.transform(feat_val_reg) if feat_val_reg else np.empty((0, X_train_reg.shape[1]))
     )
+    X_train_reg = _encode_features(enc_model, X_train_reg)
+    X_val_reg = _encode_features(enc_model, X_val_reg)
 
     if cache_features and not loaded_from_cache:
         feature_names_cache = feature_names
@@ -1693,6 +1747,7 @@ def train(
         for f in all_feat_clf:
             f.pop("profit", None)
         X_all = vec.transform(all_feat_clf)
+        X_all = _encode_features(enc_model, X_all)
         symbols_all = np.array([f.get("symbol", "") for f in features])
         le = LabelEncoder()
         sym_idx = le.fit_transform(symbols_all)
@@ -1764,6 +1819,7 @@ def train(
                 if k.startswith("regime_"):
                     f.pop(k, None)
         X_all = vec.transform(all_feat)
+        X_all = _encode_features(enc_model, X_all)
         gating_clf = LogisticRegression(max_iter=200, multi_class="multinomial")
         gating_clf.fit(X_all, regimes)
 
@@ -2049,6 +2105,8 @@ def train(
                 if existing_model is None
                 else vec.transform(features)
             )
+            X_all = _encode_features(enc_model, X_all)
+            X_all = _encode_features(enc_model, X_all)
             sequences = []
             for i in range(len(X_all)):
                 start = max(0, i - seq_len + 1)
@@ -2380,6 +2438,12 @@ def train(
         model["encoder_window"] = encoder.get("window")
         if "centers" in encoder:
             model["encoder_centers"] = encoder.get("centers")
+    if enc_model is not None:
+        w = enc_model.layer.weight.detach().cpu().numpy().tolist()
+        model["encoder_weights"] = w
+        model["encoder_window"] = enc_model.layer.weight.shape[1]
+        model["encoder_dim"] = enc_model.layer.weight.shape[0]
+        model["encoder_onnx"] = "encoder.onnx"
     if best_trial is not None and study is not None:
         model["optuna_best_params"] = best_trial.params
         model["optuna_best_score"] = float(best_trial.value)
@@ -2627,6 +2691,7 @@ def main():
     p.add_argument('--regime-model', help='JSON file with precomputed regime centers')
     p.add_argument('--moe', action='store_true', help='train mixture-of-experts model per symbol')
     p.add_argument('--federated-server', help='URL of federated averaging server')
+    p.add_argument('--use-encoder', action='store_true', help='apply pretrained contrastive encoder')
     args = p.parse_args()
     global START_EVENT_ID
     if args.resume:
@@ -2697,6 +2762,7 @@ def main():
         regime_model_file=Path(args.regime_model) if args.regime_model else None,
         moe=args.moe,
         flight_uri=args.flight_uri,
+        use_encoder=args.use_encoder,
     )
     if args.federated_server:
         model_path = Path(args.out_dir) / (

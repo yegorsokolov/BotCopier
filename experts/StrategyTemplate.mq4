@@ -17,6 +17,7 @@ extern string DecisionLogFile = "decisions.csv";
 extern string DecisionLogSocketHost = "127.0.0.1";
 extern int    DecisionLogSocketPort = 9001;
 extern string ModelVersion = "";
+extern string EncoderOnnxFile = "__ENCODER_ONNX__";
 
 string HierarchyJson = "__HIERARCHY_JSON__";
 
@@ -90,6 +91,11 @@ datetime LastModelLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
 int      NextDecisionId = 1;
+bool UseOnnxEncoder = false;
+
+#import "onnxruntime_wrapper.ex4"
+   int OnnxEncode(string model, double &inp[], double &out[]);
+#import
 
 //----------------------------------------------------------------------
 // Model loading utilities
@@ -232,6 +238,8 @@ int OnInit()
    LastModelLoad = TimeCurrent();
    if(!ok)
       Print("Using built-in model parameters");
+   if(StringLen(EncoderOnnxFile) > 0 && FileIsExist(EncoderOnnxFile))
+      UseOnnxEncoder = true;
    MarketBookAdd(SymbolToTrade);
    if(EnableDecisionLogging)
    {
@@ -342,6 +350,17 @@ double GetCalendarImpact()
 
 double GetEncodedFeature(int idx)
 {
+   if(UseOnnxEncoder)
+   {
+      double seq[];
+      ArrayResize(seq, EncoderWindow);
+      for(int i=0; i<EncoderWindow; i++)
+         seq[i] = iClose(SymbolToTrade,0,i) - iClose(SymbolToTrade,0,i+1);
+      double out[];
+      ArrayResize(out, EncoderDim);
+      if(OnnxEncode(EncoderOnnxFile, seq, out) == 0 && idx < ArraySize(out))
+         return(out[idx]);
+   }
    if(idx >= EncoderDim)
       return(0.0);
    double val = 0.0;
