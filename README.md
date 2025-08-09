@@ -101,6 +101,22 @@ docker run --rm -it \
   -p 9411:9411 jaegertracing/all-in-one:1.47
 ```
 
+To run a Zipkin collector for trace visualisation instead:
+
+```
+docker run --rm -d -p 9411:9411 openzipkin/zipkin
+```
+
+The provided Python utilities emit log lines including ``trace_id`` and ``span_id`` fields for easy correlation with traces.
+
+### Anomaly Monitoring
+
+```
+python scripts/anomaly_monitor.py --db metrics.db --metric win_rate --method ewma --threshold 3
+```
+
+The ``--threshold`` flag controls the alert sensitivity. For EWMA it represents the number of standard deviations from the moving average; for Isolation Forest it maps to the ``contamination`` parameter. Alerts are printed to stdout and optionally emailed when ``--email`` is supplied.
+
 
 
 
