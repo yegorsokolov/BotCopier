@@ -81,6 +81,21 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode:
     output = output.replace('__INTERCEPTS__', ', '.join(intercepts))
     output = output.replace('__MODEL_COUNT__', str(len(models)))
 
+    g_coeff = base.get('gating_coefficients', [])
+    if isinstance(g_coeff, list) and g_coeff and isinstance(g_coeff[0], list):
+        flat = [c for row in g_coeff for c in row]
+    else:
+        flat = g_coeff
+    g_rows: List[str] = []
+    if flat:
+        for i in range(len(models)):
+            row = flat[i * feature_count : (i + 1) * feature_count]
+            g_rows.append('{' + ', '.join(_fmt(c) for c in row) + '}')
+    output = output.replace('__GATING_COEFFICIENTS__', ', '.join(g_rows))
+    g_inter = base.get('gating_intercepts', [])
+    g_inter_str = ', '.join(_fmt(x) for x in g_inter) if g_inter else ''
+    output = output.replace('__GATING_INTERCEPTS__', g_inter_str)
+
     cal_coef = _fmt(base.get('calibration_coef', 1.0))
     cal_inter = _fmt(base.get('calibration_intercept', 0.0))
     output = output.replace('__CAL_COEF__', cal_coef)

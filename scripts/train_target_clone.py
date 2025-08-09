@@ -1085,6 +1085,7 @@ def train(
     lite_mode: bool = False,
     compress_model: bool = False,
     regime_model_file: Path | None = None,
+    moe: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
     if lite_mode:
@@ -1499,6 +1500,72 @@ def train(
     feature_mean = X_train.mean(axis=0)
     feature_std = X_train.std(axis=0)
     feature_std[feature_std == 0] = 1.0
+
+    if moe:
+        from sklearn.preprocessing import LabelEncoder
+
+        all_feat_clf = [dict(f) for f in features]
+        for f in all_feat_clf:
+            f.pop("profit", None)
+        X_all = vec.transform(all_feat_clf)
+        symbols_all = np.array([f.get("symbol", "") for f in features])
+        le = LabelEncoder()
+        sym_idx = le.fit_transform(symbols_all)
+        gating_clf = LogisticRegression(max_iter=200, multi_class="multinomial")
+        gating_clf.fit(X_all, sym_idx)
+        gating_coef = gating_clf.coef_.ravel().astype(np.float32).tolist()
+        gating_inter = gating_clf.intercept_.astype(np.float32).tolist()
+
+        expert_models = []
+        for idx, sym in enumerate(le.classes_):
+            mask = symbols_all == sym
+            if not mask.any():
+                continue
+            X_sym = X_all[mask]
+            y_sym = labels[mask]
+            sw = np.array(
+                [abs(features[i].get("profit", features[i].get("lots", 1.0))) for i in np.where(mask)[0]],
+                dtype=float,
+            )
+            exp_clf = LogisticRegression(max_iter=200)
+            exp_clf.fit(X_sym, y_sym, sample_weight=sw)
+            expert_models.append(
+                {
+                    "coefficients": exp_clf.coef_[0].astype(np.float32).tolist(),
+                    "intercept": float(exp_clf.intercept_[0]),
+                    "classes": [int(c) for c in exp_clf.classes_],
+                    "symbol": sym,
+                }
+            )
+
+        model = {
+            "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
+            "trained_at": datetime.utcnow().isoformat(),
+            "feature_names": feature_names,
+            "model_type": "moe_logreg",
+            "gating_coefficients": gating_coef,
+            "gating_intercepts": gating_inter,
+            "gating_classes": le.classes_.tolist(),
+            "session_models": expert_models,
+            "last_event_id": int(last_event_id),
+            "mean": feature_mean.astype(np.float32).tolist(),
+            "std": feature_std.astype(np.float32).tolist(),
+        }
+        if data_commits:
+            model["data_commit"] = ",".join(sorted(set(data_commits)))
+        if data_checksums:
+            model["data_checksum"] = ",".join(sorted(set(data_checksums)))
+        if calendar_events:
+            model["calendar_events"] = [
+                [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+            ]
+            model["event_window"] = float(event_window)
+        model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+        open_func = gzip.open if compress_model else open
+        with open_func(model_path, "wt") as f:
+            json.dump(model, f)
+        print(f"Model written to {model_path}")
+        return
 
     if stack_models:
         estimators = []
@@ -2293,6 +2360,7 @@ def main():
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
     p.add_argument('--regime-model', help='JSON file with precomputed regime centers')
+    p.add_argument('--moe', action='store_true', help='train mixture-of-experts model per symbol')
     args = p.parse_args()
     global START_EVENT_ID
     if args.resume:
@@ -2361,6 +2429,7 @@ def main():
         lite_mode=lite_mode,
         compress_model=args.compress_model,
         regime_model_file=Path(args.regime_model) if args.regime_model else None,
+        moe=args.moe,
     )
 
 
