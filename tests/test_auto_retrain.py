@@ -118,3 +118,36 @@ def test_retrain_no_improvement(monkeypatch, tmp_path: Path):
     assert called.get("train") is True
     assert called.get("publish") is None
     assert called.get("backtest") is True
+
+
+def test_retrain_prefers_onnx(monkeypatch, tmp_path: Path):
+    log_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    files_dir = tmp_path / "files"
+    for d in [log_dir, out_dir, files_dir]:
+        d.mkdir()
+    metrics_file = log_dir / "metrics.csv"
+    _write_metrics(metrics_file, 0.3, 0.1)
+    last_id_file = out_dir / "last_event_id"
+    last_id_file.write_text("5")
+
+    called = {}
+
+    def fake_train(ld, od, incremental=True):
+        (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
+        (od / "model.onnx").write_bytes(b"x")
+
+    def fake_publish(mf, fd):
+        called["publish"] = mf
+
+    def fake_backtest(params_file, tick_file):
+        return {"win_rate": 0.8, "drawdown": 0.05}
+
+    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
+    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
+
+    result = retrain_if_needed(log_dir, out_dir, files_dir)
+
+    assert result is True
+    assert called.get("publish") == out_dir / "model.onnx"

@@ -9,6 +9,8 @@ opentelemetry-sdk
 opentelemetry-exporter-otlp
 protobuf
 grpcio
+onnxruntime
+skl2onnx
 
 # Optional extras
 xgboost; extra == "xgboost"

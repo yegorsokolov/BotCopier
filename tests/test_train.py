@@ -9,6 +9,7 @@ import subprocess
 
 import pandas as pd
 import pytest
+import importlib.util
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import HAS_NUMPY, HAS_TF
@@ -224,6 +225,8 @@ def test_train_with_indicators(tmp_path: Path):
 
     model_file = out_dir / "model.json"
     assert model_file.exists()
+    if importlib.util.find_spec("skl2onnx"):
+        assert (out_dir / "model.onnx").exists()
     with open(model_file) as f:
         data = json.load(f)
     assert any(name in data.get("feature_names", []) for name in ["sma", "rsi", "macd"])
