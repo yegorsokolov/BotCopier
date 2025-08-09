@@ -9,5 +9,6 @@
       "0": {"algorithm": "PPO", "parameters": {}},
       "1": {"algorithm": "PPO", "parameters": {}}
     }
-  }
+  },
+  "drift_metric": 0.0
 }

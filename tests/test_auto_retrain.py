@@ -17,6 +17,14 @@ def _write_metrics(file: Path, win_rate: float, drawdown: float) -> None:
         writer.writerow(["2024.01.01 00:00", "0", str(win_rate), "1.0", "10", str(drawdown), "0.0"])
 
 
+def _write_features(file: Path, values: list[float]) -> None:
+    with open(file, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["f1"])
+        for v in values:
+            writer.writerow([v])
+
+
 def test_retrain_trigger(monkeypatch, tmp_path: Path):
     log_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
@@ -151,3 +159,49 @@ def test_retrain_prefers_onnx(monkeypatch, tmp_path: Path):
 
     assert result is True
     assert called.get("publish") == out_dir / "model.onnx"
+
+
+def test_drift_triggers_retrain(monkeypatch, tmp_path: Path):
+    log_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    files_dir = tmp_path / "files"
+    for d in [log_dir, out_dir, files_dir]:
+        d.mkdir()
+    metrics_file = log_dir / "metrics.csv"
+    # metrics are good so drift is sole trigger
+    _write_metrics(metrics_file, 0.7, 0.1)
+    baseline = log_dir / "baseline.csv"
+    recent = log_dir / "recent.csv"
+    _write_features(baseline, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    _write_features(recent, [10] * 10)
+
+    called = {}
+
+    def fake_train(ld, od, incremental=True):
+        called["train"] = True
+        (od / "model.json").write_text(json.dumps({}))
+
+    def fake_publish(mf, fd):
+        called["publish"] = True
+
+    def fake_backtest(params_file, tick_file):
+        called["backtest"] = True
+        return {"win_rate": 0.8, "drawdown": 0.05}
+
+    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
+    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
+
+    result = retrain_if_needed(
+        log_dir,
+        out_dir,
+        files_dir,
+        baseline_file=baseline,
+        recent_file=recent,
+        drift_threshold=0.1,
+    )
+
+    assert result is True
+    assert called.get("train") is True
+    data = json.loads((out_dir / "model.json").read_text())
+    assert "drift_metric" in data
