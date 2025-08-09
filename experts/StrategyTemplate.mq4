@@ -23,6 +23,8 @@ int SessionStarts[] = {__SESSION_STARTS__};
 int SessionEnds[] = {__SESSION_ENDS__};
 double ModelCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__COEFFICIENTS__};
 double ModelIntercepts[] = {__INTERCEPTS__};
+double GatingCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__GATING_COEFFICIENTS__};
+double GatingIntercepts[] = {__GATING_INTERCEPTS__};
 double CalibrationCoef = __CAL_COEF__;
 double CalibrationIntercept = __CAL_INTERCEPT__;
 double ModelThreshold = __THRESHOLD__;
@@ -144,6 +146,11 @@ bool ParseModelJson(string json)
          ProbabilityLookup[0][i] = prob_tmp[i];
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
+   ExtractJsonArray(json, "\"gating_coefficients\"", tmp);
+   int gtot = MathMin(ArraySize(tmp), ArrayRange(GatingCoefficients,0)*ArrayRange(GatingCoefficients,1));
+   for(int i=0;i<gtot;i++)
+      GatingCoefficients[i/ArrayRange(GatingCoefficients,1)][i%ArrayRange(GatingCoefficients,1)] = tmp[i];
+   ExtractJsonArray(json, "\"gating_intercepts\"", GatingIntercepts);
    ExtractJsonArray(json, "\"mean\"", FeatureMean);
    if(ArraySize(FeatureMean)==0)
       ExtractJsonArray(json, "\"feature_mean\"", FeatureMean);
@@ -493,6 +500,27 @@ int GetSessionIndex()
    return(0);
 }
 
+int SelectExpert()
+{
+   int n = ArraySize(GatingIntercepts);
+   if(n <= 0)
+      return(GetSessionIndex());
+   int best = 0;
+   double best_z = -1e10;
+   for(int m=0; m<n; m++)
+   {
+      double z = GatingIntercepts[m];
+      for(int i=0; i<FeatureCount; i++)
+         z += GatingCoefficients[m][i] * GetFeature(i);
+      if(z > best_z)
+      {
+         best_z = z;
+         best = m;
+      }
+   }
+   return(best);
+}
+
 double ComputeLogisticScoreSession(int m)
 {
    double z = ModelIntercepts[m];
@@ -506,7 +534,7 @@ double ComputeNNScore()
 {
    int hidden = ModelHiddenSize;
    if(hidden <= 0)
-      return(ComputeLogisticScoreSession(GetSessionIndex()));
+      return(ComputeLogisticScoreSession(SelectExpert()));
    int inputCount = ArraySize(NNLayer1Weights) / hidden;
    double z = NNLayer2Bias;
    for(int j=0; j<hidden; j++)
@@ -657,8 +685,8 @@ double ComputeTransformerScore()
 double GetProbability()
 {
    UpdateFeatureHistory();
-   int sess = GetSessionIndex();
-   if(ArrayRange(ProbabilityLookup,0) == ModelCount && ArrayRange(ProbabilityLookup,1) == 24)
+   int sess = SelectExpert();
+   if(ArraySize(GatingIntercepts) == 0 && ArrayRange(ProbabilityLookup,0) == ModelCount && ArrayRange(ProbabilityLookup,1) == 24)
       return(ProbabilityLookup[sess][TimeHour(TimeCurrent())]);
    if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
       return(ComputeTransformerScore());
