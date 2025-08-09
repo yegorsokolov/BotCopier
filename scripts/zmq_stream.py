@@ -8,14 +8,22 @@ subscribe to the stream.
 from __future__ import annotations
 
 import argparse
+import logging
+
 import zmq
+
+from otel_logging import setup_logging
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description="ZeroMQ stream bridge")
     p.add_argument("--pull", default="tcp://*:5555", help="address to bind the PULL socket")
     p.add_argument("--pub", default="tcp://*:5556", help="address to bind the PUB socket")
+    p.add_argument("--log-level", default="INFO", help="logging level")
     args = p.parse_args()
+
+    tracer = setup_logging("zmq_stream", getattr(logging, args.log_level.upper(), logging.INFO))
+    log = logging.getLogger("zmq_stream")
 
     ctx = zmq.Context()
     pull = ctx.socket(zmq.PULL)
@@ -25,8 +33,10 @@ def main() -> int:
 
     try:
         while True:
-            msg = pull.recv()
-            pub.send(msg)
+            with tracer.start_as_current_span("bridge_message"):
+                msg = pull.recv()
+                pub.send(msg)
+                log.info("forwarded %d bytes", len(msg))
     except KeyboardInterrupt:
         pass
     finally:
