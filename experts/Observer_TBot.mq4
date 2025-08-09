@@ -864,7 +864,7 @@ void WriteMetrics(datetime ts)
       h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
       if(h==INVALID_HANDLE)
          return;
-      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds");
+      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;trace_id;span_id");
       if(_wr <= 0)
          FileWriteErrors++;
    }
@@ -935,7 +935,8 @@ void WriteMetrics(datetime ts)
       double sortino = stddev_neg>0 ? (sum_profit/trades)/stddev_neg : 0.0;
       double expectancy = (avg_profit * win_rate) - (avg_loss * (1.0 - win_rate));
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, FlightErrors, CachedBookRefreshSeconds);
+      string span_id = GenId(8);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, FlightErrors, CachedBookRefreshSeconds, TraceId, span_id);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -950,6 +951,7 @@ void WriteMetrics(datetime ts)
          trades, max_dd, sharpe, FileWriteErrors, FlightErrors, CachedBookRefreshSeconds, payload);
        if(len>0)
          SendMetrics(payload);
+      SendOtelSpan(TraceId, span_id, "metrics");
    }
 
    if(h!=INVALID_HANDLE)

@@ -76,6 +76,32 @@ A small web dashboard can display trades, metrics and training progress in real 
    ```
 5. Open <http://localhost:8000> in a browser and supply the token when prompted to view live updates.
 
+## Tracing and Logging
+
+The observer, stream listener and training scripts emit OpenTelemetry traces and JSON logs. Configure exports via environment variables:
+
+- `OTEL_SERVICE_NAME` – service name reported to the collector.
+- `OTEL_EXPORTER_OTLP_ENDPOINT` – OTLP HTTP endpoint (e.g. `http://localhost:4318/v1`).
+- `OTEL_EXPORTER_JAEGER_AGENT_HOST` and `OTEL_EXPORTER_JAEGER_AGENT_PORT` – send traces to a Jaeger agent.
+
+Collect logs locally with:
+
+```bash
+python scripts/log_collector.py
+```
+
+Sample Jaeger deployment:
+
+```bash
+docker run --rm -it \
+  -e COLLECTOR_ZIPKIN_HOST_PORT=:9411 \
+  -p 6831:6831/udp -p 6832:6832/udp \
+  -p 5778:5778 -p 16686:16686 \
+  -p 14268:14268 -p 14250:14250 \
+  -p 9411:9411 jaegertracing/all-in-one:1.47
+```
+
+
 
 
 ### DVC Pipeline

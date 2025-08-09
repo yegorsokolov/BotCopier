@@ -14,11 +14,15 @@ import pandas as pd
 import os
 import pyarrow.flight as flight
 from opentelemetry import trace
+from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 try:  # Optional Jaeger exporter
     from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     JaegerExporter = None
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -65,6 +69,32 @@ elif os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST") and JaegerExporter:
     )
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
+
+logger_provider = LoggerProvider(resource=resource)
+if endpoint:
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+set_logger_provider(logger_provider)
+handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log = {"level": record.levelname}
+        if isinstance(record.msg, dict):
+            log.update(record.msg)
+        else:
+            log["message"] = record.getMessage()
+        if hasattr(record, "trace_id"):
+            log["trace_id"] = format_trace_id(record.trace_id)
+        if hasattr(record, "span_id"):
+            log["span_id"] = format_span_id(record.span_id)
+        return json.dumps(log)
+
+
+logger = logging.getLogger(__name__)
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 
 # -------------------------------
@@ -533,54 +563,51 @@ def train(
 
 
 def main() -> None:
-    span = tracer.start_span("train_rl_agent")
-    ctx = span.get_span_context()
-    print(
-        f"trace_id={format_trace_id(ctx.trace_id)} span_id={format_span_id(ctx.span_id)}"
-    )
-    p = argparse.ArgumentParser(description="Train RL agent from logs")
-    p.add_argument("--data-dir", required=True)
-    p.add_argument("--out-dir", required=True)
-    p.add_argument("--flight-uri", help="Arrow Flight server URI")
-    p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
-    p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
-    p.add_argument("--training-steps", type=int, default=100, help="total training steps")
-    p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
-    p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
-    p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
-    p.add_argument(
-        "--algo",
-        default="dqn",
-        help=(
-            "RL algorithm: dqn (default) or ppo if stable-baselines3 is installed."
-            " Pass qlearn for a simple numpy implementation or cql for offline"
-            " conservative Q-learning."
-        ),
-    )
-    p.add_argument("--start-model", help="path to initial model coefficients")
-    p.add_argument("--compress-model", action="store_true", help="write model.json.gz")
-    p.add_argument(
-        "--self-play",
-        action="store_true",
-        help="alternate training on real logs and simulated data",
-    )
-    args = p.parse_args()
-    train(
-        Path(args.data_dir),
-        Path(args.out_dir),
-        learning_rate=args.learning_rate,
-        epsilon=args.epsilon,
-        training_steps=args.training_steps,
-        batch_size=args.batch_size,
-        buffer_size=args.buffer_size,
-        update_freq=args.update_freq,
-        algo=args.algo,
-        start_model=Path(args.start_model) if args.start_model else None,
-        compress_model=args.compress_model,
-        self_play=args.self_play,
-        flight_uri=args.flight_uri,
-    )
-    span.end()
+    with tracer.start_as_current_span("train_rl_agent"):
+        logger.info("start training")
+        p = argparse.ArgumentParser(description="Train RL agent from logs")
+        p.add_argument("--data-dir", required=True)
+        p.add_argument("--out-dir", required=True)
+        p.add_argument("--flight-uri", help="Arrow Flight server URI")
+        p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
+        p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
+        p.add_argument("--training-steps", type=int, default=100, help="total training steps")
+        p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
+        p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
+        p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
+        p.add_argument(
+            "--algo",
+            default="dqn",
+            help=(
+                "RL algorithm: dqn (default) or ppo if stable-baselines3 is installed."
+                " Pass qlearn for a simple numpy implementation or cql for offline"
+                " conservative Q-learning."
+            ),
+        )
+        p.add_argument("--start-model", help="path to initial model coefficients")
+        p.add_argument("--compress-model", action="store_true", help="write model.json.gz")
+        p.add_argument(
+            "--self-play",
+            action="store_true",
+            help="alternate training on real logs and simulated data",
+        )
+        args = p.parse_args()
+        train(
+            Path(args.data_dir),
+            Path(args.out_dir),
+            learning_rate=args.learning_rate,
+            epsilon=args.epsilon,
+            training_steps=args.training_steps,
+            batch_size=args.batch_size,
+            buffer_size=args.buffer_size,
+            update_freq=args.update_freq,
+            algo=args.algo,
+            start_model=Path(args.start_model) if args.start_model else None,
+            compress_model=args.compress_model,
+            self_play=args.self_play,
+            flight_uri=args.flight_uri,
+        )
+        logger.info("training complete")
 
 
 if __name__ == "__main__":
