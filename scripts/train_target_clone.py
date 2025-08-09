@@ -28,6 +28,8 @@ import pandas as pd
 
 import numpy as np
 import psutil
+import pyarrow as pa
+import pyarrow.flight as flight
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
@@ -394,6 +396,7 @@ def _load_logs(
     *,
     lite_mode: bool = False,
     chunk_size: int = 50000,
+    flight_uri: str | None = None,
 ) -> tuple[pd.DataFrame | Iterable[pd.DataFrame], list[str], list[str]]:
     """Load log rows from ``data_dir``.
 
@@ -410,6 +413,21 @@ def _load_logs(
         Parsed rows as a DataFrame along with commit hashes and checksums
         collected from accompanying manifest files.
     """
+
+    if flight_uri:
+        client = flight.FlightClient(flight_uri)
+        desc = flight.FlightDescriptor.for_path("trades")
+        info = client.get_flight_info(desc)
+        reader = client.do_get(info.endpoints[0].ticket)
+        if lite_mode:
+            def _iter_batches():
+                for batch in reader:
+                    yield pa.Table.from_batches([batch]).to_pandas()
+            return _iter_batches(), [], []
+        table = reader.read_all()
+        df = table.to_pandas()
+        df.columns = [c.lower() for c in df.columns]
+        return df, [], []
 
     if data_dir.suffix == ".db":
         df = _load_logs_db(data_dir)
@@ -975,7 +993,7 @@ def _train_lite_mode(
 
     ae_info = None
     rows_iter, data_commits, data_checksums = _load_logs(
-        data_dir, lite_mode=True, chunk_size=chunk_size
+        data_dir, lite_mode=True, chunk_size=chunk_size, flight_uri=flight_uri
     )
     last_event_id = 0
     encoder = None
@@ -1146,6 +1164,7 @@ def train(
     compress_model: bool = False,
     regime_model_file: Path | None = None,
     moe: bool = False,
+    flight_uri: str | None = None,
 ):
     """Train a simple classifier model from the log directory."""
     if lite_mode:
@@ -1221,7 +1240,7 @@ def train(
     if features is None:
         if lite_mode:
             rows_iter, data_commits, data_checksums = _load_logs(
-                data_dir, lite_mode=True
+                data_dir, lite_mode=True, flight_uri=flight_uri
             )
             encoder = None
             if encoder_file is not None and encoder_file.exists():
@@ -1274,7 +1293,7 @@ def train(
                 np.concatenate(hours_list) if hours_list else np.array([], dtype=int)
             )
         else:
-            rows_df, data_commits, data_checksums = _load_logs(data_dir)
+            rows_df, data_commits, data_checksums = _load_logs(data_dir, flight_uri=flight_uri)
             if "event_id" in rows_df.columns:
                 max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
                 if not pd.isna(max_id):
@@ -1318,7 +1337,7 @@ def train(
             with open(encoder_file) as f:
                 encoder = json.load(f)
         if loaded_from_cache:
-            rows_df, _, _ = _load_logs(data_dir)
+            rows_df, _, _ = _load_logs(data_dir, flight_uri=flight_uri)
             if "event_id" in rows_df.columns:
                 max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
                 if not pd.isna(max_id):
@@ -2419,6 +2438,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--data-dir', required=True)
     p.add_argument('--out-dir', required=True)
+    p.add_argument('--flight-uri', help='Arrow Flight server URI')
     p.add_argument('--use-sma', action='store_true', help='include moving average feature')
     p.add_argument('--sma-window', type=int, default=5)
     p.add_argument('--use-rsi', action='store_true', help='include RSI feature')
@@ -2532,6 +2552,7 @@ def main():
         compress_model=args.compress_model,
         regime_model_file=Path(args.regime_model) if args.regime_model else None,
         moe=args.moe,
+        flight_uri=args.flight_uri,
     )
     span.end()
 

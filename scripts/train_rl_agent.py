@@ -12,6 +12,7 @@ import logging
 import pandas as pd
 
 import os
+import pyarrow.flight as flight
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 try:  # Optional Jaeger exporter
@@ -70,8 +71,8 @@ tracer = trace.get_tracer(__name__)
 # Data loading utilities
 # -------------------------------
 
-def _load_logs(data_dir: Path) -> pd.DataFrame:
-    """Load raw log rows from ``data_dir``."""
+def _load_logs(data_dir: Path, flight_uri: str | None = None) -> pd.DataFrame:
+    """Load raw log rows from ``data_dir`` or Arrow Flight."""
 
     fields = [
         "event_id",
@@ -93,21 +94,29 @@ def _load_logs(data_dir: Path) -> pd.DataFrame:
         "remaining_lots",
     ]
 
-    dfs: List[pd.DataFrame] = []
-    for log_file in sorted(data_dir.glob("trades*.csv")):
-        df = pd.read_csv(
-            log_file,
-            sep=";",
-            names=fields,
-            header=0,
-            parse_dates=["event_time"],
-        )
-        dfs.append(df)
-
-    if dfs:
-        df_logs = pd.concat(dfs, ignore_index=True)
+    if flight_uri:
+        client = flight.FlightClient(flight_uri)
+        desc = flight.FlightDescriptor.for_path("trades")
+        info = client.get_flight_info(desc)
+        reader = client.do_get(info.endpoints[0].ticket)
+        table = reader.read_all()
+        df_logs = table.to_pandas()
     else:
-        df_logs = pd.DataFrame(columns=fields)
+        dfs: List[pd.DataFrame] = []
+        for log_file in sorted(data_dir.glob("trades*.csv")):
+            df = pd.read_csv(
+                log_file,
+                sep=";",
+                names=fields,
+                header=0,
+                parse_dates=["event_time"],
+            )
+            dfs.append(df)
+
+        if dfs:
+            df_logs = pd.concat(dfs, ignore_index=True)
+        else:
+            df_logs = pd.DataFrame(columns=fields)
 
     df_logs.columns = [c.lower() for c in df_logs.columns]
 
@@ -209,6 +218,7 @@ def _extract_feature(row: Dict) -> Dict:
 
 def _build_dataset(
     data_dir: Path,
+    flight_uri: str | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, DictVectorizer]:
     """Return (states, actions, rewards, next_states, vectorizer).
 
@@ -217,7 +227,7 @@ def _build_dataset(
     tuple and the next state is simply the next trade's state.
     """
 
-    rows_df = _load_logs(data_dir)
+    rows_df = _load_logs(data_dir, flight_uri)
     trades = _pair_trades(rows_df.to_dict("records"))
     if not trades:
         raise ValueError(f"No training data found in {data_dir}")
@@ -261,9 +271,10 @@ def train(
     start_model: Path | None = None,
     compress_model: bool = False,
     self_play: bool = False,
+    flight_uri: str | None = None,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
-    states, actions, rewards, next_states, vec = _build_dataset(data_dir)
+    states, actions, rewards, next_states, vec = _build_dataset(data_dir, flight_uri)
     n_features = states.shape[1]
 
     init_model_data = None
@@ -530,6 +541,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Train RL agent from logs")
     p.add_argument("--data-dir", required=True)
     p.add_argument("--out-dir", required=True)
+    p.add_argument("--flight-uri", help="Arrow Flight server URI")
     p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
     p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
     p.add_argument("--training-steps", type=int, default=100, help="total training steps")
@@ -566,6 +578,7 @@ def main() -> None:
         start_model=Path(args.start_model) if args.start_model else None,
         compress_model=args.compress_model,
         self_play=args.self_play,
+        flight_uri=args.flight_uri,
     )
     span.end()
 
