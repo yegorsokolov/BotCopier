@@ -39,6 +39,8 @@ from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
+import requests
+
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -168,6 +170,48 @@ def detect_resources():
         "model_type": model_type,
         "optuna_trials": optuna_trials,
     }
+
+
+def sync_with_server(
+    model_path: Path,
+    server_url: str,
+    poll_interval: float = 1.0,
+    timeout: float = 30.0,
+) -> None:
+    """Send local model weights to a federated server and update with averaged weights."""
+    open_func = gzip.open if model_path.suffix == ".gz" else open
+    try:
+        with open_func(model_path, "rt") as f:
+            model = json.load(f)
+    except FileNotFoundError:
+        return
+    weights = model.get("coefficients")
+    intercept = model.get("intercept")
+    if weights is None:
+        return
+    payload = {"weights": weights}
+    if intercept is not None:
+        payload["intercept"] = intercept
+    try:
+        requests.post(f"{server_url}/update", json=payload, timeout=5)
+    except Exception:
+        return
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            resp = requests.get(f"{server_url}/weights", timeout=5)
+            data = resp.json()
+        except Exception:
+            time.sleep(poll_interval)
+            continue
+        if data.get("weights"):
+            model["coefficients"] = data["weights"]
+            if data.get("intercept") is not None:
+                model["intercept"] = data["intercept"]
+            with open_func(model_path, "wt") as f:
+                json.dump(model, f)
+            break
+        time.sleep(poll_interval)
 
 
 def _export_onnx(clf, feature_names: List[str], out_dir: Path) -> None:
@@ -2511,6 +2555,7 @@ def main():
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
     p.add_argument('--regime-model', help='JSON file with precomputed regime centers')
     p.add_argument('--moe', action='store_true', help='train mixture-of-experts model per symbol')
+    p.add_argument('--federated-server', help='URL of federated averaging server')
     args = p.parse_args()
     global START_EVENT_ID
     if args.resume:
@@ -2582,6 +2627,11 @@ def main():
         moe=args.moe,
         flight_uri=args.flight_uri,
     )
+    if args.federated_server:
+        model_path = Path(args.out_dir) / (
+            "model.json.gz" if args.compress_model else "model.json"
+        )
+        sync_with_server(model_path, args.federated_server)
     logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
     span.end()
 
