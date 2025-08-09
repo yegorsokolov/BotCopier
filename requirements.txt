@@ -14,6 +14,9 @@ pyzmq
 pycapnp
 onnxruntime
 skl2onnx
+fastapi
+uvicorn
+websocket-client
 
 # Optional extras
 xgboost; extra == "xgboost"

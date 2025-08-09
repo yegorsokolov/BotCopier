@@ -13,6 +13,11 @@ import sys
 
 import capnp
 import zmq
+try:  # optional websocket client
+    from websocket import create_connection, WebSocket  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    create_connection = None
+    WebSocket = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -56,6 +61,10 @@ elif os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST") and JaegerExporter:
     )
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
+
+# optional dashboard websocket connections
+ws_trades: WebSocket | None = None
+ws_metrics: WebSocket | None = None
 
 
 def append_csv(path: Path, record: dict) -> None:
@@ -121,6 +130,11 @@ def process_trade(msg) -> None:
         record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
         record.setdefault("span_id", span_id or format_span_id(ctx.span_id))
         append_csv(LOG_FILES[TRADE_MSG], record)
+        if ws_trades:
+            try:
+                ws_trades.send(json.dumps(record))
+            except Exception:
+                pass
 
 
 def process_metric(msg) -> None:
@@ -141,6 +155,11 @@ def process_metric(msg) -> None:
         record.setdefault("trace_id", format_trace_id(ctx.trace_id))
         record["span_id"] = format_span_id(ctx.span_id)
         append_csv(LOG_FILES[METRIC_MSG], record)
+        if ws_metrics:
+            try:
+                ws_metrics.send(json.dumps(record))
+            except Exception:
+                pass
 
 
 def main() -> int:
@@ -150,6 +169,8 @@ def main() -> int:
         default="tcp://127.0.0.1:5556",
         help="ZeroMQ PUB endpoint to connect to",
     )
+    p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
+    p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
     args = p.parse_args()
 
     ctx = zmq.Context()
@@ -158,6 +179,15 @@ def main() -> int:
     sub.setsockopt(zmq.SUBSCRIBE, b"")
     import time
     time.sleep(0.2)
+
+    if args.ws_url and create_connection:
+        global ws_trades, ws_metrics
+        try:
+            ws_trades = create_connection(f"{args.ws_url}/ws/trades?token={args.api_token}")
+            ws_metrics = create_connection(f"{args.ws_url}/ws/metrics?token={args.api_token}")
+        except Exception:
+            ws_trades = None
+            ws_metrics = None
 
     write_run_info()
     for p in LOG_FILES.values():
@@ -183,6 +213,16 @@ def main() -> int:
     finally:
         sub.close()
         ctx.term()
+        if ws_trades:
+            try:
+                ws_trades.close()
+            except Exception:
+                pass
+        if ws_metrics:
+            try:
+                ws_metrics.close()
+            except Exception:
+                pass
     return 0
 
 
