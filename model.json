@@ -10,5 +10,11 @@
       "1": {"algorithm": "PPO", "parameters": {}}
     }
   },
-  "drift_metric": 0.0
+  "drift_metric": 0.0,
+  "lot_coefficients": [0.0],
+  "lot_intercept": 0.0,
+  "sl_coefficients": [0.0],
+  "sl_intercept": 0.0,
+  "tp_coefficients": [0.0],
+  "tp_intercept": 0.0
 }
