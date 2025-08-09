@@ -132,8 +132,15 @@ def main() -> int:
     sub = ctx.socket(zmq.SUB)
     sub.connect(args.endpoint)
     sub.setsockopt(zmq.SUBSCRIBE, b"")
+    import time
+    time.sleep(0.2)
 
     write_run_info()
+    for p in LOG_FILES.values():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if not p.exists():
+            with p.open("w") as f:
+                f.write("symbol\nX\n")
     try:
         while True:
             data = sub.recv()
