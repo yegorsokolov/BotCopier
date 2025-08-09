@@ -55,6 +55,9 @@ const int LogSchemaVersion = 3;
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
 
+uchar    pending_trades[][];
+uchar    pending_metrics[][];
+
 string GenId(int bytes)
 {
    string s = "";
@@ -141,6 +144,72 @@ void UpdateCpuLoad(uint elapsed_ms)
    else if(CpuLoad > 0.75)
       interval = (int)(BookRefreshSeconds * 2.0);
    CachedBookRefreshSeconds = interval;
+}
+
+void SavePending()
+{
+   string tfile = LogDirectoryName + "\\pending_trades.dat";
+   int th = FileOpen(tfile, FILE_BIN|FILE_WRITE|FILE_SHARE_WRITE);
+   if(th!=INVALID_HANDLE)
+   {
+      for(int i=0; i<ArraySize(pending_trades); i++)
+      {
+         int len = ArraySize(pending_trades[i]);
+         FileWriteInteger(th, len, LONG_VALUE);
+         FileWriteArray(th, pending_trades[i], 0, len);
+      }
+      FileClose(th);
+   }
+   string mfile = LogDirectoryName + "\\pending_metrics.dat";
+   int mh = FileOpen(mfile, FILE_BIN|FILE_WRITE|FILE_SHARE_WRITE);
+   if(mh!=INVALID_HANDLE)
+   {
+      for(int j=0; j<ArraySize(pending_metrics); j++)
+      {
+         int mlen = ArraySize(pending_metrics[j]);
+         FileWriteInteger(mh, mlen, LONG_VALUE);
+         FileWriteArray(mh, pending_metrics[j], 0, mlen);
+      }
+      FileClose(mh);
+   }
+}
+
+void LoadPending()
+{
+   string tfile = LogDirectoryName + "\\pending_trades.dat";
+   int th = FileOpen(tfile, FILE_BIN|FILE_READ|FILE_SHARE_READ);
+   if(th!=INVALID_HANDLE)
+   {
+      while(!FileIsEnding(th))
+      {
+         int len = (int)FileReadInteger(th, LONG_VALUE);
+         if(len<=0)
+            break;
+         int idx = ArraySize(pending_trades);
+         ArrayResize(pending_trades, idx+1);
+         ArrayResize(pending_trades[idx], len);
+         FileReadArray(th, pending_trades[idx], 0, len);
+      }
+      FileClose(th);
+      FileDelete(tfile);
+   }
+   string mfile = LogDirectoryName + "\\pending_metrics.dat";
+   int mh = FileOpen(mfile, FILE_BIN|FILE_READ|FILE_SHARE_READ);
+   if(mh!=INVALID_HANDLE)
+   {
+      while(!FileIsEnding(mh))
+      {
+         int mlen = (int)FileReadInteger(mh, LONG_VALUE);
+         if(mlen<=0)
+            break;
+         int midx = ArraySize(pending_metrics);
+         ArrayResize(pending_metrics, midx+1);
+         ArrayResize(pending_metrics[midx], mlen);
+         FileReadArray(mh, pending_metrics[midx], 0, mlen);
+      }
+      FileClose(mh);
+      FileDelete(mfile);
+   }
 }
 
 bool CheckAnomaly(double price, double sl, double tp, double lots, double spread, double slippage)
@@ -254,6 +323,7 @@ int OnInit()
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
    DirectoryCreate(LogDirectoryName);
+   LoadPending();
    string symbols_json = "[";
    for(int k=0; k<ArraySize(track_symbols); k++)
    {
@@ -352,6 +422,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    FlushTradeBuffer();
+   SavePending();
    if(trade_log_handle!=INVALID_HANDLE)
    {
       FileClose(trade_log_handle);
@@ -575,6 +646,45 @@ void OnTick()
 void OnTimer()
 {
    FlushTradeBuffer();
+   if(FlightClient!=INVALID_HANDLE)
+   {
+      while(ArraySize(pending_trades) > 0)
+      {
+         int len = ArraySize(pending_trades[0]);
+         if(FlightSendTrade(FlightClient, pending_trades[0], len))
+         {
+            for(int i=0; i<ArraySize(pending_trades)-1; i++)
+            {
+               ArrayResize(pending_trades[i], ArraySize(pending_trades[i+1]));
+               ArrayCopy(pending_trades[i], pending_trades[i+1]);
+            }
+            ArrayResize(pending_trades, ArraySize(pending_trades)-1);
+         }
+         else
+         {
+            FlightErrors++;
+            break;
+         }
+      }
+      while(ArraySize(pending_metrics) > 0)
+      {
+         int mlen = ArraySize(pending_metrics[0]);
+         if(FlightSendMetrics(FlightClient, pending_metrics[0], mlen))
+         {
+            for(int j=0; j<ArraySize(pending_metrics)-1; j++)
+            {
+               ArrayResize(pending_metrics[j], ArraySize(pending_metrics[j+1]));
+               ArrayCopy(pending_metrics[j], pending_metrics[j+1]);
+            }
+            ArrayResize(pending_metrics, ArraySize(pending_metrics)-1);
+         }
+         else
+         {
+            FlightErrors++;
+            break;
+         }
+      }
+   }
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
 
    if(now - last_export < LearningExportIntervalMinutes*60)
@@ -597,20 +707,18 @@ string EscapeJson(string s)
 
 void SendTrade(uchar &payload[])
 {
-   if(FlightClient==INVALID_HANDLE)
-      return;
-   int len = ArraySize(payload);
-   if(!FlightSendTrade(FlightClient, payload, len))
-      FlightErrors++;
+   int n = ArraySize(pending_trades);
+   ArrayResize(pending_trades, n+1);
+   ArrayResize(pending_trades[n], ArraySize(payload));
+   ArrayCopy(pending_trades[n], payload);
 }
 
 void SendMetrics(uchar &payload[])
 {
-   if(FlightClient==INVALID_HANDLE)
-      return;
-   int len = ArraySize(payload);
-   if(!FlightSendMetrics(FlightClient, payload, len))
-      FlightErrors++;
+   int n = ArraySize(pending_metrics);
+   ArrayResize(pending_metrics, n+1);
+   ArrayResize(pending_metrics[n], ArraySize(payload));
+   ArrayCopy(pending_metrics[n], payload);
 }
 
 string FileNameFromPath(string path)
