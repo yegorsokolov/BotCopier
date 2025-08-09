@@ -29,7 +29,7 @@ import psutil
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
-from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
@@ -303,6 +303,12 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
             df_logs[col] = 0.0
         else:
             df_logs[col] = pd.to_numeric(df_logs[col], errors="coerce").fillna(0.0)
+    if "is_anomaly" not in df_logs.columns:
+        df_logs["is_anomaly"] = 0
+    else:
+        df_logs["is_anomaly"] = (
+            pd.to_numeric(df_logs["is_anomaly"], errors="coerce").fillna(0).astype(int)
+        )
 
     valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     if "action" in df_logs.columns:
@@ -408,6 +414,7 @@ def _load_logs(
         "book_bid_vol",
         "book_ask_vol",
         "book_imbalance",
+        "is_anomaly",
     ]
 
     data_commits: list[str] = []
@@ -464,6 +471,7 @@ def _load_logs(
                     chunk["trade_duration"] = 0.0
                 for col in ["book_bid_vol", "book_ask_vol", "book_imbalance"]:
                     chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
+                chunk["is_anomaly"] = pd.to_numeric(chunk.get("is_anomaly", 0), errors="coerce").fillna(0)
                 valid_actions = {"OPEN", "CLOSE", "MODIFY"}
                 chunk["action"] = chunk["action"].fillna("").str.upper()
                 chunk = chunk[(chunk["action"] == "") | chunk["action"].isin(valid_actions)]
@@ -661,6 +669,8 @@ def _extract_features(
 
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
+            continue
+        if str(r.get("is_anomaly", "0")).lower() in ("1", "true", "yes"):
             continue
 
         t = r["event_time"]
@@ -933,6 +943,7 @@ def _train_lite_mode(
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
+    ae_info = None
     rows_iter, data_commits, data_checksums = _load_logs(
         data_dir, lite_mode=True, chunk_size=chunk_size
     )
@@ -1037,6 +1048,8 @@ def _train_lite_mode(
         "classes": [int(c) for c in clf.classes_],
         "last_event_id": int(last_event_id),
     }
+    if ae_info:
+        model["autoencoder"] = ae_info
     if regime_model is not None and reg_centers is not None:
         model["regime_centers"] = reg_centers.astype(float).tolist()
         model["regime_feature_names"] = regime_model.get("feature_names", [])
@@ -1301,6 +1314,38 @@ def train(
             regimes = dists.argmin(axis=1)
             for i, r in enumerate(regimes):
                 features[i][f"regime_{int(r)}"] = 1.0
+    ae_info = None
+    ae_feature_order = ["price", "sl", "tp", "lots", "spread", "slippage"]
+    ae_matrix = np.array(
+        [[float(f.get(k, 0.0)) for k in ae_feature_order] for f in features],
+        dtype=float,
+    )
+    ae_hidden = 4
+    if ae_matrix.shape[0] >= 10:
+        ae_mean = ae_matrix.mean(axis=0)
+        ae_std = ae_matrix.std(axis=0)
+        ae_std[ae_std == 0] = 1.0
+        ae_scaled = (ae_matrix - ae_mean) / ae_std
+        ae_model = MLPRegressor(hidden_layer_sizes=(ae_hidden,), max_iter=200, random_state=42)
+        ae_model.fit(ae_scaled, ae_scaled)
+        recon = ae_model.predict(ae_scaled)
+        ae_errors = np.mean((ae_scaled - recon) ** 2, axis=1)
+        ae_threshold = float(np.percentile(ae_errors, 95))
+        mask = ae_errors <= ae_threshold
+        if mask.sum() > 0:
+            features = [features[i] for i, m in enumerate(mask) if m]
+            labels = labels[mask]
+            sl_targets = sl_targets[mask]
+            tp_targets = tp_targets[mask]
+            hours = hours[mask]
+        ae_info = {
+            "weights": [w.astype(np.float32).tolist() for w in ae_model.coefs_],
+            "bias": [b.astype(np.float32).tolist() for b in ae_model.intercepts_],
+            "mean": ae_mean.astype(np.float32).tolist(),
+            "std": ae_std.astype(np.float32).tolist(),
+            "threshold": ae_threshold,
+            "feature_order": ae_feature_order,
+        }
     hidden_size = 8
     logreg_C = 1.0
     best_trial = None
@@ -1568,6 +1613,8 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
         }
+        if ae_info:
+            model["autoencoder"] = ae_info
         if data_commits:
             model["data_commit"] = ",".join(sorted(set(data_commits)))
         if data_checksums:
@@ -2120,6 +2167,8 @@ def train(
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
     }
+    if ae_info:
+        model["autoencoder"] = ae_info
     if regime_info is not None and reg_centers is not None:
         model["regime_centers"] = reg_centers.astype(float).tolist()
         model["regime_feature_names"] = regime_info.get("feature_names", [])
