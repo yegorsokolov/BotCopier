@@ -27,6 +27,14 @@ except Exception:  # pragma: no cover - optional dependency
 import numpy as np
 from sklearn.feature_extraction import DictVectorizer
 
+try:  # pragma: no cover - optional dependency
+    from self_play_env import SelfPlayEnv  # type: ignore
+except Exception:  # pragma: no cover - fallback when executed from repo root
+    try:
+        from scripts.self_play_env import SelfPlayEnv  # type: ignore
+    except Exception:  # pragma: no cover - simulation optional
+        SelfPlayEnv = None  # type: ignore
+
 
 # -------------------------------
 # Data loading utilities
@@ -222,6 +230,7 @@ def train(
     algo: str = "dqn",
     start_model: Path | None = None,
     compress_model: bool = False,
+    self_play: bool = False,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     states, actions, rewards, next_states, vec = _build_dataset(data_dir)
@@ -237,6 +246,9 @@ def train(
 
     algo_key = algo.lower()
 
+    if self_play and algo_key not in {"ppo", "dqn"}:
+        raise ValueError("--self-play requires ppo or dqn algorithm")
+
     # precompute experience tuples for offline algorithms
     experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = [
         (states[i], int(actions[i]), float(rewards[i]), next_states[i])
@@ -246,6 +258,8 @@ def train(
     if algo_key in {"ppo", "dqn"}:
         if not HAS_SB3:
             raise ImportError("stable_baselines3 is not installed")
+        if self_play and SelfPlayEnv is None:
+            raise ImportError("SelfPlayEnv is required for self-play")
 
         class TradeEnv(Env):
             def __init__(self, observations, rewards):
@@ -280,8 +294,17 @@ def train(
         algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
         model_cls = algo_map[algo_key]
         model = model_cls("MlpPolicy", env, verbose=0)
-        model.learn(total_timesteps=training_steps)
+        if self_play:
+            sim_env = SelfPlayEnv()
+            half = max(1, training_steps // 2)
+            model.learn(total_timesteps=half)
+            model.set_env(sim_env)
+            model.learn(total_timesteps=training_steps - half)
+        else:
+            model.learn(total_timesteps=training_steps)
 
+        if self_play:
+            model.set_env(env)
         preds: List[int] = []
         total_r = 0.0
         obs, _ = env.reset()
@@ -293,6 +316,20 @@ def train(
             if done:
                 break
         train_acc = float(np.mean(np.array(preds) == np.array(actions)))
+        sim_metrics = None
+        if self_play:
+            sim_obs, _ = sim_env.reset()
+            sim_total = 0.0
+            for _ in range(sim_env.steps):
+                sim_act, _ = model.predict(sim_obs, deterministic=True)
+                sim_obs, r, done, _, _ = sim_env.step(int(sim_act))
+                sim_total += float(r)
+                if done:
+                    break
+            sim_metrics = {
+                "total_reward": float(sim_total),
+                "avg_reward": float(sim_total / sim_env.steps),
+            }
         out_dir.mkdir(parents=True, exist_ok=True)
         weights_path = out_dir / "model_weights"
         model.save(str(weights_path))
@@ -311,12 +348,22 @@ def train(
             "num_samples": len(actions),
             "weights_file": weights_path.with_suffix(".zip").name,
         }
-        if init_model_data is not None:
+        if self_play:
+            model_info["training_type"] = "self_play"
+        elif init_model_data is not None:
             model_info["training_type"] = "supervised+rl"
             model_info["init_model"] = start_model.name if start_model else None
             model_info["init_model_id"] = init_model_data.get("model_id")
         else:
             model_info["training_type"] = "rl_only"
+        if self_play:
+            model_info["self_play_params"] = {
+                "steps": sim_env.steps,
+                "drift": sim_env.drift,
+                "volatility": sim_env.volatility,
+                "spread": sim_env.spread,
+            }
+            model_info["self_play_metrics"] = sim_metrics
 
         model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
         open_func = gzip.open if compress_model else open
@@ -465,6 +512,11 @@ def main() -> None:
     )
     p.add_argument("--start-model", help="path to initial model coefficients")
     p.add_argument("--compress-model", action="store_true", help="write model.json.gz")
+    p.add_argument(
+        "--self-play",
+        action="store_true",
+        help="alternate training on real logs and simulated data",
+    )
     args = p.parse_args()
     train(
         Path(args.data_dir),
@@ -478,6 +530,7 @@ def main() -> None:
         algo=args.algo,
         start_model=Path(args.start_model) if args.start_model else None,
         compress_model=args.compress_model,
+        self_play=args.self_play,
     )
 
 
