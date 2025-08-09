@@ -1,22 +1,18 @@
 #!/usr/bin/env python3
-"""Listen for protobuf messages from the observer EA and append them to CSV logs.
-
-Messages are expected to be length-prefixed ``ObserverMessage`` protobufs. Each
-envelope carries a ``schema_version`` and either a ``TradeEvent`` or ``Metrics``
-payload. Records are written directly to the appropriate CSV file under
-``logs/``. Set the ``SCHEMA_VERSION`` environment variable to override the
-default version.
-"""
+"""Listen for observer events over ZeroMQ and append them to CSV logs."""
 from __future__ import annotations
 
 import argparse
 import csv
 import json
 import os
-import sys
 import platform
 import pkgutil
 from pathlib import Path
+import sys
+
+import capnp
+import zmq
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -27,22 +23,19 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
 
-from google.protobuf.json_format import MessageToDict
+trade_capnp = capnp.load(str(Path(__file__).resolve().parents[1] / "proto" / "trade.capnp"))
+metrics_capnp = capnp.load(str(Path(__file__).resolve().parents[1] / "proto" / "metrics.capnp"))
 
-from proto import observer_pb2
+TRADE_MSG = 0
+METRIC_MSG = 1
 
-# Expected schema version for incoming messages. Can be overridden via env var.
-EXPECTED_SCHEMA_VERSION = os.environ.get("SCHEMA_VERSION", "1.0")
-
-# Mapping from message type to output CSV file.
 LOG_FILES = {
-    "event": Path("logs/trades_raw.csv"),
-    "metric": Path("logs/metrics.csv"),
+    TRADE_MSG: Path("logs/trades_raw.csv"),
+    METRIC_MSG: Path("logs/metrics.csv"),
 }
 
 RUN_INFO_PATH = Path("logs/run_info.json")
 run_info_written = False
-
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "stream_listener")})
 provider = TracerProvider(resource=resource)
@@ -63,83 +56,102 @@ def append_csv(path: Path, record: dict) -> None:
         writer.writerow(record)
 
 
-def process_message(envelope: observer_pb2.ObserverMessage) -> None:
-    """Validate and route a message to the appropriate CSV file."""
-    if envelope.schema_version != EXPECTED_SCHEMA_VERSION:
-        print(
-            f"Unsupported schema_version: {envelope.schema_version}; expected {EXPECTED_SCHEMA_VERSION}",
-            file=sys.stderr,
-        )
-        return
-
-    kind = envelope.WhichOneof("payload")
-    if kind not in LOG_FILES:
-        print(f"Unknown message type: {kind}", file=sys.stderr)
-        return
+def write_run_info() -> None:
     global run_info_written
-    if not run_info_written:
-        info = {
-            "os": platform.platform(),
-            "python_version": platform.python_version(),
-            "libraries": sorted(m.name for m in pkgutil.iter_modules()),
-        }
-        RUN_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with RUN_INFO_PATH.open("w") as f:
-            json.dump(info, f, indent=2)
-        run_info_written = True
-    with tracer.start_as_current_span(f"process_{kind}") as span:
-        if kind == "event":
-            record = MessageToDict(envelope.event, preserving_proto_field_name=True)
-        else:
-            record = MessageToDict(envelope.metric, preserving_proto_field_name=True)
+    if run_info_written:
+        return
+    info = {
+        "os": platform.platform(),
+        "python_version": platform.python_version(),
+        "libraries": sorted(m.name for m in pkgutil.iter_modules()),
+    }
+    RUN_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with RUN_INFO_PATH.open("w") as f:
+        json.dump(info, f, indent=2)
+    run_info_written = True
+
+
+def process_trade(msg) -> None:
+    record = {
+        "event_id": msg.eventId,
+        "event_time": msg.eventTime,
+        "broker_time": msg.brokerTime,
+        "local_time": msg.localTime,
+        "action": msg.action,
+        "ticket": msg.ticket,
+        "magic": msg.magic,
+        "source": msg.source,
+        "symbol": msg.symbol,
+        "order_type": msg.orderType,
+        "lots": msg.lots,
+        "price": msg.price,
+        "sl": msg.sl,
+        "tp": msg.tp,
+        "profit": msg.profit,
+        "comment": msg.comment,
+        "remaining_lots": msg.remainingLots,
+        "decision_id": msg.decisionId,
+    }
+    with tracer.start_as_current_span("process_event") as span:
         ctx = span.get_span_context()
         record.setdefault("trace_id", format_trace_id(ctx.trace_id))
         record["span_id"] = format_span_id(ctx.span_id)
-        append_csv(LOG_FILES[kind], record)
+        append_csv(LOG_FILES[TRADE_MSG], record)
+
+
+def process_metric(msg) -> None:
+    record = {
+        "time": msg.time,
+        "magic": msg.magic,
+        "win_rate": msg.winRate,
+        "avg_profit": msg.avgProfit,
+        "trade_count": msg.tradeCount,
+        "drawdown": msg.drawdown,
+        "sharpe": msg.sharpe,
+        "file_write_errors": msg.fileWriteErrors,
+        "socket_errors": msg.socketErrors,
+        "book_refresh_seconds": msg.bookRefreshSeconds,
+    }
+    with tracer.start_as_current_span("process_metric") as span:
+        ctx = span.get_span_context()
+        record.setdefault("trace_id", format_trace_id(ctx.trace_id))
+        record["span_id"] = format_span_id(ctx.span_id)
+        append_csv(LOG_FILES[METRIC_MSG], record)
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Process observer stream logs")
+    p = argparse.ArgumentParser(description="Listen for observer events over ZeroMQ")
     p.add_argument(
-        "--binary",
-        action="store_true",
-        help="expect length-prefixed protobuf records",
+        "--endpoint",
+        default="tcp://127.0.0.1:5556",
+        help="ZeroMQ PUB endpoint to connect to",
     )
     args = p.parse_args()
 
-    if args.binary:
-        buf = sys.stdin.buffer
+    ctx = zmq.Context()
+    sub = ctx.socket(zmq.SUB)
+    sub.connect(args.endpoint)
+    sub.setsockopt(zmq.SUBSCRIBE, b"")
+
+    write_run_info()
+    try:
         while True:
-            header = buf.read(4)
-            if len(header) < 4:
-                break
-            length = int.from_bytes(header, "little")
-            payload = buf.read(length)
-            if len(payload) < length:
-                break
-            try:
-                envelope = observer_pb2.ObserverMessage.FromString(payload)
-            except Exception as exc:
-                print(f"Invalid protobuf: {exc}", file=sys.stderr)
+            data = sub.recv()
+            if not data:
                 continue
-            process_message(envelope)
-    else:
-        # Treat stdin as a stream of delimited protobuf messages.
-        data = sys.stdin.buffer.read()
-        offset = 0
-        while offset < len(data):
-            if offset + 4 > len(data):
-                break
-            length = int.from_bytes(data[offset : offset + 4], "little")
-            offset += 4
-            payload = data[offset : offset + length]
-            offset += length
-            try:
-                envelope = observer_pb2.ObserverMessage.FromString(payload)
-            except Exception as exc:
-                print(f"Invalid protobuf: {exc}", file=sys.stderr)
-                continue
-            process_message(envelope)
+            kind = data[0]
+            payload = data[1:]
+            if kind == TRADE_MSG:
+                with trade_capnp.TradeEvent.from_bytes(payload) as msg:
+                    process_trade(msg)
+            elif kind == METRIC_MSG:
+                with metrics_capnp.Metrics.from_bytes(payload) as msg:
+                    process_metric(msg)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sub.close()
+        ctx.term()
     return 0
 
 

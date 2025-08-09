@@ -7,9 +7,10 @@ int SerializeTradeEvent(int schema_version, int event_id, string trace_id, strin
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, uchar &out[]);
 #import
 
-#import "grpc_client.dll"
-bool LogTrade(string host, int port, uchar &payload[], int len);
-bool LogMetrics(string host, int port, uchar &payload[], int len);
+#import "zmq_client.dll"
+int ZmqConnect(string address);
+bool ZmqSend(int socket, uchar &payload[], int len);
+void ZmqClose(int socket);
 #import
 
 extern string TargetMagicNumbers = "12345,23456";
@@ -25,8 +26,7 @@ extern string LogDirectoryName              = "observer_logs"; // resume event_i
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
-extern string GrpcHost                      = "127.0.0.1";
-extern int    GrpcPort                      = 50051;
+extern string ZmqPushAddress                = "tcp://127.0.0.1:5555";
 extern string CommitHash                   = "";
 extern string ModelVersion                 = "";
 extern string TraceId                      = "";
@@ -44,7 +44,8 @@ int      log_db_handle    = INVALID_HANDLE;
 string   trade_log_buffer[];
 int      NextEventId = 1;
 int      FileWriteErrors = 0;
-int      GrpcErrors = 0;
+int      ZmqSocket = INVALID_HANDLE;
+int      ZmqErrors = 0;
 const int LogSchemaVersion = 3;
 
 double   CpuLoad = 0.0;
@@ -226,6 +227,7 @@ int OnInit()
    }
 
    CachedBookRefreshSeconds = BookRefreshSeconds;
+   ZmqSocket = ZmqConnect(ZmqPushAddress);
 
    // Prefer SQLite backend, fall back to CSV
    string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
@@ -309,6 +311,11 @@ void OnDeinit(const int reason)
    {
       DatabaseClose(log_db_handle);
       log_db_handle = INVALID_HANDLE;
+   }
+   if(ZmqSocket!=INVALID_HANDLE)
+   {
+      ZmqClose(ZmqSocket);
+      ZmqSocket = INVALID_HANDLE;
    }
 }
 
@@ -538,30 +545,30 @@ string EscapeJson(string s)
    return(s);
 }
 
-bool GrpcAvailable = true;
-
 void SendTrade(uchar &payload[])
 {
-   if(!GrpcAvailable)
+   if(ZmqSocket==INVALID_HANDLE)
       return;
    int len = ArraySize(payload);
-   if(!LogTrade(GrpcHost, GrpcPort, payload, len))
-   {
-      GrpcErrors++;
-      GrpcAvailable = false;
-   }
+   uchar msg[];
+   ArrayResize(msg, len+1);
+   msg[0] = 0;
+   ArrayCopy(msg, payload, 1, 0, len);
+   if(!ZmqSend(ZmqSocket, msg, len+1))
+      ZmqErrors++;
 }
 
 void SendMetrics(uchar &payload[])
 {
-   if(!GrpcAvailable)
+   if(ZmqSocket==INVALID_HANDLE)
       return;
    int len = ArraySize(payload);
-   if(!LogMetrics(GrpcHost, GrpcPort, payload, len))
-   {
-      GrpcErrors++;
-      GrpcAvailable = false;
-   }
+   uchar msg[];
+   ArrayResize(msg, len+1);
+   msg[0] = 1;
+   ArrayCopy(msg, payload, 1, 0, len);
+   if(!ZmqSend(ZmqSocket, msg, len+1))
+      ZmqErrors++;
 }
 
 string FileNameFromPath(string path)
@@ -880,7 +887,7 @@ void WriteMetrics(datetime ts)
       double sortino = stddev_neg>0 ? (sum_profit/trades)/stddev_neg : 0.0;
       double expectancy = (avg_profit * win_rate) - (avg_loss * (1.0 - win_rate));
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, GrpcErrors, CachedBookRefreshSeconds);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, ZmqErrors, CachedBookRefreshSeconds);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -892,7 +899,7 @@ void WriteMetrics(datetime ts)
        int len = SerializeMetrics(
          LogSchemaVersion,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, GrpcErrors, CachedBookRefreshSeconds, payload);
+         trades, max_dd, sharpe, FileWriteErrors, ZmqErrors, CachedBookRefreshSeconds, payload);
        if(len>0)
          SendMetrics(payload);
    }
