@@ -798,19 +798,11 @@ void OnTick()
       return;
    }
 
+   double prob = GetProbability();
+
    double feats[100];
    for(int i=0; i<FeatureCount && i<100; i++)
       feats[i] = GetFeature(i);
-
-   double prob_sum = 0.0;
-   for(int m=0; m<ModelCount; m++)
-   {
-      double z = ModelIntercepts[m];
-      for(int i=0; i<FeatureCount; i++)
-         z += ModelCoefficients[m][i] * feats[i];
-      prob_sum += 1.0 / (1.0 + MathExp(-z));
-   }
-   double prob = prob_sum / MathMax(ModelCount,1);
 
    if(EnableDebugLogging)
    {

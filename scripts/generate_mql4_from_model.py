@@ -5,7 +5,7 @@ import json
 import gzip
 from pathlib import Path
 from datetime import datetime
-from typing import Iterable, List, Union
+from typing import Iterable, List, Union, Optional
 
 
 def _fmt(value: float) -> str:
@@ -17,7 +17,28 @@ template_path = (
 )
 
 
-def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode: bool = False):
+def generate(
+    model_jsons: Union[Path, Iterable[Path]],
+    out_dir: Path,
+    lite_mode: bool = False,
+    gating_json: Optional[Path] = None,
+):
+    """Render an MQL4 strategy using one or more base models.
+
+    Parameters
+    ----------
+    model_jsons : list of Path
+        Paths to JSON files describing base models.
+    out_dir : Path
+        Directory where the generated MQL4 file will be written.
+    lite_mode : bool, optional
+        If True, exclude order book features.
+    gating_json : Path, optional
+        Optional JSON file produced by ``meta_strategy.py`` containing
+        ``gating_coefficients`` and ``gating_intercepts``. When provided,
+        these parameters will be embedded to allow runtime selection of the
+        best-performing base model.
+    """
     if isinstance(model_jsons, (str, Path)):
         model_jsons = [model_jsons]
     models: List[dict] = []
@@ -35,6 +56,10 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode:
         else:
             models.append(data)
     base = models[0]
+    gating_data = None
+    if gating_json:
+        with open(gating_json, 'rt') as f:
+            gating_data = json.load(f)
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(template_path) as f:
         template = f.read()
@@ -48,6 +73,10 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode:
     feature_names: List[str] = []
     for m in models:
         for name in m.get('feature_names', []):
+            if name not in feature_names:
+                feature_names.append(name)
+    if gating_data:
+        for name in gating_data.get('feature_names', []):
             if name not in feature_names:
                 feature_names.append(name)
     feature_count = len(feature_names)
@@ -81,20 +110,34 @@ def generate(model_jsons: Union[Path, Iterable[Path]], out_dir: Path, lite_mode:
     output = output.replace('__INTERCEPTS__', ', '.join(intercepts))
     output = output.replace('__MODEL_COUNT__', str(len(models)))
 
-    g_coeff = base.get('gating_coefficients', [])
-    if isinstance(g_coeff, list) and g_coeff and isinstance(g_coeff[0], list):
-        flat = [c for row in g_coeff for c in row]
+    # Gating coefficients / intercepts
+    if gating_data:
+        g_feat = gating_data.get('feature_names', [])
+        g_coeff = gating_data.get('gating_coefficients', [])
+        g_rows: List[str] = []
+        for row in g_coeff:
+            fmap = {f: c for f, c in zip(g_feat, row)}
+            vec = [_fmt(fmap.get(f, 0.0)) for f in feature_names]
+            g_rows.append('{' + ', '.join(vec) + '}')
+        output = output.replace('__GATING_COEFFICIENTS__', ', '.join(g_rows))
+        g_inter = gating_data.get('gating_intercepts', [])
+        g_inter_str = ', '.join(_fmt(x) for x in g_inter) if g_inter else ''
+        output = output.replace('__GATING_INTERCEPTS__', g_inter_str)
     else:
-        flat = g_coeff
-    g_rows: List[str] = []
-    if flat:
-        for i in range(len(models)):
-            row = flat[i * feature_count : (i + 1) * feature_count]
-            g_rows.append('{' + ', '.join(_fmt(c) for c in row) + '}')
-    output = output.replace('__GATING_COEFFICIENTS__', ', '.join(g_rows))
-    g_inter = base.get('gating_intercepts', [])
-    g_inter_str = ', '.join(_fmt(x) for x in g_inter) if g_inter else ''
-    output = output.replace('__GATING_INTERCEPTS__', g_inter_str)
+        g_coeff = base.get('gating_coefficients', [])
+        if isinstance(g_coeff, list) and g_coeff and isinstance(g_coeff[0], list):
+            flat = [c for row in g_coeff for c in row]
+        else:
+            flat = g_coeff
+        g_rows: List[str] = []
+        if flat:
+            for i in range(len(models)):
+                row = flat[i * feature_count : (i + 1) * feature_count]
+                g_rows.append('{' + ', '.join(_fmt(c) for c in row) + '}')
+        output = output.replace('__GATING_COEFFICIENTS__', ', '.join(g_rows))
+        g_inter = base.get('gating_intercepts', [])
+        g_inter_str = ', '.join(_fmt(x) for x in g_inter) if g_inter else ''
+        output = output.replace('__GATING_INTERCEPTS__', g_inter_str)
 
     cal_coef = _fmt(base.get('calibration_coef', 1.0))
     cal_inter = _fmt(base.get('calibration_intercept', 0.0))
@@ -378,8 +421,14 @@ def main():
     p.add_argument('model_json', nargs='+')
     p.add_argument('out_dir')
     p.add_argument('--lite-mode', action='store_true')
+    p.add_argument('--gating-json')
     args = p.parse_args()
-    generate([Path(m) for m in args.model_json], Path(args.out_dir), lite_mode=args.lite_mode)
+    generate(
+        [Path(m) for m in args.model_json],
+        Path(args.out_dir),
+        lite_mode=args.lite_mode,
+        gating_json=Path(args.gating_json) if args.gating_json else None,
+    )
 
 
 if __name__ == '__main__':
