@@ -6,6 +6,13 @@ import gzip
 
 import pytest
 
+try:  # optional dependency for decision transformer
+    import torch  # type: ignore
+    import transformers  # type: ignore
+    HAS_TRANSFORMERS = True
+except Exception:  # pragma: no cover - optional
+    HAS_TRANSFORMERS = False
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.train_rl_agent import train
 
@@ -107,3 +114,22 @@ def test_train_cql_compress_model(tmp_path: Path) -> None:
     with gzip.open(model_file, "rt") as f:
         data = json.load(f)
     assert data.get("training_type") == "offline_rl"
+
+
+@pytest.mark.skipif(not HAS_TRANSFORMERS, reason="transformers required")
+def test_train_decision_transformer(tmp_path: Path) -> None:
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    out_dir.mkdir()
+    _write_log(data_dir / "trades_1.csv")
+
+    train(data_dir, out_dir, algo="decision_transformer", training_steps=1)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("algo") == "decision_transformer"
+    assert "transformer_weights" in data
+    assert data.get("sequence_length", 0) > 0

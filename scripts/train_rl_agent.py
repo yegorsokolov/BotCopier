@@ -12,7 +12,10 @@ import logging
 import pandas as pd
 
 import os
-import pyarrow.flight as flight
+try:  # pragma: no cover - optional dependency
+    import pyarrow.flight as flight
+except Exception:  # pragma: no cover - optional dependency
+    flight = None  # type: ignore
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -42,7 +45,17 @@ except Exception:  # pragma: no cover - optional dependency
     HAS_SB3 = False
 
 import numpy as np
-from sklearn.feature_extraction import DictVectorizer
+try:  # pragma: no cover - optional dependency
+    from sklearn.feature_extraction import DictVectorizer
+except Exception:  # pragma: no cover - minimal fallback
+    class DictVectorizer:  # type: ignore
+        def fit_transform(self, feats):
+            keys = sorted({k for f in feats for k in f.keys()})
+            self.feature_names_ = keys
+            return np.array([[f.get(k, 0.0) for k in keys] for f in feats], dtype=np.float32)
+
+        def get_feature_names_out(self):  # pragma: no cover - simple
+            return np.array(self.feature_names_)
 
 try:  # pragma: no cover - optional dependency
     from self_play_env import SelfPlayEnv  # type: ignore
@@ -51,6 +64,15 @@ except Exception:  # pragma: no cover - fallback when executed from repo root
         from scripts.self_play_env import SelfPlayEnv  # type: ignore
     except Exception:  # pragma: no cover - simulation optional
         SelfPlayEnv = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import torch
+    from transformers import DecisionTransformerConfig, DecisionTransformerModel
+    HAS_TRANSFORMERS = True
+except Exception:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore
+    DecisionTransformerConfig = DecisionTransformerModel = None  # type: ignore
+    HAS_TRANSFORMERS = False
 
 
 # OpenTelemetry setup
@@ -326,6 +348,98 @@ def train(
         for i in range(len(actions))
     ]
 
+    if algo_key == "decision_transformer":
+        if not HAS_TRANSFORMERS:
+            raise ImportError("transformers and torch are required for decision_transformer")
+
+        seq_len = min(len(states), 20)
+        state_tensor = torch.tensor(states[:seq_len], dtype=torch.float32).unsqueeze(0)
+        action_tensor = torch.tensor(actions[:seq_len], dtype=torch.long)
+        returns = np.cumsum(rewards[::-1])[::-1][:seq_len]
+        rtg_tensor = torch.tensor(returns, dtype=torch.float32).unsqueeze(0)
+        timestep_tensor = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
+        action_in = torch.nn.functional.one_hot(action_tensor, num_classes=2).float().unsqueeze(0)
+
+        config = DecisionTransformerConfig(
+            state_dim=n_features,
+            act_dim=2,
+            max_ep_len=seq_len,
+            hidden_size=n_features,
+            num_hidden_layers=1,
+            num_attention_heads=1,
+        )
+        model = DecisionTransformerModel(config)
+        optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        loss_fn = torch.nn.CrossEntropyLoss()
+        for _ in range(training_steps):
+            optim.zero_grad()
+            out = model(
+                states=state_tensor,
+                actions=action_in,
+                returns_to_go=rtg_tensor,
+                timesteps=timestep_tensor,
+            )
+            logits = out.action_preds
+            loss = loss_fn(logits.view(-1, 2), action_tensor.view(-1))
+            loss.backward()
+            optim.step()
+
+        with torch.no_grad():
+            out = model(
+                states=state_tensor,
+                actions=action_in,
+                returns_to_go=rtg_tensor,
+                timesteps=timestep_tensor,
+            )
+        preds = out.action_preds.argmax(dim=-1).view(-1).cpu().numpy()
+        train_acc = float(np.mean(preds == actions[:seq_len]))
+
+        block = model.encoder.h[0]
+        qkv_w = block.attn.c_attn.weight.detach().cpu().numpy()
+        qkv_b = block.attn.c_attn.bias.detach().cpu().numpy()
+        qk = qkv_w[:, :n_features].reshape(-1).tolist()
+        qb = qkv_b[:n_features].tolist()
+        kk = qkv_w[:, n_features : 2 * n_features].reshape(-1).tolist()
+        kb = qkv_b[n_features : 2 * n_features].tolist()
+        vk = qkv_w[:, 2 * n_features :].reshape(-1).tolist()
+        vb = qkv_b[2 * n_features :].tolist()
+        out_w = block.attn.c_proj.weight.detach().cpu().numpy().reshape(-1).tolist()
+        out_b = block.attn.c_proj.bias.detach().cpu().numpy().tolist()
+        head_w = model.predict_action[0].weight.detach().cpu().numpy()
+        head_b = model.predict_action[0].bias.detach().cpu().numpy()
+        dense_w = (head_w[1] - head_w[0]).reshape(-1).tolist()
+        dense_b = float(head_b[1] - head_b[0])
+        weights = [qk, qb, kk, kb, vk, vb, out_w, out_b, dense_w, dense_b]
+
+        out_dir.mkdir(parents=True, exist_ok=True)
+        model_info = {
+            "model_id": "rl_agent_dt",
+            "algo": algo_key,
+            "trained_at": datetime.utcnow().isoformat(),
+            "feature_names": vec.get_feature_names_out().tolist(),
+            "sequence_length": int(seq_len),
+            "transformer_weights": weights,
+            "feature_mean": states.mean(axis=0).astype(float).tolist(),
+            "feature_std": states.std(axis=0).astype(float).tolist(),
+            "train_accuracy": train_acc,
+            "avg_reward": float(np.mean(rewards[:seq_len])),
+            "training_steps": training_steps,
+            "learning_rate": learning_rate,
+            "epsilon": epsilon,
+            "val_accuracy": float("nan"),
+            "accuracy": float("nan"),
+            "num_samples": len(actions),
+        }
+        model_info["training_type"] = "offline_rl"
+
+        model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+        open_func = gzip.open if compress_model else open
+        with open_func(model_path, "wt") as f:
+            json.dump(model_info, f, indent=2)
+
+        print(f"Model written to {model_path}")
+        return
+
     if algo_key in {"ppo", "dqn"}:
         if not HAS_SB3:
             raise ImportError("stable_baselines3 is not installed")
@@ -579,9 +693,8 @@ def main() -> None:
             "--algo",
             default="dqn",
             help=(
-                "RL algorithm: dqn (default) or ppo if stable-baselines3 is installed."
-                " Pass qlearn for a simple numpy implementation or cql for offline"
-                " conservative Q-learning."
+                "RL algorithm: dqn (default), ppo, qlearn, cql, or decision_transformer"
+                " (requires transformers)."
             ),
         )
         p.add_argument("--start-model", help="path to initial model coefficients")

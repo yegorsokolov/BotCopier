@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Render MQL4 strategy file from model description."""
+"""Render MQL4 strategy file from model description.
+
+This utility now supports embedding weights for decision transformer models
+trained via :mod:`scripts.train_rl_agent` using the ``--algo decision_transformer``
+option. When such weights are present in the model JSON they are injected into
+the generated MQL4 source so that inference can be performed on-platform.
+"""
 import argparse
 import json
 import gzip
@@ -217,6 +223,7 @@ def generate(
     output = output.replace('__LSTM_HIDDEN_SIZE__', str(lstm_hidden))
     output = output.replace('__LSTM_SEQ_LEN__', str(seq_len))
 
+    # Decision Transformer weights exported by train_rl_agent.py
     trans_weights = base.get('transformer_weights', [])
     def _flat(a):
         if isinstance(a, list):
