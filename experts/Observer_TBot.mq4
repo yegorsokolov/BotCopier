@@ -33,6 +33,7 @@ extern string TraceId                      = "";
 extern int    BookRefreshSeconds           = 5;
 extern string AnomalyServiceUrl            = "http://127.0.0.1:8000/anomaly";
 extern double AnomalyThreshold             = 0.1;
+extern string OtelEndpoint                = "";
 
 int timer_handle;
 
@@ -52,6 +53,31 @@ const int LogSchemaVersion = 3;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
+
+string GenId(int bytes)
+{
+   string s = "";
+   for(int i=0; i<bytes; i++)
+   {
+      int v = MathRand() & 0xFF;
+      s += StringFormat("%02x", v);
+   }
+   return(s);
+}
+
+void SendOtelSpan(string trace_id, string span_id, string name)
+{
+   if(StringLen(OtelEndpoint)==0)
+      return;
+   long now = (long)TimeCurrent();
+   long ts = now * 1000000000;
+   string payload = StringFormat(
+      "{\"resourceSpans\":[{\"scopeSpans\":[{\"spans\":[{\"traceId\":\"%s\",\"spanId\":\"%s\",\"name\":\"%s\",\"startTimeUnixNano\":\"%I64d\",\"endTimeUnixNano\":\"%I64d\"}]}]}]}",
+      trace_id, span_id, name, ts, ts);
+   uchar data[]; StringToCharArray(payload, data);
+   uchar result[]; string headers = "Content-Type: application/json"; string rheaders="";
+   WebRequest("POST", OtelEndpoint, headers, 5000, data, ArraySize(data)-1, result, rheaders);
+}
 
 enum LogBackend
 {
@@ -207,6 +233,9 @@ void GetBookVolumes(string symbol, double &bid_vol, double &ask_vol, double &imb
 int OnInit()
 {
    EventSetTimer(1);
+   MathSrand(GetTickCount());
+   if(StringLen(TraceId)==0)
+      TraceId = GenId(16);
    ArrayResize(tracked_tickets, 0);
    ticket_map.Clear();
 
@@ -636,6 +665,10 @@ void LogTrade(string action, int ticket, int magic, string source,
               double book_bid_vol, double book_ask_vol, double book_imbalance)
 {
    int id = NextEventId++;
+   string span_id = GenId(8);
+   string comment_with_span = "span=" + span_id;
+   if(StringLen(comment) > 0)
+      comment_with_span += ";" + comment;
    int decision_id = 0;
    int pos = StringFind(comment, "decision_id=");
    if(pos >= 0)
@@ -674,7 +707,7 @@ void LogTrade(string action, int ticket, int magic, string source,
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp,
-      profit, profit_after, spread, comment, remaining, slippage, (int)volume,
+      profit, profit_after, spread, comment_with_span, remaining, slippage, (int)volume,
       open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom);
 
    if(CurrentBackend==LOG_BACKEND_CSV)
@@ -720,10 +753,11 @@ void LogTrade(string action, int ticket, int magic, string source,
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type,
-      lots, price, sl, tp, profit, profit_after, spread, comment, remaining,
+      lots, price, sl, tp, profit, profit_after, spread, comment_with_span, remaining,
       slippage, (int)volume, open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, payload);
    if(len>0)
       SendTrade(payload);
+   SendOtelSpan(TraceId, span_id, action);
 }
 
 

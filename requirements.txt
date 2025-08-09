@@ -7,6 +7,7 @@ aiohttp
 prometheus_client
 opentelemetry-sdk
 opentelemetry-exporter-otlp
+opentelemetry-exporter-jaeger
 protobuf
 grpcio
 pyzmq
