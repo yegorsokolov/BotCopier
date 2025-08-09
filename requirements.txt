@@ -11,6 +11,7 @@ opentelemetry-exporter-jaeger
 protobuf
 grpcio
 pyzmq
+pyarrow
 pycapnp
 onnxruntime
 skl2onnx

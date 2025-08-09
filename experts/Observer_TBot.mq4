@@ -7,10 +7,11 @@ int SerializeTradeEvent(int schema_version, int event_id, string trace_id, strin
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, uchar &out[]);
 #import
 
-#import "zmq_client.dll"
-int ZmqConnect(string address);
-bool ZmqSend(int socket, uchar &payload[], int len);
-void ZmqClose(int socket);
+#import "flight_client.dll"
+int FlightConnect(string address);
+bool FlightSendTrade(int client, uchar &payload[], int len);
+bool FlightSendMetrics(int client, uchar &payload[], int len);
+void FlightClose(int client);
 #import
 
 extern string TargetMagicNumbers = "12345,23456";
@@ -26,7 +27,7 @@ extern string LogDirectoryName              = "observer_logs"; // resume event_i
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
-extern string ZmqPushAddress                = "tcp://127.0.0.1:5555";
+extern string FlightServerUri              = "grpc://127.0.0.1:8815";
 extern string CommitHash                   = "";
 extern string ModelVersion                 = "";
 extern string TraceId                      = "";
@@ -47,8 +48,8 @@ int      log_db_handle    = INVALID_HANDLE;
 string   trade_log_buffer[];
 int      NextEventId = 1;
 int      FileWriteErrors = 0;
-int      ZmqSocket = INVALID_HANDLE;
-int      ZmqErrors = 0;
+int      FlightClient = INVALID_HANDLE;
+int      FlightErrors = 0;
 const int LogSchemaVersion = 3;
 
 double   CpuLoad = 0.0;
@@ -276,7 +277,7 @@ int OnInit()
    }
 
    CachedBookRefreshSeconds = BookRefreshSeconds;
-   ZmqSocket = ZmqConnect(ZmqPushAddress);
+   FlightClient = FlightConnect(FlightServerUri);
 
    // Prefer SQLite backend, fall back to CSV
    string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
@@ -361,10 +362,10 @@ void OnDeinit(const int reason)
       DatabaseClose(log_db_handle);
       log_db_handle = INVALID_HANDLE;
    }
-   if(ZmqSocket!=INVALID_HANDLE)
+   if(FlightClient!=INVALID_HANDLE)
    {
-      ZmqClose(ZmqSocket);
-      ZmqSocket = INVALID_HANDLE;
+      FlightClose(FlightClient);
+      FlightClient = INVALID_HANDLE;
    }
 }
 
@@ -596,28 +597,20 @@ string EscapeJson(string s)
 
 void SendTrade(uchar &payload[])
 {
-   if(ZmqSocket==INVALID_HANDLE)
+   if(FlightClient==INVALID_HANDLE)
       return;
    int len = ArraySize(payload);
-   uchar msg[];
-   ArrayResize(msg, len+1);
-   msg[0] = 0;
-   ArrayCopy(msg, payload, 1, 0, len);
-   if(!ZmqSend(ZmqSocket, msg, len+1))
-      ZmqErrors++;
+   if(!FlightSendTrade(FlightClient, payload, len))
+      FlightErrors++;
 }
 
 void SendMetrics(uchar &payload[])
 {
-   if(ZmqSocket==INVALID_HANDLE)
+   if(FlightClient==INVALID_HANDLE)
       return;
    int len = ArraySize(payload);
-   uchar msg[];
-   ArrayResize(msg, len+1);
-   msg[0] = 1;
-   ArrayCopy(msg, payload, 1, 0, len);
-   if(!ZmqSend(ZmqSocket, msg, len+1))
-      ZmqErrors++;
+   if(!FlightSendMetrics(FlightClient, payload, len))
+      FlightErrors++;
 }
 
 string FileNameFromPath(string path)
@@ -942,7 +935,7 @@ void WriteMetrics(datetime ts)
       double sortino = stddev_neg>0 ? (sum_profit/trades)/stddev_neg : 0.0;
       double expectancy = (avg_profit * win_rate) - (avg_loss * (1.0 - win_rate));
 
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, ZmqErrors, CachedBookRefreshSeconds);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, FlightErrors, CachedBookRefreshSeconds);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -954,7 +947,7 @@ void WriteMetrics(datetime ts)
        int len = SerializeMetrics(
          LogSchemaVersion,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, ZmqErrors, CachedBookRefreshSeconds, payload);
+         trades, max_dd, sharpe, FileWriteErrors, FlightErrors, CachedBookRefreshSeconds, payload);
        if(len>0)
          SendMetrics(payload);
    }
