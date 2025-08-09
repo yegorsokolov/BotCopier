@@ -613,7 +613,8 @@ double ComputeLSTMScore()
   return(1.0 / (1.0 + MathExp(-z)));
 }
 
-double ComputeTransformerScore()
+// Compute probability using Decision Transformer weights
+double ComputeDecisionTransformerScore()
 {
    int steps = FeatureHistorySize;
    if(steps > LSTMSequenceLength)
@@ -691,7 +692,7 @@ double GetProbability()
    if(ArraySize(GatingIntercepts) == 0 && ArrayRange(ProbabilityLookup,0) == ModelCount && ArrayRange(ProbabilityLookup,1) == 24)
       return(ProbabilityLookup[sess][TimeHour(TimeCurrent())]);
    if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
-      return(ComputeTransformerScore());
+      return(ComputeDecisionTransformerScore());
    if(LSTMSequenceLength > 0 && ArraySize(LSTMDenseWeights) > 0)
       return(ComputeLSTMScore());
    if(ArraySize(NNLayer1Weights) > 0)
