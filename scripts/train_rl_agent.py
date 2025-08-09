@@ -123,8 +123,12 @@ logger.setLevel(logging.INFO)
 # Data loading utilities
 # -------------------------------
 
-def _load_logs(data_dir: Path, flight_uri: str | None = None) -> pd.DataFrame:
-    """Load raw log rows from ``data_dir`` or Arrow Flight."""
+def _load_logs(
+    data_dir: Path,
+    flight_uri: str | None = None,
+    kafka_brokers: str | None = None,
+) -> pd.DataFrame:
+    """Load raw log rows from local files, Arrow Flight, or Kafka."""
 
     fields = [
         "event_id",
@@ -146,7 +150,38 @@ def _load_logs(data_dir: Path, flight_uri: str | None = None) -> pd.DataFrame:
         "remaining_lots",
     ]
 
-    if flight_uri:
+    if kafka_brokers:
+        from confluent_kafka import Consumer
+        from fastavro import parse_schema, schemaless_reader
+        from io import BytesIO
+        from schemas import TRADE_AVRO_SCHEMA
+
+        schema = parse_schema(TRADE_AVRO_SCHEMA)
+        consumer = Consumer(
+            {
+                "bootstrap.servers": kafka_brokers,
+                "group.id": "train_rl_agent",
+                "auto.offset.reset": "earliest",
+            }
+        )
+        consumer.subscribe(["trades"])
+        rows = []
+        none_count = 0
+        try:
+            while none_count < 5:
+                msg = consumer.poll(1.0)
+                if msg is None:
+                    none_count += 1
+                    continue
+                if msg.error():
+                    continue
+                none_count = 0
+                buf = BytesIO(msg.value())
+                rows.append(schemaless_reader(buf, schema))
+        finally:
+            consumer.close()
+        df_logs = pd.DataFrame(rows, columns=fields)
+    elif flight_uri:
         client = flight.FlightClient(flight_uri)
         desc = flight.FlightDescriptor.for_path("trades")
         info = client.get_flight_info(desc)
@@ -271,6 +306,7 @@ def _extract_feature(row: Dict) -> Dict:
 def _build_dataset(
     data_dir: Path,
     flight_uri: str | None = None,
+    kafka_brokers: str | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, DictVectorizer]:
     """Return (states, actions, rewards, next_states, vectorizer).
 
@@ -279,7 +315,7 @@ def _build_dataset(
     tuple and the next state is simply the next trade's state.
     """
 
-    rows_df = _load_logs(data_dir, flight_uri)
+    rows_df = _load_logs(data_dir, flight_uri, kafka_brokers)
     trades = _pair_trades(rows_df.to_dict("records"))
     if not trades:
         raise ValueError(f"No training data found in {data_dir}")
@@ -324,9 +360,10 @@ def train(
     compress_model: bool = False,
     self_play: bool = False,
     flight_uri: str | None = None,
+    kafka_brokers: str | None = None,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
-    states, actions, rewards, next_states, vec = _build_dataset(data_dir, flight_uri)
+    states, actions, rewards, next_states, vec = _build_dataset(data_dir, flight_uri, kafka_brokers)
     n_features = states.shape[1]
 
     init_model_data = None
@@ -683,6 +720,7 @@ def main() -> None:
         p.add_argument("--data-dir", required=True)
         p.add_argument("--out-dir", required=True)
         p.add_argument("--flight-uri", help="Arrow Flight server URI")
+        p.add_argument("--kafka-brokers", help="Kafka bootstrap servers for log replay")
         p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
         p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
         p.add_argument("--training-steps", type=int, default=100, help="total training steps")
@@ -719,6 +757,7 @@ def main() -> None:
             compress_model=args.compress_model,
             self_play=args.self_play,
             flight_uri=args.flight_uri,
+            kafka_brokers=args.kafka_brokers,
         )
         logger.info("training complete")
 

@@ -1,0 +1,18 @@
+{
+  "type": "record",
+  "name": "MetricEvent",
+  "namespace": "bot",
+  "fields": [
+    {"name": "schema_version", "type": "int"},
+    {"name": "time", "type": "string"},
+    {"name": "magic", "type": "int"},
+    {"name": "win_rate", "type": "double"},
+    {"name": "avg_profit", "type": "double"},
+    {"name": "trade_count", "type": "int"},
+    {"name": "drawdown", "type": "double"},
+    {"name": "sharpe", "type": "double"},
+    {"name": "file_write_errors", "type": "int"},
+    {"name": "socket_errors", "type": "int"},
+    {"name": "book_refresh_seconds", "type": "int"}
+  ]
+}

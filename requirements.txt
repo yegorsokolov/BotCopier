@@ -19,6 +19,8 @@ fastapi
 uvicorn
 websocket-client
 requests
+confluent-kafka[avro]
+fastavro
 
 # Optional extras
 xgboost; extra == "xgboost"
