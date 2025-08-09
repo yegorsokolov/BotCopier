@@ -801,7 +801,17 @@ void OnTick()
       return;
    }
 
-   double prob = GetProbability();
+   UpdateFeatureHistory();
+   int modelIdx = SelectExpert();
+   double prob;
+   if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
+      prob = ComputeDecisionTransformerScore();
+   else if(LSTMSequenceLength > 0 && ArraySize(LSTMDenseWeights) > 0)
+      prob = ComputeLSTMScore();
+   else if(ArraySize(NNLayer1Weights) > 0)
+      prob = ComputeNNScore();
+   else
+      prob = ComputeLogisticScoreSession(modelIdx);
 
    double feats[100];
    for(int i=0; i<FeatureCount && i<100; i++)
