@@ -69,6 +69,13 @@ def generate(
         f"MagicNumber = {base.get('magic', 9999)}",
     )
 
+    # Embed hierarchy metadata if present.  The data is JSON encoded and
+    # escaped so it can be stored in the generated MQL4 source as a string
+    # literal.  Consumers may parse this at runtime for additional context
+    # about the trained meta-controller and sub-policies.
+    hier_json = json.dumps(base.get('hierarchy', {})).replace('"', '\\"')
+    output = output.replace('__HIERARCHY_JSON__', hier_json)
+
     # merge feature names preserving order
     feature_names: List[str] = []
     for m in models:

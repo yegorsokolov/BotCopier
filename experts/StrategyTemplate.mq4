@@ -18,6 +18,8 @@ extern string DecisionLogSocketHost = "127.0.0.1";
 extern int    DecisionLogSocketPort = 9001;
 extern string ModelVersion = "";
 
+string HierarchyJson = "__HIERARCHY_JSON__";
+
 int ModelCount = __MODEL_COUNT__;
 int SessionStarts[] = {__SESSION_STARTS__};
 int SessionEnds[] = {__SESSION_ENDS__};
