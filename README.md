@@ -54,6 +54,29 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    python scripts/promote_best_models.py models --dest models/best
    ```
 
+## Dashboard
+
+A small web dashboard can display trades, metrics and training progress in real time.
+
+1. Install dependencies if not already done:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Set an API token used for authentication:
+   ```bash
+   export DASHBOARD_API_TOKEN="your-token"
+   ```
+3. Start the dashboard server:
+   ```bash
+   python dashboard/server.py
+   ```
+4. Launch the stream listener and forward events to the dashboard:
+   ```bash
+   python scripts/stream_listener.py --ws-url ws://localhost:8000 --api-token "$DASHBOARD_API_TOKEN"
+   ```
+5. Open <http://localhost:8000> in a browser and supply the token when prompted to view live updates.
+
+
 
 ### DVC Pipeline
 

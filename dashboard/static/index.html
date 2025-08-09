@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>BotCopier Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <h1>BotCopier Dashboard</h1>
+    <canvas id="metricsChart" width="400" height="200"></canvas>
+    <h2>Trades</h2>
+    <ul id="trades"></ul>
+    <h2>Training Progress</h2>
+    <ul id="training"></ul>
+
+    <script>
+        const token = prompt('API Token');
+
+        const ctx = document.getElementById('metricsChart').getContext('2d');
+        const metricsChart = new Chart(ctx, {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'Win Rate', data: [] }] },
+        });
+
+        function updateChart(metric) {
+            metricsChart.data.labels.push(metric.time);
+            metricsChart.data.datasets[0].data.push(metric.win_rate);
+            metricsChart.update();
+        }
+
+        const metricsWs = new WebSocket(`ws://${location.host}/ws/metrics?token=${token}`);
+        metricsWs.onmessage = (event) => {
+            const metric = JSON.parse(event.data);
+            updateChart(metric);
+        };
+
+        const tradesWs = new WebSocket(`ws://${location.host}/ws/trades?token=${token}`);
+        tradesWs.onmessage = (event) => {
+            const trade = JSON.parse(event.data);
+            const li = document.createElement('li');
+            li.textContent = `${trade.symbol} ${trade.action} ${trade.lots}`;
+            document.getElementById('trades').appendChild(li);
+        };
+
+        const trainingWs = new WebSocket(`ws://${location.host}/ws/training_progress?token=${token}`);
+        trainingWs.onmessage = (event) => {
+            const prog = JSON.parse(event.data);
+            const li = document.createElement('li');
+            li.textContent = `${prog.step}: ${prog.status}`;
+            document.getElementById('training').appendChild(li);
+        };
+    </script>
+</body>
+</html>
