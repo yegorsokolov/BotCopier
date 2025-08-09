@@ -328,9 +328,11 @@ and export traces using the OTLP protocol.  Point
 events across components.  The ``trace_id`` of each trade event is also included
 in the ``LogTrade`` JSON emitted by the EA for end-to-end tracing.
 
-After each trading session ``upload_logs.py`` can commit these CSV files and
-push them back to the repository. The script uses the ``GITHUB_TOKEN``
-environment variable for authentication.
+After each trading session ``upload_logs.py`` packages ``trades_raw.csv``,
+``metrics.csv`` and ``model.json`` together with a ``manifest.json`` into a
+single ``run_<timestamp>.tar.gz`` archive. The archive is committed to the
+repository and the original files are removed locally. The script uses the
+``GITHUB_TOKEN`` environment variable for authentication.
 
 ### Environment Variables
 
