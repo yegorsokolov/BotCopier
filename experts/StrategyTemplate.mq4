@@ -37,6 +37,8 @@ double SLModelCoefficients[] = {__SL_COEFFICIENTS__};
 double SLModelIntercept = __SL_INTERCEPT__;
 double TPModelCoefficients[] = {__TP_COEFFICIENTS__};
 double TPModelIntercept = __TP_INTERCEPT__;
+double LotModelCoefficients[] = {__LOT_COEFFICIENTS__};
+double LotModelIntercept = __LOT_INTERCEPT__;
 int ModelHiddenSize = __NN_HIDDEN_SIZE__;
 double NNLayer1Weights[] = {__NN_L1_WEIGHTS__};
 double NNLayer1Bias[] = {__NN_L1_BIAS__};
@@ -154,6 +156,7 @@ bool ParseModelJson(string json)
          ProbabilityLookup[0][i] = prob_tmp[i];
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
+   ExtractJsonArray(json, "\"lot_coefficients\"", LotModelCoefficients);
    ExtractJsonArray(json, "\"gating_coefficients\"", tmp);
    int gtot = MathMin(ArraySize(tmp), ArrayRange(GatingCoefficients,0)*ArrayRange(GatingCoefficients,1));
    for(int i=0;i<gtot;i++)
@@ -172,6 +175,7 @@ bool ParseModelJson(string json)
    CalibrationIntercept = ExtractJsonNumber(json, "\"calibration_intercept\"");
    SLModelIntercept = ExtractJsonNumber(json, "\"sl_intercept\"");
    TPModelIntercept = ExtractJsonNumber(json, "\"tp_intercept\"");
+   LotModelIntercept = ExtractJsonNumber(json, "\"lot_intercept\"");
    ModelThreshold = ExtractJsonNumber(json, "\"threshold\"");
    ModelCount = 1;
    return(true);
@@ -719,11 +723,15 @@ double GetProbability()
    return(ComputeLogisticScoreSession(sess));
 }
 
-double GetTradeLots(double prob)
+double CalcLots()
 {
-   double x = 1.0 / (1.0 + MathExp(-10.0*(prob - 0.5)));
-   double lots = MinLots + (MaxLots - MinLots) * x;
-   return(lots);
+   double z = LotModelIntercept;
+   int n = ArraySize(LotModelCoefficients);
+   for(int i=0; i<n; i++)
+      z += LotModelCoefficients[i] * GetFeature(i);
+   if(z < MinLots) z = MinLots;
+   if(z > MaxLots) z = MaxLots;
+   return(z);
 }
 
 double GetTradeThreshold()
@@ -751,12 +759,18 @@ double PredictTPDistance()
    return(z);
 }
 
+void CalcStops(double &sl_dist, double &tp_dist)
+{
+   sl_dist = PredictSLDistance();
+   tp_dist = PredictTPDistance();
+}
+
 void LogDecision(double &feats[], double prob, string action)
 {
    if(!EnableDecisionLogging)
       return;
-   double sl_dist = PredictSLDistance();
-   double tp_dist = PredictTPDistance();
+   double sl_dist, tp_dist;
+   CalcStops(sl_dist, tp_dist);
    string feat_vals = "";
    for(int i=0; i<FeatureCount; i++)
    {
@@ -782,18 +796,20 @@ void LogDecision(double &feats[], double prob, string action)
 
 double GetNewSL(bool isBuy)
 {
-   double d = PredictSLDistance();
-   if(d <= 0) return(0);
-   if(isBuy) return(Bid - d);
-   return(Ask + d);
+   double sl_dist, tp_dummy;
+   CalcStops(sl_dist, tp_dummy);
+   if(sl_dist <= 0) return(0);
+   if(isBuy) return(Bid - sl_dist);
+   return(Ask + sl_dist);
 }
 
 double GetNewTP(bool isBuy)
 {
-   double d = PredictTPDistance();
-   if(d <= 0) return(0);
-   if(isBuy) return(Bid + d);
-   return(Ask - d);
+   double sl_dummy, tp_dist;
+   CalcStops(sl_dummy, tp_dist);
+   if(tp_dist <= 0) return(0);
+   if(isBuy) return(Bid + tp_dist);
+   return(Ask - tp_dist);
 }
 
 bool HasOpenOrders()
@@ -848,7 +864,7 @@ void OnTick()
    }
 
    // Open buy if probability exceeds threshold else sell
-   double tradeLots = GetTradeLots(prob);
+   double tradeLots = CalcLots();
    int ticket;
    double thr = GetTradeThreshold();
    string action = (prob > thr) ? "buy" : "sell";

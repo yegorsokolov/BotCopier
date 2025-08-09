@@ -790,6 +790,7 @@ def _extract_features(
     labels = []
     sl_targets = []
     tp_targets = []
+    lot_targets = []
     prices = []
     hours = []
     macd_state = {}
@@ -1006,6 +1007,7 @@ def _extract_features(
         labels.append(label)
         sl_targets.append(sl_dist)
         tp_targets.append(tp_dist)
+        lot_targets.append(lots)
         hours.append(t.hour)
         row_idx += 1
 
@@ -1061,6 +1063,7 @@ def _extract_features(
         np.array(sl_targets),
         np.array(tp_targets),
         np.array(hours, dtype=int),
+        np.array(lot_targets),
     )
 
 
@@ -1140,6 +1143,7 @@ def _train_lite_mode(
         (
             f_chunk,
             l_chunk,
+            _,
             _,
             _,
             _,
@@ -1268,6 +1272,7 @@ def train(
     extra_price_series=None,
     optuna_trials: int = 0,
     regress_sl_tp: bool = False,
+    regress_lots: bool = False,
     early_stop: bool = False,
     encoder_file: Path | None = None,
     cache_features: bool = False,
@@ -1343,7 +1348,7 @@ def train(
             existing_model = json.load(f)
             last_event_id = int(existing_model.get("last_event_id", 0))
 
-    features = labels = sl_targets = tp_targets = hours = None
+    features = labels = sl_targets = tp_targets = hours = lot_targets = None
     loaded_from_cache = False
     data_commits: list[str] = []
     data_checksums: list[str] = []
@@ -1356,6 +1361,7 @@ def train(
                 labels = cached["labels"]
                 sl_targets = cached["sl_targets"]
                 tp_targets = cached["tp_targets"]
+                lot_targets = cached.get("lot_targets")
                 hours = cached.get("hours")
                 loaded_from_cache = True
         except Exception:
@@ -1375,6 +1381,7 @@ def train(
             sl_list: list[np.ndarray] = []
             tp_list: list[np.ndarray] = []
             hours_list: list[np.ndarray] = []
+            lot_list: list[np.ndarray] = []
             for chunk in rows_iter:
                 (
                     f_chunk,
@@ -1382,6 +1389,7 @@ def train(
                     sl_chunk,
                     tp_chunk,
                     h_chunk,
+                    lot_chunk,
                 ) = _extract_features(
                     chunk.to_dict("records"),
                     use_sma=use_sma,
@@ -1410,12 +1418,14 @@ def train(
                 sl_list.append(sl_chunk)
                 tp_list.append(tp_chunk)
                 hours_list.append(h_chunk)
+                lot_list.append(lot_chunk)
             labels = np.concatenate(labels_list) if labels_list else np.array([])
             sl_targets = np.concatenate(sl_list) if sl_list else np.array([])
             tp_targets = np.concatenate(tp_list) if tp_list else np.array([])
             hours = (
                 np.concatenate(hours_list) if hours_list else np.array([], dtype=int)
             )
+            lot_targets = np.concatenate(lot_list) if lot_list else np.array([])
         else:
             rows_df, data_commits, data_checksums = _load_logs(data_dir, flight_uri=flight_uri)
             if "event_id" in rows_df.columns:
@@ -1432,6 +1442,7 @@ def train(
                 sl_targets,
                 tp_targets,
                 hours,
+                lot_targets,
             ) = _extract_features(
                 rows_df.to_dict("records"),
                 use_sma=use_sma,
@@ -1511,6 +1522,7 @@ def train(
             sl_targets = sl_targets[mask]
             tp_targets = tp_targets[mask]
             hours = hours[mask]
+            lot_targets = lot_targets[mask]
         ae_info = {
             "weights": [w.astype(np.float32).tolist() for w in ae_model.coefs_],
             "bias": [b.astype(np.float32).tolist() for b in ae_model.intercepts_],
@@ -1527,6 +1539,8 @@ def train(
     tp_coef = []
     sl_inter = 0.0
     tp_inter = 0.0
+    lot_coef = []
+    lot_inter = 0.0
 
     if existing_model is not None:
         vec = DictVectorizer(sparse=False)
@@ -1542,6 +1556,8 @@ def train(
         sl_val = np.array([])
         tp_train = tp_targets
         tp_val = np.array([])
+        lot_train = lot_targets
+        lot_val = np.array([])
         hours_train = hours
         hours_val = np.array([])
     else:
@@ -1556,6 +1572,8 @@ def train(
         sl_val = sl_targets[val_idx]
         tp_train = tp_targets[train_idx]
         tp_val = tp_targets[val_idx]
+        lot_train = lot_targets[train_idx]
+        lot_val = lot_targets[val_idx]
         hours_train = hours[train_idx]
         hours_val = hours[val_idx]
 
@@ -1566,6 +1584,8 @@ def train(
             feat_val, y_val = [], np.array([])
             hours_train = hours
             hours_val = np.array([])
+            lot_train = lot_targets
+            lot_val = np.array([])
 
     sample_weight = None
     if model_type == "logreg" and not grid_search:
@@ -1590,6 +1610,13 @@ def train(
         f["sl_dist"] = 0.0
         f["tp_dist"] = 0.0
 
+    feat_train_lot = [dict(f) for f in feat_train_reg]
+    feat_val_lot = [dict(f) for f in feat_val_reg]
+    for f in feat_train_lot:
+        f["lots"] = 0.0
+    for f in feat_val_lot:
+        f["lots"] = 0.0
+
     if existing_model is not None:
         X_train = vec.transform(feat_train_clf)
     else:
@@ -1609,6 +1636,13 @@ def train(
     X_train_reg = _encode_features(enc_model, X_train_reg)
     X_val_reg = _encode_features(enc_model, X_val_reg)
 
+    X_train_lot = vec.transform(feat_train_lot)
+    X_val_lot = (
+        vec.transform(feat_val_lot) if feat_val_lot else np.empty((0, X_train_lot.shape[1]))
+    )
+    X_train_lot = _encode_features(enc_model, X_train_lot)
+    X_val_lot = _encode_features(enc_model, X_val_lot)
+
     if cache_features and not loaded_from_cache:
         feature_names_cache = feature_names
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1618,6 +1652,7 @@ def train(
             labels=labels,
             sl_targets=sl_targets,
             tp_targets=tp_targets,
+            lot_targets=lot_targets,
             hours=hours,
             feature_names=np.array(feature_names_cache),
         )
@@ -2280,9 +2315,10 @@ def train(
             cal_inter = float(cal_lr.intercept_[0])
     
 
-    if regress_sl_tp:
+    if regress_sl_tp or regress_lots:
         from sklearn.linear_model import LinearRegression
 
+    if regress_sl_tp:
         reg_sl = LinearRegression()
         reg_sl.fit(X_train_reg, sl_train)
         reg_tp = LinearRegression()
@@ -2291,6 +2327,12 @@ def train(
         sl_inter = reg_sl.intercept_
         tp_coef = reg_tp.coef_
         tp_inter = reg_tp.intercept_
+
+    if regress_lots:
+        reg_lot = LinearRegression()
+        reg_lot.fit(X_train_lot, lot_train)
+        lot_coef = reg_lot.coef_
+        lot_inter = reg_lot.intercept_
 
     if len(y_val) > 0:
         if optuna_threshold is not None:
@@ -2374,6 +2416,10 @@ def train(
                 sl_inter = reg_sl.intercept_
                 tp_coef = reg_tp.coef_
                 tp_inter = reg_tp.intercept_
+            if regress_lots:
+                reg_lot.fit(X_train_lot, lot_train)
+                lot_coef = reg_lot.coef_
+                lot_inter = reg_lot.intercept_
             if len(y_val) > 0:
                 if optuna_threshold is not None:
                     threshold = optuna_threshold
@@ -2557,6 +2603,10 @@ def train(
         model["tp_coefficients"] = tp_coef.astype(np.float32).tolist()
         model["tp_intercept"] = float(tp_inter)
 
+    if regress_lots:
+        model["lot_coefficients"] = lot_coef.astype(np.float32).tolist()
+        model["lot_intercept"] = float(lot_inter)
+
     # Optional RL refinement
     if (
         HAS_SB3
@@ -2682,6 +2732,7 @@ def main():
     )
     p.add_argument('--encoder-file', help='JSON file with pretrained encoder weights')
     p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
+    p.add_argument('--regress-lots', action='store_true', help='learn lot size regressor')
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
     p.add_argument('--stack', help='comma separated list of model types to stack')
@@ -2748,6 +2799,7 @@ def main():
         corr_window=args.corr_window,
         optuna_trials=optuna_trials,
         regress_sl_tp=args.regress_sl_tp,
+        regress_lots=args.regress_lots,
         early_stop=args.early_stop,
         encoder_file=Path(args.encoder_file) if args.encoder_file else None,
         cache_features=args.cache_features,

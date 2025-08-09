@@ -41,6 +41,7 @@ def _load_metrics(path: Path):
                         float(r.get("file_write_errors") or r.get("write_errors") or 0)
                     ),
                     "socket_errors": int(float(r.get("socket_errors", 0) or 0)),
+                    "var_breach_count": int(float(r.get("var_breach_count", 0) or 0)),
                 }
             )
     return rows
@@ -61,6 +62,7 @@ def _plot(rows, magic=None):
     expectancy = [r.get("expectancy", 0) for r in rows]
     write_err = [r["file_write_errors"] for r in rows]
     socket_err = [r["socket_errors"] for r in rows]
+    var_breach = [r.get("var_breach_count", 0) for r in rows]
 
     fig, (ax1, ax3) = plt.subplots(2, 1, sharex=True)
     ax1.plot(times, win_rate, label="Win Rate")
@@ -77,6 +79,7 @@ def _plot(rows, magic=None):
 
     ax3.plot(times, write_err, label="File Write Errors", color="purple")
     ax3.plot(times, socket_err, label="Socket Errors", color="orange")
+    ax3.plot(times, var_breach, label="VaR Breaches", color="red")
     if any(expectancy):
         ax3b = ax3.twinx()
         ax3b.plot(times, expectancy, label="Expectancy", color="brown")

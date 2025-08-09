@@ -4,7 +4,7 @@
 
 #import "observer_proto.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, int decision_id, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, uchar &out[]);
 #import
 
 #import "kafka_bridge.dll"
@@ -974,7 +974,7 @@ void WriteMetrics(datetime ts)
       h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
       if(h==INVALID_HANDLE)
          return;
-      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;trace_id;span_id");
+      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;var_breach_count;trace_id;span_id");
       if(_wr <= 0)
          FileWriteErrors++;
    }
@@ -999,6 +999,7 @@ void WriteMetrics(datetime ts)
       double cumulative = 0.0;
       double peak = 0.0;
       double max_dd = 0.0;
+      double profits[];
 
       for(int i=0; i<OrdersHistoryTotal(); i++)
       {
@@ -1020,6 +1021,9 @@ void WriteMetrics(datetime ts)
             neg_sum_sq += p*p;
             loss_sum += -p;
          }
+         int pidx = ArraySize(profits);
+         ArrayResize(profits, pidx+1);
+         profits[pidx] = p;
          profit_total += p;
          sum_profit += p;
          sum_sq_profit += p*p;
@@ -1045,8 +1049,17 @@ void WriteMetrics(datetime ts)
       double sortino = stddev_neg>0 ? (sum_profit/trades)/stddev_neg : 0.0;
       double expectancy = (avg_profit * win_rate) - (avg_loss * (1.0 - win_rate));
 
+      ArraySort(profits, WHOLE_ARRAY, 0, MODE_ASCEND);
+      int vidx = (int)MathFloor(0.05 * ArraySize(profits));
+      if(vidx < 0) vidx = 0;
+      if(vidx >= ArraySize(profits)) vidx = ArraySize(profits)-1;
+      double var95 = profits[vidx];
+      int var_breach_count = 0;
+      for(int vb=0; vb<ArraySize(profits); vb++)
+         if(profits[vb] < var95) var_breach_count++;
+
       string span_id = GenId(8);
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, KafkaErrors, CachedBookRefreshSeconds, TraceId, span_id);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, KafkaErrors, CachedBookRefreshSeconds, var_breach_count, TraceId, span_id);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -1058,7 +1071,7 @@ void WriteMetrics(datetime ts)
        int len = SerializeMetrics(
          LogSchemaVersion,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, KafkaErrors, CachedBookRefreshSeconds, payload);
+         trades, max_dd, sharpe, FileWriteErrors, KafkaErrors, CachedBookRefreshSeconds, var_breach_count, payload);
        if(len>0)
          SendMetrics(payload);
       SendOtelSpan(TraceId, span_id, "metrics");
