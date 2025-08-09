@@ -22,6 +22,8 @@ import sys
 
 import importlib.util
 
+import os
+
 import pandas as pd
 
 import numpy as np
@@ -36,7 +38,35 @@ from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSp
 from sklearn.preprocessing import StandardScaler
 
 
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+try:  # Optional Jaeger exporter
+    from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    JaegerExporter = None
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import format_span_id, format_trace_id
+
+
 START_EVENT_ID = 0
+
+resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_target_clone")})
+provider = TracerProvider(resource=resource)
+if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+elif os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST") and JaegerExporter:
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            JaegerExporter(
+                agent_host_name=os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST"),
+                agent_port=int(os.getenv("OTEL_EXPORTER_JAEGER_AGENT_PORT", "6831")),
+            )
+        )
+    )
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
 
 try:  # Optional dependency for RL refinement
     import stable_baselines3  # type: ignore  # noqa: F401
@@ -2381,6 +2411,11 @@ def train(
 
 
 def main():
+    span = tracer.start_span("train_target_clone")
+    ctx = span.get_span_context()
+    print(
+        f"trace_id={format_trace_id(ctx.trace_id)} span_id={format_span_id(ctx.span_id)}"
+    )
     p = argparse.ArgumentParser()
     p.add_argument('--data-dir', required=True)
     p.add_argument('--out-dir', required=True)
@@ -2498,6 +2533,7 @@ def main():
         regime_model_file=Path(args.regime_model) if args.regime_model else None,
         moe=args.moe,
     )
+    span.end()
 
 
 if __name__ == '__main__':

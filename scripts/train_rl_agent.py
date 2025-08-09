@@ -11,6 +11,18 @@ from typing import Dict, List, Tuple
 import logging
 import pandas as pd
 
+import os
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+try:  # Optional Jaeger exporter
+    from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    JaegerExporter = None
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import format_span_id, format_trace_id
+
 try:
     import stable_baselines3 as sb3  # type: ignore
     try:
@@ -34,6 +46,24 @@ except Exception:  # pragma: no cover - fallback when executed from repo root
         from scripts.self_play_env import SelfPlayEnv  # type: ignore
     except Exception:  # pragma: no cover - simulation optional
         SelfPlayEnv = None  # type: ignore
+
+
+# OpenTelemetry setup
+resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_rl_agent")})
+provider = TracerProvider(resource=resource)
+if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+elif os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST") and JaegerExporter:
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            JaegerExporter(
+                agent_host_name=os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST"),
+                agent_port=int(os.getenv("OTEL_EXPORTER_JAEGER_AGENT_PORT", "6831")),
+            )
+        )
+    )
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
 
 
 # -------------------------------
@@ -492,6 +522,11 @@ def train(
 
 
 def main() -> None:
+    span = tracer.start_span("train_rl_agent")
+    ctx = span.get_span_context()
+    print(
+        f"trace_id={format_trace_id(ctx.trace_id)} span_id={format_span_id(ctx.span_id)}"
+    )
     p = argparse.ArgumentParser(description="Train RL agent from logs")
     p.add_argument("--data-dir", required=True)
     p.add_argument("--out-dir", required=True)
@@ -532,6 +567,7 @@ def main() -> None:
         compress_model=args.compress_model,
         self_play=args.self_play,
     )
+    span.end()
 
 
 if __name__ == "__main__":

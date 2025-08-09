@@ -341,6 +341,27 @@ environment variable for authentication.
 * ``OTEL_EXPORTER_OTLP_HEADERS`` – optional headers for the OTLP exporter.
 * ``OTEL_EXPORTER_OTLP_CERTIFICATE`` – TLS certificate for secure OTLP.
 * ``OTEL_SERVICE_NAME`` – override the default service name reported in traces.
+* ``OTEL_EXPORTER_JAEGER_AGENT_HOST``/``OTEL_EXPORTER_JAEGER_AGENT_PORT`` –
+  send traces to a Jaeger agent instead of OTLP.
+
+### Viewing Traces
+
+`Observer_TBot.mq4`, `stream_listener.py` and the training scripts emit
+OpenTelemetry spans that include the trace and span IDs.  Point the Python
+components at a collector by setting either ``OTEL_EXPORTER_OTLP_ENDPOINT`` or
+``OTEL_EXPORTER_JAEGER_AGENT_HOST``/``OTEL_EXPORTER_JAEGER_AGENT_PORT``.  The
+observer EA accepts an ``OtelEndpoint`` input which should reference the same
+collector.  A minimal Jaeger setup can be started locally with:
+
+```bash
+docker run -it --rm -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one
+```
+
+With the environment variables configured the scripts print the active
+``trace_id`` and ``span_id``.  The `stream_listener.py` also records these
+identifiers alongside each event in ``logs/trades_raw.csv`` and
+``logs/metrics.csv`` so spans from the EA, log listener and training phases can
+be correlated in Jaeger's web UI.
 
 ### Cron Job Example
 

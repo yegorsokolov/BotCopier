@@ -18,6 +18,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+try:  # Optional Jaeger exporter
+    from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    JaegerExporter = None
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -41,6 +45,15 @@ resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "stre
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+elif os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST") and JaegerExporter:
+    provider.add_span_processor(
+        BatchSpanProcessor(
+            JaegerExporter(
+                agent_host_name=os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST"),
+                agent_port=int(os.getenv("OTEL_EXPORTER_JAEGER_AGENT_PORT", "6831")),
+            )
+        )
+    )
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
 
@@ -72,6 +85,17 @@ def write_run_info() -> None:
 
 
 def process_trade(msg) -> None:
+    trace_id = ""
+    span_id = ""
+    try:
+        trace_id = msg.traceId
+    except Exception:
+        pass
+    comment = msg.comment
+    if comment.startswith("span="):
+        parts = comment.split(";", 1)
+        span_id = parts[0][5:]
+        comment = parts[1] if len(parts) > 1 else ""
     record = {
         "event_id": msg.eventId,
         "event_time": msg.eventTime,
@@ -88,14 +112,14 @@ def process_trade(msg) -> None:
         "sl": msg.sl,
         "tp": msg.tp,
         "profit": msg.profit,
-        "comment": msg.comment,
+        "comment": comment,
         "remaining_lots": msg.remainingLots,
         "decision_id": msg.decisionId,
     }
     with tracer.start_as_current_span("process_event") as span:
         ctx = span.get_span_context()
-        record.setdefault("trace_id", format_trace_id(ctx.trace_id))
-        record["span_id"] = format_span_id(ctx.span_id)
+        record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+        record.setdefault("span_id", span_id or format_span_id(ctx.span_id))
         append_csv(LOG_FILES[TRADE_MSG], record)
 
 
