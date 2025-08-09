@@ -41,11 +41,15 @@ from sklearn.preprocessing import StandardScaler
 
 
 from opentelemetry import trace
+from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
 try:  # Optional Jaeger exporter
     from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     JaegerExporter = None
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -69,6 +73,32 @@ elif os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST") and JaegerExporter:
     )
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
+
+logger_provider = LoggerProvider(resource=resource)
+if endpoint:
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+set_logger_provider(logger_provider)
+handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log = {"level": record.levelname}
+        if isinstance(record.msg, dict):
+            log.update(record.msg)
+        else:
+            log["message"] = record.getMessage()
+        if hasattr(record, "trace_id"):
+            log["trace_id"] = format_trace_id(record.trace_id)
+        if hasattr(record, "span_id"):
+            log["span_id"] = format_span_id(record.span_id)
+        return json.dumps(log)
+
+
+logger = logging.getLogger(__name__)
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 try:  # Optional dependency for RL refinement
     import stable_baselines3  # type: ignore  # noqa: F401
@@ -2432,9 +2462,7 @@ def train(
 def main():
     span = tracer.start_span("train_target_clone")
     ctx = span.get_span_context()
-    print(
-        f"trace_id={format_trace_id(ctx.trace_id)} span_id={format_span_id(ctx.span_id)}"
-    )
+    logger.info("start training", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
     p = argparse.ArgumentParser()
     p.add_argument('--data-dir', required=True)
     p.add_argument('--out-dir', required=True)
@@ -2554,6 +2582,7 @@ def main():
         moe=args.moe,
         flight_uri=args.flight_uri,
     )
+    logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
     span.end()
 
 
