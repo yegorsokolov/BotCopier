@@ -14,6 +14,7 @@ import sys
 
 import capnp
 import zmq
+from pydantic import BaseModel, ValidationError
 try:  # optional websocket client
     from websocket import create_connection, WebSocket  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -98,6 +99,40 @@ ws_trades: WebSocket | None = None
 ws_metrics: WebSocket | None = None
 
 
+class TradeEvent(BaseModel):
+    event_id: int
+    event_time: str
+    broker_time: str
+    local_time: str
+    action: str
+    ticket: int
+    magic: int
+    source: str
+    symbol: str
+    order_type: int
+    lots: float
+    price: float
+    sl: float
+    tp: float
+    profit: float
+    comment: str
+    remaining_lots: float
+    decision_id: int | None = None
+
+
+class MetricEvent(BaseModel):
+    time: str
+    magic: int
+    win_rate: float
+    avg_profit: float
+    trade_count: int
+    drawdown: float
+    sharpe: float
+    file_write_errors: int
+    socket_errors: int
+    book_refresh_seconds: int
+
+
 def append_csv(path: Path, record: dict) -> None:
     """Append ``record`` to ``path`` writing a header row when the file is new."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,31 +166,36 @@ def process_trade(msg) -> None:
         trace_id = msg.traceId
     except Exception:
         pass
-    comment = msg.comment
-    if comment.startswith("span="):
-        parts = comment.split(";", 1)
-        span_id = parts[0][5:]
-        comment = parts[1] if len(parts) > 1 else ""
-    record = {
-        "event_id": msg.eventId,
-        "event_time": msg.eventTime,
-        "broker_time": msg.brokerTime,
-        "local_time": msg.localTime,
-        "action": msg.action,
-        "ticket": msg.ticket,
-        "magic": msg.magic,
-        "source": msg.source,
-        "symbol": msg.symbol,
-        "order_type": msg.orderType,
-        "lots": msg.lots,
-        "price": msg.price,
-        "sl": msg.sl,
-        "tp": msg.tp,
-        "profit": msg.profit,
-        "comment": comment,
-        "remaining_lots": msg.remainingLots,
-        "decision_id": msg.decisionId,
-    }
+    try:
+        comment = msg.comment
+        if comment.startswith("span="):
+            parts = comment.split(";", 1)
+            span_id = parts[0][5:]
+            comment = parts[1] if len(parts) > 1 else ""
+        record = {
+            "event_id": msg.eventId,
+            "event_time": msg.eventTime,
+            "broker_time": msg.brokerTime,
+            "local_time": msg.localTime,
+            "action": msg.action,
+            "ticket": msg.ticket,
+            "magic": msg.magic,
+            "source": msg.source,
+            "symbol": msg.symbol,
+            "order_type": msg.orderType,
+            "lots": msg.lots,
+            "price": msg.price,
+            "sl": msg.sl,
+            "tp": msg.tp,
+            "profit": msg.profit,
+            "comment": comment,
+            "remaining_lots": msg.remainingLots,
+            "decision_id": msg.decisionId,
+        }
+        record = TradeEvent(**record).dict()
+    except (AttributeError, ValidationError) as e:
+        logger.warning({"error": "invalid trade event", "details": str(e)})
+        return
     with tracer.start_as_current_span("process_event") as span:
         ctx = span.get_span_context()
         record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
@@ -170,18 +210,23 @@ def process_trade(msg) -> None:
 
 
 def process_metric(msg) -> None:
-    record = {
-        "time": msg.time,
-        "magic": msg.magic,
-        "win_rate": msg.winRate,
-        "avg_profit": msg.avgProfit,
-        "trade_count": msg.tradeCount,
-        "drawdown": msg.drawdown,
-        "sharpe": msg.sharpe,
-        "file_write_errors": msg.fileWriteErrors,
-        "socket_errors": msg.socketErrors,
-        "book_refresh_seconds": msg.bookRefreshSeconds,
-    }
+    try:
+        record = {
+            "time": msg.time,
+            "magic": msg.magic,
+            "win_rate": msg.winRate,
+            "avg_profit": msg.avgProfit,
+            "trade_count": msg.tradeCount,
+            "drawdown": msg.drawdown,
+            "sharpe": msg.sharpe,
+            "file_write_errors": msg.fileWriteErrors,
+            "socket_errors": msg.socketErrors,
+            "book_refresh_seconds": msg.bookRefreshSeconds,
+        }
+        record = MetricEvent(**record).dict()
+    except (AttributeError, ValidationError) as e:
+        logger.warning({"error": "invalid metric event", "details": str(e)})
+        return
     with tracer.start_as_current_span("process_metric") as span:
         ctx = span.get_span_context()
         record.setdefault("trace_id", format_trace_id(ctx.trace_id))
