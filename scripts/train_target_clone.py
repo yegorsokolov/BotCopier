@@ -1754,6 +1754,77 @@ def train(
         print(f"Model written to {model_path}")
         return
 
+    if regime_model_file and regime_model_file.exists():
+        regimes = np.array([int(f.get("regime", 0)) for f in features])
+        all_feat = [dict(f) for f in features]
+        for f in all_feat:
+            f.pop("profit", None)
+            f.pop("regime", None)
+            for k in list(f.keys()):
+                if k.startswith("regime_"):
+                    f.pop(k, None)
+        X_all = vec.transform(all_feat)
+        gating_clf = LogisticRegression(max_iter=200, multi_class="multinomial")
+        gating_clf.fit(X_all, regimes)
+
+        regime_models = []
+        for r in sorted(set(regimes)):
+            mask = regimes == r
+            if not mask.any():
+                continue
+            X_r = X_all[mask]
+            y_r = labels[mask]
+            if len(np.unique(y_r)) < 2:
+                continue
+            sw = np.array(
+                [abs(features[i].get("profit", features[i].get("lots", 1.0))) for i in np.where(mask)[0]],
+                dtype=float,
+            )
+            clf_r = LogisticRegression(max_iter=200)
+            clf_r.fit(X_r, y_r, sample_weight=sw)
+            regime_models.append(
+                {
+                    "regime": int(r),
+                    "coefficients": clf_r.coef_[0].astype(np.float32).tolist(),
+                    "intercept": float(clf_r.intercept_[0]),
+                    "classes": [int(c) for c in clf_r.classes_],
+                    "feature_names": feature_names,
+                }
+            )
+
+        model = {
+            "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
+            "trained_at": datetime.utcnow().isoformat(),
+            "feature_names": feature_names,
+            "model_type": "regime_logreg",
+            "meta_model": {
+                "feature_names": feature_names,
+                "coefficients": gating_clf.coef_.astype(np.float32).tolist(),
+                "intercepts": gating_clf.intercept_.astype(np.float32).tolist(),
+            },
+            "regime_models": regime_models,
+            "last_event_id": int(last_event_id),
+            "mean": feature_mean.astype(np.float32).tolist(),
+            "std": feature_std.astype(np.float32).tolist(),
+        }
+        if ae_info:
+            model["autoencoder"] = ae_info
+        if data_commits:
+            model["data_commit"] = ",".join(sorted(set(data_commits)))
+        if data_checksums:
+            model["data_checksum"] = ",".join(sorted(set(data_checksums)))
+        if calendar_events:
+            model["calendar_events"] = [
+                [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+            ]
+            model["event_window"] = float(event_window)
+        model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+        open_func = gzip.open if compress_model else open
+        with open_func(model_path, "wt") as f:
+            json.dump(model, f)
+        print(f"Model written to {model_path}")
+        return
+
     if stack_models:
         estimators = []
         for mt in stack_models:

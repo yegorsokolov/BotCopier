@@ -48,21 +48,29 @@ def generate(
     if isinstance(model_jsons, (str, Path)):
         model_jsons = [model_jsons]
     models: List[dict] = []
+    gating_data = None
     for mj in model_jsons:
         open_func = gzip.open if str(mj).endswith('.gz') else open
         with open_func(mj, 'rt') as f:
             data = json.load(f)
-        sessions = data.get('session_models')
-        if sessions:
-            base_info = {k: v for k, v in data.items() if k != 'session_models'}
-            for sm in sessions:
+        if data.get('regime_models') and data.get('meta_model'):
+            gating_data = data.get('meta_model')
+            base_info = {k: v for k, v in data.items() if k not in ('regime_models', 'meta_model')}
+            for sm in data.get('regime_models', []):
                 m = base_info.copy()
                 m.update(sm)
                 models.append(m)
         else:
-            models.append(data)
+            sessions = data.get('session_models')
+            if sessions:
+                base_info = {k: v for k, v in data.items() if k != 'session_models'}
+                for sm in sessions:
+                    m = base_info.copy()
+                    m.update(sm)
+                    models.append(m)
+            else:
+                models.append(data)
     base = models[0]
-    gating_data = None
     if gating_json:
         with open(gating_json, 'rt') as f:
             gating_data = json.load(f)
@@ -126,14 +134,22 @@ def generate(
     # Gating coefficients / intercepts
     if gating_data:
         g_feat = gating_data.get('feature_names', [])
-        g_coeff = gating_data.get('gating_coefficients', [])
+        g_coeff = gating_data.get('coefficients') or gating_data.get('gating_coefficients', [])
+        coeff_list: List[List[float]]
+        if g_coeff and isinstance(g_coeff[0], list):
+            coeff_list = g_coeff
+        else:
+            coeff_list = []
+            for i in range(len(models)):
+                start = i * len(g_feat)
+                coeff_list.append(g_coeff[start : start + len(g_feat)])
         g_rows: List[str] = []
-        for row in g_coeff:
+        for row in coeff_list:
             fmap = {f: c for f, c in zip(g_feat, row)}
             vec = [_fmt(fmap.get(f, 0.0)) for f in feature_names]
             g_rows.append('{' + ', '.join(vec) + '}')
         output = output.replace('__GATING_COEFFICIENTS__', ', '.join(g_rows))
-        g_inter = gating_data.get('gating_intercepts', [])
+        g_inter = gating_data.get('intercepts') or gating_data.get('gating_intercepts', [])
         g_inter_str = ', '.join(_fmt(x) for x in g_inter) if g_inter else ''
         output = output.replace('__GATING_INTERCEPTS__', g_inter_str)
     else:
