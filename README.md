@@ -241,18 +241,21 @@ model when ``model.json`` changes.
 ## Automatic Retraining
 
 The ``auto_retrain.py`` helper monitors the latest metrics produced by the
-observer.  When the win rate falls below a threshold or drawdown exceeds a
-limit, the script trains a new model with ``train_target_clone.py`` using only
-events after the previously processed ``last_event_id``.  The marker is stored
-alongside the trained model so subsequent runs continue from the most recent
-data.  After training it validates the model with ``backtest_strategy.py`` and
-publishes the updated ``model.json`` only if the backtest shows an improvement
-over the live metrics.
+observer. It can also compare recent feature distributions against a baseline
+using Population Stability Index (PSI) or Kolmogorov–Smirnov (KS) statistics.
+When the win rate falls below a threshold, drawdown exceeds a limit, or drift
+is above ``--drift-threshold``, the script trains a new model with
+``train_target_clone.py`` using only events after the previously processed
+``last_event_id``.  The marker is stored alongside the trained model so
+subsequent runs continue from the most recent data.  After training it
+validates the model with ``backtest_strategy.py`` and publishes the updated
+``model.json`` only if the backtest shows an improvement over the live metrics.
+The calculated drift metric is saved into ``model.json`` for audit purposes.
 
 Example cron job running every 15 minutes:
 
 ```cron
-*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2
+*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2 --baseline-file baseline.csv --recent-file recent.csv --drift-threshold 0.2
 ```
 
 Example systemd service and timer:
