@@ -1,0 +1,31 @@
+schema: '2.0'
+stages:
+  train_pipeline:
+    cmd: python scripts/upload_logs.py && python scripts/train_target_clone.py 
+      --data-dir observer_logs --out-dir models --learning-rate 0.1 
+      --n-estimators 100
+    deps:
+    - path: observer_logs
+      hash: md5
+      md5: d751713988987e9331980363e24189ce.dir
+      size: 0
+      nfiles: 0
+    - path: scripts/train_target_clone.py
+      hash: md5
+      md5: 95719d9afb4b029ae113a36075543fd0
+      size: 94657
+      isexec: true
+    - path: scripts/upload_logs.py
+      hash: md5
+      md5: 814effe1ae2114638687e01ac76710ef
+      size: 1972
+    params:
+      params.yaml:
+        training.learning_rate: 0.1
+        training.n_estimators: 100
+    outs:
+    - path: models
+      hash: md5
+      md5: d751713988987e9331980363e24189ce.dir
+      size: 0
+      nfiles: 0

@@ -54,6 +54,19 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    python scripts/promote_best_models.py models --dest models/best
    ```
 
+
+### DVC Pipeline
+
+The `observer_logs/` and `models/` directories are tracked with [DVC](https://dvc.org). A basic workflow:
+
+```bash
+# reproduce training and upload logs
+dvc repro train_pipeline
+# push artifacts and metadata
+dvc push
+# verify data hashes
+dvc status
+```
 ## External Training
 
 Exported logs can be processed by the Python scripts.  A typical workflow is:
