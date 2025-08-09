@@ -30,3 +30,11 @@ def test_publish_model(tmp_path: Path):
     assert data["threshold"] == 0.6
     assert data["hourly_thresholds"] == [0.1] * 24
 
+
+def test_publish_onnx(tmp_path: Path):
+    onnx_file = tmp_path / "model.onnx"
+    onnx_file.write_bytes(b"dummy")
+    files_dir = tmp_path / "files"
+    publish(onnx_file, files_dir)
+    assert (files_dir / "model.onnx").exists()
+

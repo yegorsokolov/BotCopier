@@ -4,13 +4,34 @@
 import argparse
 import json
 import gzip
+import shutil
 from pathlib import Path
 
 
-def publish(model_json: Path, files_dir: Path) -> None:
-    """Copy minimal model fields to ``files_dir/model.json`` or ``model.json.gz``."""
-    open_func = gzip.open if str(model_json).endswith('.gz') else open
-    with open_func(model_json, 'rt') as f:
+def publish(model_path: Path, files_dir: Path) -> None:
+    """Copy model artifacts to ``files_dir``.
+
+    If ``model_path`` points to an ONNX file (or a directory containing one),
+    that file is copied directly.  Otherwise minimal fields from a JSON model
+    are extracted and written to the destination, preserving compression.
+    """
+
+    if model_path.is_dir():
+        for name in ["model.onnx", "model.json", "model.json.gz"]:
+            candidate = model_path / name
+            if candidate.exists():
+                model_path = candidate
+                break
+
+    if model_path.suffix == ".onnx":
+        files_dir.mkdir(parents=True, exist_ok=True)
+        dest = files_dir / "model.onnx"
+        shutil.copy(model_path, dest)
+        print(f"ONNX model copied to {dest}")
+        return
+
+    open_func = gzip.open if model_path.suffix == ".gz" else open
+    with open_func(model_path, "rt") as f:
         data = json.load(f)
 
     out = {
@@ -22,19 +43,19 @@ def publish(model_json: Path, files_dir: Path) -> None:
     }
 
     files_dir.mkdir(parents=True, exist_ok=True)
-    dest = files_dir / model_json.name
-    open_func_out = gzip.open if dest.suffix == '.gz' else open
-    with open_func_out(dest, 'wt') as f:
+    dest = files_dir / model_path.name
+    open_func_out = gzip.open if dest.suffix == ".gz" else open
+    with open_func_out(dest, "wt") as f:
         json.dump(out, f, indent=2)
     print(f"Model parameters written to {dest}")
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Publish model parameters")
-    p.add_argument("model_json", help="path to trained model.json")
+    p.add_argument("model", help="path to trained model directory or file")
     p.add_argument("files_dir", help="MT4 Files directory")
     args = p.parse_args()
-    publish(Path(args.model_json), Path(args.files_dir))
+    publish(Path(args.model), Path(args.files_dir))
 
 
 if __name__ == "__main__":

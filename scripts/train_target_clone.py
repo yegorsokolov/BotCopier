@@ -108,6 +108,22 @@ def detect_resources():
     }
 
 
+def _export_onnx(clf, feature_names: List[str], out_dir: Path) -> None:
+    """Export ``clf`` to ONNX format if dependencies are available."""
+    try:
+        from skl2onnx import convert_sklearn
+        from skl2onnx.common.data_types import FloatTensorType
+
+        onnx_path = out_dir / "model.onnx"
+        initial_type = [("input", FloatTensorType([None, len(feature_names)]))]
+        model_onnx = convert_sklearn(clf, initial_types=initial_type)
+        with open(onnx_path, "wb") as f:
+            f.write(model_onnx.SerializeToString())
+        print(f"ONNX model written to {onnx_path}")
+    except Exception as exc:  # pragma: no cover - optional dependency
+        print(f"ONNX conversion skipped: {exc}")
+
+
 def _sma(values, window):
     """Simple moving average for the last ``window`` values."""
     if not values:
@@ -1040,6 +1056,7 @@ def _train_lite_mode(
     with open_func(model_path, "wt") as f:
         json.dump(model, f)
     print(f"Model written to {model_path}")
+    _export_onnx(clf, feature_names, out_dir)
 
 
 def train(
@@ -2294,6 +2311,7 @@ def train(
         json.dump(model, f, indent=2)
 
     print(f"Model written to {model_path}")
+    _export_onnx(clf, model.get("feature_names", []), out_dir)
 
     if "coefficients" in model and "intercept" in model:
         w = np.array(model["coefficients"], dtype=float)
