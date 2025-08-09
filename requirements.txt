@@ -9,6 +9,8 @@ opentelemetry-sdk
 opentelemetry-exporter-otlp
 protobuf
 grpcio
+pyzmq
+pycapnp
 onnxruntime
 skl2onnx
 
