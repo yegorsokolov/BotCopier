@@ -1,0 +1,14 @@
+stages:
+  train_pipeline:
+    cmd: python scripts/upload_logs.py && python scripts/train_target_clone.py --data-dir observer_logs --out-dir models --learning-rate 0.1 --n-estimators 100
+    deps:
+      - observer_logs
+      - scripts/train_target_clone.py
+      - scripts/upload_logs.py
+    params:
+      - training.learning_rate
+      - training.n_estimators
+    meta:
+      commit: ce4d18fe3e26793c55a17a992472d02fe78d3c9e
+    outs:
+      - models
