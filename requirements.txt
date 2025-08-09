@@ -18,6 +18,7 @@ skl2onnx
 fastapi
 uvicorn
 websocket-client
+requests
 
 # Optional extras
 xgboost; extra == "xgboost"
