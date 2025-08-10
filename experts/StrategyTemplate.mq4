@@ -895,6 +895,9 @@ bool HasOpenOrders()
 
 void OnTick()
 {
+   // When ReloadModelInterval is set, periodically check for updated
+   // coefficients written by ``online_trainer.py`` and reload them without
+   // recompiling the EA.
    if(ReloadModelInterval > 0 && TimeCurrent() - LastModelLoad >= ReloadModelInterval)
    {
       if(LoadModel())

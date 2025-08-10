@@ -54,6 +54,17 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    python scripts/promote_best_models.py models --dest models/best
    ```
 
+## Online Training
+
+`scripts/online_trainer.py` keeps a model updated as new trades arrive.  It can
+tail ``logs/trades_raw.csv`` or consume newline-delimited JSON records from a
+socket and applies :func:`sklearn.linear_model.SGDClassifier.partial_fit`
+after each batch.  When the coefficients change the updated ``model.json`` is
+written and ``generate_mql4_from_model.py`` is invoked to rebuild the strategy
+source.  Set ``ReloadModelInterval`` on the EA so it periodically reloads the
+file from the terminal's ``Files`` directory and continues trading with the new
+parameters.
+
 ## Dashboard
 
 A small web dashboard can display trades, metrics and training progress in real time.

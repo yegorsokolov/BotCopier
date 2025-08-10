@@ -1,27 +1,31 @@
 import json
+import subprocess
 from pathlib import Path
+
+import numpy as np
 
 from scripts.online_trainer import OnlineTrainer
 
 
-def test_online_trainer_updates(tmp_path: Path):
-    save_path = tmp_path / "model_online.json"
-    trainer = OnlineTrainer(save_path=save_path, save_interval=0)
-    events = [
-        {"event_id": 1, "features": {"a": 1.0, "b": 0.0}, "y": 1},
-        {"event_id": 2, "features": {"a": 0.0, "b": 1.0}, "y": 0},
-    ]
-    for e in events:
-        trainer.process_event(e)
-    trainer.save_model()
-    data = json.loads(save_path.read_text())
-    assert data["last_event_id"] == 2
-    assert any(abs(c) > 0 for c in data["coefficients"])
+def test_online_trainer_updates(tmp_path: Path, monkeypatch):
+    model_path = tmp_path / "model.json"
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
 
-    # Reload and continue training
-    trainer2 = OnlineTrainer(save_path=save_path, save_interval=0)
-    before = dict(trainer2.model._weights)
-    trainer2.process_event({"event_id": 3, "features": {"a": 1.0, "b": 1.0}, "y": 1})
-    trainer2.save_model()
-    after = dict(trainer2.model._weights)
-    assert after["a"] != before.get("a", 0.0) or after["b"] != before.get("b", 0.0)
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2, run_generator=True)
+    batch = [
+        {"a": 1.0, "b": 0.0, "y": 1},
+        {"a": 0.0, "b": 1.0, "y": 0},
+    ]
+    trainer.update(batch)
+
+    data = json.loads(model_path.read_text())
+    assert set(data["feature_names"]) == {"a", "b"}
+    assert len(calls) == 1  # generation triggered
+
+    trainer2 = OnlineTrainer(model_path=model_path, batch_size=1, run_generator=False)
+    before = trainer2.clf.coef_.copy()
+    trainer2.update([{"a": 1.0, "b": 1.0, "y": 1}])
+    after = trainer2.clf.coef_.copy()
+    assert not np.array_equal(before, after)
+
