@@ -34,6 +34,7 @@ extern int    BookRefreshSeconds           = 5;
 extern string AnomalyServiceUrl            = "http://127.0.0.1:8000/anomaly";
 extern double AnomalyThreshold             = 0.1;
 extern string OtelEndpoint                = "";
+extern string ModelStateFile              = "model_online.json";
 
 int timer_handle;
 
@@ -46,6 +47,7 @@ int      trade_log_handle = INVALID_HANDLE;
 int      log_db_handle    = INVALID_HANDLE;
 string   trade_log_buffer[];
 int      NextEventId = 1;
+datetime ModelTimestamp = 0;
 int      FileWriteErrors = 0;
 int      FlightClient = INVALID_HANDLE;
 int      SocketErrors = 0;
@@ -211,6 +213,42 @@ void LoadPending()
    }
 }
 
+double ExtractJsonNumber(string json, string key)
+{
+   int pos = StringFind(json, key);
+   if(pos < 0)
+      return(0.0);
+   pos = StringFind(json, ":", pos);
+   if(pos < 0)
+      return(0.0);
+   pos++;
+   while(pos < StringLen(json) && StringMid(json, pos, 1) == " ") pos++;
+   int end = pos;
+   while(end < StringLen(json))
+   {
+      string ch = StringMid(json, end, 1);
+      if(ch == "," || ch == "}")
+         break;
+      end++;
+   }
+   string val = StringSubstr(json, pos, end-pos);
+   return(StrToDouble(val));
+}
+
+void LoadModelState()
+{
+   int h = FileOpen(ModelStateFile, FILE_READ|FILE_SHARE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   string content = "";
+   while(!FileIsEnding(h))
+      content += FileReadString(h);
+   FileClose(h);
+   int last_id = (int)ExtractJsonNumber(content, "\"last_event_id\"");
+   if(last_id > 0)
+      NextEventId = last_id + 1;
+}
+
 bool CheckAnomaly(double price, double sl, double tp, double lots, double spread, double slippage)
 {
    string payload = StringFormat("[%.5f,%.5f,%.5f,%.2f,%.5f,%.5f]", price, sl, tp, lots, spread, slippage);
@@ -322,6 +360,8 @@ int OnInit()
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
    DirectoryCreate(LogDirectoryName);
+   LoadModelState();
+   ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    LoadPending();
    string symbols_json = "[";
    for(int k=0; k<ArraySize(track_symbols); k++)
@@ -585,6 +625,12 @@ void OnTick()
 {
    uint tick_start = GetTickCount();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   datetime ts = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
+   if(ts != ModelTimestamp)
+   {
+      LoadModelState();
+      ModelTimestamp = ts;
+   }
    int current[];
    int cur_idx = 0;
    ArrayResize(current, OrdersTotal());

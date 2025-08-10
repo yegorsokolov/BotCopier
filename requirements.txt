@@ -1,6 +1,7 @@
 numpy
 pandas
 scikit-learn
+river
 psutil
 pytest
 aiohttp
