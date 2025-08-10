@@ -1288,6 +1288,8 @@ def train(
     moe: bool = False,
     flight_uri: str | None = None,
     use_encoder: bool = False,
+    uncertain_file: Path | None = None,
+    uncertain_weight: float = 2.0,
 ):
     """Train a simple classifier model from the log directory."""
     if lite_mode:
@@ -1477,7 +1479,30 @@ def train(
                 max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
                 if not pd.isna(max_id):
                     last_event_id = max(last_event_id, int(max_id))
-
+    # append labeled uncertain decisions
+    base_len = len(features)
+    ufile = uncertain_file or (data_dir / "uncertain_decisions_labeled.csv")
+    added = 0
+    if ufile.exists():
+        df_u = pd.read_csv(ufile, sep=";")
+        extra_feats: list[dict[str, float]] = []
+        extra_labels: list[float] = []
+        for _, row in df_u.iterrows():
+            feat_str = str(row.get("features", ""))
+            vals = [v for v in feat_str.split(",") if v != ""]
+            feat = {f"f{i}": float(v) for i, v in enumerate(vals)}
+            extra_feats.append(feat)
+            extra_labels.append(float(row.get("label", 0)))
+        if extra_feats:
+            features.extend(extra_feats)
+            labels = np.concatenate([labels, np.array(extra_labels)])
+            zeros = np.zeros(len(extra_feats))
+            sl_targets = np.concatenate([sl_targets, zeros])
+            tp_targets = np.concatenate([tp_targets, zeros])
+            hours = np.concatenate([hours, zeros.astype(int)])
+            lot_targets = np.concatenate([lot_targets, zeros])
+            added = len(extra_feats)
+    uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
     regime_info = None
@@ -1523,6 +1548,7 @@ def train(
             tp_targets = tp_targets[mask]
             hours = hours[mask]
             lot_targets = lot_targets[mask]
+            uncertainty_mask = uncertainty_mask[mask]
         ae_info = {
             "weights": [w.astype(np.float32).tolist() for w in ae_model.coefs_],
             "bias": [b.astype(np.float32).tolist() for b in ae_model.intercepts_],
@@ -1560,6 +1586,7 @@ def train(
         lot_val = np.array([])
         hours_train = hours
         hours_val = np.array([])
+        unc_train_mask = uncertainty_mask
     else:
         tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
         # select the final chronological split for validation
@@ -1576,6 +1603,7 @@ def train(
         lot_val = lot_targets[val_idx]
         hours_train = hours[train_idx]
         hours_val = hours[val_idx]
+        unc_train_mask = uncertainty_mask[train_idx]
 
         # if the training split ended up with only one class, fall back to using
         # all data for training so the model can be fit
@@ -1586,15 +1614,19 @@ def train(
             hours_val = np.array([])
             lot_train = lot_targets
             lot_val = np.array([])
+            unc_train_mask = uncertainty_mask
 
-    sample_weight = None
     coef_variances = None
     noise_variance = None
+    base_weight = np.ones(len(feat_train), dtype=float)
     if model_type in ("logreg", "bayes_logreg") and not grid_search:
-        sample_weight = np.array(
+        base_weight *= np.array(
             [abs(f.get("profit", f.get("lots", 1.0))) for f in feat_train],
             dtype=float,
         )
+    if unc_train_mask.size:
+        base_weight *= np.where(unc_train_mask > 0, uncertain_weight, 1.0)
+    sample_weight = base_weight if not np.allclose(base_weight, 1.0) else None
 
     feat_train_clf = [dict(f) for f in feat_train]
     feat_val_clf = [dict(f) for f in feat_val]
@@ -2768,6 +2800,8 @@ def main():
     p.add_argument('--moe', action='store_true', help='train mixture-of-experts model per symbol')
     p.add_argument('--federated-server', help='URL of federated averaging server')
     p.add_argument('--use-encoder', action='store_true', help='apply pretrained contrastive encoder')
+    p.add_argument('--uncertain-file', help='CSV with labeled uncertain decisions')
+    p.add_argument('--uncertain-weight', type=float, default=2.0, help='sample weight multiplier for labeled uncertainties')
     args = p.parse_args()
     global START_EVENT_ID
     if args.resume:
@@ -2840,6 +2874,8 @@ def main():
         moe=args.moe,
         flight_uri=args.flight_uri,
         use_encoder=args.use_encoder,
+        uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
+        uncertain_weight=args.uncertain_weight,
     )
     if args.federated_server:
         model_path = Path(args.out_dir) / (
