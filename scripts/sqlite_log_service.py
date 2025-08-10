@@ -9,6 +9,7 @@ from pathlib import Path
 from asyncio import StreamReader, StreamWriter, Queue
 
 FIELDS = [
+    "schema_version",
     "event_id",
     "event_time",
     "broker_time",

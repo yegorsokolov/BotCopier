@@ -108,6 +108,7 @@ ws_metrics: WebSocket | None = None
 
 
 class TradeEvent(BaseModel):
+    schema_version: int
     event_id: int
     event_time: str
     broker_time: str
@@ -129,6 +130,7 @@ class TradeEvent(BaseModel):
 
 
 class MetricEvent(BaseModel):
+    schema_version: int
     time: str
     magic: int
     win_rate: float
@@ -203,6 +205,7 @@ def process_trade(msg) -> None:
             span_id = parts[0][5:]
             comment = parts[1] if len(parts) > 1 else ""
         record = {
+            "schema_version": SCHEMA_VERSION,
             "event_id": _get(msg, "eventId", "event_id"),
             "event_time": _get(msg, "eventTime", "event_time"),
             "broker_time": _get(msg, "brokerTime", "broker_time"),
@@ -251,6 +254,7 @@ def process_metric(msg) -> None:
     span_id = _get(msg, "spanId", "span_id") or ""
     try:
         record = {
+            "schema_version": SCHEMA_VERSION,
             "time": _get(msg, "time"),
             "magic": _get(msg, "magic"),
             "win_rate": _get(msg, "winRate", "win_rate"),
