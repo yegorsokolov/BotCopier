@@ -22,6 +22,8 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
   - `plot_metrics.py` – plot metric history using Matplotlib.
   - `plot_feature_importance.py` – display SHAP feature importances saved in `model.json`.
   - `nats_stream.py` – proxy that publishes trade and metric events to NATS JetStream.
+  - `nats_publisher.py` – send a single encoded event to NATS JetStream.
+  - `nats_consumer.py` – persist NATS events to CSV and/or SQLite.
 - `models/` – location for generated models.
 - `config.json` – example configuration file.
 
@@ -356,8 +358,9 @@ After completing a trial run commit both `run_info.json` files along with the ge
 `Observer_TBot` serialises trade events and periodic metric summaries using
 Protobuf and forwards them to a local proxy. The proxy
 (`scripts/nats_stream.py`) publishes each payload to NATS JetStream subjects
-``trades`` and ``metrics``. Consumers subscribe with durable names so no events
-are missed.
+``trades`` and ``metrics``. The first byte of every message is the schema
+version, currently ``1``. Publishers and consumers compare this byte and log a
+warning if it does not match their expected version.
 
 Start the proxy and listeners:
 
@@ -366,6 +369,18 @@ python scripts/nats_stream.py
 python scripts/stream_listener.py
 python scripts/metrics_collector.py --db metrics.db --http-port 8080 \
     --prometheus-port 8000
+```
+
+Publish a single event from a JSON description:
+
+```bash
+python scripts/nats_publisher.py trade trade.json
+```
+
+Consume events and store them for training:
+
+```bash
+python scripts/nats_consumer.py --trades-csv trades.csv --metrics-sqlite metrics.db
 ```
 
 `stream_listener.py` appends trade events to ``logs/trades_raw.csv`` and metric

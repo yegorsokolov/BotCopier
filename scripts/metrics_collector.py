@@ -14,7 +14,7 @@ from aiohttp import web
 
 import nats
 from google.protobuf.json_format import MessageToDict
-from proto import metrics_pb2
+from proto import metric_event_pb2
 
 SCHEMA_VERSION = 1
 
@@ -227,7 +227,7 @@ def serve(
                     )
                     await msg.ack()
                     continue
-                m = metrics_pb2.Metrics.FromString(msg.data[1:])
+                m = metric_event_pb2.MetricEvent.FromString(msg.data[1:])
                 obj = MessageToDict(m, preserving_proto_field_name=True)
                 trace_id = obj.get("trace_id", "")
                 span_id = obj.get("span_id", "")

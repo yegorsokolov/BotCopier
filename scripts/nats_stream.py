@@ -17,7 +17,7 @@ import nats
 from google.protobuf.message import DecodeError
 
 from otel_logging import setup_logging
-from proto import trade_event_pb2, metrics_pb2
+from proto import trade_event_pb2, metric_event_pb2
 
 SCHEMA_VERSION = 1
 TRADE_MSG = 0
@@ -51,7 +51,7 @@ async def _handle_conn(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
                 log.info("published trade %d bytes", len(data))
             elif msg_type == METRIC_MSG:
                 try:
-                    metrics_pb2.Metrics.FromString(data)
+                    metric_event_pb2.MetricEvent.FromString(data)
                 except DecodeError:
                     continue
                 await js.publish("metrics", bytes([version]) + data)

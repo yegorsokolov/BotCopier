@@ -631,7 +631,7 @@ string EscapeJson(string s)
    return(s);
 }
 
-void SendTrade(uchar &payload[])
+bool SendTrade(uchar &payload[])
 {
    int len = ArraySize(payload);
    uchar out[];
@@ -639,10 +639,14 @@ void SendTrade(uchar &payload[])
    out[0] = (uchar)SCHEMA_VERSION;
    ArrayCopy(out, payload, 1, 0, len);
    if(!NatsPublish("trades", out, ArraySize(out)))
+   {
       SocketErrors++;
+      return(false);
+   }
+   return(true);
 }
 
-void SendMetrics(uchar &payload[])
+bool SendMetrics(uchar &payload[])
 {
    int len = ArraySize(payload);
    uchar out[];
@@ -650,7 +654,11 @@ void SendMetrics(uchar &payload[])
    out[0] = (uchar)SCHEMA_VERSION;
    ArrayCopy(out, payload, 1, 0, len);
    if(!NatsPublish("metrics", out, ArraySize(out)))
+   {
       SocketErrors++;
+      return(false);
+   }
+   return(true);
 }
 
 string FileNameFromPath(string path)
@@ -743,42 +751,6 @@ void LogTrade(string action, int ticket, int magic, string source,
       profit, profit_after, spread, TraceId, span_id, comment_with_span, remaining, slippage, (int)volume,
       open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom);
 
-   if(CurrentBackend==LOG_BACKEND_CSV)
-   {
-      if(trade_log_handle==INVALID_HANDLE)
-         return;
-      if(EnableDebugLogging)
-      {
-         FileSeek(trade_log_handle, 0, SEEK_END);
-         int _wr = FileWrite(trade_log_handle, line);
-         if(_wr <= 0)
-            FileWriteErrors++;
-         FileFlush(trade_log_handle);
-      }
-      else
-      {
-         int n = ArraySize(trade_log_buffer);
-         ArrayResize(trade_log_buffer, n+1);
-         trade_log_buffer[n] = line;
-      }
-   }
-   else if(CurrentBackend==LOG_BACKEND_SQLITE)
-   {
-      if(log_db_handle!=INVALID_HANDLE)
-      {
-         string sql = StringFormat(
-            "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d)",
-            id,
-            SqlEscape(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
-            SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
-            SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
-            SqlEscape(action), ticket, magic, SqlEscape(source), SqlEscape(symbol), order_type,
-            lots, price, sl, tp, profit, profit_after, spread, SqlEscape(TraceId), SqlEscape(span_id), SqlEscape(comment), remaining,
-            slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom);
-         DatabaseExecute(log_db_handle, sql);
-      }
-   }
-
    uchar payload[];
    int len = SerializeTradeEvent(
       SCHEMA_VERSION, id, TraceId,
@@ -788,8 +760,47 @@ void LogTrade(string action, int ticket, int magic, string source,
       action, ticket, magic, source, symbol, order_type,
       lots, price, sl, tp, profit, profit_after, spread, comment_with_span, remaining,
       slippage, (int)volume, open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, payload);
+   bool sent = false;
    if(len>0)
-      SendTrade(payload);
+      sent = SendTrade(payload);
+   if(!sent)
+   {
+      if(CurrentBackend==LOG_BACKEND_CSV)
+      {
+         if(trade_log_handle==INVALID_HANDLE)
+            return;
+         if(EnableDebugLogging)
+         {
+            FileSeek(trade_log_handle, 0, SEEK_END);
+            int _wr = FileWrite(trade_log_handle, line);
+            if(_wr <= 0)
+               FileWriteErrors++;
+            FileFlush(trade_log_handle);
+         }
+         else
+         {
+            int n = ArraySize(trade_log_buffer);
+            ArrayResize(trade_log_buffer, n+1);
+            trade_log_buffer[n] = line;
+         }
+      }
+      else if(CurrentBackend==LOG_BACKEND_SQLITE)
+      {
+         if(log_db_handle!=INVALID_HANDLE)
+         {
+            string sql = StringFormat(
+               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d)",
+               id,
+               SqlEscape(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
+               SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
+               SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
+               SqlEscape(action), ticket, magic, SqlEscape(source), SqlEscape(symbol), order_type,
+               lots, price, sl, tp, profit, profit_after, spread, SqlEscape(TraceId), SqlEscape(span_id), SqlEscape(comment), remaining,
+               slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom);
+            DatabaseExecute(log_db_handle, sql);
+         }
+      }
+   }
    SendOtelSpan(TraceId, span_id, action);
 }
 
@@ -898,20 +909,6 @@ void WriteMetrics(datetime ts)
 {
    int h = INVALID_HANDLE;
    string fname = LogDirectoryName + "\\metrics.csv";
-   h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-   if(h==INVALID_HANDLE)
-   {
-      h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
-      if(h==INVALID_HANDLE)
-         return;
-      int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;var_breach_count;trace_id;span_id");
-      if(_wr <= 0)
-         FileWriteErrors++;
-   }
-   else
-   {
-      FileSeek(h, 0, SEEK_END);
-   }
 
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
    for(int m=0; m<ArraySize(target_magics); m++)
@@ -990,20 +987,40 @@ void WriteMetrics(datetime ts)
 
       string span_id = GenId(8);
       string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, TraceId, span_id);
-      if(h!=INVALID_HANDLE)
-      {
-         int _wr_line = FileWrite(h, line);
-         if(_wr_line <= 0)
-            FileWriteErrors++;
-      }
 
-       uchar payload[];
-       int len = SerializeMetrics(
+      uchar payload[];
+      int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
          trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, payload);
-       if(len>0)
-         SendMetrics(payload);
+      bool sent = false;
+      if(len>0)
+         sent = SendMetrics(payload);
+      if(!sent)
+      {
+         if(h==INVALID_HANDLE)
+         {
+            h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+            if(h==INVALID_HANDLE)
+            {
+               h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
+               if(h!=INVALID_HANDLE)
+               {
+                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;var_breach_count;trace_id;span_id");
+                  if(_wr <= 0)
+                     FileWriteErrors++;
+               }
+            }
+            else
+               FileSeek(h, 0, SEEK_END);
+         }
+         if(h!=INVALID_HANDLE)
+         {
+            int _wr_line = FileWrite(h, line);
+            if(_wr_line <= 0)
+               FileWriteErrors++;
+         }
+      }
       SendOtelSpan(TraceId, span_id, "metrics");
    }
 

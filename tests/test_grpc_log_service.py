@@ -3,7 +3,7 @@ from pathlib import Path
 
 import grpc
 
-from proto import trade_event_pb2, metrics_pb2
+from proto import trade_event_pb2, metric_event_pb2
 from scripts import grpc_log_service
 
 
@@ -45,7 +45,7 @@ def test_grpc_log_service(tmp_path: Path):
         )
         log_trade(trade)
 
-        metrics = metrics_pb2.Metrics(
+        metrics = metric_event_pb2.MetricEvent(
             time="t",
             magic=2,
             win_rate=0.5,
@@ -56,6 +56,7 @@ def test_grpc_log_service(tmp_path: Path):
             file_write_errors=0,
             socket_errors=0,
             book_refresh_seconds=5,
+            var_breach_count=0,
         )
         log_metrics(metrics)
     finally:

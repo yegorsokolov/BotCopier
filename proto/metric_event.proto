@@ -1,7 +1,7 @@
 syntax = "proto3";
 package tbot;
 
-message Metrics {
+message MetricEvent {
   string time = 1;
   int32 magic = 2;
   double win_rate = 3;
@@ -12,4 +12,5 @@ message Metrics {
   int32 file_write_errors = 8;
   int32 socket_errors = 9;
   int32 book_refresh_seconds = 10;
+  int32 var_breach_count = 11;
 }

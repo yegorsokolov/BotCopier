@@ -46,7 +46,7 @@ from opentelemetry.trace import (
     set_span_in_context,
 )
 
-from proto import trade_event_pb2, metrics_pb2
+from proto import trade_event_pb2, metric_event_pb2
 
 SCHEMA_VERSION = 1
 TRADE_MSG = 0
@@ -336,7 +336,7 @@ def main() -> int:
                 await msg.ack()
                 return
             try:
-                metric = metrics_pb2.Metrics.FromString(msg.data[1:])
+                metric = metric_event_pb2.MetricEvent.FromString(msg.data[1:])
             except Exception:
                 await msg.ack()
                 return
