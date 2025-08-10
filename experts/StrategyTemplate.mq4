@@ -84,6 +84,8 @@ double CachedBookBidVol = 0.0;
 double CachedBookAskVol = 0.0;
 double CachedBookImbalance = 0.0;
 datetime CachedBookTime = 0;
+double CachedNewsSentiment = 0.0;
+datetime CachedNewsTime = 0;
 int EncoderWindow = __ENCODER_WINDOW__;
 int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
@@ -515,6 +517,27 @@ double PairCorrelation(string sym1, string sym2, int window=5)
    if(den1 <= 0 || den2 <= 0)
       return(0.0);
    return(num / MathSqrt(den1 * den2));
+}
+
+double GetNewsSentiment()
+{
+   if(TimeCurrent() == CachedNewsTime)
+      return(CachedNewsSentiment);
+   CachedNewsTime = TimeCurrent();
+   CachedNewsSentiment = 0.0;
+   int h = FileOpen("news_sentiment.csv", FILE_READ|FILE_CSV|FILE_COMMON, ';');
+   if(h == INVALID_HANDLE)
+      return(0.0);
+   while(!FileIsEnding(h))
+   {
+      string ts = FileReadString(h);
+      string sym = FileReadString(h);
+      double sc = FileReadNumber(h);
+      if(sym == SymbolToTrade)
+         CachedNewsSentiment = sc;
+   }
+   FileClose(h);
+   return(CachedNewsSentiment);
 }
 
 double GetFeature(int index)

@@ -22,6 +22,7 @@ websocket-client
 requests
 confluent-kafka[avro]
 fastavro
+transformers
 
 # Optional extras
 xgboost; extra == "xgboost"

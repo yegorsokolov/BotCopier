@@ -415,6 +415,8 @@ def generate(
             elif name.startswith('ae') and name[2:].isdigit():
                 idx_ae = int(name[2:])
                 expr = f'GetEncodedFeature({idx_ae})'
+            elif name == 'news_sentiment':
+                expr = 'GetNewsSentiment()'
         if expr is None:
             expr = '0.0'
         cases.append(f"      case {idx}:\n         val = ({expr});\n         break;")
