@@ -139,15 +139,20 @@ def _has_sufficient_gpu(min_gb: float = 1.0) -> bool:
     return False
 
 
-class ContrastiveEncoder(nn.Module):
-    """Simple linear encoder used for contrastive pretraining."""
+if _HAS_TORCH:
+    class ContrastiveEncoder(nn.Module):
+        """Simple linear encoder used for contrastive pretraining."""
 
-    def __init__(self, window: int, dim: int):
-        super().__init__()
-        self.layer = nn.Linear(window, dim, bias=False)
+        def __init__(self, window: int, dim: int):
+            super().__init__()
+            self.layer = nn.Linear(window, dim, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple
-        return self.layer(x)
+        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple
+            return self.layer(x)
+else:  # pragma: no cover - torch not available
+    class ContrastiveEncoder:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            raise ImportError("PyTorch not available")
 
 
 def _load_contrastive_encoder(path: Path) -> ContrastiveEncoder:
@@ -740,6 +745,41 @@ def _load_calendar(file: Path) -> list[tuple[datetime, float]]:
     return events
 
 
+def _load_news_sentiment(file: Path) -> dict[str, list[tuple[datetime, float]]]:
+    """Load news sentiment scores from a SQLite or CSV file."""
+    if file is None or not file.exists():
+        return {}
+    data: dict[str, list[tuple[datetime, float]]] = {}
+    try:
+        if file.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+            conn = sqlite3.connect(file)
+            cur = conn.cursor()
+            rows = cur.execute(
+                "SELECT symbol, timestamp, score FROM sentiment ORDER BY timestamp"
+            ).fetchall()
+            conn.close()
+            for sym, ts, sc in rows:
+                try:
+                    t = datetime.fromisoformat(str(ts))
+                except Exception:
+                    continue
+                data.setdefault(str(sym), []).append((t, float(sc)))
+        else:
+            df = pd.read_csv(file)
+            for _, row in df.iterrows():
+                t = pd.to_datetime(row.get("timestamp"), utc=False, errors="coerce")
+                if pd.isna(t):
+                    continue
+                sym = str(row.get("symbol", ""))
+                score = float(row.get("score", 0.0) or 0.0)
+                data.setdefault(sym, []).append((t.to_pydatetime(), score))
+    except Exception:
+        return {}
+    for lst in data.values():
+        lst.sort(key=lambda x: x[0])
+    return data
+
+
 def _read_last_event_id(out_dir: Path) -> int:
     """Read ``last_event_id`` from an existing model file in ``out_dir``."""
     json_path = out_dir / "model.json"
@@ -785,6 +825,7 @@ def _extract_features(
     calendar_events: list[tuple[datetime, float]] | None = None,
     event_window: float = 60.0,
     perf_budget: float | None = None,
+    news_sentiment: dict[str, list[tuple[datetime, float]]] | None = None,
 ):
     feature_dicts = []
     labels = []
@@ -825,6 +866,7 @@ def _extract_features(
         np.array(encoder.get("centers", []), dtype=float) if encoder else np.empty((0, 0))
     )
     calendar_events = calendar_events or []
+    news_indices = {sym: 0 for sym in (news_sentiment or {}).keys()}
     row_idx = 0
 
     start_time = time.perf_counter()
@@ -991,9 +1033,21 @@ def _extract_features(
             vals = deltas.dot(enc_weights)
             for i, v in enumerate(vals):
                 feat[f"ae{i}"] = float(v)
-            if enc_centers.size > 0:
-                d = ((enc_centers - vals) ** 2).sum(axis=1)
-                feat["regime"] = float(int(np.argmin(d)))
+        if enc_centers.size > 0:
+            d = ((enc_centers - vals) ** 2).sum(axis=1)
+            feat["regime"] = float(int(np.argmin(d)))
+
+        if news_sentiment is not None:
+            sent_list = news_sentiment.get(symbol)
+            score = 0.0
+            if sent_list:
+                idx = news_indices.get(symbol, 0)
+                while idx + 1 < len(sent_list) and sent_list[idx + 1][0] <= t:
+                    idx += 1
+                news_indices[symbol] = idx
+                if sent_list[idx][0] <= t:
+                    score = float(sent_list[idx][1])
+            feat["news_sentiment"] = score
 
         prices.append(price)
         sym_prices.append(price)
@@ -1055,6 +1109,8 @@ def _extract_features(
         enabled_feats.append("adx")
     if higher_timeframes:
         enabled_feats.extend(f"tf_{tf}" for tf in higher_timeframes)
+    if news_sentiment is not None:
+        enabled_feats.append("news_sentiment")
     logging.info("Enabled features: %s", sorted(enabled_feats))
 
     return (
@@ -1100,6 +1156,7 @@ def _train_lite_mode(
     corr_pairs=None,
     corr_window: int = 5,
     extra_price_series=None,
+    news_sentiment=None,
     calendar_events: list[tuple[datetime, float]] | None = None,
     event_window: float = 60.0,
     encoder_file: Path | None = None,
@@ -1169,6 +1226,7 @@ def _train_lite_mode(
             encoder=encoder,
             calendar_events=calendar_events,
             event_window=event_window,
+            news_sentiment=news_sentiment,
         )
         if not f_chunk:
             continue
@@ -1290,8 +1348,10 @@ def train(
     use_encoder: bool = False,
     uncertain_file: Path | None = None,
     uncertain_weight: float = 2.0,
+    news_sentiment_file: Path | None = None,
 ):
     """Train a simple classifier model from the log directory."""
+    news_data = _load_news_sentiment(news_sentiment_file) if news_sentiment_file else None
     if lite_mode:
         regime_model = None
         if regime_model_file and regime_model_file.exists():
@@ -1316,6 +1376,7 @@ def train(
             corr_pairs=corr_pairs,
             corr_window=corr_window,
             extra_price_series=extra_price_series,
+            news_sentiment=news_data,
             calendar_events=calendar_events,
             event_window=event_window,
             encoder_file=encoder_file,
@@ -1414,6 +1475,7 @@ def train(
                     encoder=encoder,
                     calendar_events=calendar_events,
                     event_window=event_window,
+                    news_sentiment=news_data,
                 )
                 features.extend(f_chunk)
                 labels_list.append(l_chunk)
@@ -1467,6 +1529,7 @@ def train(
                 encoder=encoder,
                 calendar_events=calendar_events,
                 event_window=event_window,
+                news_sentiment=news_data,
             )
     else:
         encoder = None
