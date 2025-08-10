@@ -6,11 +6,8 @@
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, int decision_id, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, uchar &out[]);
 #import
-
-#import "flight_bridge.dll"
-int FlightConnect(string uri);
-bool FlightSend(int client, string path, uchar &payload[], int len);
-void FlightClose(int client);
+#import "nats_bridge.dll"
+bool NatsPublish(string subject, uchar &payload[], int len);
 #import
 
 extern string TargetMagicNumbers = "12345,23456";
@@ -26,7 +23,6 @@ extern string LogDirectoryName              = "observer_logs"; // resume event_i
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
-extern string FlightUri                  = "grpc://127.0.0.1:8815";
 extern string CommitHash                   = "";
 extern string ModelVersion                 = "";
 extern string TraceId                      = "";
@@ -49,15 +45,12 @@ string   trade_log_buffer[];
 int      NextEventId = 1;
 datetime ModelTimestamp = 0;
 int      FileWriteErrors = 0;
-int      FlightClient = INVALID_HANDLE;
 int      SocketErrors = 0;
 const int LogSchemaVersion = 3;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
 
-uchar    pending_trades[][];
-uchar    pending_metrics[][];
 
 string GenId(int bytes)
 {
@@ -147,71 +140,6 @@ void UpdateCpuLoad(uint elapsed_ms)
    CachedBookRefreshSeconds = interval;
 }
 
-void SavePending()
-{
-   string tfile = LogDirectoryName + "\\pending_trades.dat";
-   int th = FileOpen(tfile, FILE_BIN|FILE_WRITE|FILE_SHARE_WRITE);
-   if(th!=INVALID_HANDLE)
-   {
-      for(int i=0; i<ArraySize(pending_trades); i++)
-      {
-         int len = ArraySize(pending_trades[i]);
-         FileWriteInteger(th, len, LONG_VALUE);
-         FileWriteArray(th, pending_trades[i], 0, len);
-      }
-      FileClose(th);
-   }
-   string mfile = LogDirectoryName + "\\pending_metrics.dat";
-   int mh = FileOpen(mfile, FILE_BIN|FILE_WRITE|FILE_SHARE_WRITE);
-   if(mh!=INVALID_HANDLE)
-   {
-      for(int j=0; j<ArraySize(pending_metrics); j++)
-      {
-         int mlen = ArraySize(pending_metrics[j]);
-         FileWriteInteger(mh, mlen, LONG_VALUE);
-         FileWriteArray(mh, pending_metrics[j], 0, mlen);
-      }
-      FileClose(mh);
-   }
-}
-
-void LoadPending()
-{
-   string tfile = LogDirectoryName + "\\pending_trades.dat";
-   int th = FileOpen(tfile, FILE_BIN|FILE_READ|FILE_SHARE_READ);
-   if(th!=INVALID_HANDLE)
-   {
-      while(!FileIsEnding(th))
-      {
-         int len = (int)FileReadInteger(th, LONG_VALUE);
-         if(len<=0)
-            break;
-         int idx = ArraySize(pending_trades);
-         ArrayResize(pending_trades, idx+1);
-         ArrayResize(pending_trades[idx], len);
-         FileReadArray(th, pending_trades[idx], 0, len);
-      }
-      FileClose(th);
-      FileDelete(tfile);
-   }
-   string mfile = LogDirectoryName + "\\pending_metrics.dat";
-   int mh = FileOpen(mfile, FILE_BIN|FILE_READ|FILE_SHARE_READ);
-   if(mh!=INVALID_HANDLE)
-   {
-      while(!FileIsEnding(mh))
-      {
-         int mlen = (int)FileReadInteger(mh, LONG_VALUE);
-         if(mlen<=0)
-            break;
-         int midx = ArraySize(pending_metrics);
-         ArrayResize(pending_metrics, midx+1);
-         ArrayResize(pending_metrics[midx], mlen);
-         FileReadArray(mh, pending_metrics[midx], 0, mlen);
-      }
-      FileClose(mh);
-      FileDelete(mfile);
-   }
-}
 
 double ExtractJsonNumber(string json, string key)
 {
@@ -362,7 +290,6 @@ int OnInit()
    DirectoryCreate(LogDirectoryName);
    LoadModelState();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
-   LoadPending();
    string symbols_json = "[";
    for(int k=0; k<ArraySize(track_symbols); k++)
    {
@@ -386,7 +313,6 @@ int OnInit()
    }
 
    CachedBookRefreshSeconds = BookRefreshSeconds;
-   FlightClient = FlightConnect(FlightUri);
 
    // Prefer SQLite backend, fall back to CSV
    string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
@@ -461,7 +387,6 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    FlushTradeBuffer();
-   SavePending();
    if(trade_log_handle!=INVALID_HANDLE)
    {
       FileClose(trade_log_handle);
@@ -471,11 +396,6 @@ void OnDeinit(const int reason)
    {
       DatabaseClose(log_db_handle);
       log_db_handle = INVALID_HANDLE;
-   }
-   if(FlightClient!=INVALID_HANDLE)
-   {
-      FlightClose(FlightClient);
-      FlightClient = INVALID_HANDLE;
    }
 }
 
@@ -691,45 +611,6 @@ void OnTick()
 void OnTimer()
 {
    FlushTradeBuffer();
-   if(FlightClient!=INVALID_HANDLE)
-   {
-      while(ArraySize(pending_trades) > 0)
-      {
-         int len = ArraySize(pending_trades[0]);
-         if(FlightSend(FlightClient, "trades", pending_trades[0], len))
-         {
-            for(int i=0; i<ArraySize(pending_trades)-1; i++)
-            {
-               ArrayResize(pending_trades[i], ArraySize(pending_trades[i+1]));
-               ArrayCopy(pending_trades[i], pending_trades[i+1]);
-            }
-            ArrayResize(pending_trades, ArraySize(pending_trades)-1);
-         }
-         else
-         {
-            SocketErrors++;
-            break;
-         }
-      }
-      while(ArraySize(pending_metrics) > 0)
-      {
-         int mlen = ArraySize(pending_metrics[0]);
-         if(FlightSend(FlightClient, "metrics", pending_metrics[0], mlen))
-         {
-            for(int j=0; j<ArraySize(pending_metrics)-1; j++)
-            {
-               ArrayResize(pending_metrics[j], ArraySize(pending_metrics[j+1]));
-               ArrayCopy(pending_metrics[j], pending_metrics[j+1]);
-            }
-            ArrayResize(pending_metrics, ArraySize(pending_metrics)-1);
-         }
-         else
-         {
-            SocketErrors++;
-            break;
-         }
-      }
-   }
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
 
    if(now - last_export < LearningExportIntervalMinutes*60)
@@ -752,18 +633,14 @@ string EscapeJson(string s)
 
 void SendTrade(uchar &payload[])
 {
-   int n = ArraySize(pending_trades);
-   ArrayResize(pending_trades, n+1);
-   ArrayResize(pending_trades[n], ArraySize(payload));
-   ArrayCopy(pending_trades[n], payload);
+   if(!NatsPublish("trades", payload, ArraySize(payload)))
+      SocketErrors++;
 }
 
 void SendMetrics(uchar &payload[])
 {
-   int n = ArraySize(pending_metrics);
-   ArrayResize(pending_metrics, n+1);
-   ArrayResize(pending_metrics[n], ArraySize(payload));
-   ArrayCopy(pending_metrics[n], payload);
+   if(!NatsPublish("metrics", payload, ArraySize(payload)))
+      SocketErrors++;
 }
 
 string FileNameFromPath(string path)
