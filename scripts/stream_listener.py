@@ -38,7 +38,15 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import format_span_id, format_trace_id
+from opentelemetry.trace import (
+    format_span_id,
+    format_trace_id,
+    NonRecordingSpan,
+    SpanContext,
+    TraceFlags,
+    TraceState,
+    set_span_in_context,
+)
 
 trade_capnp = capnp.load(str(Path(__file__).resolve().parents[1] / "proto" / "trade.capnp"))
 metrics_capnp = capnp.load(str(Path(__file__).resolve().parents[1] / "proto" / "metrics.capnp"))
@@ -170,6 +178,23 @@ def _get(msg, camel: str, snake: str | None = None):
     return getattr(msg, camel, getattr(msg, snake, None))
 
 
+def _context_from_ids(trace_id: str, span_id: str):
+    """Build a span context from ``trace_id`` and ``span_id`` if provided."""
+    if trace_id and span_id:
+        try:
+            ctx = SpanContext(
+                trace_id=int(trace_id, 16),
+                span_id=int(span_id, 16),
+                is_remote=True,
+                trace_flags=TraceFlags(TraceFlags.SAMPLED),
+                trace_state=TraceState(),
+            )
+            return set_span_in_context(NonRecordingSpan(ctx))
+        except ValueError:
+            pass
+    return None
+
+
 def process_trade(msg) -> None:
     trace_id = _get(msg, "traceId", "trace_id") or ""
     span_id = ""
@@ -203,11 +228,18 @@ def process_trade(msg) -> None:
     except (AttributeError, ValidationError, TypeError) as e:
         logger.warning({"error": "invalid trade event", "details": str(e)})
         return
-    with tracer.start_as_current_span("process_event") as span:
+    ctx_in = _context_from_ids(trace_id, span_id)
+    with tracer.start_as_current_span("process_event", context=ctx_in) as span:
         ctx = span.get_span_context()
         record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
         record.setdefault("span_id", span_id or format_span_id(ctx.span_id))
-        logger.info(record)
+        extra = {}
+        try:
+            extra["trace_id"] = int(record["trace_id"], 16)
+            extra["span_id"] = int(record["span_id"], 16)
+        except (KeyError, ValueError):
+            pass
+        logger.info(record, extra=extra)
         append_csv(LOG_FILES[TRADE_MSG], record)
         if ws_trades:
             try:
@@ -217,6 +249,8 @@ def process_trade(msg) -> None:
 
 
 def process_metric(msg) -> None:
+    trace_id = _get(msg, "traceId", "trace_id") or ""
+    span_id = _get(msg, "spanId", "span_id") or ""
     try:
         record = {
             "time": _get(msg, "time"),
@@ -234,11 +268,18 @@ def process_metric(msg) -> None:
     except (AttributeError, ValidationError, TypeError) as e:
         logger.warning({"error": "invalid metric event", "details": str(e)})
         return
-    with tracer.start_as_current_span("process_metric") as span:
+    ctx_in = _context_from_ids(trace_id, span_id)
+    with tracer.start_as_current_span("process_metric", context=ctx_in) as span:
         ctx = span.get_span_context()
-        record.setdefault("trace_id", format_trace_id(ctx.trace_id))
-        record["span_id"] = format_span_id(ctx.span_id)
-        logger.info(record)
+        record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+        record["span_id"] = span_id or format_span_id(ctx.span_id)
+        extra = {}
+        try:
+            extra["trace_id"] = int(record["trace_id"], 16)
+            extra["span_id"] = int(record["span_id"], 16)
+        except (KeyError, ValueError):
+            pass
+        logger.info(record, extra=extra)
         append_csv(LOG_FILES[METRIC_MSG], record)
         if ws_metrics:
             try:

@@ -6,17 +6,30 @@ import asyncio
 import json
 import os
 import sqlite3
+import logging
 from pathlib import Path
 from typing import Callable, Optional
 from asyncio import StreamReader, StreamWriter, Queue
 from aiohttp import web
 
 from opentelemetry import trace
+from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import format_span_id, format_trace_id
+from opentelemetry.trace import (
+    format_span_id,
+    format_trace_id,
+    NonRecordingSpan,
+    SpanContext,
+    TraceFlags,
+    TraceState,
+    set_span_in_context,
+)
 
 FIELDS = [
     "time",
@@ -41,6 +54,48 @@ if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
+
+
+def _context_from_ids(trace_id: str, span_id: str):
+    if trace_id and span_id:
+        try:
+            ctx = SpanContext(
+                trace_id=int(trace_id, 16),
+                span_id=int(span_id, 16),
+                is_remote=True,
+                trace_flags=TraceFlags(TraceFlags.SAMPLED),
+                trace_state=TraceState(),
+            )
+            return set_span_in_context(NonRecordingSpan(ctx))
+        except ValueError:
+            pass
+    return None
+
+logger_provider = LoggerProvider(resource=resource)
+if endpoint:
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+set_logger_provider(logger_provider)
+handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log = {"level": record.levelname}
+        if isinstance(record.msg, dict):
+            log.update(record.msg)
+        else:
+            log["message"] = record.getMessage()
+        if hasattr(record, "trace_id"):
+            log["trace_id"] = format_trace_id(record.trace_id)
+        if hasattr(record, "span_id"):
+            log["span_id"] = format_span_id(record.span_id)
+        return json.dumps(log)
+
+
+logger = logging.getLogger(__name__)
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 
 async def _writer_task(
@@ -73,18 +128,28 @@ async def _writer_task(
 async def _handle_conn(reader: StreamReader, writer: StreamWriter, queue: Queue) -> None:
     try:
         while data := await reader.readline():
-            with tracer.start_as_current_span("metrics_message") as span:
-                line = data.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "metrics":
+            line = data.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("type") == "metrics":
+                trace_id = obj.get("trace_id", "")
+                span_id = obj.get("span_id", "")
+                ctx_in = _context_from_ids(trace_id, span_id)
+                with tracer.start_as_current_span("metrics_message", context=ctx_in) as span:
                     ctx = span.get_span_context()
-                    obj.setdefault("trace_id", format_trace_id(ctx.trace_id))
-                    obj.setdefault("span_id", format_span_id(ctx.span_id))
+                    obj.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+                    obj.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+                    extra = {}
+                    try:
+                        extra["trace_id"] = int(obj["trace_id"], 16)
+                        extra["span_id"] = int(obj["span_id"], 16)
+                    except (KeyError, ValueError):
+                        pass
+                    logger.info(obj, extra=extra)
                     await queue.put(obj)
     finally:
         writer.close()

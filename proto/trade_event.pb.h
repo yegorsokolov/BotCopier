@@ -185,6 +185,8 @@ class TradeEvent final :
     kSymbolFieldNumber = 9,
     kCommentFieldNumber = 18,
     kOpenTimeFieldNumber = 22,
+    kTraceIdFieldNumber = 29,
+    kSpanIdFieldNumber = 30,
     kEventIdFieldNumber = 1,
     kTicketFieldNumber = 6,
     kMagicFieldNumber = 7,
@@ -195,16 +197,16 @@ class TradeEvent final :
     kTpFieldNumber = 14,
     kProfitFieldNumber = 15,
     kProfitAfterTradeFieldNumber = 16,
-    kRemainingLotsFieldNumber = 19,
     kSpreadFieldNumber = 17,
-    kVolumeFieldNumber = 21,
+    kRemainingLotsFieldNumber = 19,
     kSlippageFieldNumber = 20,
     kBookBidVolFieldNumber = 23,
     kBookAskVolFieldNumber = 24,
+    kVolumeFieldNumber = 21,
+    kDecisionIdFieldNumber = 28,
     kBookImbalanceFieldNumber = 25,
     kSlHitDistFieldNumber = 26,
     kTpHitDistFieldNumber = 27,
-    kDecisionIdFieldNumber = 28,
   };
   // string event_time = 2;
   void clear_event_time();
@@ -318,6 +320,34 @@ class TradeEvent final :
   std::string* _internal_mutable_open_time();
   public:
 
+  // string trace_id = 29;
+  void clear_trace_id();
+  const std::string& trace_id() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_trace_id(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_trace_id();
+  PROTOBUF_NODISCARD std::string* release_trace_id();
+  void set_allocated_trace_id(std::string* trace_id);
+  private:
+  const std::string& _internal_trace_id() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_trace_id(const std::string& value);
+  std::string* _internal_mutable_trace_id();
+  public:
+
+  // string span_id = 30;
+  void clear_span_id();
+  const std::string& span_id() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_span_id(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_span_id();
+  PROTOBUF_NODISCARD std::string* release_span_id();
+  void set_allocated_span_id(std::string* span_id);
+  private:
+  const std::string& _internal_span_id() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_span_id(const std::string& value);
+  std::string* _internal_mutable_span_id();
+  public:
+
   // int32 event_id = 1;
   void clear_event_id();
   int32_t event_id() const;
@@ -408,6 +438,15 @@ class TradeEvent final :
   void _internal_set_profit_after_trade(double value);
   public:
 
+  // double spread = 17;
+  void clear_spread();
+  double spread() const;
+  void set_spread(double value);
+  private:
+  double _internal_spread() const;
+  void _internal_set_spread(double value);
+  public:
+
   // double remaining_lots = 19;
   void clear_remaining_lots();
   double remaining_lots() const;
@@ -415,24 +454,6 @@ class TradeEvent final :
   private:
   double _internal_remaining_lots() const;
   void _internal_set_remaining_lots(double value);
-  public:
-
-  // int32 spread = 17;
-  void clear_spread();
-  int32_t spread() const;
-  void set_spread(int32_t value);
-  private:
-  int32_t _internal_spread() const;
-  void _internal_set_spread(int32_t value);
-  public:
-
-  // int32 volume = 21;
-  void clear_volume();
-  int32_t volume() const;
-  void set_volume(int32_t value);
-  private:
-  int32_t _internal_volume() const;
-  void _internal_set_volume(int32_t value);
   public:
 
   // double slippage = 20;
@@ -462,6 +483,24 @@ class TradeEvent final :
   void _internal_set_book_ask_vol(double value);
   public:
 
+  // int32 volume = 21;
+  void clear_volume();
+  int32_t volume() const;
+  void set_volume(int32_t value);
+  private:
+  int32_t _internal_volume() const;
+  void _internal_set_volume(int32_t value);
+  public:
+
+  // int32 decision_id = 28;
+  void clear_decision_id();
+  int32_t decision_id() const;
+  void set_decision_id(int32_t value);
+  private:
+  int32_t _internal_decision_id() const;
+  void _internal_set_decision_id(int32_t value);
+  public:
+
   // double book_imbalance = 25;
   void clear_book_imbalance();
   double book_imbalance() const;
@@ -489,15 +528,6 @@ class TradeEvent final :
   void _internal_set_tp_hit_dist(double value);
   public:
 
-  // int32 decision_id = 28;
-  void clear_decision_id();
-  int32_t decision_id() const;
-  void set_decision_id(int32_t value);
-  private:
-  int32_t _internal_decision_id() const;
-  void _internal_set_decision_id(int32_t value);
-  public:
-
   // @@protoc_insertion_point(class_scope:tbot.TradeEvent)
  private:
   class _Internal;
@@ -514,6 +544,8 @@ class TradeEvent final :
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr symbol_;
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr comment_;
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr open_time_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr trace_id_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr span_id_;
     int32_t event_id_;
     int32_t ticket_;
     int32_t magic_;
@@ -524,16 +556,16 @@ class TradeEvent final :
     double tp_;
     double profit_;
     double profit_after_trade_;
+    double spread_;
     double remaining_lots_;
-    int32_t spread_;
-    int32_t volume_;
     double slippage_;
     double book_bid_vol_;
     double book_ask_vol_;
+    int32_t volume_;
+    int32_t decision_id_;
     double book_imbalance_;
     double sl_hit_dist_;
     double tp_hit_dist_;
-    int32_t decision_id_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -1050,22 +1082,22 @@ inline void TradeEvent::set_profit_after_trade(double value) {
   // @@protoc_insertion_point(field_set:tbot.TradeEvent.profit_after_trade)
 }
 
-// int32 spread = 17;
+// double spread = 17;
 inline void TradeEvent::clear_spread() {
   _impl_.spread_ = 0;
 }
-inline int32_t TradeEvent::_internal_spread() const {
+inline double TradeEvent::_internal_spread() const {
   return _impl_.spread_;
 }
-inline int32_t TradeEvent::spread() const {
+inline double TradeEvent::spread() const {
   // @@protoc_insertion_point(field_get:tbot.TradeEvent.spread)
   return _internal_spread();
 }
-inline void TradeEvent::_internal_set_spread(int32_t value) {
+inline void TradeEvent::_internal_set_spread(double value) {
   
   _impl_.spread_ = value;
 }
-inline void TradeEvent::set_spread(int32_t value) {
+inline void TradeEvent::set_spread(double value) {
   _internal_set_spread(value);
   // @@protoc_insertion_point(field_set:tbot.TradeEvent.spread)
 }
@@ -1348,6 +1380,106 @@ inline void TradeEvent::_internal_set_decision_id(int32_t value) {
 inline void TradeEvent::set_decision_id(int32_t value) {
   _internal_set_decision_id(value);
   // @@protoc_insertion_point(field_set:tbot.TradeEvent.decision_id)
+}
+
+// string trace_id = 29;
+inline void TradeEvent::clear_trace_id() {
+  _impl_.trace_id_.ClearToEmpty();
+}
+inline const std::string& TradeEvent::trace_id() const {
+  // @@protoc_insertion_point(field_get:tbot.TradeEvent.trace_id)
+  return _internal_trace_id();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void TradeEvent::set_trace_id(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.trace_id_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:tbot.TradeEvent.trace_id)
+}
+inline std::string* TradeEvent::mutable_trace_id() {
+  std::string* _s = _internal_mutable_trace_id();
+  // @@protoc_insertion_point(field_mutable:tbot.TradeEvent.trace_id)
+  return _s;
+}
+inline const std::string& TradeEvent::_internal_trace_id() const {
+  return _impl_.trace_id_.Get();
+}
+inline void TradeEvent::_internal_set_trace_id(const std::string& value) {
+  
+  _impl_.trace_id_.Set(value, GetArenaForAllocation());
+}
+inline std::string* TradeEvent::_internal_mutable_trace_id() {
+  
+  return _impl_.trace_id_.Mutable(GetArenaForAllocation());
+}
+inline std::string* TradeEvent::release_trace_id() {
+  // @@protoc_insertion_point(field_release:tbot.TradeEvent.trace_id)
+  return _impl_.trace_id_.Release();
+}
+inline void TradeEvent::set_allocated_trace_id(std::string* trace_id) {
+  if (trace_id != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.trace_id_.SetAllocated(trace_id, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.trace_id_.IsDefault()) {
+    _impl_.trace_id_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:tbot.TradeEvent.trace_id)
+}
+
+// string span_id = 30;
+inline void TradeEvent::clear_span_id() {
+  _impl_.span_id_.ClearToEmpty();
+}
+inline const std::string& TradeEvent::span_id() const {
+  // @@protoc_insertion_point(field_get:tbot.TradeEvent.span_id)
+  return _internal_span_id();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void TradeEvent::set_span_id(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.span_id_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:tbot.TradeEvent.span_id)
+}
+inline std::string* TradeEvent::mutable_span_id() {
+  std::string* _s = _internal_mutable_span_id();
+  // @@protoc_insertion_point(field_mutable:tbot.TradeEvent.span_id)
+  return _s;
+}
+inline const std::string& TradeEvent::_internal_span_id() const {
+  return _impl_.span_id_.Get();
+}
+inline void TradeEvent::_internal_set_span_id(const std::string& value) {
+  
+  _impl_.span_id_.Set(value, GetArenaForAllocation());
+}
+inline std::string* TradeEvent::_internal_mutable_span_id() {
+  
+  return _impl_.span_id_.Mutable(GetArenaForAllocation());
+}
+inline std::string* TradeEvent::release_span_id() {
+  // @@protoc_insertion_point(field_release:tbot.TradeEvent.span_id)
+  return _impl_.span_id_.Release();
+}
+inline void TradeEvent::set_allocated_span_id(std::string* span_id) {
+  if (span_id != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.span_id_.SetAllocated(span_id, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.span_id_.IsDefault()) {
+    _impl_.span_id_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:tbot.TradeEvent.span_id)
 }
 
 #ifdef __GNUC__
