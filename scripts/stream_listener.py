@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Listen for observer events over ZeroMQ and append them to CSV logs."""
+"""Listen for observer events from NATS JetStream and append them to CSV logs."""
 from __future__ import annotations
 
 import argparse
@@ -12,10 +12,8 @@ import pkgutil
 from pathlib import Path
 import sys
 
-from io import BytesIO
-
-import capnp
-import zmq
+import asyncio
+import nats
 from pydantic import BaseModel, ValidationError
 try:  # optional websocket client
     from websocket import create_connection, WebSocket  # type: ignore
@@ -48,8 +46,7 @@ from opentelemetry.trace import (
     set_span_in_context,
 )
 
-trade_capnp = capnp.load(str(Path(__file__).resolve().parents[1] / "proto" / "trade.capnp"))
-metrics_capnp = capnp.load(str(Path(__file__).resolve().parents[1] / "proto" / "metrics.capnp"))
+from proto import trade_event_pb2, metrics_pb2
 
 TRADE_MSG = 0
 METRIC_MSG = 1
@@ -290,90 +287,54 @@ def process_metric(msg) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Listen for observer events")
-    p.add_argument(
-        "--endpoint",
-        default="tcp://127.0.0.1:5556",
-        help="ZeroMQ PUB endpoint to connect to",
-    )
-    p.add_argument("--brokers", help="Kafka bootstrap servers, enables Kafka consumption")
-    p.add_argument("--group", default="stream_listener", help="Kafka consumer group id")
+    p.add_argument("--servers", default="nats://127.0.0.1:4222", help="NATS server URLs")
     p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
     p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
     args = p.parse_args()
 
-    if args.brokers:
-        from confluent_kafka import Consumer
-        from fastavro import parse_schema, schemaless_reader
-        from schemas import TRADE_AVRO_SCHEMA, METRIC_AVRO_SCHEMA
-
-        trade_schema = parse_schema(TRADE_AVRO_SCHEMA)
-        metric_schema = parse_schema(METRIC_AVRO_SCHEMA)
-        consumer = Consumer(
-            {
-                "bootstrap.servers": args.brokers,
-                "group.id": args.group,
-                "auto.offset.reset": "earliest",
-            }
-        )
-        consumer.subscribe(["trades", "metrics"])
-    else:
-        ctx = zmq.Context()
-        sub = ctx.socket(zmq.SUB)
-        sub.connect(args.endpoint)
-        sub.setsockopt(zmq.SUBSCRIBE, b"")
-        import time
-        time.sleep(0.2)
-
     if args.ws_url and create_connection:
         global ws_trades, ws_metrics
         try:
-            ws_trades = create_connection(f"{args.ws_url}/ws/trades?token={args.api_token}")
-            ws_metrics = create_connection(f"{args.ws_url}/ws/metrics?token={args.api_token}")
+            headers = [f"Authorization: Bearer {args.api_token}"] if args.api_token else []
+            ws_trades = create_connection(f"{args.ws_url}/ws/trades", header=headers)
+            ws_metrics = create_connection(f"{args.ws_url}/ws/metrics", header=headers)
         except Exception:
             ws_trades = None
             ws_metrics = None
 
-    write_run_info()
-    for p in LOG_FILES.values():
-        p.parent.mkdir(parents=True, exist_ok=True)
-        if not p.exists():
-            with p.open("w") as f:
-                f.write("symbol\nX\n")
+    async def _run() -> None:
+        nc = await nats.connect(args.servers)
+        js = nc.jetstream()
+
+        async def trade_handler(msg):
+            try:
+                trade = trade_event_pb2.TradeEvent.FromString(msg.data)
+            except Exception:
+                await msg.ack()
+                return
+            process_trade(trade)
+            await msg.ack()
+
+        async def metric_handler(msg):
+            try:
+                metric = metrics_pb2.Metrics.FromString(msg.data)
+            except Exception:
+                await msg.ack()
+                return
+            process_metric(metric)
+            await msg.ack()
+
+        await js.subscribe("trades", durable="stream_listener_trades", cb=trade_handler)
+        await js.subscribe("metrics", durable="stream_listener_metrics", cb=metric_handler)
+
+        write_run_info()
+        for pth in LOG_FILES.values():
+            pth.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.Future()
+
     try:
-        while True:
-            if args.brokers:
-                msg = consumer.poll(1.0)
-                if msg is None:
-                    continue
-                if msg.error():
-                    continue
-                buf = BytesIO(msg.value())
-                if msg.topic() == "trades":
-                    record = schemaless_reader(buf, trade_schema)
-                    process_trade(record)
-                elif msg.topic() == "metrics":
-                    record = schemaless_reader(buf, metric_schema)
-                    process_metric(record)
-            else:
-                data = sub.recv()
-                if not data:
-                    continue
-                kind = data[0]
-                payload = data[1:]
-                if kind == TRADE_MSG:
-                    with trade_capnp.TradeEvent.from_bytes(payload) as msg:
-                        process_trade(msg)
-                elif kind == METRIC_MSG:
-                    with metrics_capnp.Metrics.from_bytes(payload) as msg:
-                        process_metric(msg)
-    except KeyboardInterrupt:
-        pass
+        asyncio.run(_run())
     finally:
-        if args.brokers:
-            consumer.close()
-        else:
-            sub.close()
-            ctx.term()
         if ws_trades:
             try:
                 ws_trades.close()

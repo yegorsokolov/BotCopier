@@ -21,7 +21,7 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
   - `plot_metrics.py` – plot metric history using Matplotlib.
   - `plot_feature_importance.py` – display SHAP feature importances saved in `model.json`.
-  - `grpc_log_service.py` – gRPC server receiving trade and metric logs.
+  - `nats_stream.py` – proxy that publishes trade and metric events to NATS JetStream.
 - `models/` – location for generated models.
 - `config.json` – example configuration file.
 
@@ -342,44 +342,24 @@ After completing a trial run commit both `run_info.json` files along with the ge
 
 ## Real-time Streaming
 
-On start-up the observer EA tries to stream each trade event and periodic
-metric summary over gRPC. If the channel cannot be reached it
-falls back to writing a SQLite database ``trades_raw.sqlite`` and finally to a
-CSV file ``trades_raw.csv``. Configure the destination via the ``GrpcHost``
-and ``GrpcPort`` inputs (default ``127.0.0.1:50051``).
+`Observer_TBot` serialises trade events and periodic metric summaries using
+Protobuf and forwards them to a local proxy. The proxy
+(`scripts/nats_stream.py`) publishes each payload to NATS JetStream subjects
+``trades`` and ``metrics``. Consumers subscribe with durable names so no events
+are missed.
 
-Run the ``grpc_log_service.py`` helper to capture RPC messages into CSV files:
-
-```bash
-python scripts/grpc_log_service.py --trade-out trades.csv --metrics-out metrics.csv
-```
-
-For persistent storage you can instead log directly to a SQLite database using ``sqlite_log_service.py``:
+Start the proxy and listeners:
 
 ```bash
-python scripts/sqlite_log_service.py --db stream.db
-```
-
-Query the logs later with the ``sqlite3`` command line tool, for example:
-
-```bash
-sqlite3 stream.db "SELECT COUNT(*) FROM logs;"
-```
-
-Start ``Observer_TBot`` with the same host and port settings and the CSV will be
-populated as trades occur.  If the connection is lost, the EA automatically
-attempts to reconnect so streaming can resume without manual intervention.
-
-To forward metric snapshots without creating ``metrics.csv`` set ``StreamMetricsOnly``
-to ``true``. Use the ``metrics_collector.py`` helper to store these messages
-in a SQLite database:
-
-```bash
+python scripts/nats_stream.py
+python scripts/stream_listener.py
 python scripts/metrics_collector.py --db metrics.db --http-port 8080 \
     --prometheus-port 8000
 ```
 
-The collector exposes an HTTP endpoint returning the most recent metrics as JSON:
+`stream_listener.py` appends trade events to ``logs/trades_raw.csv`` and metric
+updates to ``logs/metrics.csv``. ``metrics_collector.py`` stores snapshots in a
+SQLite database and exposes them over HTTP:
 
 ```bash
 curl http://127.0.0.1:8080/metrics?limit=10
@@ -397,12 +377,6 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:8000"]
 ```
-
-To capture newline-delimited JSON from the EA directly, run the
-``stream_listener.py`` helper which writes trade events to
-``logs/trades_raw.csv`` and metrics to ``logs/metrics.csv``. Each message must
-include a matching ``schema_version`` field (default ``1.0`` or overridden via
-the ``SCHEMA_VERSION`` environment variable).
 
 All helper scripts are instrumented with [OpenTelemetry](https://opentelemetry.io/)
 and export traces using the OTLP protocol.  Point

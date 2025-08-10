@@ -20,6 +20,7 @@ fastapi
 uvicorn
 websocket-client
 requests
+nats-py
 confluent-kafka[avro]
 fastavro
 transformers

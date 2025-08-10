@@ -9,8 +9,12 @@ import sqlite3
 import logging
 from pathlib import Path
 from typing import Callable, Optional
-from asyncio import StreamReader, StreamWriter, Queue
+from asyncio import Queue
 from aiohttp import web
+
+import nats
+from google.protobuf.json_format import MessageToDict
+from proto import metrics_pb2
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -125,41 +129,12 @@ async def _writer_task(
         conn.close()
 
 
-async def _handle_conn(reader: StreamReader, writer: StreamWriter, queue: Queue) -> None:
-    try:
-        while data := await reader.readline():
-            line = data.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("type") == "metrics":
-                trace_id = obj.get("trace_id", "")
-                span_id = obj.get("span_id", "")
-                ctx_in = _context_from_ids(trace_id, span_id)
-                with tracer.start_as_current_span("metrics_message", context=ctx_in) as span:
-                    ctx = span.get_span_context()
-                    obj.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
-                    obj.setdefault("span_id", span_id or format_span_id(ctx.span_id))
-                    extra = {}
-                    try:
-                        extra["trace_id"] = int(obj["trace_id"], 16)
-                        extra["span_id"] = int(obj["span_id"], 16)
-                    except (KeyError, ValueError):
-                        pass
-                    logger.info(obj, extra=extra)
-                    await queue.put(obj)
-    finally:
-        writer.close()
-        await writer.wait_closed()
 
 
 def serve(
-    host: str,
-    port: int,
+    servers: str,
     db_file: Path,
+    http_host: str = "127.0.0.1",
     http_port: Optional[int] = None,
     prometheus_port: Optional[int] = None,
 ) -> None:
@@ -207,7 +182,8 @@ def serve(
         else:
             prom_updater = lambda _row: None
 
-        server = await asyncio.start_server(lambda r, w: _handle_conn(r, w, queue), host, port)
+        nc = await nats.connect(servers)
+        js = nc.jetstream()
         writer_task = asyncio.create_task(_writer_task(db_file, queue, prom_updater))
 
         async def metrics_handler(request: web.Request) -> web.Response:
@@ -224,36 +200,56 @@ def serve(
                 ).fetchall()
             finally:
                 conn.close()
-            # return rows in chronological order
             rows = [dict(zip(FIELDS, r)) for r in reversed(rows)]
             return web.json_response(rows)
 
-        runner = None
-        async with server:
-            if http_port is not None:
-                app = web.Application()
-                app.add_routes([web.get("/metrics", metrics_handler)])
-                runner = web.AppRunner(app)
-                await runner.setup()
-                site = web.TCPSite(runner, host, http_port)
-                await site.start()
+        if http_port is not None:
+            app = web.Application()
+            app.add_routes([web.get("/metrics", metrics_handler)])
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, http_host, http_port)
+            await site.start()
+        else:
+            runner = None
 
-            await server.serve_forever()
-
-        if runner is not None:
-            await runner.cleanup()
-        await queue.join()
-        queue.put_nowait(None)
-        await writer_task
+        sub = await js.subscribe("metrics", durable="metrics_collector")
+        try:
+            async for msg in sub.messages:
+                m = metrics_pb2.Metrics.FromString(msg.data)
+                obj = MessageToDict(m, preserving_proto_field_name=True)
+                trace_id = obj.get("trace_id", "")
+                span_id = obj.get("span_id", "")
+                ctx_in = _context_from_ids(trace_id, span_id)
+                with tracer.start_as_current_span("metrics_message", context=ctx_in) as span:
+                    ctx = span.get_span_context()
+                    obj.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+                    obj.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+                    extra = {}
+                    try:
+                        extra["trace_id"] = int(obj["trace_id"], 16)
+                        extra["span_id"] = int(obj["span_id"], 16)
+                    except (KeyError, ValueError):
+                        pass
+                    logger.info(obj, extra=extra)
+                    await queue.put(obj)
+                await msg.ack()
+        finally:
+            await sub.unsubscribe()
+            await queue.join()
+            queue.put_nowait(None)
+            await writer_task
+            if runner is not None:
+                await runner.cleanup()
 
     asyncio.run(_run())
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Collect metric messages into SQLite")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=9000)
+    p.add_argument("--servers", default="nats://127.0.0.1:4222", help="NATS server URLs")
     p.add_argument("--db", required=True, help="output SQLite file")
+    p.add_argument("--http-host", default="127.0.0.1")
     p.add_argument("--http-port", type=int, help="serve metrics via HTTP on this port")
     p.add_argument(
         "--prometheus-port",
@@ -263,9 +259,9 @@ def main() -> None:
     args = p.parse_args()
 
     serve(
-        args.host,
-        args.port,
+        args.servers,
         Path(args.db),
+        args.http_host,
         args.http_port,
         args.prometheus_port,
     )
