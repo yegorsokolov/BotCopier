@@ -142,6 +142,10 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
 
     profit_factor = (gross_profit / gross_loss) if gross_loss else float("inf")
 
+    expected_return = sum(profits) / len(profits) if profits else 0.0
+    downside = [p for p in profits if p < 0]
+    downside_risk = -sum(downside) / len(downside) if downside else 0.0
+
     sharpe = 0.0
     if len(profits) > 1:
         mean = sum(profits) / len(profits)
@@ -163,6 +167,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
         "gross_loss": gross_loss,
         "profit_factor": profit_factor,
         "sharpe_ratio": sharpe,
+        "expected_return": expected_return,
+        "downside_risk": downside_risk,
     }
 
 

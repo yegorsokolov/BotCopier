@@ -14,14 +14,31 @@ except Exception:  # pragma: no cover
 
 
 def _score_for_model(model_json: Path, metric: str) -> float:
-    """Return ``metric`` from ``evaluation.json`` beside ``model_json``."""
+    """Return ``metric`` for ``model_json``.
+
+    If ``evaluation.json`` exists beside ``model_json`` it is preferred.  Otherwise
+    metrics are read from ``model.json`` itself.  A special ``metric`` value of
+    ``risk_reward`` computes ``expected_return - downside_risk`` from the model
+    metadata.
+    """
 
     eval_file = model_json.parent / "evaluation.json"
-    if not eval_file.exists():
-        return 0.0
+    if eval_file.exists():
+        try:
+            with open(eval_file) as f:
+                data = json.load(f)
+            return float(data.get(metric, 0.0))
+        except Exception:
+            return 0.0
     try:
-        with open(eval_file) as f:
+        with open(model_json) as f:
             data = json.load(f)
+        if metric == "risk_reward":
+            er = data.get("expected_return")
+            dr = data.get("downside_risk")
+            if er is not None and dr is not None:
+                return float(er) - float(dr)
+            return 0.0
         return float(data.get(metric, 0.0))
     except Exception:
         return 0.0
