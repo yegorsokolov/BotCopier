@@ -136,6 +136,27 @@ docker run --rm -d -p 9411:9411 openzipkin/zipkin
 
 The provided Python utilities emit log lines including ``trace_id`` and ``span_id`` fields for easy correlation with traces.
 
+## Prometheus and Grafana
+
+Expose runtime metrics with Prometheus by starting the collector with a port:
+
+```bash
+python scripts/metrics_collector.py --db metrics.db --prom-port 9000
+```
+
+Prometheus can then scrape the endpoint using a configuration like:
+
+```yaml
+# grafana/prometheus.yml
+scrape_configs:
+  - job_name: bot_metrics
+    static_configs:
+      - targets: ['localhost:9000']
+```
+
+Import `grafana/metrics_dashboard.json` into Grafana to visualise win rate, drawdown
+and socket error counts.
+
 ### Anomaly Monitoring
 
 ```

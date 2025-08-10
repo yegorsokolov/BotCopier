@@ -138,25 +138,38 @@ def serve(
     db_file: Path,
     http_host: str = "127.0.0.1",
     http_port: Optional[int] = None,
-    prometheus_port: Optional[int] = None,
+    prom_port: Optional[int] = None,
 ) -> None:
     async def _run() -> None:
         queue: Queue = Queue()
         prom_updater: Callable[[dict], None]
 
-        if prometheus_port is not None:
-            from prometheus_client import Counter, Gauge, start_http_server
-
-            win_rate_g = Gauge("bot_win_rate", "Win rate")
-            drawdown_g = Gauge("bot_drawdown", "Drawdown")
-            file_err_c = Counter(
-                "bot_file_write_errors_total", "File write error count"
+        if prom_port is not None:
+            from prometheus_client import (
+                CONTENT_TYPE_LATEST,
+                CollectorRegistry,
+                Counter,
+                Gauge,
+                generate_latest,
             )
+
+            registry = CollectorRegistry()
+            win_rate_g = Gauge("bot_win_rate", "Win rate", registry=registry)
+            drawdown_g = Gauge("bot_drawdown", "Drawdown", registry=registry)
             socket_err_c = Counter(
-                "bot_socket_errors_total", "Socket error count"
+                "bot_socket_errors_total", "Socket error count", registry=registry
             )
 
-            start_http_server(prometheus_port)
+            async def prom_handler(_request: web.Request) -> web.Response:
+                data = generate_latest(registry)
+                return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
+
+            prom_app = web.Application()
+            prom_app.add_routes([web.get("/metrics", prom_handler)])
+            prom_runner = web.AppRunner(prom_app)
+            await prom_runner.setup()
+            prom_site = web.TCPSite(prom_runner, http_host, prom_port)
+            await prom_site.start()
 
             def _prom_updater(row: dict) -> None:
                 if (v := row.get("win_rate")) is not None:
@@ -169,11 +182,6 @@ def serve(
                         drawdown_g.set(float(v))
                     except (TypeError, ValueError):
                         pass
-                if (v := row.get("file_write_errors")) is not None:
-                    try:
-                        file_err_c.inc(float(v))
-                    except (TypeError, ValueError):
-                        pass
                 if (v := row.get("socket_errors")) is not None:
                     try:
                         socket_err_c.inc(float(v))
@@ -183,6 +191,7 @@ def serve(
             prom_updater = _prom_updater
         else:
             prom_updater = lambda _row: None
+            prom_runner = None
 
         nc = await nats.connect(servers)
         js = nc.jetstream()
@@ -252,6 +261,8 @@ def serve(
             await writer_task
             if runner is not None:
                 await runner.cleanup()
+            if prom_runner is not None:
+                await prom_runner.cleanup()
 
     asyncio.run(_run())
 
@@ -263,7 +274,7 @@ def main() -> None:
     p.add_argument("--http-host", default="127.0.0.1")
     p.add_argument("--http-port", type=int, help="serve metrics via HTTP on this port")
     p.add_argument(
-        "--prometheus-port",
+        "--prom-port",
         type=int,
         help="expose Prometheus metrics on this port",
     )
@@ -274,7 +285,7 @@ def main() -> None:
         Path(args.db),
         args.http_host,
         args.http_port,
-        args.prometheus_port,
+        args.prom_port,
     )
 
 
