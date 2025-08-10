@@ -67,6 +67,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
 
 
+SCHEMA_VERSION = 1
 START_EVENT_ID = 0
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_target_clone")})
@@ -446,6 +447,24 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
 
     df_logs.columns = [c.lower() for c in df_logs.columns]
 
+    if "schema_version" in df_logs.columns:
+        df_logs["schema_version"] = (
+            pd.to_numeric(df_logs["schema_version"], errors="coerce")
+            .fillna(SCHEMA_VERSION)
+            .astype(int)
+        )
+        mismatch_mask = df_logs["schema_version"] != SCHEMA_VERSION
+        if mismatch_mask.any():
+            logging.warning(
+                "Dropping %s rows with schema version != %s",
+                mismatch_mask.sum(),
+                SCHEMA_VERSION,
+            )
+            df_logs = df_logs[~mismatch_mask]
+    else:
+        logging.warning("schema_version column missing; assuming %s", SCHEMA_VERSION)
+        df_logs["schema_version"] = SCHEMA_VERSION
+
     if "open_time" in df_logs.columns:
         df_logs["trade_duration"] = (
             pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
@@ -554,6 +573,7 @@ def _load_logs(
         return df, [], []
 
     fields = [
+        "schema_version",
         "event_id",
         "event_time",
         "broker_time",
@@ -594,6 +614,23 @@ def _load_logs(
     if metrics_file.exists():
         df_metrics = pd.read_csv(metrics_file, sep=";")
         df_metrics.columns = [c.lower() for c in df_metrics.columns]
+        if "schema_version" in df_metrics.columns:
+            df_metrics["schema_version"] = (
+                pd.to_numeric(df_metrics["schema_version"], errors="coerce")
+                .fillna(SCHEMA_VERSION)
+                .astype(int)
+            )
+            m_mask = df_metrics["schema_version"] != SCHEMA_VERSION
+            if m_mask.any():
+                logging.warning(
+                    "Dropping %s metric rows with schema version != %s",
+                    m_mask.sum(),
+                    SCHEMA_VERSION,
+                )
+                df_metrics = df_metrics[~m_mask]
+        else:
+            logging.warning("schema_version column missing in metrics; assuming %s", SCHEMA_VERSION)
+            df_metrics["schema_version"] = SCHEMA_VERSION
         if "magic" in df_metrics.columns:
             key_col = "magic"
         elif "model_id" in df_metrics.columns:
@@ -629,6 +666,21 @@ def _load_logs(
             for chunk in reader:
                 chunk = chunk.reindex(columns=fields)
                 chunk.columns = [c.lower() for c in chunk.columns]
+                invalid = pd.DataFrame(columns=chunk.columns)
+                chunk["schema_version"] = (
+                    pd.to_numeric(chunk.get("schema_version"), errors="coerce")
+                    .fillna(SCHEMA_VERSION)
+                    .astype(int)
+                )
+                ver_mask = chunk["schema_version"] != SCHEMA_VERSION
+                if ver_mask.any():
+                    invalid = pd.concat([invalid, chunk[ver_mask]])
+                    logging.warning(
+                        "Dropping %s rows with schema version != %s",
+                        ver_mask.sum(),
+                        SCHEMA_VERSION,
+                    )
+                chunk = chunk[~ver_mask]
                 chunk["event_time"] = pd.to_datetime(chunk.get("event_time"), errors="coerce")
                 if "open_time" in chunk.columns:
                     chunk["open_time"] = pd.to_datetime(chunk.get("open_time"), errors="coerce")
@@ -643,7 +695,6 @@ def _load_logs(
                 valid_actions = {"OPEN", "CLOSE", "MODIFY"}
                 chunk["action"] = chunk["action"].fillna("").str.upper()
                 chunk = chunk[(chunk["action"] == "") | chunk["action"].isin(valid_actions)]
-                invalid = pd.DataFrame(columns=chunk.columns)
                 if "event_id" in chunk.columns:
                     dup_mask = (
                         chunk["event_id"].isin(seen_ids)
