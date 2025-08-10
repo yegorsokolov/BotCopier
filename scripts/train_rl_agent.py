@@ -44,15 +44,35 @@ except Exception:  # pragma: no cover - optional dependency
     Env = object  # type: ignore
     HAS_SB3 = False
 
+try:  # pragma: no cover - optional dependency
+    import sb3_contrib as sb3c  # type: ignore
+    HAS_SB3_CONTRIB = True
+except Exception:  # pragma: no cover - optional dependency
+    sb3c = None  # type: ignore
+    HAS_SB3_CONTRIB = False
+
 import numpy as np
 try:  # pragma: no cover - optional dependency
     from sklearn.feature_extraction import DictVectorizer
 except Exception:  # pragma: no cover - minimal fallback
     class DictVectorizer:  # type: ignore
+        def __init__(self, *args, **kwargs):
+            pass
+
         def fit_transform(self, feats):
             keys = sorted({k for f in feats for k in f.keys()})
             self.feature_names_ = keys
-            return np.array([[f.get(k, 0.0) for k in keys] for f in feats], dtype=np.float32)
+            rows = []
+            for f in feats:
+                row = []
+                for k in keys:
+                    v = f.get(k, 0.0)
+                    try:
+                        row.append(float(v))
+                    except Exception:
+                        row.append(0.0)
+                rows.append(row)
+            return np.array(rows, dtype=np.float32)
 
         def get_feature_names_out(self):  # pragma: no cover - simple
             return np.array(self.feature_names_)
@@ -376,8 +396,8 @@ def train(
 
     algo_key = algo.lower()
 
-    if self_play and algo_key not in {"ppo", "dqn"}:
-        raise ValueError("--self-play requires ppo or dqn algorithm")
+    if self_play and algo_key not in {"ppo", "dqn", "c51", "qr_dqn"}:
+        raise ValueError("--self-play requires ppo, dqn, c51, or qr_dqn algorithm")
 
     # precompute experience tuples for offline algorithms
     experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = [
@@ -477,9 +497,11 @@ def train(
         print(f"Model written to {model_path}")
         return
 
-    if algo_key in {"ppo", "dqn"}:
+    if algo_key in {"ppo", "dqn", "c51", "qr_dqn"}:
         if not HAS_SB3:
             raise ImportError("stable_baselines3 is not installed")
+        if algo_key in {"c51", "qr_dqn"} and not HAS_SB3_CONTRIB:
+            raise ImportError("sb3-contrib is required for c51 or qr_dqn")
         if self_play and SelfPlayEnv is None:
             raise ImportError("SelfPlayEnv is required for self-play")
 
@@ -514,6 +536,8 @@ def train(
 
         env = TradeEnv(states, rewards)
         algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
+        if HAS_SB3_CONTRIB:
+            algo_map.update({"c51": sb3c.C51, "qr_dqn": sb3c.QRDQN})
         model_cls = algo_map[algo_key]
         model = model_cls("MlpPolicy", env, verbose=0)
         if self_play:
@@ -538,6 +562,36 @@ def train(
             if done:
                 break
         train_acc = float(np.mean(np.array(preds) == np.array(actions)))
+
+        expected_return = float("nan")
+        downside_risk = float("nan")
+        if HAS_SB3_CONTRIB and algo_key in {"c51", "qr_dqn"} and torch is not None:
+            with torch.no_grad():
+                obs_tensor = torch.tensor(states, dtype=torch.float32)
+                dist = model.policy.q_net(obs_tensor)
+                if algo_key == "c51":
+                    probs = torch.softmax(dist, dim=-1).cpu().numpy()
+                    atoms = model.policy.support.cpu().numpy()
+                    q_vals = (probs * atoms).sum(-1)
+                    best = q_vals.argmax(-1)
+                    exp_returns = q_vals[np.arange(len(q_vals)), best]
+                    downside = [probs[i, a][atoms < 0].sum() for i, a in enumerate(best)]
+                else:
+                    quantiles = dist.cpu().numpy()
+                    q_vals = quantiles.mean(-1)
+                    best = q_vals.argmax(-1)
+                    exp_returns = q_vals[np.arange(len(q_vals)), best]
+                    downside = [
+                        (quantiles[i, a] < 0).mean() for i, a in enumerate(best)
+                    ]
+                expected_return = float(np.mean(exp_returns))
+                downside_risk = float(np.mean(downside))
+                logger.info(
+                    {
+                        "expected_return": expected_return,
+                        "downside_risk": downside_risk,
+                    }
+                )
         sim_metrics = None
         if self_play:
             sim_obs, _ = sim_env.reset()
@@ -570,6 +624,10 @@ def train(
             "num_samples": len(actions),
             "weights_file": weights_path.with_suffix(".zip").name,
         }
+        if not np.isnan(expected_return):
+            model_info["expected_return"] = expected_return
+        if not np.isnan(downside_risk):
+            model_info["downside_risk"] = downside_risk
         if self_play:
             model_info["training_type"] = "self_play"
         elif init_model_data is not None:
@@ -731,8 +789,8 @@ def main() -> None:
             "--algo",
             default="dqn",
             help=(
-                "RL algorithm: dqn (default), ppo, qlearn, cql, or decision_transformer"
-                " (requires transformers)."
+                "RL algorithm: dqn (default), ppo, c51, qr_dqn, qlearn, cql, or "
+                "decision_transformer (requires transformers)."
             ),
         )
         p.add_argument("--start-model", help="path to initial model coefficients")

@@ -26,3 +26,4 @@ fastavro
 xgboost; extra == "xgboost"
 optuna; extra == "optuna"
 stable-baselines3; extra == "rl"
+sb3-contrib; extra == "rl"
