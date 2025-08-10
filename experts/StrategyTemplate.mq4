@@ -20,6 +20,8 @@ extern string DecisionLogSocketHost = "127.0.0.1";
 extern int    DecisionLogSocketPort = 9001;
 extern string ModelVersion = "";
 extern string EncoderOnnxFile = "__ENCODER_ONNX__";
+extern string BanditRouterHost = "127.0.0.1";
+extern int    BanditRouterPort = 9100;
 
 string HierarchyJson = "__HIERARCHY_JSON__";
 
@@ -99,6 +101,7 @@ datetime LastModelLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
 int      UncertainLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
+int      BanditSocket = INVALID_HANDLE;
 int      NextDecisionId = 1;
 bool UseOnnxEncoder = false;
 
@@ -296,6 +299,18 @@ int OnInit()
    }
    else
       Print("Uncertain decision log open failed: ", GetLastError());
+   BanditSocket = SocketCreate();
+   if(BanditSocket != INVALID_HANDLE)
+   {
+      if(!SocketConnect(BanditSocket, BanditRouterHost, BanditRouterPort, 1000))
+      {
+         Print("Bandit router connect failed: ", GetLastError());
+         SocketClose(BanditSocket);
+         BanditSocket = INVALID_HANDLE;
+      }
+   }
+   else
+      Print("Bandit router socket creation failed: ", GetLastError());
    return(INIT_SUCCEEDED);
 }
 
@@ -871,6 +886,42 @@ void LogDecision(double &feats[], double prob, string action)
    NextDecisionId++;
 }
 
+int ExtractModelIndex(string comment)
+{
+   int pos = StringFind(comment, "model=");
+   if(pos < 0) return(-1);
+   pos += 6;
+   int end = StringFind(comment, "|", pos);
+   string val = (end > pos) ? StringSubstr(comment, pos, end-pos) : StringSubstr(comment, pos);
+   return(StrToInteger(val));
+}
+
+int QueryBanditModel()
+{
+   if(BanditSocket == INVALID_HANDLE)
+      return(0);
+   uchar bytes[];
+   StringToCharArray("CHOOSE\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
+   if(SocketSend(BanditSocket, bytes, ArraySize(bytes)-1) <= 0)
+      return(0);
+   uchar resp[16];
+   int got = SocketRead(BanditSocket, resp, 15, 1000);
+   if(got <= 0) return(0);
+   resp[got] = 0;
+   string s = CharArrayToString(resp);
+   return(StrToInteger(s));
+}
+
+void SendBanditReward(int modelIdx, double reward)
+{
+   if(BanditSocket == INVALID_HANDLE)
+      return;
+   string msg = StringFormat("REWARD %d %.2f\n", modelIdx, reward);
+   uchar bytes[];
+   StringToCharArray(msg, bytes, 0, WHOLE_ARRAY, CP_UTF8);
+   SocketSend(BanditSocket, bytes, ArraySize(bytes)-1);
+}
+
 double GetNewSL(bool isBuy)
 {
    double sl_dist, tp_dummy;
@@ -918,6 +969,12 @@ void OnTick()
 
    UpdateFeatureHistory();
    int modelIdx = SelectExpert();
+   if(BanditSocket != INVALID_HANDLE)
+   {
+      int idx = QueryBanditModel();
+      if(idx >= 0)
+         modelIdx = idx;
+   }
    double prob;
    if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
       prob = ComputeDecisionTransformerScore();
@@ -950,7 +1007,7 @@ void OnTick()
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
    LogDecision(feats, prob, action);
-   string order_comment = StringFormat("model|decision_id=%d", decision_id);
+   string order_comment = StringFormat("model=%d|decision_id=%d", modelIdx, decision_id);
    if(prob > thr)
    {
       ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3,
@@ -1008,6 +1065,24 @@ void ManageOpenOrders()
    }
 }
 
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &req,
+                        const MqlTradeResult  &res)
+{
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD && trans.type!=TRADE_TRANSACTION_DEAL_UPDATE)
+      return;
+   if(!HistoryDealSelect(trans.deal))
+      return;
+   string comment = HistoryDealGetString(trans.deal, DEAL_COMMENT);
+   int idx = ExtractModelIndex(comment);
+   if(idx < 0) return;
+   double profit = HistoryDealGetDouble(trans.deal, DEAL_PROFIT)+
+                   HistoryDealGetDouble(trans.deal, DEAL_SWAP)+
+                   HistoryDealGetDouble(trans.deal, DEAL_COMMISSION);
+   double reward = (profit > 0) ? 1.0 : 0.0;
+   SendBanditReward(idx, reward);
+}
+
 void OnDeinit(const int reason)
 {
    if(DecisionLogHandle != INVALID_HANDLE)
@@ -1016,5 +1091,7 @@ void OnDeinit(const int reason)
       FileClose(UncertainLogHandle);
    if(DecisionSocket != INVALID_HANDLE)
       SocketClose(DecisionSocket);
+   if(BanditSocket != INVALID_HANDLE)
+      SocketClose(BanditSocket);
    MarketBookRelease(SymbolToTrade);
 }
