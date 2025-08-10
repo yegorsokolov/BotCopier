@@ -818,7 +818,7 @@ def _extract_features(
     volatility=None,
     higher_timeframes=None,
     *,
-    corr_pairs=None,
+    corr_map=None,
     extra_price_series=None,
     corr_window: int = 5,
     encoder: dict | None = None,
@@ -858,6 +858,11 @@ def _extract_features(
     adx_state = {}
     extra_series = extra_price_series or {}
     price_map = {sym: [] for sym in extra_series.keys()}
+    if corr_map:
+        for base, peers in corr_map.items():
+            price_map.setdefault(base, [])
+            for p in peers:
+                price_map.setdefault(p, [])
     enc_window = int(encoder.get("window")) if encoder else 0
     enc_weights = (
         np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
@@ -1014,16 +1019,16 @@ def _extract_features(
                 feat[f"macd_{tf}"] = tf_macd.get(tf, 0.0)
                 feat[f"macd_signal_{tf}"] = tf_macd_sig.get(tf, 0.0)
 
-        if corr_pairs:
-            for s1, s2 in corr_pairs:
-                p1 = price_map.get(s1, [])
-                p2 = price_map.get(s2, [])
-                corr = _rolling_corr(p1, p2, corr_window)
+        if corr_map:
+            base_prices = price_map.get(symbol, [])
+            for peer in corr_map.get(symbol, []):
+                peer_prices = price_map.get(peer, [])
+                corr = _rolling_corr(base_prices, peer_prices, corr_window)
                 ratio = 0.0
-                if p1 and p2 and p2[-1] != 0:
-                    ratio = p1[-1] / p2[-1]
-                feat[f"corr_{s1}_{s2}"] = corr
-                feat[f"ratio_{s1}_{s2}"] = ratio
+                if base_prices and peer_prices and peer_prices[-1] != 0:
+                    ratio = base_prices[-1] / peer_prices[-1]
+                feat[f"corr_{peer}"] = corr
+                feat[f"ratio_{peer}"] = ratio
 
         if enc_window > 0 and enc_weights.size > 0:
             seq = (prices + [price])[-(enc_window + 1) :]
@@ -1153,7 +1158,7 @@ def _train_lite_mode(
     use_adx: bool = False,
     use_volume: bool = False,
     volatility_series=None,
-    corr_pairs=None,
+    corr_map=None,
     corr_window: int = 5,
     extra_price_series=None,
     news_sentiment=None,
@@ -1220,7 +1225,7 @@ def _train_lite_mode(
             use_volume=use_volume,
             volatility=volatility_series,
             higher_timeframes=None,
-            corr_pairs=corr_pairs,
+            corr_map=corr_map,
             corr_window=corr_window,
             extra_price_series=extra_price_series,
             encoder=encoder,
@@ -1325,7 +1330,7 @@ def train(
     max_depth: int = 3,
     incremental: bool = False,
     sequence_length: int = 5,
-    corr_pairs=None,
+    corr_map=None,
     corr_window: int = 5,
     extra_price_series=None,
     optuna_trials: int = 0,
@@ -1373,7 +1378,7 @@ def train(
             use_adx=use_adx,
             use_volume=use_volume,
             volatility_series=volatility_series,
-            corr_pairs=corr_pairs,
+            corr_map=corr_map,
             corr_window=corr_window,
             extra_price_series=extra_price_series,
             news_sentiment=news_data,
@@ -1469,7 +1474,7 @@ def train(
                     use_volume=use_volume,
                     volatility=volatility_series,
                     higher_timeframes=higher_timeframes,
-                    corr_pairs=corr_pairs,
+                    corr_map=corr_map,
                     corr_window=corr_window,
                     extra_price_series=extra_price_series,
                     encoder=encoder,
@@ -1523,7 +1528,7 @@ def train(
                 use_volume=use_volume,
                 volatility=volatility_series,
                 higher_timeframes=higher_timeframes,
-                corr_pairs=corr_pairs,
+                corr_map=corr_map,
                 corr_window=corr_window,
                 extra_price_series=extra_price_series,
                 encoder=encoder,
@@ -2882,9 +2887,13 @@ def main():
     else:
         events = None
     if args.corr_symbols:
-        corr_pairs = [tuple(p.split(':')) for p in args.corr_symbols.split(',')]
+        corr_map = {}
+        for p in args.corr_symbols.split(','):
+            if ':' in p:
+                base, peer = p.split(':', 1)
+                corr_map.setdefault(base, []).append(peer)
     else:
-        corr_pairs = None
+        corr_map = None
     if args.higher_timeframes:
         higher_tfs = [tf.strip() for tf in args.higher_timeframes.split(',') if tf.strip()]
     else:
@@ -2917,7 +2926,7 @@ def main():
         max_depth=args.max_depth,
         incremental=args.incremental,
         sequence_length=args.sequence_length,
-        corr_pairs=corr_pairs,
+        corr_map=corr_map,
         corr_window=args.corr_window,
         optuna_trials=optuna_trials,
         regress_sl_tp=args.regress_sl_tp,
