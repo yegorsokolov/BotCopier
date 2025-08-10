@@ -499,8 +499,13 @@ double BookImbalance()
    return(CachedBookImbalance);
 }
 
-double PairCorrelation(string sym1, string sym2, int window=5)
+double PairCorrelation(string sym1, string sym2="", int window=5)
 {
+   if(sym2 == "")
+   {
+      sym2 = sym1;
+      sym1 = SymbolToTrade;
+   }
    double mean1 = iMA(sym1, 0, window, 0, MODE_SMA, PRICE_CLOSE, 1);
    double mean2 = iMA(sym2, 0, window, 0, MODE_SMA, PRICE_CLOSE, 1);
    double num = 0.0;

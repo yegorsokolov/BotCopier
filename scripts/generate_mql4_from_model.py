@@ -408,10 +408,14 @@ def generate(
                 parts = name[6:].split('_')
                 if len(parts) == 2:
                     expr = f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
+                elif len(parts) == 1:
+                    expr = f'iClose(SymbolToTrade, 0, 0) / iClose("{parts[0]}", 0, 0)'
             elif name.startswith('corr_'):
                 parts = name[5:].split('_')
                 if len(parts) == 2:
                     expr = f'PairCorrelation("{parts[0]}", "{parts[1]}")'
+                elif len(parts) == 1:
+                    expr = f'PairCorrelation("{parts[0]}")'
             elif name.startswith('ae') and name[2:].isdigit():
                 idx_ae = int(name[2:])
                 expr = f'GetEncodedFeature({idx_ae})'
