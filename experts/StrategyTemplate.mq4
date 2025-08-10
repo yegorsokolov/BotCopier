@@ -34,8 +34,8 @@ double GatingCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__GATING_COEFFI
 double GatingIntercepts[] = {__GATING_INTERCEPTS__};
 double CalibrationCoef = __CAL_COEF__;
 double CalibrationIntercept = __CAL_INTERCEPT__;
-double ModelThreshold = __THRESHOLD__;
-double HourlyThresholds[] = {__HOURLY_THRESHOLDS__};
+double ModelThreshold[] = {__HOURLY_THRESHOLDS__};
+double DefaultThreshold = __THRESHOLD__;
 double ProbabilityLookup[__MODEL_COUNT__][24] = {__PROBABILITY_TABLE__};
 double SLModelCoefficients[] = {__SL_COEFFICIENTS__};
 double SLModelIntercept = __SL_INTERCEPT__;
@@ -155,7 +155,7 @@ bool ParseModelJson(string json)
    int n = MathMin(ArraySize(tmp), ArrayRange(ModelCoefficients,1));
    for(int i=0;i<n;i++)
       ModelCoefficients[0][i] = tmp[i];
-   ExtractJsonArray(json, "\"hourly_thresholds\"", HourlyThresholds);
+   ExtractJsonArray(json, "\"hourly_thresholds\"", ModelThreshold);
    double prob_tmp[];
    ExtractJsonArray(json, "\"probability_table\"", prob_tmp);
    if(ArraySize(prob_tmp) == 24 && ArrayRange(ProbabilityLookup,0) > 0)
@@ -188,7 +188,7 @@ bool ParseModelJson(string json)
    SLModelIntercept = ExtractJsonNumber(json, "\"sl_intercept\"");
    TPModelIntercept = ExtractJsonNumber(json, "\"tp_intercept\"");
    LotModelIntercept = ExtractJsonNumber(json, "\"lot_intercept\"");
-   ModelThreshold = ExtractJsonNumber(json, "\"threshold\"");
+   DefaultThreshold = ExtractJsonNumber(json, "\"threshold\"");
    ModelCount = 1;
    return(true);
 }
@@ -201,7 +201,7 @@ bool ParseModelCsv(string line)
       return(false);
    if(ArraySize(ModelIntercepts)>0)
       ModelIntercepts[0] = StrToDouble(parts[0]);
-   ModelThreshold = StrToDouble(parts[1]);
+   DefaultThreshold = StrToDouble(parts[1]);
    int n = MathMin(cnt - 2, ArrayRange(ModelCoefficients,1));
    for(int i=0; i<n; i++)
       ModelCoefficients[0][i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i+2])));
@@ -806,9 +806,9 @@ double CalcLots()
 
 double GetTradeThreshold()
 {
-   if(ArraySize(HourlyThresholds) == 24)
-      return(HourlyThresholds[TimeHour(TimeCurrent())]);
-   return(ModelThreshold);
+   if(ArraySize(ModelThreshold) == 24)
+      return(ModelThreshold[TimeHour(TimeCurrent())]);
+   return(DefaultThreshold);
 }
 
 double PredictSLDistance()
@@ -853,7 +853,8 @@ void LogDecision(double &feats[], double prob, string action)
       FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
       FileFlush(DecisionLogHandle);
    }
-   bool uncertain = MathAbs(prob - ModelThreshold) <= UncertaintyMargin;
+   double thr = GetTradeThreshold();
+   bool uncertain = MathAbs(prob - thr) <= UncertaintyMargin;
    if(uncertain && UncertainLogHandle != INVALID_HANDLE)
    {
       FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
