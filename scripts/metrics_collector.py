@@ -16,6 +16,8 @@ import nats
 from google.protobuf.json_format import MessageToDict
 from proto import metrics_pb2
 
+SCHEMA_VERSION = 1
+
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -216,7 +218,16 @@ def serve(
         sub = await js.subscribe("metrics", durable="metrics_collector")
         try:
             async for msg in sub.messages:
-                m = metrics_pb2.Metrics.FromString(msg.data)
+                version = msg.data[0]
+                if version != SCHEMA_VERSION:
+                    logger.warning(
+                        "schema version %d mismatch (expected %d)",
+                        version,
+                        SCHEMA_VERSION,
+                    )
+                    await msg.ack()
+                    continue
+                m = metrics_pb2.Metrics.FromString(msg.data[1:])
                 obj = MessageToDict(m, preserving_proto_field_name=True)
                 trace_id = obj.get("trace_id", "")
                 span_id = obj.get("span_id", "")

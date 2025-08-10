@@ -46,7 +46,7 @@ int      NextEventId = 1;
 datetime ModelTimestamp = 0;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
-const int LogSchemaVersion = 3;
+const int SCHEMA_VERSION = 1;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -633,13 +633,23 @@ string EscapeJson(string s)
 
 void SendTrade(uchar &payload[])
 {
-   if(!NatsPublish("trades", payload, ArraySize(payload)))
+   int len = ArraySize(payload);
+   uchar out[];
+   ArrayResize(out, len + 1);
+   out[0] = (uchar)SCHEMA_VERSION;
+   ArrayCopy(out, payload, 1, 0, len);
+   if(!NatsPublish("trades", out, ArraySize(out)))
       SocketErrors++;
 }
 
 void SendMetrics(uchar &payload[])
 {
-   if(!NatsPublish("metrics", payload, ArraySize(payload)))
+   int len = ArraySize(payload);
+   uchar out[];
+   ArrayResize(out, len + 1);
+   out[0] = (uchar)SCHEMA_VERSION;
+   ArrayCopy(out, payload, 1, 0, len);
+   if(!NatsPublish("metrics", out, ArraySize(out)))
       SocketErrors++;
 }
 
@@ -771,7 +781,7 @@ void LogTrade(string action, int ticket, int magic, string source,
 
    uchar payload[];
    int len = SerializeTradeEvent(
-      LogSchemaVersion, id, TraceId,
+      SCHEMA_VERSION, id, TraceId,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
@@ -989,7 +999,7 @@ void WriteMetrics(datetime ts)
 
        uchar payload[];
        int len = SerializeMetrics(
-         LogSchemaVersion,
+         SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
          trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, payload);
        if(len>0)
