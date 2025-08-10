@@ -48,6 +48,7 @@ from opentelemetry.trace import (
 
 from proto import trade_event_pb2, metrics_pb2
 
+SCHEMA_VERSION = 1
 TRADE_MSG = 0
 METRIC_MSG = 1
 
@@ -307,8 +308,17 @@ def main() -> int:
         js = nc.jetstream()
 
         async def trade_handler(msg):
+            version = msg.data[0]
+            if version != SCHEMA_VERSION:
+                logger.warning(
+                    "schema version %d mismatch (expected %d)",
+                    version,
+                    SCHEMA_VERSION,
+                )
+                await msg.ack()
+                return
             try:
-                trade = trade_event_pb2.TradeEvent.FromString(msg.data)
+                trade = trade_event_pb2.TradeEvent.FromString(msg.data[1:])
             except Exception:
                 await msg.ack()
                 return
@@ -316,8 +326,17 @@ def main() -> int:
             await msg.ack()
 
         async def metric_handler(msg):
+            version = msg.data[0]
+            if version != SCHEMA_VERSION:
+                logger.warning(
+                    "schema version %d mismatch (expected %d)",
+                    version,
+                    SCHEMA_VERSION,
+                )
+                await msg.ack()
+                return
             try:
-                metric = metrics_pb2.Metrics.FromString(msg.data)
+                metric = metrics_pb2.Metrics.FromString(msg.data[1:])
             except Exception:
                 await msg.ack()
                 return

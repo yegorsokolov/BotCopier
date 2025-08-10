@@ -2,9 +2,9 @@
 """Bridge trade and metric messages to NATS JetStream.
 
 This service listens for length-prefixed messages from ``Observer_TBot`` and
-publishes the contained Protobuf payloads to NATS subjects. The first byte of
-each message indicates the type: ``0`` for ``TradeEvent`` and ``1`` for
-``Metrics``.
+publishes the contained Protobuf payloads to NATS subjects. Messages begin with
+one byte schema version followed by a byte indicating the type: ``0`` for
+``TradeEvent`` and ``1`` for ``Metrics``.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from google.protobuf.message import DecodeError
 from otel_logging import setup_logging
 from proto import trade_event_pb2, metrics_pb2
 
+SCHEMA_VERSION = 1
 TRADE_MSG = 0
 METRIC_MSG = 1
 
@@ -35,21 +36,25 @@ async def _handle_conn(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
                 payload = await reader.readexactly(length)
             except asyncio.IncompleteReadError:
                 break
-            msg_type = payload[0]
-            data = payload[1:]
+            version = payload[0]
+            msg_type = payload[1]
+            data = payload[2:]
+            if version != SCHEMA_VERSION:
+                log.warning("schema version %d mismatch", version)
+                continue
             if msg_type == TRADE_MSG:
                 try:
                     trade_event_pb2.TradeEvent.FromString(data)
                 except DecodeError:
                     continue
-                await js.publish("trades", data)
+                await js.publish("trades", bytes([version]) + data)
                 log.info("published trade %d bytes", len(data))
             elif msg_type == METRIC_MSG:
                 try:
                     metrics_pb2.Metrics.FromString(data)
                 except DecodeError:
                     continue
-                await js.publish("metrics", data)
+                await js.publish("metrics", bytes([version]) + data)
                 log.info("published metric %d bytes", len(data))
     finally:
         writer.close()
