@@ -56,6 +56,15 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    python scripts/promote_best_models.py models --dest models/best
    ```
 
+## Rollback and Safety Limits
+
+`scripts/bandit_router.py` routes between multiple generated models and
+persists win/loss counts in `bandit_state.json`. Removing or replacing this
+file rolls the router back to a fresh state if behaviour degrades. The EA
+continues to enforce its own risk controls through inputs like `MinLots`,
+`MaxLots`, `BreakEvenPips` and `TrailingPips` so model selection errors remain
+bounded.
+
 ## Online Training
 
 `scripts/online_trainer.py` keeps a model updated as new trades arrive.  It can
