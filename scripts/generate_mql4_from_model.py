@@ -440,6 +440,27 @@ def generate(
     output = output.replace('__CACHE_TIMEFRAMES__', ', '.join(tf_list))
     output = output.replace('__CACHE_TF_COUNT__', str(len(tf_list)))
 
+    # Ensure generated experts reload model parameters when the underlying
+    # model file is updated.  We track the last modification timestamp and
+    # trigger ``LoadModel`` whenever it changes.
+    output = output.replace(
+        'int ModelCount = __MODEL_COUNT__;',
+        'int ModelCount = __MODEL_COUNT__;'\
+        '\nint ModelTimestamp = 0;',
+    )
+    output = output.replace(
+        'bool ok = LoadModel();',
+        'bool ok = LoadModel();\n   ModelTimestamp = FileGetInteger(ModelFileName, FILE_MODIFY_DATE);',
+    )
+    output = output.replace(
+        'if(ReloadModelInterval > 0 && TimeCurrent() - LastModelLoad >= ReloadModelInterval)',
+        'datetime ts = FileGetInteger(ModelFileName, FILE_MODIFY_DATE);\n   if(ts != ModelTimestamp)',
+    )
+    output = output.replace(
+        'LastModelLoad = TimeCurrent();',
+        'ModelTimestamp = ts;',
+    )
+
     threshold = base.get('threshold', 0.5)
     output = output.replace('__THRESHOLD__', _fmt(threshold))
     ts = base.get('trained_at')
