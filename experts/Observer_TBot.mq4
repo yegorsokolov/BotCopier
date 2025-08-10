@@ -7,11 +7,10 @@ int SerializeTradeEvent(int schema_version, int event_id, string trace_id, strin
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, uchar &out[]);
 #import
 
-#import "kafka_bridge.dll"
-int KafkaConnect(string brokers, string trade_topic, string metric_topic);
-bool KafkaSendTrade(int client, uchar &payload[], int len);
-bool KafkaSendMetrics(int client, uchar &payload[], int len);
-void KafkaClose(int client);
+#import "flight_bridge.dll"
+int FlightConnect(string uri);
+bool FlightSend(int client, string path, uchar &payload[], int len);
+void FlightClose(int client);
 #import
 
 extern string TargetMagicNumbers = "12345,23456";
@@ -27,9 +26,7 @@ extern string LogDirectoryName              = "observer_logs"; // resume event_i
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
-extern string KafkaBrokers                = "127.0.0.1:9092";
-extern string KafkaTradeTopic            = "trades";
-extern string KafkaMetricsTopic          = "metrics";
+extern string FlightUri                  = "grpc://127.0.0.1:8815";
 extern string CommitHash                   = "";
 extern string ModelVersion                 = "";
 extern string TraceId                      = "";
@@ -50,8 +47,8 @@ int      log_db_handle    = INVALID_HANDLE;
 string   trade_log_buffer[];
 int      NextEventId = 1;
 int      FileWriteErrors = 0;
-int      KafkaClient = INVALID_HANDLE;
-int      KafkaErrors = 0;
+int      FlightClient = INVALID_HANDLE;
+int      SocketErrors = 0;
 const int LogSchemaVersion = 3;
 
 double   CpuLoad = 0.0;
@@ -349,7 +346,7 @@ int OnInit()
    }
 
    CachedBookRefreshSeconds = BookRefreshSeconds;
-   KafkaClient = KafkaConnect(KafkaBrokers, KafkaTradeTopic, KafkaMetricsTopic);
+   FlightClient = FlightConnect(FlightUri);
 
    // Prefer SQLite backend, fall back to CSV
    string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
@@ -435,10 +432,10 @@ void OnDeinit(const int reason)
       DatabaseClose(log_db_handle);
       log_db_handle = INVALID_HANDLE;
    }
-   if(KafkaClient!=INVALID_HANDLE)
+   if(FlightClient!=INVALID_HANDLE)
    {
-      KafkaClose(KafkaClient);
-      KafkaClient = INVALID_HANDLE;
+      FlightClose(FlightClient);
+      FlightClient = INVALID_HANDLE;
    }
 }
 
@@ -648,12 +645,12 @@ void OnTick()
 void OnTimer()
 {
    FlushTradeBuffer();
-   if(KafkaClient!=INVALID_HANDLE)
+   if(FlightClient!=INVALID_HANDLE)
    {
       while(ArraySize(pending_trades) > 0)
       {
          int len = ArraySize(pending_trades[0]);
-         if(KafkaSendTrade(KafkaClient, pending_trades[0], len))
+         if(FlightSend(FlightClient, "trades", pending_trades[0], len))
          {
             for(int i=0; i<ArraySize(pending_trades)-1; i++)
             {
@@ -664,14 +661,14 @@ void OnTimer()
          }
          else
          {
-            KafkaErrors++;
+            SocketErrors++;
             break;
          }
       }
       while(ArraySize(pending_metrics) > 0)
       {
          int mlen = ArraySize(pending_metrics[0]);
-         if(KafkaSendMetrics(KafkaClient, pending_metrics[0], mlen))
+         if(FlightSend(FlightClient, "metrics", pending_metrics[0], mlen))
          {
             for(int j=0; j<ArraySize(pending_metrics)-1; j++)
             {
@@ -682,7 +679,7 @@ void OnTimer()
          }
          else
          {
-            KafkaErrors++;
+            SocketErrors++;
             break;
          }
       }
@@ -1059,7 +1056,7 @@ void WriteMetrics(datetime ts)
          if(profits[vb] < var95) var_breach_count++;
 
       string span_id = GenId(8);
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, KafkaErrors, CachedBookRefreshSeconds, var_breach_count, TraceId, span_id);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, TraceId, span_id);
       if(h!=INVALID_HANDLE)
       {
          int _wr_line = FileWrite(h, line);
@@ -1071,7 +1068,7 @@ void WriteMetrics(datetime ts)
        int len = SerializeMetrics(
          LogSchemaVersion,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, KafkaErrors, CachedBookRefreshSeconds, var_breach_count, payload);
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, payload);
        if(len>0)
          SendMetrics(payload);
       SendOtelSpan(TraceId, span_id, "metrics");

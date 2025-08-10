@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Arrow Flight server exposing trade and metric streams."""
+"""Arrow Flight server exposing trade and metric streams.
+
+The server stores incoming record batches in memory and supports two
+paths:
+
+* ``trades``
+* ``metrics``
+"""
 
 from __future__ import annotations
 
@@ -13,7 +20,7 @@ from schemas import TRADE_SCHEMA, METRIC_SCHEMA
 
 
 class FlightServer(flight.FlightServerBase):
-    """Simple in-memory Flight server."""
+    """Simple in-memory Flight server for trades and metrics."""
 
     def __init__(self, host: str = "0.0.0.0", port: int = 8815) -> None:
         self._host = host
@@ -29,6 +36,8 @@ class FlightServer(flight.FlightServerBase):
         self, context: flight.ServerCallContext, descriptor: flight.FlightDescriptor
     ) -> flight.FlightInfo:
         path = descriptor.path[0].decode()
+        if path not in ("trades", "metrics"):
+            raise KeyError(f"unknown path: {path}")
         schema = TRADE_SCHEMA if path == "trades" else METRIC_SCHEMA
         ticket = flight.Ticket(path.encode())
         endpoint = flight.FlightEndpoint(ticket, [flight.Location.for_grpc_tcp(self._host, self.port)])
@@ -43,6 +52,8 @@ class FlightServer(flight.FlightServerBase):
         writer: flight.ServerStreamWriter,
     ) -> None:
         path = descriptor.path[0].decode()
+        if path not in ("trades", "metrics"):
+            raise KeyError(f"unknown path: {path}")
         batches = self._batches.setdefault(path, [])
         for chunk in reader:
             batches.append(chunk.data)
@@ -52,6 +63,8 @@ class FlightServer(flight.FlightServerBase):
         self, context: flight.ServerCallContext, ticket: flight.Ticket
     ) -> flight.RecordBatchStream:
         path = ticket.ticket.decode()
+        if path not in ("trades", "metrics"):
+            raise KeyError(f"unknown path: {path}")
         schema = TRADE_SCHEMA if path == "trades" else METRIC_SCHEMA
         table = pa.Table.from_batches(self._batches.get(path, []), schema=schema)
         return flight.RecordBatchStream(table)
