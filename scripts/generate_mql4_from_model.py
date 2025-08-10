@@ -104,6 +104,8 @@ def generate(
 
     coeff_rows = []
     intercepts = []
+    var_rows = []
+    noise_vars = []
     for m in models:
         coeffs = m.get('coefficients') or m.get('coef_vector', [])
         if not coeffs:
@@ -116,7 +118,7 @@ def generate(
                     coeffs = []
         fmap = {f: c for f, c in zip(m.get('feature_names', []), coeffs)}
         vec = [_fmt(fmap.get(f, 0.0)) for f in feature_names]
-        coeff_rows.append('{'+', '.join(vec)+'}')
+        coeff_rows.append('{' + ', '.join(vec) + '}')
         intercept = m.get('intercept')
         if intercept is None:
             q_int = m.get('q_intercepts')
@@ -125,11 +127,18 @@ def generate(
             else:
                 intercept = 0.0
         intercepts.append(_fmt(intercept))
+        coef_var = m.get('coef_variances', [])
+        fmap_v = {f: v for f, v in zip(m.get('feature_names', []), coef_var)}
+        vec_v = [_fmt(fmap_v.get(f, 0.0)) for f in feature_names]
+        var_rows.append('{' + ', '.join(vec_v) + '}')
+        noise_vars.append(_fmt(m.get('noise_variance', 0.0)))
 
     coeff_str = ', '.join(coeff_rows)
     output = output.replace('__COEFFICIENTS__', coeff_str)
     output = output.replace('__INTERCEPTS__', ', '.join(intercepts))
     output = output.replace('__MODEL_COUNT__', str(len(models)))
+    output = output.replace('__COEF_VARIANCES__', ', '.join(var_rows))
+    output = output.replace('__NOISE_VARIANCES__', ', '.join(noise_vars))
 
     # Gating coefficients / intercepts
     if gating_data:

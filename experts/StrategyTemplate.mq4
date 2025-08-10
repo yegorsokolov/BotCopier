@@ -26,6 +26,8 @@ int SessionStarts[] = {__SESSION_STARTS__};
 int SessionEnds[] = {__SESSION_ENDS__};
 double ModelCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__COEFFICIENTS__};
 double ModelIntercepts[] = {__INTERCEPTS__};
+double ModelCoeffVar[__MODEL_COUNT__][__FEATURE_COUNT__] = {__COEF_VARIANCES__};
+double ModelNoiseVar[] = {__NOISE_VARIANCES__};
 double GatingCoefficients[__MODEL_COUNT__][__FEATURE_COUNT__] = {__GATING_COEFFICIENTS__};
 double GatingIntercepts[] = {__GATING_INTERCEPTS__};
 double CalibrationCoef = __CAL_COEF__;
@@ -157,6 +159,11 @@ bool ParseModelJson(string json)
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
    ExtractJsonArray(json, "\"lot_coefficients\"", LotModelCoefficients);
+   ExtractJsonArray(json, "\"coef_variances\"", tmp);
+   n = MathMin(ArraySize(tmp), ArrayRange(ModelCoeffVar,1));
+   for(int i=0;i<n;i++)
+      ModelCoeffVar[0][i] = tmp[i];
+   ModelNoiseVar[0] = ExtractJsonNumber(json, "\"noise_variance\"");
    ExtractJsonArray(json, "\"gating_coefficients\"", tmp);
    int gtot = MathMin(ArraySize(tmp), ArrayRange(GatingCoefficients,0)*ArrayRange(GatingCoefficients,1));
    for(int i=0;i<gtot;i++)
@@ -555,6 +562,25 @@ double ComputeLogisticScoreSession(int m)
    return(1.0 / (1.0 + MathExp(-z)));
 }
 
+double ComputePredictiveVariance(int m)
+{
+   double var = 0.0;
+   if(ArraySize(ModelNoiseVar) > m)
+      var += ModelNoiseVar[m];
+   for(int i=0; i<FeatureCount; i++)
+   {
+      double f = GetFeature(i);
+      var += ModelCoeffVar[m][i] * f * f;
+   }
+   double z = ModelIntercepts[m];
+   for(int i=0; i<FeatureCount; i++)
+      z += ModelCoefficients[m][i] * GetFeature(i);
+   z = CalibrationCoef*z + CalibrationIntercept;
+   double p = 1.0 / (1.0 + MathExp(-z));
+   double deriv = p*(1.0 - p);
+   return(var * deriv * deriv);
+}
+
 double ComputeNNScore()
 {
    int hidden = ModelHiddenSize;
@@ -729,6 +755,10 @@ double CalcLots()
    int n = ArraySize(LotModelCoefficients);
    for(int i=0; i<n; i++)
       z += LotModelCoefficients[i] * GetFeature(i);
+   int m = SelectExpert();
+   double pv = ComputePredictiveVariance(m);
+   double scale = 1.0 / (1.0 + pv);
+   z *= scale;
    if(z < MinLots) z = MinLots;
    if(z > MaxLots) z = MaxLots;
    return(z);

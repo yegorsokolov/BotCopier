@@ -31,7 +31,7 @@ import psutil
 import pyarrow as pa
 import pyarrow.flight as flight
 from sklearn.feature_extraction import DictVectorizer
-from sklearn.linear_model import LogisticRegression, SGDClassifier
+from sklearn.linear_model import BayesianRidge, LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.calibration import CalibratedClassifierCV
@@ -1588,7 +1588,9 @@ def train(
             lot_val = np.array([])
 
     sample_weight = None
-    if model_type == "logreg" and not grid_search:
+    coef_variances = None
+    noise_variance = None
+    if model_type in ("logreg", "bayes_logreg") and not grid_search:
         sample_weight = np.array(
             [abs(f.get("profit", f.get("lots", 1.0))) for f in feat_train],
             dtype=float,
@@ -1659,7 +1661,7 @@ def train(
 
     optuna_threshold = None
     if optuna_trials > 0:
-        available_models = ["logreg", "random_forest", "xgboost", "nn"]
+        available_models = ["logreg", "bayes_logreg", "random_forest", "xgboost", "nn"]
         try:
             import importlib.util
 
@@ -1684,6 +1686,9 @@ def train(
             if model_choice == "logreg":
                 c = trial.suggest_float("C", 1e-3, 10.0, log=True)
                 clf = LogisticRegression(max_iter=200, C=c)
+                clf.fit(X_tr, y_train)
+            elif model_choice == "bayes_logreg":
+                clf = BayesianRidge()
                 clf.fit(X_tr, y_train)
             elif model_choice == "random_forest":
                 est = trial.suggest_int("n_estimators", 50, 200)
@@ -1760,6 +1765,8 @@ def train(
         feature_names = [feature_names[i] for i in sel_idx]
         if model_type == "logreg" and "C" in best_trial.params:
             logreg_C = float(best_trial.params["C"])
+        elif model_type == "bayes_logreg":
+            pass
         elif model_type == "random_forest":
             n_estimators = int(best_trial.params["n_estimators"])
             max_depth = int(best_trial.params["max_depth"])
@@ -2076,6 +2083,17 @@ def train(
                 clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
             )
             model_type = "logreg"
+    elif model_type == "bayes_logreg":
+        clf = BayesianRidge()
+        clf.fit(X_train, y_train, sample_weight=sample_weight)
+        train_pred = clf.predict(X_train)
+        val_pred = clf.predict(X_val) if len(y_val) > 0 else np.empty(0)
+        train_proba_raw = 1.0 / (1.0 + np.exp(-train_pred))
+        val_proba_raw = (
+            1.0 / (1.0 + np.exp(-val_pred)) if len(y_val) > 0 else np.empty(0)
+        )
+        coef_variances = np.diag(clf.sigma_)
+        noise_variance = 1.0 / clf.alpha_
     elif model_type == "nn":
         try:
             from tensorflow import keras  # type: ignore
@@ -2364,7 +2382,7 @@ def train(
     try:
         import shap  # type: ignore
 
-        if model_type == "logreg":
+        if model_type in ("logreg", "bayes_logreg"):
             explainer = shap.LinearExplainer(clf, X_train)
             shap_values = explainer.shap_values(X_train)
         else:
@@ -2434,7 +2452,7 @@ def train(
             train_acc = float(accuracy_score(y_train, train_preds))
 
             try:
-                if model_type == "logreg":
+                if model_type in ("logreg", "bayes_logreg"):
                     explainer = shap.LinearExplainer(clf, X_train)
                     shap_values = explainer.shap_values(X_train)
                 else:
@@ -2511,6 +2529,12 @@ def train(
         model["coefficients"] = clf.coef_[0].astype(np.float32).tolist()
         model["intercept"] = float(clf.intercept_[0])
         model["classes"] = [int(c) for c in clf.classes_]
+    elif model_type == "bayes_logreg":
+        model["coefficients"] = clf.coef_.astype(np.float32).tolist()
+        model["intercept"] = float(clf.intercept_)
+        model["coef_variances"] = coef_variances.astype(np.float32).tolist()
+        model["noise_variance"] = float(noise_variance)
+        model["classes"] = [0, 1]
     elif model_type == "xgboost":
         # approximate tree ensemble with linear model for MQL4 export
         logit_p = np.log(train_proba_raw / (1.0 - train_proba_raw + 1e-9))
@@ -2736,6 +2760,7 @@ def main():
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
     p.add_argument('--stack', help='comma separated list of model types to stack')
+    p.add_argument('--model-type', help='force model type such as bayes_logreg')
     p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
@@ -2769,7 +2794,7 @@ def main():
         higher_tfs = None
     resources = detect_resources()
     lite_mode = resources["lite_mode"]
-    model_type = resources["model_type"]
+    model_type = args.model_type or resources["model_type"]
     optuna_trials = (
         0 if lite_mode else (args.optuna_trials or resources["optuna_trials"])
     )
