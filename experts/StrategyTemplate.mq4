@@ -14,6 +14,8 @@ extern double TrailingPips = 0;
 extern bool   EnableDecisionLogging = true;
 extern bool   DecisionLogToSocket = false;
 extern string DecisionLogFile = "decisions.csv";
+extern string UncertainDecisionFile = "uncertain_decisions.csv";
+extern double UncertaintyMargin = 0.05;
 extern string DecisionLogSocketHost = "127.0.0.1";
 extern int    DecisionLogSocketPort = 9001;
 extern string ModelVersion = "";
@@ -93,6 +95,7 @@ double RegimeCenters[__REGIME_COUNT__][__REGIME_FEATURE_COUNT__] = {__REGIME_CEN
 int RegimeFeatureIdx[] = {__REGIME_FEATURE_IDX__};
 datetime LastModelLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
+int      UncertainLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
 int      NextDecisionId = 1;
 bool UseOnnxEncoder = false;
@@ -281,7 +284,16 @@ int OnInit()
          else
             Print("Decision log open failed: ", GetLastError());
       }
+  }
+   UncertainLogHandle = FileOpen(UncertainDecisionFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+   if(UncertainLogHandle != INVALID_HANDLE)
+   {
+      if(FileSize(UncertainLogHandle) == 0)
+         FileWrite(UncertainLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;features");
+      FileSeek(UncertainLogHandle, 0, SEEK_END);
    }
+   else
+      Print("Uncertain decision log open failed: ", GetLastError());
    return(INIT_SUCCEEDED);
 }
 
@@ -813,6 +825,12 @@ void LogDecision(double &feats[], double prob, string action)
       FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
       FileFlush(DecisionLogHandle);
    }
+   bool uncertain = MathAbs(prob - ModelThreshold) <= UncertaintyMargin;
+   if(uncertain && UncertainLogHandle != INVALID_HANDLE)
+   {
+      FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
+      FileFlush(UncertainLogHandle);
+   }
    if(DecisionSocket != INVALID_HANDLE)
    {
       string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"features\":[%s]}",
@@ -962,6 +980,8 @@ void OnDeinit(const int reason)
 {
    if(DecisionLogHandle != INVALID_HANDLE)
       FileClose(DecisionLogHandle);
+   if(UncertainLogHandle != INVALID_HANDLE)
+      FileClose(UncertainLogHandle);
    if(DecisionSocket != INVALID_HANDLE)
       SocketClose(DecisionSocket);
    MarketBookRelease(SymbolToTrade);
