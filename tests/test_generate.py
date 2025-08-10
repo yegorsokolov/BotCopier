@@ -356,7 +356,7 @@ def test_generate_hourly_thresholds(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert "HourlyThresholds" in content
+    assert "ModelThreshold" in content
     assert "GetTradeThreshold()" in content
 
 

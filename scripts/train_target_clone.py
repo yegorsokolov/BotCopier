@@ -2516,17 +2516,15 @@ def train(
     train_preds = (train_proba >= threshold).astype(int)
     train_acc = float(accuracy_score(y_train, train_preds))
 
-    hourly_thresholds = None
-    if len(y_val) > 0:
-        hours_val_arr = np.array(hours_val, dtype=int)
-        hourly_thresholds = []
-        for h in range(24):
-            idx = np.where(hours_val_arr == h)[0]
-            if len(idx) > 0:
-                t, _ = _best_threshold(y_val[idx], val_proba[idx])
-            else:
-                t = threshold
-            hourly_thresholds.append(float(t))
+    hours_val_arr = np.array(hours_val, dtype=int) if len(hours_val) else np.array([], dtype=int)
+    hourly_thresholds: List[float] = []
+    for h in range(24):
+        idx = np.where(hours_val_arr == h)[0]
+        if len(idx) > 0:
+            t, _ = _best_threshold(y_val[idx], val_proba[idx])
+        else:
+            t = threshold
+        hourly_thresholds.append(float(t))
 
     # Compute SHAP feature importance on the training set
     keep_idx = list(range(len(feature_names)))
@@ -2666,8 +2664,7 @@ def train(
         model["optuna_trials"] = [
             {"params": t.params, "value": float(t.value)} for t in study.trials
         ]
-    if hourly_thresholds is not None:
-        model["hourly_thresholds"] = hourly_thresholds
+    model["hourly_thresholds"] = hourly_thresholds
     if calibration is not None:
         model["calibration_method"] = calibration
         if calibration == "sigmoid":

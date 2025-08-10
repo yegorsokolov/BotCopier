@@ -16,5 +16,9 @@
   "sl_coefficients": [0.0],
   "sl_intercept": 0.0,
   "tp_coefficients": [0.0],
-  "tp_intercept": 0.0
+  "tp_intercept": 0.0,
+  "hourly_thresholds": [
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+  ]
 }
