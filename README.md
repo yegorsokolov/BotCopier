@@ -101,6 +101,20 @@ docker run --rm -it \
   -p 9411:9411 jaegertracing/all-in-one:1.47
 ```
 
+To visualise end-to-end request flows via OTLP, enable the Jaeger collector's
+OTLP HTTP listener and point the services to it:
+
+```bash
+docker run --rm -it \
+  -e COLLECTOR_OTLP_ENABLED=true \
+  -p 4318:4318 -p 16686:16686 \
+  jaegertracing/all-in-one:1.47
+
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1
+python scripts/stream_listener.py
+python scripts/metrics_collector.py --db metrics.db
+```
+
 To run a Zipkin collector for trace visualisation instead:
 
 ```

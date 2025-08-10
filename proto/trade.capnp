@@ -29,4 +29,6 @@ struct TradeEvent {
   slHitDist @25 :Float64;
   tpHitDist @26 :Float64;
   decisionId @27 :Int32;
+  traceId @28 :Text;
+  spanId @29 :Text;
 }

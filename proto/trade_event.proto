@@ -30,4 +30,6 @@ message TradeEvent {
   double sl_hit_dist = 26;
   double tp_hit_dist = 27;
   int32 decision_id = 28;
+  string trace_id = 29;
+  string span_id = 30;
 }

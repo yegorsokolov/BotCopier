@@ -31,6 +31,8 @@ PROTOBUF_CONSTEXPR TradeEvent::TradeEvent(
   , /*decltype(_impl_.symbol_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
   , /*decltype(_impl_.comment_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
   , /*decltype(_impl_.open_time_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.trace_id_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
+  , /*decltype(_impl_.span_id_)*/{&::_pbi::fixed_address_empty_string, ::_pbi::ConstantInitialized{}}
   , /*decltype(_impl_.event_id_)*/0
   , /*decltype(_impl_.ticket_)*/0
   , /*decltype(_impl_.magic_)*/0
@@ -41,16 +43,16 @@ PROTOBUF_CONSTEXPR TradeEvent::TradeEvent(
   , /*decltype(_impl_.tp_)*/0
   , /*decltype(_impl_.profit_)*/0
   , /*decltype(_impl_.profit_after_trade_)*/0
-  , /*decltype(_impl_.remaining_lots_)*/0
   , /*decltype(_impl_.spread_)*/0
-  , /*decltype(_impl_.volume_)*/0
+  , /*decltype(_impl_.remaining_lots_)*/0
   , /*decltype(_impl_.slippage_)*/0
   , /*decltype(_impl_.book_bid_vol_)*/0
   , /*decltype(_impl_.book_ask_vol_)*/0
+  , /*decltype(_impl_.volume_)*/0
+  , /*decltype(_impl_.decision_id_)*/0
   , /*decltype(_impl_.book_imbalance_)*/0
   , /*decltype(_impl_.sl_hit_dist_)*/0
   , /*decltype(_impl_.tp_hit_dist_)*/0
-  , /*decltype(_impl_.decision_id_)*/0
   , /*decltype(_impl_._cached_size_)*/{}} {}
 struct TradeEventDefaultTypeInternal {
   PROTOBUF_CONSTEXPR TradeEventDefaultTypeInternal()
@@ -101,6 +103,8 @@ const uint32_t TableStruct_trade_5fevent_2eproto::offsets[] PROTOBUF_SECTION_VAR
   PROTOBUF_FIELD_OFFSET(::tbot::TradeEvent, _impl_.sl_hit_dist_),
   PROTOBUF_FIELD_OFFSET(::tbot::TradeEvent, _impl_.tp_hit_dist_),
   PROTOBUF_FIELD_OFFSET(::tbot::TradeEvent, _impl_.decision_id_),
+  PROTOBUF_FIELD_OFFSET(::tbot::TradeEvent, _impl_.trace_id_),
+  PROTOBUF_FIELD_OFFSET(::tbot::TradeEvent, _impl_.span_id_),
 };
 static const ::_pbi::MigrationSchema schemas[] PROTOBUF_SECTION_VARIABLE(protodesc_cold) = {
   { 0, -1, -1, sizeof(::tbot::TradeEvent)},
@@ -111,7 +115,7 @@ static const ::_pb::Message* const file_default_instances[] = {
 };
 
 const char descriptor_table_protodef_trade_5fevent_2eproto[] PROTOBUF_SECTION_VARIABLE(protodesc_cold) =
-  "\n\021trade_event.proto\022\004tbot\"\220\004\n\nTradeEvent"
+  "\n\021trade_event.proto\022\004tbot\"\263\004\n\nTradeEvent"
   "\022\020\n\010event_id\030\001 \001(\005\022\022\n\nevent_time\030\002 \001(\t\022\023"
   "\n\013broker_time\030\003 \001(\t\022\022\n\nlocal_time\030\004 \001(\t\022"
   "\016\n\006action\030\005 \001(\t\022\016\n\006ticket\030\006 \001(\005\022\r\n\005magic"
@@ -119,17 +123,17 @@ const char descriptor_table_protodef_trade_5fevent_2eproto[] PROTOBUF_SECTION_VA
   "\n\norder_type\030\n \001(\005\022\014\n\004lots\030\013 \001(\001\022\r\n\005pric"
   "e\030\014 \001(\001\022\n\n\002sl\030\r \001(\001\022\n\n\002tp\030\016 \001(\001\022\016\n\006profi"
   "t\030\017 \001(\001\022\032\n\022profit_after_trade\030\020 \001(\001\022\016\n\006s"
-  "pread\030\021 \001(\005\022\017\n\007comment\030\022 \001(\t\022\026\n\016remainin"
+  "pread\030\021 \001(\001\022\017\n\007comment\030\022 \001(\t\022\026\n\016remainin"
   "g_lots\030\023 \001(\001\022\020\n\010slippage\030\024 \001(\001\022\016\n\006volume"
   "\030\025 \001(\005\022\021\n\topen_time\030\026 \001(\t\022\024\n\014book_bid_vo"
   "l\030\027 \001(\001\022\024\n\014book_ask_vol\030\030 \001(\001\022\026\n\016book_im"
   "balance\030\031 \001(\001\022\023\n\013sl_hit_dist\030\032 \001(\001\022\023\n\013tp"
-  "_hit_dist\030\033 \001(\001\022\023\n\013decision_id\030\034 \001(\005b\006pr"
-  "oto3"
+  "_hit_dist\030\033 \001(\001\022\023\n\013decision_id\030\034 \001(\005\022\020\n\010"
+  "trace_id\030\035 \001(\t\022\017\n\007span_id\030\036 \001(\tb\006proto3"
   ;
 static ::_pbi::once_flag descriptor_table_trade_5fevent_2eproto_once;
 const ::_pbi::DescriptorTable descriptor_table_trade_5fevent_2eproto = {
-    false, false, 564, descriptor_table_protodef_trade_5fevent_2eproto,
+    false, false, 599, descriptor_table_protodef_trade_5fevent_2eproto,
     "trade_event.proto",
     &descriptor_table_trade_5fevent_2eproto_once, nullptr, 0, 1,
     schemas, file_default_instances, TableStruct_trade_5fevent_2eproto::offsets,
@@ -168,6 +172,8 @@ TradeEvent::TradeEvent(const TradeEvent& from)
     , decltype(_impl_.symbol_){}
     , decltype(_impl_.comment_){}
     , decltype(_impl_.open_time_){}
+    , decltype(_impl_.trace_id_){}
+    , decltype(_impl_.span_id_){}
     , decltype(_impl_.event_id_){}
     , decltype(_impl_.ticket_){}
     , decltype(_impl_.magic_){}
@@ -178,16 +184,16 @@ TradeEvent::TradeEvent(const TradeEvent& from)
     , decltype(_impl_.tp_){}
     , decltype(_impl_.profit_){}
     , decltype(_impl_.profit_after_trade_){}
-    , decltype(_impl_.remaining_lots_){}
     , decltype(_impl_.spread_){}
-    , decltype(_impl_.volume_){}
+    , decltype(_impl_.remaining_lots_){}
     , decltype(_impl_.slippage_){}
     , decltype(_impl_.book_bid_vol_){}
     , decltype(_impl_.book_ask_vol_){}
+    , decltype(_impl_.volume_){}
+    , decltype(_impl_.decision_id_){}
     , decltype(_impl_.book_imbalance_){}
     , decltype(_impl_.sl_hit_dist_){}
     , decltype(_impl_.tp_hit_dist_){}
-    , decltype(_impl_.decision_id_){}
     , /*decltype(_impl_._cached_size_)*/{}};
 
   _internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
@@ -255,9 +261,25 @@ TradeEvent::TradeEvent(const TradeEvent& from)
     _this->_impl_.open_time_.Set(from._internal_open_time(), 
       _this->GetArenaForAllocation());
   }
+  _impl_.trace_id_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.trace_id_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_trace_id().empty()) {
+    _this->_impl_.trace_id_.Set(from._internal_trace_id(), 
+      _this->GetArenaForAllocation());
+  }
+  _impl_.span_id_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.span_id_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (!from._internal_span_id().empty()) {
+    _this->_impl_.span_id_.Set(from._internal_span_id(), 
+      _this->GetArenaForAllocation());
+  }
   ::memcpy(&_impl_.event_id_, &from._impl_.event_id_,
-    static_cast<size_t>(reinterpret_cast<char*>(&_impl_.decision_id_) -
-    reinterpret_cast<char*>(&_impl_.event_id_)) + sizeof(_impl_.decision_id_));
+    static_cast<size_t>(reinterpret_cast<char*>(&_impl_.tp_hit_dist_) -
+    reinterpret_cast<char*>(&_impl_.event_id_)) + sizeof(_impl_.tp_hit_dist_));
   // @@protoc_insertion_point(copy_constructor:tbot.TradeEvent)
 }
 
@@ -274,6 +296,8 @@ inline void TradeEvent::SharedCtor(
     , decltype(_impl_.symbol_){}
     , decltype(_impl_.comment_){}
     , decltype(_impl_.open_time_){}
+    , decltype(_impl_.trace_id_){}
+    , decltype(_impl_.span_id_){}
     , decltype(_impl_.event_id_){0}
     , decltype(_impl_.ticket_){0}
     , decltype(_impl_.magic_){0}
@@ -284,16 +308,16 @@ inline void TradeEvent::SharedCtor(
     , decltype(_impl_.tp_){0}
     , decltype(_impl_.profit_){0}
     , decltype(_impl_.profit_after_trade_){0}
-    , decltype(_impl_.remaining_lots_){0}
     , decltype(_impl_.spread_){0}
-    , decltype(_impl_.volume_){0}
+    , decltype(_impl_.remaining_lots_){0}
     , decltype(_impl_.slippage_){0}
     , decltype(_impl_.book_bid_vol_){0}
     , decltype(_impl_.book_ask_vol_){0}
+    , decltype(_impl_.volume_){0}
+    , decltype(_impl_.decision_id_){0}
     , decltype(_impl_.book_imbalance_){0}
     , decltype(_impl_.sl_hit_dist_){0}
     , decltype(_impl_.tp_hit_dist_){0}
-    , decltype(_impl_.decision_id_){0}
     , /*decltype(_impl_._cached_size_)*/{}
   };
   _impl_.event_time_.InitDefault();
@@ -328,6 +352,14 @@ inline void TradeEvent::SharedCtor(
   #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
     _impl_.open_time_.Set("", GetArenaForAllocation());
   #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  _impl_.trace_id_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.trace_id_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  _impl_.span_id_.InitDefault();
+  #ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+    _impl_.span_id_.Set("", GetArenaForAllocation());
+  #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
 }
 
 TradeEvent::~TradeEvent() {
@@ -349,6 +381,8 @@ inline void TradeEvent::SharedDtor() {
   _impl_.symbol_.Destroy();
   _impl_.comment_.Destroy();
   _impl_.open_time_.Destroy();
+  _impl_.trace_id_.Destroy();
+  _impl_.span_id_.Destroy();
 }
 
 void TradeEvent::SetCachedSize(int size) const {
@@ -369,9 +403,11 @@ void TradeEvent::Clear() {
   _impl_.symbol_.ClearToEmpty();
   _impl_.comment_.ClearToEmpty();
   _impl_.open_time_.ClearToEmpty();
+  _impl_.trace_id_.ClearToEmpty();
+  _impl_.span_id_.ClearToEmpty();
   ::memset(&_impl_.event_id_, 0, static_cast<size_t>(
-      reinterpret_cast<char*>(&_impl_.decision_id_) -
-      reinterpret_cast<char*>(&_impl_.event_id_)) + sizeof(_impl_.decision_id_));
+      reinterpret_cast<char*>(&_impl_.tp_hit_dist_) -
+      reinterpret_cast<char*>(&_impl_.event_id_)) + sizeof(_impl_.tp_hit_dist_));
   _internal_metadata_.Clear<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>();
 }
 
@@ -521,11 +557,11 @@ const char* TradeEvent::_InternalParse(const char* ptr, ::_pbi::ParseContext* ct
         } else
           goto handle_unusual;
         continue;
-      // int32 spread = 17;
+      // double spread = 17;
       case 17:
-        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 136)) {
-          _impl_.spread_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint32(&ptr);
-          CHK_(ptr);
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 137)) {
+          _impl_.spread_ = ::PROTOBUF_NAMESPACE_ID::internal::UnalignedLoad<double>(ptr);
+          ptr += sizeof(double);
         } else
           goto handle_unusual;
         continue;
@@ -618,6 +654,26 @@ const char* TradeEvent::_InternalParse(const char* ptr, ::_pbi::ParseContext* ct
         if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 224)) {
           _impl_.decision_id_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint32(&ptr);
           CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // string trace_id = 29;
+      case 29:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 234)) {
+          auto str = _internal_mutable_trace_id();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+          CHK_(::_pbi::VerifyUTF8(str, "tbot.TradeEvent.trace_id"));
+        } else
+          goto handle_unusual;
+        continue;
+      // string span_id = 30;
+      case 30:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 242)) {
+          auto str = _internal_mutable_span_id();
+          ptr = ::_pbi::InlineGreedyStringParser(str, ptr, ctx);
+          CHK_(ptr);
+          CHK_(::_pbi::VerifyUTF8(str, "tbot.TradeEvent.span_id"));
         } else
           goto handle_unusual;
         continue;
@@ -794,10 +850,14 @@ uint8_t* TradeEvent::_InternalSerialize(
     target = ::_pbi::WireFormatLite::WriteDoubleToArray(16, this->_internal_profit_after_trade(), target);
   }
 
-  // int32 spread = 17;
-  if (this->_internal_spread() != 0) {
+  // double spread = 17;
+  static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
+  double tmp_spread = this->_internal_spread();
+  uint64_t raw_spread;
+  memcpy(&raw_spread, &tmp_spread, sizeof(tmp_spread));
+  if (raw_spread != 0) {
     target = stream->EnsureSpace(target);
-    target = ::_pbi::WireFormatLite::WriteInt32ToArray(17, this->_internal_spread(), target);
+    target = ::_pbi::WireFormatLite::WriteDoubleToArray(17, this->_internal_spread(), target);
   }
 
   // string comment = 18;
@@ -902,6 +962,26 @@ uint8_t* TradeEvent::_InternalSerialize(
     target = ::_pbi::WireFormatLite::WriteInt32ToArray(28, this->_internal_decision_id(), target);
   }
 
+  // string trace_id = 29;
+  if (!this->_internal_trace_id().empty()) {
+    ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::VerifyUtf8String(
+      this->_internal_trace_id().data(), static_cast<int>(this->_internal_trace_id().length()),
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::SERIALIZE,
+      "tbot.TradeEvent.trace_id");
+    target = stream->WriteStringMaybeAliased(
+        29, this->_internal_trace_id(), target);
+  }
+
+  // string span_id = 30;
+  if (!this->_internal_span_id().empty()) {
+    ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::VerifyUtf8String(
+      this->_internal_span_id().data(), static_cast<int>(this->_internal_span_id().length()),
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::SERIALIZE,
+      "tbot.TradeEvent.span_id");
+    target = stream->WriteStringMaybeAliased(
+        30, this->_internal_span_id(), target);
+  }
+
   if (PROTOBUF_PREDICT_FALSE(_internal_metadata_.have_unknown_fields())) {
     target = ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
         _internal_metadata_.unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(::PROTOBUF_NAMESPACE_ID::UnknownFieldSet::default_instance), target, stream);
@@ -972,6 +1052,20 @@ size_t TradeEvent::ByteSizeLong() const {
     total_size += 2 +
       ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::StringSize(
         this->_internal_open_time());
+  }
+
+  // string trace_id = 29;
+  if (!this->_internal_trace_id().empty()) {
+    total_size += 2 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::StringSize(
+        this->_internal_trace_id());
+  }
+
+  // string span_id = 30;
+  if (!this->_internal_span_id().empty()) {
+    total_size += 2 +
+      ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::StringSize(
+        this->_internal_span_id());
   }
 
   // int32 event_id = 1;
@@ -1048,6 +1142,15 @@ size_t TradeEvent::ByteSizeLong() const {
     total_size += 2 + 8;
   }
 
+  // double spread = 17;
+  static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
+  double tmp_spread = this->_internal_spread();
+  uint64_t raw_spread;
+  memcpy(&raw_spread, &tmp_spread, sizeof(tmp_spread));
+  if (raw_spread != 0) {
+    total_size += 2 + 8;
+  }
+
   // double remaining_lots = 19;
   static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
   double tmp_remaining_lots = this->_internal_remaining_lots();
@@ -1055,20 +1158,6 @@ size_t TradeEvent::ByteSizeLong() const {
   memcpy(&raw_remaining_lots, &tmp_remaining_lots, sizeof(tmp_remaining_lots));
   if (raw_remaining_lots != 0) {
     total_size += 2 + 8;
-  }
-
-  // int32 spread = 17;
-  if (this->_internal_spread() != 0) {
-    total_size += 2 +
-      ::_pbi::WireFormatLite::Int32Size(
-        this->_internal_spread());
-  }
-
-  // int32 volume = 21;
-  if (this->_internal_volume() != 0) {
-    total_size += 2 +
-      ::_pbi::WireFormatLite::Int32Size(
-        this->_internal_volume());
   }
 
   // double slippage = 20;
@@ -1098,6 +1187,20 @@ size_t TradeEvent::ByteSizeLong() const {
     total_size += 2 + 8;
   }
 
+  // int32 volume = 21;
+  if (this->_internal_volume() != 0) {
+    total_size += 2 +
+      ::_pbi::WireFormatLite::Int32Size(
+        this->_internal_volume());
+  }
+
+  // int32 decision_id = 28;
+  if (this->_internal_decision_id() != 0) {
+    total_size += 2 +
+      ::_pbi::WireFormatLite::Int32Size(
+        this->_internal_decision_id());
+  }
+
   // double book_imbalance = 25;
   static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
   double tmp_book_imbalance = this->_internal_book_imbalance();
@@ -1123,13 +1226,6 @@ size_t TradeEvent::ByteSizeLong() const {
   memcpy(&raw_tp_hit_dist, &tmp_tp_hit_dist, sizeof(tmp_tp_hit_dist));
   if (raw_tp_hit_dist != 0) {
     total_size += 2 + 8;
-  }
-
-  // int32 decision_id = 28;
-  if (this->_internal_decision_id() != 0) {
-    total_size += 2 +
-      ::_pbi::WireFormatLite::Int32Size(
-        this->_internal_decision_id());
   }
 
   return MaybeComputeUnknownFieldsSize(total_size, &_impl_._cached_size_);
@@ -1173,6 +1269,12 @@ void TradeEvent::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PRO
   }
   if (!from._internal_open_time().empty()) {
     _this->_internal_set_open_time(from._internal_open_time());
+  }
+  if (!from._internal_trace_id().empty()) {
+    _this->_internal_set_trace_id(from._internal_trace_id());
+  }
+  if (!from._internal_span_id().empty()) {
+    _this->_internal_set_span_id(from._internal_span_id());
   }
   if (from._internal_event_id() != 0) {
     _this->_internal_set_event_id(from._internal_event_id());
@@ -1229,17 +1331,18 @@ void TradeEvent::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PRO
     _this->_internal_set_profit_after_trade(from._internal_profit_after_trade());
   }
   static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
+  double tmp_spread = from._internal_spread();
+  uint64_t raw_spread;
+  memcpy(&raw_spread, &tmp_spread, sizeof(tmp_spread));
+  if (raw_spread != 0) {
+    _this->_internal_set_spread(from._internal_spread());
+  }
+  static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
   double tmp_remaining_lots = from._internal_remaining_lots();
   uint64_t raw_remaining_lots;
   memcpy(&raw_remaining_lots, &tmp_remaining_lots, sizeof(tmp_remaining_lots));
   if (raw_remaining_lots != 0) {
     _this->_internal_set_remaining_lots(from._internal_remaining_lots());
-  }
-  if (from._internal_spread() != 0) {
-    _this->_internal_set_spread(from._internal_spread());
-  }
-  if (from._internal_volume() != 0) {
-    _this->_internal_set_volume(from._internal_volume());
   }
   static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
   double tmp_slippage = from._internal_slippage();
@@ -1262,6 +1365,12 @@ void TradeEvent::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PRO
   if (raw_book_ask_vol != 0) {
     _this->_internal_set_book_ask_vol(from._internal_book_ask_vol());
   }
+  if (from._internal_volume() != 0) {
+    _this->_internal_set_volume(from._internal_volume());
+  }
+  if (from._internal_decision_id() != 0) {
+    _this->_internal_set_decision_id(from._internal_decision_id());
+  }
   static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
   double tmp_book_imbalance = from._internal_book_imbalance();
   uint64_t raw_book_imbalance;
@@ -1282,9 +1391,6 @@ void TradeEvent::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PRO
   memcpy(&raw_tp_hit_dist, &tmp_tp_hit_dist, sizeof(tmp_tp_hit_dist));
   if (raw_tp_hit_dist != 0) {
     _this->_internal_set_tp_hit_dist(from._internal_tp_hit_dist());
-  }
-  if (from._internal_decision_id() != 0) {
-    _this->_internal_set_decision_id(from._internal_decision_id());
   }
   _this->_internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
 }
@@ -1337,9 +1443,17 @@ void TradeEvent::InternalSwap(TradeEvent* other) {
       &_impl_.open_time_, lhs_arena,
       &other->_impl_.open_time_, rhs_arena
   );
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.trace_id_, lhs_arena,
+      &other->_impl_.trace_id_, rhs_arena
+  );
+  ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr::InternalSwap(
+      &_impl_.span_id_, lhs_arena,
+      &other->_impl_.span_id_, rhs_arena
+  );
   ::PROTOBUF_NAMESPACE_ID::internal::memswap<
-      PROTOBUF_FIELD_OFFSET(TradeEvent, _impl_.decision_id_)
-      + sizeof(TradeEvent::_impl_.decision_id_)
+      PROTOBUF_FIELD_OFFSET(TradeEvent, _impl_.tp_hit_dist_)
+      + sizeof(TradeEvent::_impl_.tp_hit_dist_)
       - PROTOBUF_FIELD_OFFSET(TradeEvent, _impl_.event_id_)>(
           reinterpret_cast<char*>(&_impl_.event_id_),
           reinterpret_cast<char*>(&other->_impl_.event_id_));
