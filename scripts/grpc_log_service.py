@@ -11,7 +11,7 @@ from pathlib import Path
 import grpc
 from google.protobuf import empty_pb2
 
-from proto import trade_event_pb2, metrics_pb2
+from proto import trade_event_pb2, metric_event_pb2
 
 TRADE_FIELDS = [
     "event_id",
@@ -92,7 +92,7 @@ def create_server(host: str, port: int, trade_out: Path, metrics_out: Path) -> g
     )
     metrics_handler = grpc.unary_unary_rpc_method_handler(
         service.LogMetrics,
-        request_deserializer=metrics_pb2.Metrics.FromString,
+        request_deserializer=metric_event_pb2.MetricEvent.FromString,
         response_serializer=empty_pb2.Empty.SerializeToString,
     )
     handler = grpc.method_handlers_generic_handler(

@@ -31,7 +31,7 @@
 #include <google/protobuf/extension_set.h>  // IWYU pragma: export
 #include <google/protobuf/unknown_field_set.h>
 #include "trade_event.pb.h"
-#include "metrics.pb.h"
+#include "metric_event.pb.h"
 // @@protoc_insertion_point(includes)
 #include <google/protobuf/port_def.inc>
 #define PROTOBUF_INTERNAL_EXPORT_observer_2eproto
@@ -221,23 +221,23 @@ class ObserverMessage final :
       ::tbot::TradeEvent* event);
   ::tbot::TradeEvent* unsafe_arena_release_event();
 
-  // .tbot.Metrics metric = 3;
+  // .tbot.MetricEvent metric = 3;
   bool has_metric() const;
   private:
   bool _internal_has_metric() const;
   public:
   void clear_metric();
-  const ::tbot::Metrics& metric() const;
-  PROTOBUF_NODISCARD ::tbot::Metrics* release_metric();
-  ::tbot::Metrics* mutable_metric();
-  void set_allocated_metric(::tbot::Metrics* metric);
+  const ::tbot::MetricEvent& metric() const;
+  PROTOBUF_NODISCARD ::tbot::MetricEvent* release_metric();
+  ::tbot::MetricEvent* mutable_metric();
+  void set_allocated_metric(::tbot::MetricEvent* metric);
   private:
-  const ::tbot::Metrics& _internal_metric() const;
-  ::tbot::Metrics* _internal_mutable_metric();
+  const ::tbot::MetricEvent& _internal_metric() const;
+  ::tbot::MetricEvent* _internal_mutable_metric();
   public:
   void unsafe_arena_set_allocated_metric(
-      ::tbot::Metrics* metric);
-  ::tbot::Metrics* unsafe_arena_release_metric();
+      ::tbot::MetricEvent* metric);
+  ::tbot::MetricEvent* unsafe_arena_release_metric();
 
   void clear_payload();
   PayloadCase payload_case() const;
@@ -259,7 +259,7 @@ class ObserverMessage final :
       constexpr PayloadUnion() : _constinit_{} {}
         ::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized _constinit_;
       ::tbot::TradeEvent* event_;
-      ::tbot::Metrics* metric_;
+      ::tbot::MetricEvent* metric_;
     } payload_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
     uint32_t _oneof_case_[1];
@@ -395,7 +395,7 @@ inline ::tbot::TradeEvent* ObserverMessage::mutable_event() {
   return _msg;
 }
 
-// .tbot.Metrics metric = 3;
+// .tbot.MetricEvent metric = 3;
 inline bool ObserverMessage::_internal_has_metric() const {
   return payload_case() == kMetric;
 }
@@ -405,11 +405,11 @@ inline bool ObserverMessage::has_metric() const {
 inline void ObserverMessage::set_has_metric() {
   _impl_._oneof_case_[0] = kMetric;
 }
-inline ::tbot::Metrics* ObserverMessage::release_metric() {
+inline ::tbot::MetricEvent* ObserverMessage::release_metric() {
   // @@protoc_insertion_point(field_release:tbot.ObserverMessage.metric)
   if (_internal_has_metric()) {
     clear_has_payload();
-    ::tbot::Metrics* temp = _impl_.payload_.metric_;
+    ::tbot::MetricEvent* temp = _impl_.payload_.metric_;
     if (GetArenaForAllocation() != nullptr) {
       temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
     }
@@ -419,27 +419,27 @@ inline ::tbot::Metrics* ObserverMessage::release_metric() {
     return nullptr;
   }
 }
-inline const ::tbot::Metrics& ObserverMessage::_internal_metric() const {
+inline const ::tbot::MetricEvent& ObserverMessage::_internal_metric() const {
   return _internal_has_metric()
       ? *_impl_.payload_.metric_
-      : reinterpret_cast< ::tbot::Metrics&>(::tbot::_Metrics_default_instance_);
+      : reinterpret_cast< ::tbot::MetricEvent&>(::tbot::_MetricEvent_default_instance_);
 }
-inline const ::tbot::Metrics& ObserverMessage::metric() const {
+inline const ::tbot::MetricEvent& ObserverMessage::metric() const {
   // @@protoc_insertion_point(field_get:tbot.ObserverMessage.metric)
   return _internal_metric();
 }
-inline ::tbot::Metrics* ObserverMessage::unsafe_arena_release_metric() {
+inline ::tbot::MetricEvent* ObserverMessage::unsafe_arena_release_metric() {
   // @@protoc_insertion_point(field_unsafe_arena_release:tbot.ObserverMessage.metric)
   if (_internal_has_metric()) {
     clear_has_payload();
-    ::tbot::Metrics* temp = _impl_.payload_.metric_;
+    ::tbot::MetricEvent* temp = _impl_.payload_.metric_;
     _impl_.payload_.metric_ = nullptr;
     return temp;
   } else {
     return nullptr;
   }
 }
-inline void ObserverMessage::unsafe_arena_set_allocated_metric(::tbot::Metrics* metric) {
+inline void ObserverMessage::unsafe_arena_set_allocated_metric(::tbot::MetricEvent* metric) {
   clear_payload();
   if (metric) {
     set_has_metric();
@@ -447,16 +447,16 @@ inline void ObserverMessage::unsafe_arena_set_allocated_metric(::tbot::Metrics* 
   }
   // @@protoc_insertion_point(field_unsafe_arena_set_allocated:tbot.ObserverMessage.metric)
 }
-inline ::tbot::Metrics* ObserverMessage::_internal_mutable_metric() {
+inline ::tbot::MetricEvent* ObserverMessage::_internal_mutable_metric() {
   if (!_internal_has_metric()) {
     clear_payload();
     set_has_metric();
-    _impl_.payload_.metric_ = CreateMaybeMessage< ::tbot::Metrics >(GetArenaForAllocation());
+    _impl_.payload_.metric_ = CreateMaybeMessage< ::tbot::MetricEvent >(GetArenaForAllocation());
   }
   return _impl_.payload_.metric_;
 }
-inline ::tbot::Metrics* ObserverMessage::mutable_metric() {
-  ::tbot::Metrics* _msg = _internal_mutable_metric();
+inline ::tbot::MetricEvent* ObserverMessage::mutable_metric() {
+  ::tbot::MetricEvent* _msg = _internal_mutable_metric();
   // @@protoc_insertion_point(field_mutable:tbot.ObserverMessage.metric)
   return _msg;
 }

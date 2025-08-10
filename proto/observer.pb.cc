@@ -63,18 +63,18 @@ static const ::_pb::Message* const file_default_instances[] = {
 
 const char descriptor_table_protodef_observer_2eproto[] PROTOBUF_SECTION_VARIABLE(protodesc_cold) =
   "\n\016observer.proto\022\004tbot\032\021trade_event.prot"
-  "o\032\rmetrics.proto\"x\n\017ObserverMessage\022\026\n\016s"
-  "chema_version\030\001 \001(\t\022!\n\005event\030\002 \001(\0132\020.tbo"
-  "t.TradeEventH\000\022\037\n\006metric\030\003 \001(\0132\r.tbot.Me"
-  "tricsH\000B\t\n\007payloadb\006proto3"
+  "o\032\022metric_event.proto\"|\n\017ObserverMessage"
+  "\022\026\n\016schema_version\030\001 \001(\t\022!\n\005event\030\002 \001(\0132"
+  "\020.tbot.TradeEventH\000\022#\n\006metric\030\003 \001(\0132\021.tb"
+  "ot.MetricEventH\000B\t\n\007payloadb\006proto3"
   ;
 static const ::_pbi::DescriptorTable* const descriptor_table_observer_2eproto_deps[2] = {
-  &::descriptor_table_metrics_2eproto,
+  &::descriptor_table_metric_5fevent_2eproto,
   &::descriptor_table_trade_5fevent_2eproto,
 };
 static ::_pbi::once_flag descriptor_table_observer_2eproto_once;
 const ::_pbi::DescriptorTable descriptor_table_observer_2eproto = {
-    false, false, 186, descriptor_table_protodef_observer_2eproto,
+    false, false, 195, descriptor_table_protodef_observer_2eproto,
     "observer.proto",
     &descriptor_table_observer_2eproto_once, descriptor_table_observer_2eproto_deps, 2, 1,
     schemas, file_default_instances, TableStruct_observer_2eproto::offsets,
@@ -94,14 +94,14 @@ namespace tbot {
 class ObserverMessage::_Internal {
  public:
   static const ::tbot::TradeEvent& event(const ObserverMessage* msg);
-  static const ::tbot::Metrics& metric(const ObserverMessage* msg);
+  static const ::tbot::MetricEvent& metric(const ObserverMessage* msg);
 };
 
 const ::tbot::TradeEvent&
 ObserverMessage::_Internal::event(const ObserverMessage* msg) {
   return *msg->_impl_.payload_.event_;
 }
-const ::tbot::Metrics&
+const ::tbot::MetricEvent&
 ObserverMessage::_Internal::metric(const ObserverMessage* msg) {
   return *msg->_impl_.payload_.metric_;
 }
@@ -129,7 +129,7 @@ void ObserverMessage::clear_event() {
     clear_has_payload();
   }
 }
-void ObserverMessage::set_allocated_metric(::tbot::Metrics* metric) {
+void ObserverMessage::set_allocated_metric(::tbot::MetricEvent* metric) {
   ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
   clear_payload();
   if (metric) {
@@ -185,7 +185,7 @@ ObserverMessage::ObserverMessage(const ObserverMessage& from)
       break;
     }
     case kMetric: {
-      _this->_internal_mutable_metric()->::tbot::Metrics::MergeFrom(
+      _this->_internal_mutable_metric()->::tbot::MetricEvent::MergeFrom(
           from._internal_metric());
       break;
     }
@@ -292,7 +292,7 @@ const char* ObserverMessage::_InternalParse(const char* ptr, ::_pbi::ParseContex
         } else
           goto handle_unusual;
         continue;
-      // .tbot.Metrics metric = 3;
+      // .tbot.MetricEvent metric = 3;
       case 3:
         if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 26)) {
           ptr = ctx->ParseMessage(_internal_mutable_metric(), ptr);
@@ -346,7 +346,7 @@ uint8_t* ObserverMessage::_InternalSerialize(
         _Internal::event(this).GetCachedSize(), target, stream);
   }
 
-  // .tbot.Metrics metric = 3;
+  // .tbot.MetricEvent metric = 3;
   if (_internal_has_metric()) {
     target = ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::
       InternalWriteMessage(3, _Internal::metric(this),
@@ -384,7 +384,7 @@ size_t ObserverMessage::ByteSizeLong() const {
           *_impl_.payload_.event_);
       break;
     }
-    // .tbot.Metrics metric = 3;
+    // .tbot.MetricEvent metric = 3;
     case kMetric: {
       total_size += 1 +
         ::PROTOBUF_NAMESPACE_ID::internal::WireFormatLite::MessageSize(
@@ -423,7 +423,7 @@ void ObserverMessage::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const 
       break;
     }
     case kMetric: {
-      _this->_internal_mutable_metric()->::tbot::Metrics::MergeFrom(
+      _this->_internal_mutable_metric()->::tbot::MetricEvent::MergeFrom(
           from._internal_metric());
       break;
     }
