@@ -636,3 +636,28 @@ def test_on_tick_logistic_inference(tmp_path: Path):
     assert "if(prob > thr)" in content
     assert "GetNewSL(true)" in content
     assert "GetNewTP(true)" in content
+
+
+def test_symbol_embeddings(tmp_path: Path):
+    model = {
+        "model_id": "emb",
+        "magic": 100,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["hour"],
+        "symbol_embeddings": {
+            "EURUSD": [0.1, 0.2],
+            "USDJPY": [0.3, 0.4],
+        },
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+    generated = list(out_dir.glob("Generated_emb_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert "EURUSD" in content
+    assert "SymbolEmbeddings" in content

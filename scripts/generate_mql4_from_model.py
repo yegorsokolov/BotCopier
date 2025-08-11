@@ -317,6 +317,24 @@ def generate(
     std_vec = [_fmt(std_map.get(f, 1.0)) for f in feature_names]
     output = output.replace('__FEATURE_STD__', ', '.join(std_vec))
 
+    emb_data = base.get('symbol_embeddings', {})
+    if emb_data:
+        emb_symbols = list(emb_data.keys())
+        emb_dim = len(next(iter(emb_data.values()), []))
+        sym_list = ', '.join(f'"{s}"' for s in emb_symbols)
+        emb_rows = ', '.join(
+            '{' + ', '.join(_fmt(v) for v in emb_data[s]) + '}' for s in emb_symbols
+        )
+        output = output.replace('__SYM_EMB_DIM__', str(emb_dim))
+        output = output.replace('__SYM_EMB_COUNT__', str(len(emb_symbols)))
+        output = output.replace('__SYM_EMB_SYMBOLS__', sym_list)
+        output = output.replace('__SYM_EMB_VALUES__', emb_rows)
+    else:
+        output = output.replace('__SYM_EMB_DIM__', '0')
+        output = output.replace('__SYM_EMB_COUNT__', '0')
+        output = output.replace('__SYM_EMB_SYMBOLS__', '')
+        output = output.replace('__SYM_EMB_VALUES__', '')
+
     cal_events = base.get('calendar_events', [])
     if cal_events:
         time_vals = ', '.join(

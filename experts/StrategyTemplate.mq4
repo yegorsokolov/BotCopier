@@ -71,6 +71,10 @@ double TransformerDenseWeights[] = {__TRANS_DENSE_W__};
 double TransformerDenseBias = __TRANS_DENSE_B__;
 double FeatureMean[] = {__FEATURE_MEAN__};
 double FeatureStd[] = {__FEATURE_STD__};
+int SymbolEmbDim = __SYM_EMB_DIM__;
+int SymbolEmbCount = __SYM_EMB_COUNT__;
+string SymbolEmbSymbols[] = {__SYM_EMB_SYMBOLS__};
+double SymbolEmbeddings[__SYM_EMB_COUNT__][__SYM_EMB_DIM__] = {__SYM_EMB_VALUES__};
 datetime CalendarTimes[] = {__CALENDAR_TIMES__};
 double CalendarImpacts[] = {__CALENDAR_IMPACTS__};
 int EventWindowMinutes = __EVENT_WINDOW__;
@@ -152,6 +156,19 @@ void ExtractJsonArray(string json, string key, double &arr[])
    ArrayResize(arr, cnt);
    for(int i=0; i<cnt; i++)
       arr[i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i])));
+}
+
+bool GetSymbolEmbedding(string sym, double &vec[])
+{
+   for(int i=0; i<SymbolEmbCount; i++)
+   {
+      if(SymbolEmbSymbols[i] == sym)
+      {
+         ArrayCopy(vec, SymbolEmbeddings[i]);
+         return(true);
+      }
+   }
+   return(false);
 }
 
 bool ParseModelJson(string json)

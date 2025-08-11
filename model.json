@@ -20,5 +20,12 @@
   "hourly_thresholds": [
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
-  ]
+  ],
+  "graph": {
+    "symbols": [],
+    "edge_index": [],
+    "edge_weight": [],
+    "embedding_dim": 0
+  },
+  "symbol_embeddings": {}
 }
