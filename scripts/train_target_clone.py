@@ -3023,7 +3023,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--data-dir', required=True)
     p.add_argument('--out-dir', required=True)
-    p.add_argument('--flight-uri', help='Arrow Flight server URI')
+    p.add_argument('--flight-uri', default=os.environ.get('FLIGHT_URI'),
+                   help='Arrow Flight server URI (default from FLIGHT_URI)')
     p.add_argument('--use-sma', action='store_true', help='include moving average feature')
     p.add_argument('--sma-window', type=int, default=5)
     p.add_argument('--use-rsi', action='store_true', help='include RSI feature')

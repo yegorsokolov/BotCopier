@@ -6,8 +6,9 @@
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, int decision_id, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, uchar &out[]);
 #import
-#import "nats_bridge.dll"
-bool NatsPublish(string subject, uchar &payload[], int len);
+#import "flight_client.dll"
+bool FlightClientInit(string host, int port);
+bool FlightClientSend(string path, uchar &payload[], int len);
 #import
 #import "shm_ring.dll"
 bool ShmRingInit(string name, int size);
@@ -35,6 +36,8 @@ extern string AnomalyServiceUrl            = "http://127.0.0.1:8000/anomaly";
 extern double AnomalyThreshold             = 0.1;
 extern string OtelEndpoint                = "";
 extern string ModelStateFile              = "model_online.json";
+extern string FlightServerHost            = "127.0.0.1";
+extern int    FlightServerPort            = 8815;
 
 int timer_handle;
 
@@ -296,6 +299,7 @@ int OnInit()
    DirectoryCreate(LogDirectoryName);
    // initialise shared memory ring buffer (1MB by default)
    ShmRingInit("tbot_events", 1<<20);
+   FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    string symbols_json = "[";
@@ -648,7 +652,7 @@ bool SendTrade(uchar &payload[])
    ArrayCopy(out, payload, 1, 0, len);
    if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
       return(true);
-   if(!NatsPublish("trades", out, ArraySize(out)))
+   if(!FlightClientSend("trades", out, ArraySize(out)))
    {
       SocketErrors++;
       return(false);
@@ -665,7 +669,7 @@ bool SendMetrics(uchar &payload[])
    ArrayCopy(out, payload, 1, 0, len);
    if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
       return(true);
-   if(!NatsPublish("metrics", out, ArraySize(out)))
+   if(!FlightClientSend("metrics", out, ArraySize(out)))
    {
       SocketErrors++;
       return(false);

@@ -5,8 +5,10 @@ from typing import List, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
+import pyarrow.flight as flight
 
 API_TOKEN = os.environ.get("DASHBOARD_API_TOKEN", "")
+FLIGHT_URI = os.environ.get("FLIGHT_URI", "")
 
 app = FastAPI(title="BotCopier Dashboard")
 
@@ -21,6 +23,18 @@ training_progress: List[dict] = []
 trade_connections: Set[WebSocket] = set()
 metric_connections: Set[WebSocket] = set()
 training_connections: Set[WebSocket] = set()
+
+if FLIGHT_URI:
+    try:
+        client = flight.FlightClient(FLIGHT_URI)
+        for name, store in (("trades", trades), ("metrics", metrics)):
+            desc = flight.FlightDescriptor.for_path(name)
+            info = client.get_flight_info(desc)
+            reader = client.do_get(info.endpoints[0].ticket)
+            table = reader.read_all()
+            store.extend(table.to_pylist())
+    except Exception:
+        pass
 
 
 async def verify_token(request: Request):
