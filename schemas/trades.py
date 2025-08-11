@@ -1,6 +1,38 @@
-"""Arrow schema for trade event records."""
+"""Arrow and Pydantic schemas for trade event records."""
 
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel
 import pyarrow as pa
+
+
+class TradeEvent(BaseModel):
+    """Pydantic model describing a trade event."""
+
+    schema_version: int
+    event_id: int
+    event_time: datetime
+    broker_time: Optional[datetime] = None
+    local_time: Optional[datetime] = None
+    action: str
+    ticket: int
+    magic: int
+    source: str
+    symbol: str
+    order_type: int
+    lots: float
+    price: float
+    sl: float
+    tp: float
+    profit: float
+    comment: str = ""
+    remaining_lots: float
+    decision_id: Optional[int] = None
+
+    class Config:
+        extra = "ignore"
+
 
 TRADE_SCHEMA = pa.schema([
     ("schema_version", pa.int32()),

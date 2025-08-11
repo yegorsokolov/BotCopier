@@ -24,14 +24,22 @@ try:  # optional NATS dependency
     import nats  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     nats = None
-try:  # pydantic is optional for tests
-    from pydantic import BaseModel, ValidationError  # type: ignore
+try:  # pydantic validation schemas
+    from pydantic import ValidationError  # type: ignore
+    from schemas.trades import TradeEvent  # type: ignore
+    from schemas.metrics import MetricEvent  # type: ignore
 except Exception:  # pragma: no cover - minimal fallback
-    class BaseModel:  # type: ignore
-        pass
-
     class ValidationError(Exception):
         pass
+
+    class _Event(dict):
+        def __init__(self, **data):
+            super().__init__(data)
+
+        def dict(self):  # mimic pydantic API
+            return dict(self)
+
+    TradeEvent = MetricEvent = _Event  # type: ignore
 try:  # optional websocket client
     from websocket import create_connection, WebSocket  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -103,10 +111,10 @@ except Exception:  # pragma: no cover - minimal fallbacks
             pass
 
     def format_span_id(x):  # type: ignore
-        return x
+        return str(x)
 
     def format_trace_id(x):  # type: ignore
-        return x
+        return str(x)
 
     class NonRecordingSpan:  # type: ignore
         def __init__(self, *_args, **_kwargs):
@@ -131,6 +139,13 @@ except Exception:  # pragma: no cover - minimal fallbacks
 
         def __exit__(self, exc_type, exc, tb):
             return False
+
+        class _Ctx:
+            trace_id = 0
+            span_id = 0
+
+        def get_span_context(self):  # type: ignore
+            return self._Ctx()
 
     class _TracerStub:
         def start_as_current_span(self, *a, **k):
@@ -248,42 +263,6 @@ def _trigger_retrain() -> None:
         logger.error({"error": "failed to trigger retrain", "details": str(e)})
 
 _load_adwin()
-
-
-class TradeEvent(BaseModel):
-    schema_version: int
-    event_id: int
-    event_time: str
-    broker_time: str
-    local_time: str
-    action: str
-    ticket: int
-    magic: int
-    source: str
-    symbol: str
-    order_type: int
-    lots: float
-    price: float
-    sl: float
-    tp: float
-    profit: float
-    comment: str
-    remaining_lots: float
-    decision_id: int | None = None
-
-
-class MetricEvent(BaseModel):
-    schema_version: int
-    time: str
-    magic: int
-    win_rate: float
-    avg_profit: float
-    trade_count: int
-    drawdown: float
-    sharpe: float
-    file_write_errors: int
-    socket_errors: int
-    book_refresh_seconds: int
 
 
 def append_csv(path: Path, record: dict) -> None:
