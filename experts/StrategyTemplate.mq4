@@ -20,6 +20,7 @@ extern string DecisionLogSocketHost = "127.0.0.1";
 extern int    DecisionLogSocketPort = 9001;
 extern string ModelVersion = "";
 extern string EncoderOnnxFile = "__ENCODER_ONNX__";
+extern string ModelOnnxFile = "__MODEL_ONNX__";
 extern string BanditRouterHost = "127.0.0.1";
 extern int    BanditRouterPort = 9100;
 
@@ -104,9 +105,11 @@ int      DecisionSocket = INVALID_HANDLE;
 int      BanditSocket = INVALID_HANDLE;
 int      NextDecisionId = 1;
 bool UseOnnxEncoder = false;
+bool UseOnnxModel = false;
 
 #import "onnxruntime_wrapper.ex4"
    int OnnxEncode(string model, double &inp[], double &out[]);
+   int OnnxPredict(string model, double &inp[], double &out[]);
 #import
 
 //----------------------------------------------------------------------
@@ -259,6 +262,8 @@ int OnInit()
       Print("Using built-in model parameters");
    if(StringLen(EncoderOnnxFile) > 0 && FileIsExist(EncoderOnnxFile))
       UseOnnxEncoder = true;
+   if(StringLen(ModelOnnxFile) > 0 && FileIsExist(ModelOnnxFile))
+      UseOnnxModel = true;
    MarketBookAdd(SymbolToTrade);
    if(EnableDecisionLogging)
    {
@@ -792,6 +797,17 @@ double ComputeDecisionTransformerScore()
 double GetProbability()
 {
    UpdateFeatureHistory();
+   if(UseOnnxModel)
+   {
+      double inp[];
+      ArrayResize(inp, FeatureCount);
+      for(int i=0; i<FeatureCount; i++)
+         inp[i] = GetFeature(i);
+      double out[];
+      ArrayResize(out,1);
+      if(OnnxPredict(ModelOnnxFile, inp, out) == 0)
+         return(out[0]);
+   }
    int sess = SelectExpert();
    if(ArraySize(GatingIntercepts) == 0 && ArrayRange(ProbabilityLookup,0) == ModelCount && ArrayRange(ProbabilityLookup,1) == 24)
       return(ProbabilityLookup[sess][TimeHour(TimeCurrent())]);

@@ -25,6 +25,7 @@ nats-py
 confluent-kafka[avro]
 fastavro
 transformers
+pytorch-forecasting; extra == "tft"
 
 # Optional extras
 xgboost; extra == "xgboost"

@@ -290,6 +290,7 @@ def generate(
     output = output.replace('__ENCODER_WINDOW__', str(enc_window))
     output = output.replace('__ENCODER_DIM__', str(enc_dim))
     output = output.replace('__ENCODER_ONNX__', base.get('encoder_onnx', 'encoder.onnx'))
+    output = output.replace('__MODEL_ONNX__', base.get('onnx_file', ''))
 
     centers = base.get('encoder_centers', [])
     center_flat = ', '.join(_fmt(v) for row in centers for v in row)
