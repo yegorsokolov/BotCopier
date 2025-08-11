@@ -14,6 +14,12 @@ import sys
 
 import asyncio
 import time
+import pickle
+import subprocess
+try:  # optional drift detection dependency
+    from river.drift import ADWIN  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    ADWIN = None  # type: ignore
 try:  # optional NATS dependency
     import nats  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -207,6 +213,42 @@ logger.setLevel(logging.INFO)
 ws_trades: WebSocket | None = None
 ws_metrics: WebSocket | None = None
 
+# ADWIN drift detectors
+ADWIN_STATE_PATH = Path("logs/adwin_state.pkl")
+MONITOR_FEATURES = ["win_rate", "avg_profit", "drawdown", "sharpe"]
+adwin_detectors: dict[str, ADWIN] = {}
+
+def _load_adwin() -> None:
+    if ADWIN is None:
+        return
+    global adwin_detectors
+    if ADWIN_STATE_PATH.exists():
+        try:
+            with ADWIN_STATE_PATH.open("rb") as f:
+                adwin_detectors = pickle.load(f)
+        except Exception:
+            adwin_detectors = {}
+    for feat in MONITOR_FEATURES:
+        adwin_detectors.setdefault(feat, ADWIN())
+
+def _save_adwin() -> None:
+    if ADWIN is None:
+        return
+    try:
+        ADWIN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with ADWIN_STATE_PATH.open("wb") as f:
+            pickle.dump(adwin_detectors, f)
+    except Exception:
+        pass
+
+def _trigger_retrain() -> None:
+    try:
+        subprocess.Popen([sys.executable, str(Path(__file__).with_name("auto_retrain.py"))])
+    except Exception as e:
+        logger.error({"error": "failed to trigger retrain", "details": str(e)})
+
+_load_adwin()
+
 
 class TradeEvent(BaseModel):
     schema_version: int
@@ -389,6 +431,23 @@ def process_metric(msg) -> None:
                 ws_metrics.send(json.dumps(record))
             except Exception:
                 pass
+        if ADWIN is not None:
+            drift_features = []
+            for feat in MONITOR_FEATURES:
+                try:
+                    val = float(record.get(feat, 0))
+                except (TypeError, ValueError):
+                    continue
+                det = adwin_detectors.get(feat)
+                if det is None:
+                    continue
+                det.update(val)
+                if det.drift_detected:
+                    drift_features.append(feat)
+            if drift_features:
+                logger.warning({"alert": "drift detected", "features": drift_features})
+                _trigger_retrain()
+            _save_adwin()
 
 
 def main() -> int:
