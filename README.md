@@ -124,6 +124,21 @@ A small web dashboard can display trades, metrics and training progress in real 
    ```
 5. Open <http://localhost:8000> in a browser and supply the token when prompted to view live updates.
 
+### Arrow Flight Logging
+
+`Observer_TBot` streams trade and metric events over [Apache Arrow Flight](https://arrow.apache.org/).
+Start the in-memory server and point clients to it:
+
+```bash
+python scripts/flight_server.py
+```
+
+`train_target_clone.py` accepts `--flight-uri` (defaulting to `$FLIGHT_URI`) and the dashboard pre-loads data when `FLIGHT_URI` is set.
+
+#### Latency Benchmark
+
+Sending 500 trade events as individual JSON posts took ~0.53s while uploading the same data as a single Arrow Flight batch finished in ~0.002s on this machine.
+
 ## Tracing and Logging
 
 The observer, stream listener and training scripts emit OpenTelemetry traces and JSON logs. Configure exports via environment variables:
