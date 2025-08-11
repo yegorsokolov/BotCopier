@@ -51,6 +51,14 @@ except Exception:  # pragma: no cover - optional dependency
     sb3c = None  # type: ignore
     HAS_SB3_CONTRIB = False
 
+try:  # pragma: no cover - optional dependency
+    from federated_buffer import FederatedBufferClient  # type: ignore
+except Exception:  # pragma: no cover - executed when run from repo root
+    try:
+        from scripts.federated_buffer import FederatedBufferClient  # type: ignore
+    except Exception:  # pragma: no cover - federated buffer optional
+        FederatedBufferClient = None  # type: ignore
+
 import numpy as np
 try:  # pragma: no cover - optional dependency
     from sklearn.feature_extraction import DictVectorizer
@@ -381,6 +389,8 @@ def train(
     self_play: bool = False,
     flight_uri: str | None = None,
     kafka_brokers: str | None = None,
+    federated_server: str | None = None,
+    sync_interval: int = 50,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     states, actions, rewards, next_states, vec = _build_dataset(data_dir, flight_uri, kafka_brokers)
@@ -404,6 +414,14 @@ def train(
         (states[i], int(actions[i]), float(rewards[i]), next_states[i])
         for i in range(len(actions))
     ]
+
+    buffer_client = (
+        FederatedBufferClient(federated_server)
+        if federated_server and FederatedBufferClient is not None
+        else None
+    )
+    if buffer_client is not None:
+        experiences = buffer_client.sync(experiences)
 
     if algo_key == "decision_transformer":
         if not HAS_TRANSFORMERS:
@@ -678,7 +696,9 @@ def train(
 
     if algo_key == "cql":
         alpha = 0.01  # conservative penalty strength
-        for _ in range(training_steps):
+        for i in range(training_steps):
+            if buffer_client is not None and i % sync_interval == 0:
+                experiences = buffer_client.sync(experiences)
             for s, a, r, ns in experiences:
                 q_next0 = intercepts[0] + np.dot(weights[0], ns)
                 q_next1 = intercepts[1] + np.dot(weights[1], ns)
@@ -698,7 +718,9 @@ def train(
     else:  # qlearn
         episode_rewards: List[float] = []  # average reward per step
         episode_totals: List[float] = []   # total reward per episode
-        for _ in range(training_steps):
+        for i in range(training_steps):
+            if buffer_client is not None and i % sync_interval == 0:
+                experiences = buffer_client.sync(experiences)
             total_r = 0.0
             buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
             for step, exp in enumerate(experiences):
@@ -800,6 +822,13 @@ def main() -> None:
             action="store_true",
             help="alternate training on real logs and simulated data",
         )
+        p.add_argument("--federated-server", help="gRPC address of federated buffer server")
+        p.add_argument(
+            "--sync-interval",
+            type=int,
+            default=50,
+            help="training iterations between federated buffer syncs",
+        )
         args = p.parse_args()
         train(
             Path(args.data_dir),
@@ -816,6 +845,8 @@ def main() -> None:
             self_play=args.self_play,
             flight_uri=args.flight_uri,
             kafka_brokers=args.kafka_brokers,
+            federated_server=args.federated_server,
+            sync_interval=args.sync_interval,
         )
         logger.info("training complete")
 
