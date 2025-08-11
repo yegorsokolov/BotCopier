@@ -50,6 +50,14 @@ except Exception:  # pragma: no cover - optional dependency
     nn = None
     _HAS_TORCH = False
 
+# Optional graph library for node embeddings
+try:  # pragma: no cover - optional dependency
+    from torch_geometric.nn import Node2Vec  # type: ignore
+    _HAS_PYG = True
+except Exception:  # pragma: no cover - optional dependency
+    Node2Vec = None  # type: ignore
+    _HAS_PYG = False
+
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -1386,6 +1394,7 @@ def train(
     corr_map=None,
     corr_window: int = 5,
     extra_price_series=None,
+    symbol_graph: Path | None = None,
     optuna_trials: int = 0,
     regress_sl_tp: bool = False,
     regress_lots: bool = False,
@@ -1688,6 +1697,48 @@ def train(
     tp_inter = 0.0
     lot_coef = []
     lot_inter = 0.0
+
+    # ------------------------------------------------------------------
+    # Graph-based symbol embeddings
+    # ------------------------------------------------------------------
+    symbol_embeddings: dict[str, list[float]] = {}
+    graph_params = None
+    if symbol_graph and _HAS_TORCH and _HAS_PYG:
+        try:
+            with open(symbol_graph) as f_g:
+                graph_params = json.load(f_g)
+            symbols = graph_params.get("symbols", [])
+            edge_index = torch.tensor(
+                graph_params.get("edge_index", []), dtype=torch.long
+            ).t().contiguous()
+            if edge_index.numel() > 0:
+                emb_dim = int(graph_params.get("embedding_dim", 8)) or 8
+                node2vec = Node2Vec(
+                    edge_index,
+                    embedding_dim=emb_dim,
+                    walk_length=5,
+                    context_size=3,
+                    walks_per_node=10,
+                )
+                optimizer = torch.optim.Adam(node2vec.parameters(), lr=0.01)
+                loader = node2vec.loader(batch_size=32, shuffle=True)
+                for _ in range(20):
+                    for pos_rw, neg_rw in loader:
+                        optimizer.zero_grad()
+                        loss = node2vec.loss(pos_rw, neg_rw)
+                        loss.backward()
+                        optimizer.step()
+                emb = node2vec.embedding.weight.detach().cpu().numpy()
+                for i, sym in enumerate(symbols):
+                    symbol_embeddings[sym] = emb[i].astype(float).tolist()
+                for feat in features:
+                    vec = symbol_embeddings.get(feat.get("symbol"))
+                    if vec is not None:
+                        for j, v in enumerate(vec):
+                            feat[f"sym_emb_{j}"] = float(v)
+                graph_params["embedding_dim"] = emb.shape[1]
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logging.warning("symbol embedding computation failed: %s", exc)
 
     if existing_model is not None:
         vec = DictVectorizer(sparse=False)
@@ -2719,6 +2770,15 @@ def train(
         model["optuna_trials"] = [
             {"params": t.params, "value": float(t.value)} for t in study.trials
         ]
+    if symbol_embeddings:
+        model["symbol_embeddings"] = symbol_embeddings
+    if graph_params:
+        model["graph"] = {
+            "symbols": graph_params.get("symbols", []),
+            "edge_index": graph_params.get("edge_index", []),
+            "edge_weight": graph_params.get("edge_weight", []),
+            "embedding_dim": graph_params.get("embedding_dim", 0),
+        }
     model["hourly_thresholds"] = hourly_thresholds
     if calibration is not None:
         model["calibration_method"] = calibration
@@ -2978,6 +3038,7 @@ def main():
     p.add_argument('--cache-features', action='store_true', help='reuse cached feature matrix')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
+    p.add_argument('--symbol-graph', help='JSON file describing symbol correlation graph')
     p.add_argument(
         '--optuna-trials',
         type=int,
@@ -3024,6 +3085,10 @@ def main():
                 corr_map.setdefault(base, []).append(peer)
     else:
         corr_map = None
+    if args.symbol_graph:
+        symbol_graph = Path(args.symbol_graph)
+    else:
+        symbol_graph = None
     if args.higher_timeframes:
         higher_tfs = [tf.strip() for tf in args.higher_timeframes.split(',') if tf.strip()]
     else:
@@ -3078,6 +3143,7 @@ def main():
         use_encoder=args.use_encoder,
         uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
         uncertain_weight=args.uncertain_weight,
+        symbol_graph=symbol_graph,
     )
     if args.federated_server:
         model_path = Path(args.out_dir) / (
