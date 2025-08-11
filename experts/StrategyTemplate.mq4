@@ -23,6 +23,10 @@ extern string EncoderOnnxFile = "__ENCODER_ONNX__";
 extern string ModelOnnxFile = "__MODEL_ONNX__";
 extern string BanditRouterHost = "127.0.0.1";
 extern int    BanditRouterPort = 9100;
+extern string MetaAdaptHost = "127.0.0.1";
+extern int    MetaAdaptPort = 9200;
+extern int    AdaptationInterval = 0; // seconds, 0=disabled
+extern string AdaptationLogFile = "adaptations.csv";
 
 string HierarchyJson = "__HIERARCHY_JSON__";
 
@@ -110,6 +114,8 @@ int      BanditSocket = INVALID_HANDLE;
 int      NextDecisionId = 1;
 bool UseOnnxEncoder = false;
 bool UseOnnxModel = false;
+int      AdaptLogHandle = INVALID_HANDLE;
+datetime LastAdaptRequest = 0;
 
 #import "onnxruntime_wrapper.ex4"
    int OnnxEncode(string model, double &inp[], double &out[]);
@@ -333,6 +339,18 @@ int OnInit()
    }
    else
       Print("Bandit router socket creation failed: ", GetLastError());
+   if(StringLen(AdaptationLogFile) > 0)
+   {
+      AdaptLogHandle = FileOpen(AdaptationLogFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+      if(AdaptLogHandle != INVALID_HANDLE)
+      {
+         if(FileSize(AdaptLogHandle) == 0)
+            FileWrite(AdaptLogHandle, "timestamp;regime;old_weights;new_weights");
+         FileSeek(AdaptLogHandle, 0, SEEK_END);
+      }
+      else
+         Print("Adaptation log open failed: ", GetLastError());
+   }
    return(INIT_SUCCEEDED);
 }
 
@@ -955,6 +973,62 @@ void SendBanditReward(int modelIdx, double reward)
    SocketSend(BanditSocket, bytes, ArraySize(bytes)-1);
 }
 
+void LogAdaptationEvent(int regime, double &oldCoeffs[], double &newCoeffs[], double oldInt, double newInt)
+{
+   if(AdaptLogHandle == INVALID_HANDLE)
+      return;
+   string oldStr = "", newStr = "";
+   for(int i=0;i<ArraySize(oldCoeffs);i++)
+   {
+      if(i>0){ oldStr += "|"; newStr += "|"; }
+      oldStr += DoubleToString(oldCoeffs[i],8);
+      newStr += DoubleToString(newCoeffs[i],8);
+   }
+   FileWrite(AdaptLogHandle, TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), regime, oldStr+":"+DoubleToString(oldInt,8), newStr+":"+DoubleToString(newInt,8));
+}
+
+bool RequestAdaptedWeights(int regime)
+{
+   int sock = SocketCreate();
+   if(sock == INVALID_HANDLE)
+      return(false);
+   if(!SocketConnect(sock, MetaAdaptHost, MetaAdaptPort, 1000))
+   {
+      SocketClose(sock);
+      return(false);
+   }
+   string msg = StringFormat("{\"regime\":%d}\n", regime);
+   uchar bytes[];
+   StringToCharArray(msg, bytes, 0, WHOLE_ARRAY, CP_UTF8);
+   if(SocketSend(sock, bytes, ArraySize(bytes)-1) <= 0)
+   {
+      SocketClose(sock);
+      return(false);
+   }
+   uchar resp[2048];
+   int got = SocketRead(sock, resp, 2047, 1000);
+   SocketClose(sock);
+   if(got <= 0)
+      return(false);
+   resp[got] = 0;
+   string json = CharArrayToString(resp);
+   double tmp[];
+   ExtractJsonArray(json, "\"coefficients\"", tmp);
+   int n = MathMin(ArraySize(tmp), ArrayRange(ModelCoefficients,1));
+   double oldCoeffs[];
+   ArrayResize(oldCoeffs, n);
+   for(int i=0;i<n;i++)
+   {
+      oldCoeffs[i] = ModelCoefficients[0][i];
+      ModelCoefficients[0][i] = tmp[i];
+   }
+   double oldInt = ModelIntercepts[0];
+   double newInt = ExtractJsonNumber(json, "\"intercept\"");
+   ModelIntercepts[0] = newInt;
+   LogAdaptationEvent(regime, oldCoeffs, tmp, oldInt, newInt);
+   return(true);
+}
+
 double GetNewSL(bool isBuy)
 {
    double sl_dist, tp_dummy;
@@ -993,6 +1067,13 @@ void OnTick()
       if(LoadModel())
          Print("Model parameters reloaded");
       LastModelLoad = TimeCurrent();
+   }
+   if(AdaptationInterval > 0 && TimeCurrent() - LastAdaptRequest >= AdaptationInterval)
+   {
+      int reg = GetRegime();
+      if(RequestAdaptedWeights(reg))
+         Print("Adapted weights received");
+      LastAdaptRequest = TimeCurrent();
    }
    if(HasOpenOrders())
    {
@@ -1126,5 +1207,7 @@ void OnDeinit(const int reason)
       SocketClose(DecisionSocket);
    if(BanditSocket != INVALID_HANDLE)
       SocketClose(BanditSocket);
+   if(AdaptLogHandle != INVALID_HANDLE)
+      FileClose(AdaptLogHandle);
    MarketBookRelease(SymbolToTrade);
 }
