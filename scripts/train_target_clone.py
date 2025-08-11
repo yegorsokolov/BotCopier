@@ -195,6 +195,7 @@ def detect_resources():
     if not lite_mode:
         for mt, module in [
             ("transformer", "transformers"),
+            ("tft", "pytorch_forecasting"),
             ("lstm", "torch"),
             ("catboost", "catboost"),
             ("lgbm", "lightgbm"),
@@ -1352,7 +1353,8 @@ def _train_lite_mode(
     with open_func(model_path, "wt") as f:
         json.dump(model, f)
     print(f"Model written to {model_path}")
-    _export_onnx(clf, feature_names, out_dir)
+    if model_type != "tft":
+        _export_onnx(clf, feature_names, out_dir)
 
 
 def train(
@@ -2430,6 +2432,59 @@ def train(
                 else np.empty(0)
             )
             clf = model_nn
+    elif model_type == "tft":
+        try:
+            import torch
+            import pytorch_lightning as pl  # type: ignore
+            from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet  # type: ignore
+        except Exception:
+            logging.warning(
+                "pytorch-forecasting is required for tft model; using LogisticRegression instead",
+            )
+            clf = LogisticRegression(max_iter=200)
+            clf.fit(X_train, y_train)
+            train_proba_raw = clf.predict_proba(X_train)[:, 1]
+            val_proba_raw = (
+                clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
+            )
+            model_type = "logreg"
+        else:
+            df = pd.DataFrame(X_train, columns=feature_names)
+            df["y"] = y_train
+            df["time_idx"] = np.arange(len(df))
+            df["group"] = 0
+            ds = TimeSeriesDataSet(
+                df,
+                time_idx="time_idx",
+                target="y",
+                group_ids=["group"],
+                max_encoder_length=sequence_length,
+                max_prediction_length=1,
+                time_varying_unknown_reals=feature_names + ["y"],
+            )
+            train_loader = ds.to_dataloader(train=True, batch_size=32)
+            tft = TemporalFusionTransformer.from_dataset(ds, learning_rate=1e-3, log_interval=-1)
+            trainer = pl.Trainer(
+                max_epochs=5,
+                enable_checkpointing=False,
+                logger=False,
+                enable_model_summary=False,
+            )
+            trainer.fit(tft, train_loader)
+            train_proba_raw = tft.predict(train_loader).detach().cpu().numpy().reshape(-1)
+            if len(y_val) > 0:
+                dfv = pd.DataFrame(X_val, columns=feature_names)
+                dfv["y"] = y_val
+                dfv["time_idx"] = np.arange(len(dfv))
+                dfv["group"] = 0
+                val_ds = TimeSeriesDataSet.from_dataset(ds, dfv, predict=True)
+                val_loader = val_ds.to_dataloader(train=False, batch_size=32)
+                val_proba_raw = (
+                    tft.predict(val_loader).detach().cpu().numpy().reshape(-1)
+                )
+            else:
+                val_proba_raw = np.empty(0)
+            clf = tft
     else:
         if grid_search:
             if c_values is None:
@@ -2768,6 +2823,32 @@ def train(
         weights = [w.tolist() for w in clf.get_weights()]
         model["transformer_weights"] = weights
         model["sequence_length"] = sequence_length
+    elif model_type == "tft":
+        try:
+            import torch
+            state = clf.state_dict()
+            enc_w = state.get("encoder.weight")
+            dec_w = state.get("decoder.weight")
+            if enc_w is not None:
+                model["encoder_weights"] = enc_w.detach().cpu().numpy().tolist()
+            if dec_w is not None:
+                model["decoder_weights"] = dec_w.detach().cpu().numpy().tolist()
+            model["onnx_file"] = "model.onnx"
+            try:
+                dummy = torch.zeros(1, sequence_length, len(feature_names))
+                torch.onnx.export(
+                    clf,
+                    dummy,
+                    out_dir / "model.onnx",
+                    opset_version=13,
+                    input_names=["input"],
+                    output_names=["output"],
+                    dynamic_axes={"input": {0: "batch"}},
+                )
+            except Exception as exc:  # pragma: no cover - optional export
+                logging.warning("ONNX export failed: %s", exc)
+        except Exception:  # pragma: no cover - torch errors
+            pass
 
     if regress_sl_tp:
         model["sl_coefficients"] = sl_coef.astype(np.float32).tolist()
@@ -2840,7 +2921,8 @@ def train(
         json.dump(model, f, indent=2)
 
     print(f"Model written to {model_path}")
-    _export_onnx(clf, model.get("feature_names", []), out_dir)
+    if model_type != "tft":
+        _export_onnx(clf, model.get("feature_names", []), out_dir)
 
     if "coefficients" in model and "intercept" in model:
         w = np.array(model["coefficients"], dtype=float)
