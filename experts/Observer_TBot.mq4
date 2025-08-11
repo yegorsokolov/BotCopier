@@ -9,6 +9,10 @@ int SerializeMetrics(int schema_version, string time, int magic, double win_rate
 #import "nats_bridge.dll"
 bool NatsPublish(string subject, uchar &payload[], int len);
 #import
+#import "shm_ring.dll"
+bool ShmRingInit(string name, int size);
+bool ShmRingWrite(int msg_type, uchar &payload[], int len);
+#import
 
 extern string TargetMagicNumbers = "12345,23456";
 extern int    LearningExportIntervalMinutes = 15;
@@ -47,6 +51,8 @@ datetime ModelTimestamp = 0;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
 const int SCHEMA_VERSION = 1;
+const int MSG_TRADE = 0;
+const int MSG_METRIC = 1;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -288,6 +294,8 @@ int OnInit()
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
    DirectoryCreate(LogDirectoryName);
+   // initialise shared memory ring buffer (1MB by default)
+   ShmRingInit("tbot_events", 1<<20);
    LoadModelState();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    string symbols_json = "[";
@@ -638,6 +646,8 @@ bool SendTrade(uchar &payload[])
    ArrayResize(out, len + 1);
    out[0] = (uchar)SCHEMA_VERSION;
    ArrayCopy(out, payload, 1, 0, len);
+   if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
+      return(true);
    if(!NatsPublish("trades", out, ArraySize(out)))
    {
       SocketErrors++;
@@ -653,6 +663,8 @@ bool SendMetrics(uchar &payload[])
    ArrayResize(out, len + 1);
    out[0] = (uchar)SCHEMA_VERSION;
    ArrayCopy(out, payload, 1, 0, len);
+   if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
+      return(true);
    if(!NatsPublish("metrics", out, ArraySize(out)))
    {
       SocketErrors++;

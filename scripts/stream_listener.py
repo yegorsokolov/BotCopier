@@ -13,8 +13,19 @@ from pathlib import Path
 import sys
 
 import asyncio
-import nats
-from pydantic import BaseModel, ValidationError
+import time
+try:  # optional NATS dependency
+    import nats  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    nats = None
+try:  # pydantic is optional for tests
+    from pydantic import BaseModel, ValidationError  # type: ignore
+except Exception:  # pragma: no cover - minimal fallback
+    class BaseModel:  # type: ignore
+        pass
+
+    class ValidationError(Exception):
+        pass
 try:  # optional websocket client
     from websocket import create_connection, WebSocket  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -23,30 +34,120 @@ except Exception:  # pragma: no cover - optional dependency
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from opentelemetry import trace
-from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-try:  # Optional Jaeger exporter
-    from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    JaegerExporter = None
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import (
-    format_span_id,
-    format_trace_id,
-    NonRecordingSpan,
-    SpanContext,
-    TraceFlags,
-    TraceState,
-    set_span_in_context,
-)
+try:  # optional OpenTelemetry dependencies
+    from opentelemetry import trace
+    from opentelemetry._logs import set_logger_provider
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+    try:
+        from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
+    except Exception:  # pragma: no cover - optional dependency
+        JaegerExporter = None
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.trace import (
+        format_span_id,
+        format_trace_id,
+        NonRecordingSpan,
+        SpanContext,
+        TraceFlags,
+        TraceState,
+        set_span_in_context,
+    )
+except Exception:  # pragma: no cover - minimal fallbacks
+    trace = None  # type: ignore
+    set_logger_provider = lambda *a, **k: None  # type: ignore
+    OTLPSpanExporter = OTLPLogExporter = JaegerExporter = None  # type: ignore
 
-from proto import trade_event_pb2, metric_event_pb2
+    class Resource:  # type: ignore
+        @staticmethod
+        def create(*a, **k):
+            return None
+
+    class TracerProvider:  # type: ignore
+        def __init__(self, *a, **k):
+            pass
+
+        def add_span_processor(self, *a, **k):
+            pass
+
+    class LoggerProvider:  # type: ignore
+        def __init__(self, *a, **k):
+            pass
+
+        def add_log_record_processor(self, *a, **k):
+            pass
+
+    class BatchSpanProcessor:  # type: ignore
+        def __init__(self, *a, **k):
+            pass
+
+    class BatchLogRecordProcessor:  # type: ignore
+        def __init__(self, *a, **k):
+            pass
+
+    class LoggingHandler(logging.Handler):  # type: ignore
+        def __init__(self, *a, **k):
+            super().__init__()
+
+        def emit(self, record):
+            pass
+
+    def format_span_id(x):  # type: ignore
+        return x
+
+    def format_trace_id(x):  # type: ignore
+        return x
+
+    class NonRecordingSpan:  # type: ignore
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class SpanContext:  # type: ignore
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class TraceFlags(int):  # type: ignore
+        SAMPLED = 1
+
+    class TraceState:  # type: ignore
+        pass
+
+    def set_span_in_context(span):  # type: ignore
+        return None
+
+    class _SpanCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _TracerStub:
+        def start_as_current_span(self, *a, **k):
+            return _SpanCtx()
+
+    class _TraceStub:
+        def set_tracer_provider(self, *a, **k):
+            pass
+
+        def get_tracer(self, *a, **k):
+            return _TracerStub()
+
+    trace = _TraceStub()
+
+try:  # protobufs generated from observer schema
+    from proto import trade_event_pb2, metric_event_pb2  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    trade_event_pb2 = metric_event_pb2 = None  # type: ignore
+
+try:
+    from .shm_ring import ShmRing, TRADE_MSG, METRIC_MSG
+except Exception:  # pragma: no cover - package relative import fallback
+    from shm_ring import ShmRing, TRADE_MSG, METRIC_MSG
 
 SCHEMA_VERSION = 1
 TRADE_MSG = 0
@@ -295,6 +396,7 @@ def main() -> int:
     p.add_argument("--servers", default="nats://127.0.0.1:4222", help="NATS server URLs")
     p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
     p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
+    p.add_argument("--ring-path", default=os.getenv("TBOT_RING", "/tmp/tbot_events"), help="Path to shared memory ring buffer")
     args = p.parse_args()
 
     if args.ws_url and create_connection:
@@ -306,6 +408,42 @@ def main() -> int:
         except Exception:
             ws_trades = None
             ws_metrics = None
+
+    # Try shared memory ring first
+    ring = None
+    try:
+        ring = ShmRing.open(args.ring_path)
+    except Exception:
+        ring = None
+
+    if ring is not None:
+        write_run_info()
+        for pth in LOG_FILES.values():
+            pth.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            msg = ring.pop()
+            if msg is None:
+                time.sleep(0.01)
+                continue
+            msg_type, payload = msg
+            version = payload[0]
+            if version != SCHEMA_VERSION:
+                logger.warning(
+                    "schema version %d mismatch (expected %d)",
+                    version,
+                    SCHEMA_VERSION,
+                )
+                continue
+            try:
+                if msg_type == TRADE_MSG:
+                    trade = trade_event_pb2.TradeEvent.FromString(payload[1:].tobytes())
+                    process_trade(trade)
+                elif msg_type == METRIC_MSG:
+                    metric = metric_event_pb2.MetricEvent.FromString(payload[1:].tobytes())
+                    process_metric(metric)
+            except Exception:
+                continue
+        return 0
 
     async def _run() -> None:
         nc = await nats.connect(args.servers)
