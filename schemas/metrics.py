@@ -1,6 +1,30 @@
-"""Arrow schema for periodic metric updates."""
+"""Arrow and Pydantic schemas for periodic metric updates."""
 
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel
 import pyarrow as pa
+
+
+class MetricEvent(BaseModel):
+    """Pydantic model describing a metric update."""
+
+    schema_version: int
+    time: datetime
+    magic: int
+    win_rate: float
+    avg_profit: float
+    trade_count: int
+    drawdown: float
+    sharpe: float
+    file_write_errors: int
+    socket_errors: int
+    book_refresh_seconds: int
+
+    class Config:
+        extra = "ignore"
+
 
 METRIC_SCHEMA = pa.schema([
     ("schema_version", pa.int32()),

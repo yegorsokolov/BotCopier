@@ -1,8 +1,17 @@
 import logging
 from types import SimpleNamespace
 from pathlib import Path
-
 import sys
+import types
+
+pa_stub = types.SimpleNamespace(
+    int32=lambda *a, **k: None,
+    string=lambda *a, **k: None,
+    float64=lambda *a, **k: None,
+    schema=lambda *a, **k: None,
+)
+sys.modules.setdefault("pyarrow", pa_stub)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import stream_listener as sl
 
@@ -65,3 +74,36 @@ def test_metric_validation(monkeypatch, caplog):
         sl.process_metric(msg)
     assert not records
     assert "invalid metric event" in caplog.text
+
+
+def test_trade_validation_missing_field(monkeypatch, caplog):
+    records = []
+
+    def fake_append(path, record):
+        records.append(record)
+
+    monkeypatch.setattr(sl, "append_csv", fake_append)
+
+    msg = SimpleNamespace(
+        eventId=1,
+        eventTime="t",
+        brokerTime="b",
+        localTime="l",
+        ticket=1,
+        magic=0,
+        source="src",
+        symbol="X",
+        orderType=0,
+        lots=0.1,
+        price=1.0,
+        sl=0.0,
+        tp=0.0,
+        profit=0.0,
+        comment="",
+        remainingLots=0.0,
+        decisionId=0,
+    )  # action missing
+    with caplog.at_level(logging.WARNING):
+        sl.process_trade(msg)
+    assert not records
+    assert "invalid trade event" in caplog.text

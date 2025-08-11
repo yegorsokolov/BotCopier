@@ -41,6 +41,9 @@ from sklearn.preprocessing import StandardScaler
 
 import requests
 
+from pydantic import ValidationError  # type: ignore
+from schemas.trades import TradeEvent  # type: ignore
+
 try:
     import torch
     from torch import nn
@@ -755,6 +758,17 @@ def _load_logs(
                             df_metrics, how="left", left_on="magic", right_on="model_id"
                         )
                         chunk = chunk.drop(columns=["model_id"])
+                records = []
+                for row in chunk.to_dict(orient="records"):
+                    try:
+                        TradeEvent(**row)
+                        records.append(row)
+                    except ValidationError:
+                        invalid = pd.concat([invalid, pd.DataFrame([row])])
+                if records:
+                    chunk = pd.DataFrame(records, columns=chunk.columns)
+                else:
+                    chunk = pd.DataFrame(columns=chunk.columns)
                 if not invalid.empty:
                     invalid_rows.append(invalid)
                 yield chunk
