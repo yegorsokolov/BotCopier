@@ -76,6 +76,32 @@ source.  Set ``ReloadModelInterval`` on the EA so it periodically reloads the
 file from the terminal's ``Files`` directory and continues trading with the new
 parameters.
 
+## Federated Experience Buffer
+
+The `scripts/federated_buffer.py` module implements a lightweight gRPC
+service that allows multiple learners to share experience batches without
+revealing individual trades. Each client compresses its local experience
+tuples and uploads them to a central server. The server aggregates the
+data using secure averaging with a small amount of Gaussian noise and
+returns the merged buffer to clients.
+
+Run the buffer server:
+
+```bash
+python scripts/federated_buffer.py server --address 127.0.0.1:50051
+```
+
+Clients can periodically sync their buffers during training by providing
+the server address:
+
+```bash
+python scripts/train_rl_agent.py --data-dir logs --out-dir models \
+    --federated-server 127.0.0.1:50051 --sync-interval 10
+```
+
+This setup helps keep individual trade data confidential while enabling a
+shared experience pool for more robust models.
+
 ## Dashboard
 
 A small web dashboard can display trades, metrics and training progress in real time.

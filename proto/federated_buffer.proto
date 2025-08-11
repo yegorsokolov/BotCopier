@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package federated;
+
+import "google/protobuf/empty.proto";
+
+service ExperienceBuffer {
+  rpc Upload(ExperienceBatch) returns (google.protobuf.Empty);
+  rpc Download(google.protobuf.Empty) returns (ExperienceBatch);
+}
+
+message ExperienceBatch {
+  bytes data = 1;
+}
