@@ -199,7 +199,13 @@ bool CheckAnomaly(double price, double sl, double tp, double lots, double spread
    {
       string txt = CharArrayToString(result);
       double err = StrToDouble(txt);
-      return(err > AnomalyThreshold);
+      if(err > AnomalyThreshold)
+      {
+         string span_id = GenId(8);
+         SendOtelSpan(TraceId, span_id, "anomaly_detected");
+         return(true);
+      }
+      return(false);
    }
    return(false);
 }

@@ -2635,6 +2635,22 @@ def train(
         val_acc = float("nan")
     train_preds = (train_proba >= threshold).astype(int)
     train_acc = float(accuracy_score(y_train, train_preds))
+    ctx_metrics = trace.get_current_span().get_span_context()
+    logger.info(
+        {"train_acc": train_acc, "val_acc": val_acc},
+        extra={"trace_id": ctx_metrics.trace_id, "span_id": ctx_metrics.span_id},
+    )
+    for i in range(min(5, len(train_preds))):
+        with tracer.start_as_current_span("decision") as dspan:
+            dctx = dspan.get_span_context()
+            logger.info(
+                {
+                    "decision_id": int(i),
+                    "prediction": int(train_preds[i]),
+                    "prob": float(train_proba[i]),
+                },
+                extra={"trace_id": dctx.trace_id, "span_id": dctx.span_id},
+            )
 
     hours_val_arr = np.array(hours_val, dtype=int) if len(hours_val) else np.array([], dtype=int)
     hourly_thresholds: List[float] = []
@@ -3077,96 +3093,96 @@ def main():
     p.add_argument('--uncertain-file', help='CSV with labeled uncertain decisions')
     p.add_argument('--uncertain-weight', type=float, default=2.0, help='sample weight multiplier for labeled uncertainties')
     args = p.parse_args()
-    global START_EVENT_ID
-    if args.resume:
-        START_EVENT_ID = _read_last_event_id(Path(args.out_dir))
-    else:
-        START_EVENT_ID = args.start_event_id
-    if args.volatility_file:
-        import json
-        with open(args.volatility_file) as f:
-            vol_data = json.load(f)
-    else:
-        vol_data = None
-    if args.calendar_file:
-        events = _load_calendar(Path(args.calendar_file))
-    else:
-        events = None
-    if args.corr_symbols:
-        corr_map = {}
-        for p in args.corr_symbols.split(','):
-            if ':' in p:
-                base, peer = p.split(':', 1)
-                corr_map.setdefault(base, []).append(peer)
-    else:
-        corr_map = None
-    if args.symbol_graph:
-        symbol_graph = Path(args.symbol_graph)
-    else:
-        symbol_graph = None
-    if args.higher_timeframes:
-        higher_tfs = [tf.strip() for tf in args.higher_timeframes.split(',') if tf.strip()]
-    else:
-        higher_tfs = None
-    resources = detect_resources()
-    lite_mode = resources["lite_mode"]
-    model_type = args.model_type or resources["model_type"]
-    optuna_trials = (
-        0 if lite_mode else (args.optuna_trials or resources["optuna_trials"])
-    )
-    train(
-        Path(args.data_dir),
-        Path(args.out_dir),
-        use_sma=args.use_sma,
-        sma_window=args.sma_window,
-        use_rsi=args.use_rsi,
-        rsi_period=args.rsi_period,
-        use_macd=args.use_macd,
-        use_atr=args.use_atr,
-        use_bollinger=args.use_bollinger,
-        use_stochastic=args.use_stochastic,
-        use_adx=args.use_adx,
-        higher_timeframes=higher_tfs,
-        volatility_series=vol_data,
-        grid_search=args.grid_search,
-        c_values=args.c_values,
-        model_type=model_type,
-        n_estimators=args.n_estimators,
-        learning_rate=args.learning_rate,
-        max_depth=args.max_depth,
-        incremental=args.incremental,
-        sequence_length=args.sequence_length,
-        corr_map=corr_map,
-        corr_window=args.corr_window,
-        optuna_trials=optuna_trials,
-        regress_sl_tp=args.regress_sl_tp,
-        regress_lots=args.regress_lots,
-        early_stop=args.early_stop,
-        encoder_file=Path(args.encoder_file) if args.encoder_file else None,
-        cache_features=args.cache_features,
-        calendar_events=events,
-        event_window=args.event_window,
-        calibration=args.calibration,
-        stack_models=[s.strip() for s in args.stack.split(',')] if args.stack else None,
-        prune_threshold=args.prune_threshold,
-        prune_warn=args.prune_warn,
-        lite_mode=lite_mode,
-        compress_model=args.compress_model,
-        regime_model_file=Path(args.regime_model) if args.regime_model else None,
-        moe=args.moe,
-        flight_uri=args.flight_uri,
-        use_encoder=args.use_encoder,
-        uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
-        uncertain_weight=args.uncertain_weight,
-        symbol_graph=symbol_graph,
-    )
-    if args.federated_server:
-        model_path = Path(args.out_dir) / (
-            "model.json.gz" if args.compress_model else "model.json"
+    with trace.use_span(span, end_on_exit=True):
+        global START_EVENT_ID
+        if args.resume:
+            START_EVENT_ID = _read_last_event_id(Path(args.out_dir))
+        else:
+            START_EVENT_ID = args.start_event_id
+        if args.volatility_file:
+            import json
+            with open(args.volatility_file) as f:
+                vol_data = json.load(f)
+        else:
+            vol_data = None
+        if args.calendar_file:
+            events = _load_calendar(Path(args.calendar_file))
+        else:
+            events = None
+        if args.corr_symbols:
+            corr_map = {}
+            for p in args.corr_symbols.split(','):
+                if ':' in p:
+                    base, peer = p.split(':', 1)
+                    corr_map.setdefault(base, []).append(peer)
+        else:
+            corr_map = None
+        if args.symbol_graph:
+            symbol_graph = Path(args.symbol_graph)
+        else:
+            symbol_graph = None
+        if args.higher_timeframes:
+            higher_tfs = [tf.strip() for tf in args.higher_timeframes.split(',') if tf.strip()]
+        else:
+            higher_tfs = None
+        resources = detect_resources()
+        lite_mode = resources["lite_mode"]
+        model_type = args.model_type or resources["model_type"]
+        optuna_trials = (
+            0 if lite_mode else (args.optuna_trials or resources["optuna_trials"])
         )
-        sync_with_server(model_path, args.federated_server)
-    logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
-    span.end()
+        train(
+            Path(args.data_dir),
+            Path(args.out_dir),
+            use_sma=args.use_sma,
+            sma_window=args.sma_window,
+            use_rsi=args.use_rsi,
+            rsi_period=args.rsi_period,
+            use_macd=args.use_macd,
+            use_atr=args.use_atr,
+            use_bollinger=args.use_bollinger,
+            use_stochastic=args.use_stochastic,
+            use_adx=args.use_adx,
+            higher_timeframes=higher_tfs,
+            volatility_series=vol_data,
+            grid_search=args.grid_search,
+            c_values=args.c_values,
+            model_type=model_type,
+            n_estimators=args.n_estimators,
+            learning_rate=args.learning_rate,
+            max_depth=args.max_depth,
+            incremental=args.incremental,
+            sequence_length=args.sequence_length,
+            corr_map=corr_map,
+            corr_window=args.corr_window,
+            optuna_trials=optuna_trials,
+            regress_sl_tp=args.regress_sl_tp,
+            regress_lots=args.regress_lots,
+            early_stop=args.early_stop,
+            encoder_file=Path(args.encoder_file) if args.encoder_file else None,
+            cache_features=args.cache_features,
+            calendar_events=events,
+            event_window=args.event_window,
+            calibration=args.calibration,
+            stack_models=[s.strip() for s in args.stack.split(',')] if args.stack else None,
+            prune_threshold=args.prune_threshold,
+            prune_warn=args.prune_warn,
+            lite_mode=lite_mode,
+            compress_model=args.compress_model,
+            regime_model_file=Path(args.regime_model) if args.regime_model else None,
+            moe=args.moe,
+            flight_uri=args.flight_uri,
+            use_encoder=args.use_encoder,
+            uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
+            uncertain_weight=args.uncertain_weight,
+            symbol_graph=symbol_graph,
+        )
+        if args.federated_server:
+            model_path = Path(args.out_dir) / (
+                "model.json.gz" if args.compress_model else "model.json"
+            )
+            sync_with_server(model_path, args.federated_server)
+        logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
 
 
 if __name__ == '__main__':
