@@ -490,6 +490,9 @@ repository and the original files are removed locally. The script uses the
 ### Environment Variables
 
 * ``SCHEMA_VERSION`` – expected message schema version for ``stream_listener.py``.
+  During initialisation the observer EA writes a small JSON ``hello`` packet
+  containing this version to the shared memory ring. ``stream_listener.py``
+  verifies the packet before processing events and exits on mismatch.
 * ``GITHUB_TOKEN`` – personal access token with ``repo`` scope used by
   ``upload_logs.py`` to push commits.
 * ``OTEL_EXPORTER_OTLP_ENDPOINT`` – URL of the OTLP collector (Jaeger or Zipkin).
