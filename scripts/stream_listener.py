@@ -424,7 +424,10 @@ def process_metric(msg) -> None:
                 if det.drift_detected:
                     drift_features.append(feat)
             if drift_features:
-                logger.warning({"alert": "drift detected", "features": drift_features})
+                logger.warning(
+                    {"alert": "drift detected", "features": drift_features},
+                    extra=extra,
+                )
                 _trigger_retrain()
             _save_adwin()
 

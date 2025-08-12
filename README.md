@@ -594,6 +594,26 @@ plt.show()
 - When running Python scripts, verify the paths to log files and models are correct.
 - Use the Experts and Journal tabs inside MT4 for additional debugging information.
 
+### Trace Correlation
+
+Traces exported via OpenTelemetry can be inspected to investigate anomalies or
+specific trades. First locate the `trace_id` in `logs/metrics.csv` or
+`logs/trades_raw.csv`, then query the collector:
+
+```bash
+TRACE_ID="your-trace-id"
+curl -s "http://localhost:16686/api/traces/$TRACE_ID" | jq '.data[0]'
+```
+
+Filter JSON logs for the same trace to see related events:
+
+```bash
+rg $TRACE_ID logs/*.json
+```
+
+Matching `trace_id` values let you follow a decision from the logs to its span
+in Jaeger or Zipkin for deeper analysis.
+
 ## Debugging Tips
 
 - Set `EnableDebugLogging` to `true` to print socket status and feature values.

@@ -572,13 +572,19 @@ def train(
         preds: List[int] = []
         total_r = 0.0
         obs, _ = env.reset()
-        for _ in range(len(actions)):
-            act, _ = model.predict(obs, deterministic=True)
-            preds.append(int(act))
-            obs, reward, done, _, _ = env.step(int(act))
-            total_r += float(reward)
-            if done:
-                break
+        for i in range(len(actions)):
+            with tracer.start_as_current_span("decision") as dspan:
+                act, _ = model.predict(obs, deterministic=True)
+                preds.append(int(act))
+                obs, reward, done, _, _ = env.step(int(act))
+                total_r += float(reward)
+                dctx = dspan.get_span_context()
+                logger.info(
+                    {"decision_id": i, "action": int(act), "reward": float(reward)},
+                    extra={"trace_id": dctx.trace_id, "span_id": dctx.span_id},
+                )
+                if done:
+                    break
         train_acc = float(np.mean(np.array(preds) == np.array(actions)))
 
         expected_return = float("nan")
@@ -604,11 +610,13 @@ def train(
                     ]
                 expected_return = float(np.mean(exp_returns))
                 downside_risk = float(np.mean(downside))
+                ctx_log = trace.get_current_span().get_span_context()
                 logger.info(
                     {
                         "expected_return": expected_return,
                         "downside_risk": downside_risk,
-                    }
+                    },
+                    extra={"trace_id": ctx_log.trace_id, "span_id": ctx_log.span_id},
                 )
         sim_metrics = None
         if self_play:
@@ -794,8 +802,9 @@ def train(
 
 
 def main() -> None:
-    with tracer.start_as_current_span("train_rl_agent"):
-        logger.info("start training")
+    with tracer.start_as_current_span("train_rl_agent") as span:
+        ctx = span.get_span_context()
+        logger.info("start training", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
         p = argparse.ArgumentParser(description="Train RL agent from logs")
         p.add_argument("--data-dir", required=True)
         p.add_argument("--out-dir", required=True)
@@ -848,7 +857,7 @@ def main() -> None:
             federated_server=args.federated_server,
             sync_interval=args.sync_interval,
         )
-        logger.info("training complete")
+        logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
 
 
 if __name__ == "__main__":
