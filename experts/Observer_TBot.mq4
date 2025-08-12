@@ -56,6 +56,7 @@ int      SocketErrors = 0;
 const int SCHEMA_VERSION = 1;
 const int MSG_TRADE = 0;
 const int MSG_METRIC = 1;
+const int MSG_HELLO = 2;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -305,6 +306,10 @@ int OnInit()
    DirectoryCreate(LogDirectoryName);
    // initialise shared memory ring buffer (1MB by default)
    ShmRingInit("tbot_events", 1<<20);
+   string hello = StringFormat("{\"type\":\"hello\",\"schema_version\":%d}", SCHEMA_VERSION);
+   uchar hello_payload[];
+   StringToCharArray(hello, hello_payload);
+   ShmRingWrite(MSG_HELLO, hello_payload, ArraySize(hello_payload) - 1);
    FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);

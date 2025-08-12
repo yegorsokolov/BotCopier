@@ -173,6 +173,7 @@ except Exception:  # pragma: no cover - package relative import fallback
 SCHEMA_VERSION = 1
 TRADE_MSG = 0
 METRIC_MSG = 1
+HELLO_MSG = 2
 
 LOG_FILES = {
     TRADE_MSG: Path("logs/trades_raw.csv"),
@@ -458,6 +459,29 @@ def main() -> int:
         ring = None
 
     if ring is not None:
+        while True:
+            msg = ring.pop()
+            if msg is None:
+                time.sleep(0.01)
+                continue
+            msg_type, payload = msg
+            if msg_type != HELLO_MSG:
+                logger.warning("expected hello packet")
+                return 1
+            try:
+                info = json.loads(payload.tobytes().decode())
+            except Exception:
+                logger.warning("invalid hello packet")
+                return 1
+            version = info.get("schema_version")
+            if version != SCHEMA_VERSION:
+                logger.warning(
+                    "schema version %s mismatch (expected %d)",
+                    version,
+                    SCHEMA_VERSION,
+                )
+                return 1
+            break
         write_run_info()
         for pth in LOG_FILES.values():
             pth.parent.mkdir(parents=True, exist_ok=True)
