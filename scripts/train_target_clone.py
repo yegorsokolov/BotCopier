@@ -910,6 +910,7 @@ def _extract_features(
     lot_targets = []
     prices = []
     hours = []
+    times = []
     macd_state = {}
     higher_timeframes = [str(tf).upper() for tf in (higher_timeframes or [])]
     tf_map = {
@@ -973,6 +974,7 @@ def _extract_features(
                 continue
             t = parsed
 
+        times.append(t)
         order_type = int(float(r.get("order_type", 0)))
         label = 1 if order_type == 0 else 0  # buy=1, sell=0
 
@@ -1201,6 +1203,7 @@ def _extract_features(
         np.array(tp_targets),
         np.array(hours, dtype=int),
         np.array(lot_targets),
+        np.array(times, dtype="datetime64[s]"),
     )
 
 
@@ -1281,6 +1284,7 @@ def _train_lite_mode(
         (
             f_chunk,
             l_chunk,
+            _,
             _,
             _,
             _,
@@ -1431,6 +1435,7 @@ def train(
     use_encoder: bool = False,
     uncertain_file: Path | None = None,
     uncertain_weight: float = 2.0,
+    decay_half_life: float = 30.0,
     news_sentiment_file: Path | None = None,
 ):
     """Train a simple classifier model from the log directory."""
@@ -1494,7 +1499,7 @@ def train(
             existing_model = json.load(f)
             last_event_id = int(existing_model.get("last_event_id", 0))
 
-    features = labels = sl_targets = tp_targets = hours = lot_targets = None
+    features = labels = sl_targets = tp_targets = hours = lot_targets = event_times = None
     loaded_from_cache = False
     data_commits: list[str] = []
     data_checksums: list[str] = []
@@ -1509,6 +1514,11 @@ def train(
                 tp_targets = cached["tp_targets"]
                 lot_targets = cached.get("lot_targets")
                 hours = cached.get("hours")
+                event_times = cached.get("event_times")
+                if event_times is not None:
+                    event_times = np.array(event_times, dtype="datetime64[s]")
+                else:
+                    event_times = np.array([], dtype="datetime64[s]")
                 loaded_from_cache = True
         except Exception:
             features = None
@@ -1528,6 +1538,7 @@ def train(
             tp_list: list[np.ndarray] = []
             hours_list: list[np.ndarray] = []
             lot_list: list[np.ndarray] = []
+            time_list: list[np.ndarray] = []
             for chunk in rows_iter:
                 (
                     f_chunk,
@@ -1536,6 +1547,7 @@ def train(
                     tp_chunk,
                     h_chunk,
                     lot_chunk,
+                    t_chunk,
                 ) = _extract_features(
                     chunk.to_dict("records"),
                     use_sma=use_sma,
@@ -1566,6 +1578,7 @@ def train(
                 tp_list.append(tp_chunk)
                 hours_list.append(h_chunk)
                 lot_list.append(lot_chunk)
+                time_list.append(t_chunk)
             labels = np.concatenate(labels_list) if labels_list else np.array([])
             sl_targets = np.concatenate(sl_list) if sl_list else np.array([])
             tp_targets = np.concatenate(tp_list) if tp_list else np.array([])
@@ -1573,6 +1586,11 @@ def train(
                 np.concatenate(hours_list) if hours_list else np.array([], dtype=int)
             )
             lot_targets = np.concatenate(lot_list) if lot_list else np.array([])
+            event_times = (
+                np.concatenate(time_list)
+                if time_list
+                else np.array([], dtype="datetime64[s]")
+            )
         else:
             rows_df, data_commits, data_checksums = _load_logs(data_dir, flight_uri=flight_uri)
             if "event_id" in rows_df.columns:
@@ -1590,6 +1608,7 @@ def train(
                 tp_targets,
                 hours,
                 lot_targets,
+                event_times,
             ) = _extract_features(
                 rows_df.to_dict("records"),
                 use_sma=use_sma,
@@ -1633,6 +1652,7 @@ def train(
         df_u = pd.read_csv(ufile, sep=";")
         extra_feats: list[dict[str, float]] = []
         extra_labels: list[float] = []
+        now_ts = np.datetime64(datetime.utcnow(), "s")
         for _, row in df_u.iterrows():
             feat_str = str(row.get("features", ""))
             vals = [v for v in feat_str.split(",") if v != ""]
@@ -1647,6 +1667,7 @@ def train(
             tp_targets = np.concatenate([tp_targets, zeros])
             hours = np.concatenate([hours, zeros.astype(int)])
             lot_targets = np.concatenate([lot_targets, zeros])
+            event_times = np.concatenate([event_times, np.full(len(extra_feats), now_ts)])
             added = len(extra_feats)
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
@@ -1774,6 +1795,8 @@ def train(
         lot_val = np.array([])
         hours_train = hours
         hours_val = np.array([])
+        times_train = event_times
+        times_val = np.array([], dtype="datetime64[s]")
         unc_train_mask = uncertainty_mask
     else:
         tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
@@ -1791,6 +1814,8 @@ def train(
         lot_val = lot_targets[val_idx]
         hours_train = hours[train_idx]
         hours_val = hours[val_idx]
+        times_train = event_times[train_idx]
+        times_val = event_times[val_idx]
         unc_train_mask = uncertainty_mask[train_idx]
 
         # if the training split ended up with only one class, fall back to using
@@ -1802,10 +1827,13 @@ def train(
             hours_val = np.array([])
             lot_train = lot_targets
             lot_val = np.array([])
+            times_train = event_times
+            times_val = np.array([], dtype="datetime64[s]")
             unc_train_mask = uncertainty_mask
 
     coef_variances = None
     noise_variance = None
+    weight_decay_info = None
     base_weight = np.ones(len(feat_train), dtype=float)
     if model_type in ("logreg", "bayes_logreg") and not grid_search:
         base_weight *= np.array(
@@ -1814,6 +1842,18 @@ def train(
         )
     if unc_train_mask.size:
         base_weight *= np.where(unc_train_mask > 0, uncertain_weight, 1.0)
+    if decay_half_life > 0 and event_times is not None and event_times.size:
+        ref_time = event_times.max()
+        age_days = (
+            (ref_time - times_train).astype("timedelta64[s]").astype(float)
+            / (24 * 3600)
+        )
+        decay = 0.5 ** (age_days / decay_half_life)
+        base_weight *= decay
+        weight_decay_info = {
+            "half_life_days": float(decay_half_life),
+            "ref_time": np.datetime_as_string(ref_time, unit="s"),
+        }
     sample_weight = base_weight if not np.allclose(base_weight, 1.0) else None
 
     feat_train_clf = [dict(f) for f in feat_train]
@@ -1876,6 +1916,7 @@ def train(
             tp_targets=tp_targets,
             lot_targets=lot_targets,
             hours=hours,
+            event_times=event_times,
             feature_names=np.array(feature_names_cache),
         )
 
@@ -2053,6 +2094,8 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
         }
+        if weight_decay_info:
+            model["weight_decay"] = weight_decay_info
         if ae_info:
             model["autoencoder"] = ae_info
         if data_commits:
@@ -2125,6 +2168,8 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
         }
+        if weight_decay_info:
+            model["weight_decay"] = weight_decay_info
         if ae_info:
             model["autoencoder"] = ae_info
         if data_commits:
@@ -2770,6 +2815,8 @@ def train(
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
     }
+    if weight_decay_info:
+        model["weight_decay"] = weight_decay_info
     if ae_info:
         model["autoencoder"] = ae_info
     if regime_info is not None and reg_centers is not None:
@@ -3094,6 +3141,7 @@ def main():
     p.add_argument('--use-encoder', action='store_true', help='apply pretrained contrastive encoder')
     p.add_argument('--uncertain-file', help='CSV with labeled uncertain decisions')
     p.add_argument('--uncertain-weight', type=float, default=2.0, help='sample weight multiplier for labeled uncertainties')
+    p.add_argument('--decay-half-life', type=float, default=30.0, help='half-life in days for sample weight decay')
     args = p.parse_args()
     with trace.use_span(span, end_on_exit=True):
         global START_EVENT_ID
@@ -3177,6 +3225,7 @@ def main():
             use_encoder=args.use_encoder,
             uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
             uncertain_weight=args.uncertain_weight,
+            decay_half_life=args.decay_half_life,
             symbol_graph=symbol_graph,
         )
         if args.federated_server:
