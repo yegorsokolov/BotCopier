@@ -3,7 +3,7 @@
 #include <Arrays/ArrayInt.mqh>
 
 #import "observer_proto.dll"
-int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, int decision_id, uchar &out[]);
+int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, int decision_id, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, uchar &out[]);
 #import
 #import "flight_client.dll"
@@ -337,7 +337,7 @@ int OnInit()
    log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
    if(log_db_handle!=INVALID_HANDLE)
    {
-      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, decision_id INTEGER, is_anomaly INTEGER)";
+      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL)";
       DatabaseExecute(log_db_handle, create_sql);
       // Resume event id from existing records
       int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
@@ -387,7 +387,7 @@ int OnInit()
             NextEventId = last_id + 1;
          if(need_header)
          {
-            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly";
+            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level";
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
@@ -726,7 +726,7 @@ void LogTrade(string action, int ticket, int magic, string source,
               double profit_after, double remaining, datetime time_event,
               string comment, double volume, datetime open_time,
               double book_bid_vol, double book_ask_vol, double book_imbalance)
-{
+  {
    int id = NextEventId++;
    string span_id = GenId(8);
    string comment_with_span = "span=" + span_id;
@@ -762,16 +762,18 @@ void LogTrade(string action, int ticket, int magic, string source,
    double spread = MarketInfo(symbol, MODE_ASK) - MarketInfo(symbol, MODE_BID);
    double slippage = price - req_price;
    bool is_anom = CheckAnomaly(price, sl, tp, lots, spread, slippage);
+   double equity = AccountEquity();
+   double margin_level = AccountMarginLevel();
 
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f",
       id,
       TimeToString(time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type, lots, price, sl, tp,
       profit, profit_after, spread, TraceId, span_id, comment_with_span, remaining, slippage, (int)volume,
-      open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom);
+      open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom, equity, margin_level);
 
    uchar payload[];
    int len = SerializeTradeEvent(
@@ -781,7 +783,7 @@ void LogTrade(string action, int ticket, int magic, string source,
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       action, ticket, magic, source, symbol, order_type,
       lots, price, sl, tp, profit, profit_after, spread, comment_with_span, remaining,
-      slippage, (int)volume, open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, payload);
+      slippage, (int)volume, open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, equity, margin_level, decision_id, payload);
    bool sent = false;
    if(len>0)
       sent = SendTrade(payload);
@@ -811,14 +813,14 @@ void LogTrade(string action, int ticket, int magic, string source,
          if(log_db_handle!=INVALID_HANDLE)
          {
             string sql = StringFormat(
-               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d)",
+               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f)",
                id,
                SqlEscape(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(action), ticket, magic, SqlEscape(source), SqlEscape(symbol), order_type,
                lots, price, sl, tp, profit, profit_after, spread, SqlEscape(TraceId), SqlEscape(span_id), SqlEscape(comment), remaining,
-               slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom);
+               slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom, equity, margin_level);
             DatabaseExecute(log_db_handle, sql);
          }
       }

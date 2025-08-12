@@ -614,6 +614,8 @@ def _load_logs(
         "book_bid_vol",
         "book_ask_vol",
         "book_imbalance",
+        "equity",
+        "margin_level",
         "is_anomaly",
     ]
 
@@ -701,7 +703,7 @@ def _load_logs(
                     ).dt.total_seconds().fillna(0)
                 else:
                     chunk["trade_duration"] = 0.0
-                for col in ["book_bid_vol", "book_ask_vol", "book_imbalance"]:
+                for col in ["book_bid_vol", "book_ask_vol", "book_imbalance", "equity", "margin_level"]:
                     chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
                 chunk["is_anomaly"] = pd.to_numeric(chunk.get("is_anomaly", 0), errors="coerce").fillna(0)
                 valid_actions = {"OPEN", "CLOSE", "MODIFY"}
