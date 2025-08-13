@@ -34,6 +34,7 @@ extern string TraceId                      = "";
 extern int    BookRefreshSeconds           = 5;
 extern string AnomalyServiceUrl            = "http://127.0.0.1:8000/anomaly";
 extern double AnomalyThreshold             = 0.1;
+extern int    AnomalyTimeoutSeconds       = 5;
 extern string OtelEndpoint                = "";
 extern string ModelStateFile              = "model_online.json";
 extern string FlightServerHost            = "127.0.0.1";
@@ -61,12 +62,67 @@ const int MSG_HELLO = 2;
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
 
+class PendingTrade
+{
+public:
+   int      id;
+   string   span_id;
+   string   action;
+   int      ticket;
+   int      magic;
+   string   source;
+   string   symbol;
+   int      order_type;
+   double   lots;
+   double   price;
+   double   req_price;
+   double   sl;
+   double   tp;
+   double   profit;
+   double   profit_after;
+   double   remaining;
+   datetime time_event;
+   string   comment;
+   double   volume;
+   datetime open_time;
+   double   book_bid_vol;
+   double   book_ask_vol;
+   double   book_imbalance;
+   double   spread;
+   double   slippage;
+   double   sl_hit_dist;
+   double   tp_hit_dist;
+   double   equity;
+   double   margin_level;
+   int      decision_id;
+   string   comment_with_span;
+   string   open_time_str;
+   datetime start_time;
+};
+
+PendingTrade AnomalyQueue[];
+
 uchar   pending_trades[][1];
 uchar   pending_metrics[][1];
 int     trade_backoff = 1;
 int     metric_backoff = 1;
 datetime next_trade_flush = 0;
 datetime next_metric_flush = 0;
+
+void EnqueueAnomaly(PendingTrade &t)
+{
+   int n = ArraySize(AnomalyQueue);
+   ArrayResize(AnomalyQueue, n+1);
+   AnomalyQueue[n] = t;
+}
+
+void RemoveAnomaly(int index)
+{
+   int n = ArraySize(AnomalyQueue);
+   for(int i=index; i<n-1; i++)
+      AnomalyQueue[i] = AnomalyQueue[i+1];
+   ArrayResize(AnomalyQueue, n-1);
+}
 
 
 string GenId(int bytes)
@@ -283,7 +339,7 @@ void LoadModelState()
       NextEventId = last_id + 1;
 }
 
-bool CheckAnomaly(double price, double sl, double tp, double lots, double spread, double slippage)
+int CheckAnomaly(double price, double sl, double tp, double lots, double spread, double slippage)
 {
    string payload = StringFormat("[%.5f,%.5f,%.5f,%.2f,%.5f,%.5f]", price, sl, tp, lots, spread, slippage);
    uchar data[];
@@ -300,11 +356,11 @@ bool CheckAnomaly(double price, double sl, double tp, double lots, double spread
       {
          string span_id = GenId(8);
          SendOtelSpan(TraceId, span_id, "anomaly_detected");
-         return(true);
+         return(1);
       }
-      return(false);
+      return(0);
    }
-   return(false);
+   return(-1);
 }
 
 bool Contains(int &arr[], int value)
@@ -733,6 +789,7 @@ void OnTick()
 
 void OnTimer()
 {
+   ProcessAnomalyQueue();
    FlushTradeBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    FlushPending(now);
@@ -795,6 +852,100 @@ bool SendMetrics(uchar &payload[])
    return(true);
 }
 
+void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
+{
+   string line = StringFormat(
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f",
+      t.id,
+      TimeToString(t.time_event, TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
+      t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
+      t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread,
+      TraceId, t.span_id, t.comment_with_span, t.remaining, t.slippage,
+      (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol,
+      t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom,
+      t.equity, t.margin_level);
+
+   uchar payload[];
+   int len = SerializeTradeEvent(
+      SCHEMA_VERSION, t.id, TraceId,
+      TimeToString(t.time_event, TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
+      TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
+      t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
+      t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, t.comment_with_span, t.remaining,
+      t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.decision_id, payload);
+
+   bool sent = false;
+   if(len>0)
+      sent = SendTrade(payload);
+   if(!sent)
+   {
+      if(CurrentBackend==LOG_BACKEND_CSV)
+      {
+         if(trade_log_handle==INVALID_HANDLE)
+            return;
+         if(EnableDebugLogging)
+         {
+            FileSeek(trade_log_handle, 0, SEEK_END);
+            int _wr = FileWrite(trade_log_handle, line);
+            if(_wr <= 0)
+               FileWriteErrors++;
+            FileFlush(trade_log_handle);
+         }
+         else
+         {
+            int n = ArraySize(trade_log_buffer);
+            ArrayResize(trade_log_buffer, n+1);
+            trade_log_buffer[n] = line;
+         }
+      }
+      else if(CurrentBackend==LOG_BACKEND_SQLITE)
+      {
+         if(log_db_handle!=INVALID_HANDLE)
+         {
+            string sql = StringFormat(
+               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f)",
+               t.id,
+               SqlEscape(TimeToString(t.time_event, TIME_DATE|TIME_SECONDS)),
+               SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
+               SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
+               SqlEscape(t.action), t.ticket, t.magic, SqlEscape(t.source), SqlEscape(t.symbol), t.order_type,
+               t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, SqlEscape(TraceId), SqlEscape(t.span_id), SqlEscape(t.comment), t.remaining,
+               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom, t.equity, t.margin_level);
+            DatabaseExecute(log_db_handle, sql);
+         }
+      }
+   }
+   SendOtelSpan(TraceId, t.span_id, t.action);
+}
+
+void ProcessAnomalyQueue()
+{
+   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   int i = 0;
+   while(i < ArraySize(AnomalyQueue))
+   {
+      PendingTrade t = AnomalyQueue[i];
+      int res = CheckAnomaly(t.price, t.sl, t.tp, t.lots, t.spread, t.slippage);
+      if(res >= 0)
+      {
+         bool is_anom = (res == 1);
+         FinalizeTradeEntry(t, is_anom);
+         RemoveAnomaly(i);
+         continue;
+      }
+      if(now - t.start_time > AnomalyTimeoutSeconds)
+      {
+         FinalizeTradeEntry(t, false);
+         RemoveAnomaly(i);
+         continue;
+      }
+      i++;
+   }
+}
+
 string FileNameFromPath(string path)
 {
    int pos = StringLen(path)-1;
@@ -839,11 +990,38 @@ void LogTrade(string action, int ticket, int magic, string source,
               string comment, double volume, datetime open_time,
               double book_bid_vol, double book_ask_vol, double book_imbalance)
   {
-   int id = NextEventId++;
-   string span_id = GenId(8);
-   string comment_with_span = "span=" + span_id;
+   PendingTrade t;
+   t.id = NextEventId++;
+   t.span_id = GenId(8);
+   t.action = action;
+   t.ticket = ticket;
+   t.magic = magic;
+   t.source = source;
+   t.symbol = symbol;
+   t.order_type = order_type;
+   t.lots = lots;
+   t.price = price;
+   t.req_price = req_price;
+   t.sl = sl;
+   t.tp = tp;
+   t.profit = profit;
+   t.profit_after = profit_after;
+   t.remaining = remaining;
+   t.time_event = time_event;
+   t.comment = comment;
+   t.volume = volume;
+   t.open_time = open_time;
+   t.book_bid_vol = book_bid_vol;
+   t.book_ask_vol = book_ask_vol;
+   t.book_imbalance = book_imbalance;
+   t.spread = MarketInfo(symbol, MODE_ASK) - MarketInfo(symbol, MODE_BID);
+   t.slippage = price - req_price;
+   t.equity = AccountEquity();
+   t.margin_level = AccountMarginLevel();
+   string span_comment = "span=" + t.span_id;
    if(StringLen(comment) > 0)
-      comment_with_span += ";" + comment;
+      span_comment += ";" + comment;
+   t.comment_with_span = span_comment;
    int decision_id = 0;
    int pos = StringFind(comment, "decision_id=");
    if(pos >= 0)
@@ -859,9 +1037,11 @@ void LogTrade(string action, int ticket, int magic, string source,
       }
       decision_id = (int)StringToInteger(StringSubstr(comment, start, end-start));
    }
+   t.decision_id = decision_id;
    string open_time_str = "";
    if(action=="CLOSE" && open_time>0)
       open_time_str = TimeToString(open_time, TIME_DATE|TIME_SECONDS);
+   t.open_time_str = open_time_str;
    double sl_hit_dist = 0.0;
    double tp_hit_dist = 0.0;
    if(action=="CLOSE")
@@ -871,73 +1051,10 @@ void LogTrade(string action, int ticket, int magic, string source,
       if(tp!=0.0)
          tp_hit_dist = MathAbs(price - tp);
    }
-   double spread = MarketInfo(symbol, MODE_ASK) - MarketInfo(symbol, MODE_BID);
-   double slippage = price - req_price;
-   bool is_anom = CheckAnomaly(price, sl, tp, lots, spread, slippage);
-   double equity = AccountEquity();
-   double margin_level = AccountMarginLevel();
-
-   string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f",
-      id,
-      TimeToString(time_event, TIME_DATE|TIME_SECONDS),
-      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-      TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
-      action, ticket, magic, source, symbol, order_type, lots, price, sl, tp,
-      profit, profit_after, spread, TraceId, span_id, comment_with_span, remaining, slippage, (int)volume,
-      open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom, equity, margin_level);
-
-   uchar payload[];
-   int len = SerializeTradeEvent(
-      SCHEMA_VERSION, id, TraceId,
-      TimeToString(time_event, TIME_DATE|TIME_SECONDS),
-      TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
-      TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
-      action, ticket, magic, source, symbol, order_type,
-      lots, price, sl, tp, profit, profit_after, spread, comment_with_span, remaining,
-      slippage, (int)volume, open_time_str, book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, equity, margin_level, decision_id, payload);
-   bool sent = false;
-   if(len>0)
-      sent = SendTrade(payload);
-   if(!sent)
-   {
-      if(CurrentBackend==LOG_BACKEND_CSV)
-      {
-         if(trade_log_handle==INVALID_HANDLE)
-            return;
-         if(EnableDebugLogging)
-         {
-            FileSeek(trade_log_handle, 0, SEEK_END);
-            int _wr = FileWrite(trade_log_handle, line);
-            if(_wr <= 0)
-               FileWriteErrors++;
-            FileFlush(trade_log_handle);
-         }
-         else
-         {
-            int n = ArraySize(trade_log_buffer);
-            ArrayResize(trade_log_buffer, n+1);
-            trade_log_buffer[n] = line;
-         }
-      }
-      else if(CurrentBackend==LOG_BACKEND_SQLITE)
-      {
-         if(log_db_handle!=INVALID_HANDLE)
-         {
-            string sql = StringFormat(
-               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f)",
-               id,
-               SqlEscape(TimeToString(time_event, TIME_DATE|TIME_SECONDS)),
-               SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
-               SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
-               SqlEscape(action), ticket, magic, SqlEscape(source), SqlEscape(symbol), order_type,
-               lots, price, sl, tp, profit, profit_after, spread, SqlEscape(TraceId), SqlEscape(span_id), SqlEscape(comment), remaining,
-               slippage, (int)volume, SqlEscape(open_time_str), book_bid_vol, book_ask_vol, book_imbalance, sl_hit_dist, tp_hit_dist, decision_id, is_anom, equity, margin_level);
-            DatabaseExecute(log_db_handle, sql);
-         }
-      }
-   }
-   SendOtelSpan(TraceId, span_id, action);
+   t.sl_hit_dist = sl_hit_dist;
+   t.tp_hit_dist = tp_hit_dist;
+   t.start_time = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   EnqueueAnomaly(t);
 }
 
 
