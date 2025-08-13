@@ -80,6 +80,8 @@ int SymbolEmbDim = __SYM_EMB_DIM__;
 int SymbolEmbCount = __SYM_EMB_COUNT__;
 string SymbolEmbSymbols[] = {__SYM_EMB_SYMBOLS__};
 double SymbolEmbeddings[__SYM_EMB_COUNT__][__SYM_EMB_DIM__] = {__SYM_EMB_VALUES__};
+string RiskParitySymbols[];
+double RiskParityWeights[];
 datetime CalendarTimes[] = {__CALENDAR_TIMES__};
 double CalendarImpacts[] = {__CALENDAR_IMPACTS__};
 int EventWindowMinutes = __EVENT_WINDOW__;
@@ -165,6 +167,28 @@ void ExtractJsonArray(string json, string key, double &arr[])
       arr[i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i])));
 }
 
+void ExtractJsonStringArray(string json, string key, string &arr[])
+{
+   int pos = StringFind(json, key);
+   if(pos < 0) return;
+   pos = StringFind(json, "[", pos);
+   if(pos < 0) return;
+   int end = StringFind(json, "]", pos);
+   if(end < 0) return;
+   string vals = StringSubstr(json, pos+1, end-pos-1);
+   string parts[];
+   int cnt = StringSplit(vals, ',', parts);
+   ArrayResize(arr, cnt);
+   for(int i=0; i<cnt; i++)
+   {
+      string s = StringTrimLeft(StringTrimRight(parts[i]));
+      if(StringLen(s) >= 2 && StringMid(s,0,1)=="\"" && StringMid(s,StringLen(s)-1,1)=="\"")
+         arr[i] = StringSubstr(s,1,StringLen(s)-2);
+      else
+         arr[i] = s;
+   }
+}
+
 bool GetSymbolEmbedding(string sym, double &vec[])
 {
    for(int i=0; i<SymbolEmbCount; i++)
@@ -176,6 +200,16 @@ bool GetSymbolEmbedding(string sym, double &vec[])
       }
    }
    return(false);
+}
+
+double GetRiskParityWeight(string sym)
+{
+   for(int i=0; i<ArraySize(RiskParitySymbols); i++)
+   {
+      if(RiskParitySymbols[i] == sym)
+         return(RiskParityWeights[i]);
+   }
+   return(1.0);
 }
 
 bool ParseModelJson(string json)
@@ -194,6 +228,8 @@ bool ParseModelJson(string json)
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
    ExtractJsonArray(json, "\"lot_coefficients\"", LotModelCoefficients);
+   ExtractJsonStringArray(json, "\"risk_parity_symbols\"", RiskParitySymbols);
+   ExtractJsonArray(json, "\"risk_parity_weights\"", RiskParityWeights);
    ExtractJsonArray(json, "\"coef_variances\"", tmp);
    n = MathMin(ArraySize(tmp), ArrayRange(ModelCoeffVar,1));
    for(int i=0;i<n;i++)
@@ -866,6 +902,7 @@ double CalcLots()
    double pv = ComputePredictiveVariance(m);
    double scale = 1.0 / (1.0 + pv);
    z *= scale;
+   z *= GetRiskParityWeight(SymbolToTrade);
    if(z < MinLots) z = MinLots;
    if(z > MaxLots) z = MaxLots;
    return(z);

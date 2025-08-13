@@ -30,5 +30,7 @@
     "edge_weight": [],
     "embedding_dim": 0
   },
-  "symbol_embeddings": {}
+  "symbol_embeddings": {},
+  "risk_parity_symbols": [],
+  "risk_parity_weights": []
 }

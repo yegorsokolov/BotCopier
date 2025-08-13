@@ -903,6 +903,52 @@ def _read_last_event_id(out_dir: Path) -> int:
         return 0
 
 
+def _risk_parity_weights(cov: np.ndarray, max_iter: int = 1000, tol: float = 1e-8) -> np.ndarray:
+    """Compute risk-parity weights for covariance matrix ``cov``.
+
+    This solves for weights where each asset contributes equally to overall
+    portfolio risk using a simple iterative proportional scaling algorithm.
+    """
+    n = cov.shape[0]
+    if n == 0:
+        return np.array([])
+    w = np.ones(n) / n
+    for _ in range(max_iter):
+        # Marginal risk contribution of each asset
+        marginal = cov @ w
+        risk_contrib = w * marginal
+        target = risk_contrib.mean()
+        if np.max(np.abs(risk_contrib - target)) < tol:
+            break
+        # Scale weights inversely proportional to their risk contribution
+        w *= target / risk_contrib
+        w /= w.sum()
+    return w
+
+
+def _compute_risk_parity(price_map: dict[str, list[float]], window: int = 100) -> dict[str, float]:
+    """Return risk-parity weights given ``price_map`` of symbol->prices."""
+    returns: dict[str, pd.Series] = {}
+    for sym, prices in price_map.items():
+        if len(prices) > 1:
+            s = pd.Series(prices).pct_change().dropna()
+            if window > 0:
+                s = s.tail(window)
+            if not s.empty:
+                returns[sym] = s.reset_index(drop=True)
+    if len(returns) < 2:
+        # Single symbol – allocate full weight
+        if len(returns) == 1:
+            sym = next(iter(returns))
+            return {sym: 1.0}
+        return {}
+    df = pd.DataFrame(returns)
+    cov = df.cov().values
+    weights = _risk_parity_weights(cov)
+    symbols = list(df.columns)
+    return {sym: float(w) for sym, w in zip(symbols, weights)}
+
+
 def _extract_features(
     rows,
     use_sma=False,
@@ -937,6 +983,7 @@ def _extract_features(
     prices = []
     hours = []
     times = []
+    price_map = {sym: [] for sym in (extra_price_series or {}).keys()}
     macd_state = {}
     higher_timeframes = [str(tf).upper() for tf in (higher_timeframes or [])]
     tf_map = {
@@ -960,7 +1007,7 @@ def _extract_features(
     stoch_state = {}
     adx_state = {}
     extra_series = extra_price_series or {}
-    price_map = {sym: [] for sym in extra_series.keys()}
+    price_map.update({sym: [] for sym in extra_series.keys()})
     if corr_map:
         for base, peers in corr_map.items():
             price_map.setdefault(base, [])
@@ -1234,6 +1281,7 @@ def _extract_features(
         np.array(hours, dtype=int),
         np.array(lot_targets),
         np.array(times, dtype="datetime64[s]"),
+        price_map,
     )
 
 
@@ -1314,6 +1362,7 @@ def _train_lite_mode(
         (
             f_chunk,
             l_chunk,
+            _,
             _,
             _,
             _,
@@ -1553,6 +1602,7 @@ def train(
         except Exception:
             features = None
 
+    price_map_total: dict[str, list[float]] = {}
     if features is None:
         if lite_mode:
             rows_iter, data_commits, data_checksums = _load_logs(
@@ -1569,6 +1619,7 @@ def train(
             hours_list: list[np.ndarray] = []
             lot_list: list[np.ndarray] = []
             time_list: list[np.ndarray] = []
+            price_map_total: dict[str, list[float]] = {}
             for chunk in rows_iter:
                 (
                     f_chunk,
@@ -1578,6 +1629,7 @@ def train(
                     h_chunk,
                     lot_chunk,
                     t_chunk,
+                    p_chunk,
                 ) = _extract_features(
                     chunk.to_dict("records"),
                     use_sma=use_sma,
@@ -1602,6 +1654,8 @@ def train(
                     event_window=event_window,
                     news_sentiment=news_data,
                 )
+                for sym, prices in p_chunk.items():
+                    price_map_total.setdefault(sym, []).extend(prices)
                 features.extend(f_chunk)
                 labels_list.append(l_chunk)
                 sl_list.append(sl_chunk)
@@ -1639,6 +1693,7 @@ def train(
                 hours,
                 lot_targets,
                 event_times,
+                price_map_total,
             ) = _extract_features(
                 rows_df.to_dict("records"),
                 use_sma=use_sma,
@@ -1702,6 +1757,7 @@ def train(
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
+    risk_parity = _compute_risk_parity(price_map_total)
     regime_info = None
     reg_centers = None
     if regime_model_file and regime_model_file.exists():
@@ -2864,6 +2920,9 @@ def train(
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
     }
+    if risk_parity:
+        model["risk_parity_symbols"] = list(risk_parity.keys())
+        model["risk_parity_weights"] = [float(risk_parity[s]) for s in risk_parity]
     if student_coef is not None and student_inter is not None:
         model["student_coefficients"] = student_coef
         model["student_intercept"] = student_inter
