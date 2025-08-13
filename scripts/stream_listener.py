@@ -16,6 +16,7 @@ import asyncio
 import time
 import pickle
 import subprocess
+import gzip
 try:  # optional drift detection dependency
     from river.drift import ADWIN  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -183,6 +184,9 @@ LOG_FILES = {
 RUN_INFO_PATH = Path("logs/run_info.json")
 run_info_written = False
 
+trade_prev = bytearray()
+metric_prev = bytearray()
+
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "stream_listener")})
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
@@ -290,6 +294,41 @@ def write_run_info() -> None:
     with RUN_INFO_PATH.open("w") as f:
         json.dump(info, f, indent=2)
     run_info_written = True
+
+
+def _maybe_decompress(data: bytes) -> bytes:
+    if len(data) > 2 and data[0] == 0x1F and data[1] == 0x8B:
+        try:
+            return gzip.decompress(data)
+        except Exception:
+            return data
+    return data
+
+
+def _decode_event(data: bytes, prev: bytearray):
+    buf = _maybe_decompress(data)
+    if len(buf) < 2:
+        return None
+    version = buf[0]
+    tag = buf[1]
+    if tag == 0:
+        prev[:] = buf[2:]
+        return version, bytes(prev)
+    if tag == 1:
+        if not prev:
+            return None
+        cnt = buf[2]
+        pos = 3
+        for _ in range(cnt):
+            if pos + 2 >= len(buf):
+                break
+            idx = (buf[pos] << 8) | buf[pos + 1]
+            val = buf[pos + 2]
+            pos += 3
+            if idx < len(prev):
+                prev[idx] = val
+        return version, bytes(prev)
+    return None
 
 
 def _get(msg, camel: str, snake: str | None = None):
@@ -491,7 +530,10 @@ def main() -> int:
                 time.sleep(0.01)
                 continue
             msg_type, payload = msg
-            version = payload[0]
+            decoded = _decode_event(bytes(payload), trade_prev if msg_type == TRADE_MSG else metric_prev)
+            if not decoded:
+                continue
+            version, body = decoded
             if version != SCHEMA_VERSION:
                 logger.warning(
                     "schema version %d mismatch (expected %d)",
@@ -501,10 +543,10 @@ def main() -> int:
                 continue
             try:
                 if msg_type == TRADE_MSG:
-                    trade = trade_event_pb2.TradeEvent.FromString(payload[1:].tobytes())
+                    trade = trade_event_pb2.TradeEvent.FromString(body)
                     process_trade(trade)
                 elif msg_type == METRIC_MSG:
-                    metric = metric_event_pb2.MetricEvent.FromString(payload[1:].tobytes())
+                    metric = metric_event_pb2.MetricEvent.FromString(body)
                     process_metric(metric)
             except Exception:
                 continue
@@ -515,7 +557,11 @@ def main() -> int:
         js = nc.jetstream()
 
         async def trade_handler(msg):
-            version = msg.data[0]
+            decoded = _decode_event(msg.data, trade_prev)
+            if not decoded:
+                await msg.ack()
+                return
+            version, body = decoded
             if version != SCHEMA_VERSION:
                 logger.warning(
                     "schema version %d mismatch (expected %d)",
@@ -525,7 +571,7 @@ def main() -> int:
                 await msg.ack()
                 return
             try:
-                trade = trade_event_pb2.TradeEvent.FromString(msg.data[1:])
+                trade = trade_event_pb2.TradeEvent.FromString(body)
             except Exception:
                 await msg.ack()
                 return
@@ -533,7 +579,11 @@ def main() -> int:
             await msg.ack()
 
         async def metric_handler(msg):
-            version = msg.data[0]
+            decoded = _decode_event(msg.data, metric_prev)
+            if not decoded:
+                await msg.ack()
+                return
+            version, body = decoded
             if version != SCHEMA_VERSION:
                 logger.warning(
                     "schema version %d mismatch (expected %d)",
@@ -543,7 +593,7 @@ def main() -> int:
                 await msg.ack()
                 return
             try:
-                metric = metric_event_pb2.MetricEvent.FromString(msg.data[1:])
+                metric = metric_event_pb2.MetricEvent.FromString(body)
             except Exception:
                 await msg.ack()
                 return
