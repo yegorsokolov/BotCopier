@@ -107,7 +107,11 @@ def generate(
     var_rows = []
     noise_vars = []
     for m in models:
-        coeffs = m.get('coefficients') or m.get('coef_vector', [])
+        coeffs = (
+            m.get('student_coefficients')
+            or m.get('coefficients')
+            or m.get('coef_vector', [])
+        )
         if not coeffs:
             q_w = m.get('q_weights')
             if isinstance(q_w, list) and len(q_w) >= 2:
@@ -119,7 +123,9 @@ def generate(
         fmap = {f: c for f, c in zip(m.get('feature_names', []), coeffs)}
         vec = [_fmt(fmap.get(f, 0.0)) for f in feature_names]
         coeff_rows.append('{' + ', '.join(vec) + '}')
-        intercept = m.get('intercept')
+        intercept = m.get('student_intercept')
+        if intercept is None:
+            intercept = m.get('intercept')
         if intercept is None:
             q_int = m.get('q_intercepts')
             if isinstance(q_int, list) and len(q_int) >= 2:
@@ -488,6 +494,8 @@ def generate(
 
     threshold = base.get('threshold', 0.5)
     output = output.replace('__THRESHOLD__', _fmt(threshold))
+    if base.get('teacher_accuracy') is not None:
+        output += f"\n// Teacher accuracy: {_fmt(base['teacher_accuracy'])}\n"
     ts = base.get('trained_at')
     if ts:
         try:
