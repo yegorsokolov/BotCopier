@@ -696,6 +696,12 @@ def _load_logs(
                     )
                 chunk = chunk[~ver_mask]
                 chunk["event_time"] = pd.to_datetime(chunk.get("event_time"), errors="coerce")
+                if "broker_time" in chunk.columns:
+                    chunk["broker_time"] = pd.to_datetime(chunk.get("broker_time"), errors="coerce")
+                    chunk["broker_time"] = chunk["broker_time"].where(~chunk["broker_time"].isna(), None)
+                if "local_time" in chunk.columns:
+                    chunk["local_time"] = pd.to_datetime(chunk.get("local_time"), errors="coerce")
+                    chunk["local_time"] = chunk["local_time"].where(~chunk["local_time"].isna(), None)
                 if "open_time" in chunk.columns:
                     chunk["open_time"] = pd.to_datetime(chunk.get("open_time"), errors="coerce")
                     chunk["trade_duration"] = (
@@ -706,6 +712,9 @@ def _load_logs(
                 for col in ["book_bid_vol", "book_ask_vol", "book_imbalance", "equity", "margin_level"]:
                     chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
                 chunk["is_anomaly"] = pd.to_numeric(chunk.get("is_anomaly", 0), errors="coerce").fillna(0)
+                for col in ["source", "comment"]:
+                    if col in chunk.columns:
+                        chunk[col] = chunk[col].fillna("").astype(str)
                 valid_actions = {"OPEN", "CLOSE", "MODIFY"}
                 chunk["action"] = chunk["action"].fillna("").str.upper()
                 chunk = chunk[(chunk["action"] == "") | chunk["action"].isin(valid_actions)]
@@ -749,10 +758,11 @@ def _load_logs(
                         "Dropping %s rows with negative lots or NaN price", unreal_mask.sum()
                     )
                 chunk = chunk[~unreal_mask]
-                if df_metrics is not None and key_col is not None and "magic" in chunk.columns:
+                if "magic" in chunk.columns:
                     chunk["magic"] = (
                         pd.to_numeric(chunk["magic"], errors="coerce").fillna(0).astype(int)
                     )
+                if df_metrics is not None and key_col is not None and "magic" in chunk.columns:
                     if key_col == "magic":
                         chunk = chunk.merge(df_metrics, how="left", on="magic")
                     else:
@@ -2796,6 +2806,25 @@ def train(
                 feature_importance = {}
 
 
+    # Train a lightweight student model on the teacher's soft probabilities.
+    student_coef: list[float] | None = None
+    student_inter: float | None = None
+    student_val_acc: float | None = None
+    if model_type not in ("logreg", "bayes_logreg") and hasattr(clf, "predict_proba"):
+        try:
+            teacher_probs = train_proba
+            X_rep = np.vstack([X_train, X_train])
+            y_rep = np.concatenate([np.ones(len(teacher_probs)), np.zeros(len(teacher_probs))])
+            sw = np.concatenate([teacher_probs, 1 - teacher_probs])
+            student = LogisticRegression(max_iter=200)
+            student.fit(X_rep, y_rep, sample_weight=sw)
+            student_coef = student.coef_[0].astype(np.float32).tolist()
+            student_inter = float(student.intercept_[0])
+            if len(y_val) > 0:
+                student_val_acc = float(student.score(X_val, y_val))
+        except Exception:  # pragma: no cover - distillation best effort
+            pass
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     model = {
@@ -2815,6 +2844,12 @@ def train(
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
     }
+    if student_coef is not None and student_inter is not None:
+        model["student_coefficients"] = student_coef
+        model["student_intercept"] = student_inter
+        model["teacher_accuracy"] = val_acc
+        if student_val_acc is not None:
+            model["student_accuracy"] = student_val_acc
     if weight_decay_info:
         model["weight_decay"] = weight_decay_info
     if ae_info:
