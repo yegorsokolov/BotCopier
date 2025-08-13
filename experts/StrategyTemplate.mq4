@@ -16,6 +16,7 @@ extern bool   DecisionLogToSocket = false;
 extern string DecisionLogFile = "decisions.csv";
 extern string UncertainDecisionFile = "uncertain_decisions.csv";
 extern double UncertaintyMargin = 0.05;
+extern double MaxPredictiveVariance = 0.1;
 extern string DecisionLogSocketHost = "127.0.0.1";
 extern int    DecisionLogSocketPort = 9001;
 extern string ModelVersion = "";
@@ -1112,6 +1113,29 @@ void OnTick()
          feat_vals += DoubleToString(feats[i], 2);
       }
       Print("Features: [" + feat_vals + "] prob=" + DoubleToString(prob, 4));
+   }
+
+   double pv = ComputePredictiveVariance(modelIdx);
+   if(pv > MaxPredictiveVariance)
+   {
+      Print("Skipping trade due to high predictive variance: " + DoubleToString(pv, 6));
+      int decision_id = NextDecisionId;
+      LogDecision(feats, prob, "skip");
+      if(UncertainLogHandle != INVALID_HANDLE)
+      {
+         double sl_dist, tp_dist;
+         CalcStops(sl_dist, tp_dist);
+         string feat_vals = "";
+         for(int i=0; i<FeatureCount; i++)
+         {
+            if(i>0) feat_vals += ",";
+            feat_vals += DoubleToString(feats[i], 5);
+         }
+         datetime now = TimeCurrent();
+         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, sl_dist, tp_dist, feat_vals);
+         FileFlush(UncertainLogHandle);
+      }
+      return;
    }
 
    // Open buy if probability exceeds threshold else sell
