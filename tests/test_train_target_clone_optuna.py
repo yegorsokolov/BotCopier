@@ -37,6 +37,8 @@ def _write_sample_log(file: Path):
         "book_imbalance",
         "sl_hit_dist",
         "tp_hit_dist",
+        "commission",
+        "swap",
     ]
     rows = [
         [
@@ -66,6 +68,8 @@ def _write_sample_log(file: Path):
             "0",
             "0",
             "0",
+            "0",
+            "0",
         ],
         [
             "2",
@@ -89,6 +93,8 @@ def _write_sample_log(file: Path):
             "0.0002",
             "200",
             "",
+            "0",
+            "0",
             "0",
             "0",
             "0",
