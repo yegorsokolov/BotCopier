@@ -481,7 +481,13 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
         df_logs["trade_duration"] = (
             pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
         ).dt.total_seconds().fillna(0)
-    for col in ["book_bid_vol", "book_ask_vol", "book_imbalance"]:
+    for col in [
+        "book_bid_vol",
+        "book_ask_vol",
+        "book_imbalance",
+        "commission",
+        "swap",
+    ]:
         if col not in df_logs.columns:
             df_logs[col] = 0.0
         else:
@@ -616,6 +622,8 @@ def _load_logs(
         "book_imbalance",
         "equity",
         "margin_level",
+        "commission",
+        "swap",
         "is_anomaly",
     ]
 
@@ -709,7 +717,15 @@ def _load_logs(
                     ).dt.total_seconds().fillna(0)
                 else:
                     chunk["trade_duration"] = 0.0
-                for col in ["book_bid_vol", "book_ask_vol", "book_imbalance", "equity", "margin_level"]:
+                for col in [
+                    "book_bid_vol",
+                    "book_ask_vol",
+                    "book_imbalance",
+                    "equity",
+                    "margin_level",
+                    "commission",
+                    "swap",
+                ]:
                     chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
                 chunk["is_anomaly"] = pd.to_numeric(chunk.get("is_anomaly", 0), errors="coerce").fillna(0)
                 for col in ["source", "comment"]:
@@ -1015,6 +1031,8 @@ def _extract_features(
         slippage = _safe_float(r.get("slippage", 0))
         account_equity = _safe_float(r.get("equity", 0))
         margin_level = _safe_float(r.get("margin_level", 0))
+        commission = _safe_float(r.get("commission", 0))
+        swap = _safe_float(r.get("swap", 0))
 
         hour_sin = math.sin(2 * math.pi * t.hour / 24)
         hour_cos = math.cos(2 * math.pi * t.hour / 24)
@@ -1045,6 +1063,8 @@ def _extract_features(
             "book_bid_vol": float(r.get("book_bid_vol", 0) or 0),
             "book_ask_vol": float(r.get("book_ask_vol", 0) or 0),
             "book_imbalance": float(r.get("book_imbalance", 0) or 0),
+            "commission": commission,
+            "swap": swap,
         }
 
         if calendar_events is not None:
