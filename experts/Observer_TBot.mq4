@@ -30,6 +30,7 @@ extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
 extern string CommitHash                   = "";
 extern string ModelVersion                 = "";
+extern string ModelFileName                = "model.json";
 extern string TraceId                      = "";
 extern int    BookRefreshSeconds           = 5;
 extern string AnomalyServiceUrl            = "http://127.0.0.1:8000/anomaly";
@@ -61,6 +62,8 @@ const int MSG_HELLO = 2;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
+string   RiskParitySymbols[];
+double   RiskParityWeights[];
 
 class PendingTrade
 {
@@ -96,6 +99,7 @@ public:
    double   margin_level;
    double   commission;
    double   swap;
+   double   risk_weight;
    int      decision_id;
    string   comment_with_span;
    string   open_time_str;
@@ -327,6 +331,44 @@ double ExtractJsonNumber(string json, string key)
    return(StrToDouble(val));
 }
 
+void ExtractJsonArray(string json, string key, double &arr[])
+{
+   int pos = StringFind(json, key);
+   if(pos < 0) return;
+   pos = StringFind(json, "[", pos);
+   if(pos < 0) return;
+   int end = StringFind(json, "]", pos);
+   if(end < 0) return;
+   string vals = StringSubstr(json, pos+1, end-pos-1);
+   string parts[];
+   int cnt = StringSplit(vals, ',', parts);
+   ArrayResize(arr, cnt);
+   for(int i=0; i<cnt; i++)
+      arr[i] = StrToDouble(StringTrimLeft(StringTrimRight(parts[i])));
+}
+
+void ExtractJsonStringArray(string json, string key, string &arr[])
+{
+   int pos = StringFind(json, key);
+   if(pos < 0) return;
+   pos = StringFind(json, "[", pos);
+   if(pos < 0) return;
+   int end = StringFind(json, "]", pos);
+   if(end < 0) return;
+   string vals = StringSubstr(json, pos+1, end-pos-1);
+   string parts[];
+   int cnt = StringSplit(vals, ',', parts);
+   ArrayResize(arr, cnt);
+   for(int i=0; i<cnt; i++)
+   {
+      string s = StringTrimLeft(StringTrimRight(parts[i]));
+      if(StringLen(s) >= 2 && StringMid(s,0,1)=="\"" && StringMid(s,StringLen(s)-1,1)=="\"")
+         arr[i] = StringSubstr(s,1,StringLen(s)-2);
+      else
+         arr[i] = s;
+   }
+}
+
 void LoadModelState()
 {
    int h = FileOpen(ModelStateFile, FILE_READ|FILE_SHARE_READ|FILE_COMMON);
@@ -339,6 +381,29 @@ void LoadModelState()
    int last_id = (int)ExtractJsonNumber(content, "\"last_event_id\"");
    if(last_id > 0)
       NextEventId = last_id + 1;
+}
+
+void LoadRiskWeights()
+{
+   int h = FileOpen(ModelFileName, FILE_READ|FILE_SHARE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   string content = "";
+   while(!FileIsEnding(h))
+      content += FileReadString(h);
+   FileClose(h);
+   ExtractJsonStringArray(content, "\"risk_parity_symbols\"", RiskParitySymbols);
+   ExtractJsonArray(content, "\"risk_parity_weights\"", RiskParityWeights);
+}
+
+double GetRiskWeight(string sym)
+{
+   for(int i=0; i<ArraySize(RiskParitySymbols); i++)
+   {
+       if(RiskParitySymbols[i] == sym)
+           return(RiskParityWeights[i]);
+   }
+   return(1.0);
 }
 
 int CheckAnomaly(double price, double sl, double tp, double lots, double spread, double slippage)
@@ -468,6 +533,7 @@ int OnInit()
    LoadQueue(LogDirectoryName + "\\pending_trades.bin", pending_trades);
    LoadQueue(LogDirectoryName + "\\pending_metrics.bin", pending_metrics);
    LoadModelState();
+   LoadRiskWeights();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    string symbols_json = "[";
    for(int k=0; k<ArraySize(track_symbols); k++)
@@ -548,7 +614,7 @@ int OnInit()
             NextEventId = last_id + 1;
          if(need_header)
          {
-            string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap";
+           string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight";
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
@@ -857,7 +923,7 @@ bool SendMetrics(uchar &payload[])
 void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 {
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f",
       t.id,
       TimeToString(t.time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
@@ -867,7 +933,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       TraceId, t.span_id, t.comment_with_span, t.remaining, t.slippage,
       (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol,
       t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom,
-      t.equity, t.margin_level, t.commission, t.swap);
+      t.equity, t.margin_level, t.commission, t.swap, t.risk_weight);
 
    uchar payload[];
    int len = SerializeTradeEvent(
@@ -1027,6 +1093,7 @@ void LogTrade(string action, int ticket, int magic, string source,
       t.commission = OrderCommission();
       t.swap = OrderSwap();
    }
+   t.risk_weight = GetRiskWeight(symbol);
    string span_comment = "span=" + t.span_id;
    if(StringLen(comment) > 0)
       span_comment += ";" + comment;
