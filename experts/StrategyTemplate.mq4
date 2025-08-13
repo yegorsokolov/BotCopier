@@ -1,6 +1,11 @@
 #property strict
 #include "model_interface.mqh"
 
+#import "shm_ring.dll"
+bool ShmRingInit(string name, int size);
+bool ShmRingRead(int &msg_type, uchar &payload[], int &len);
+#import
+
 extern string SymbolToTrade = "EURUSD";
 extern double Lots = 0.1;
 extern int MagicNumber = 1234;
@@ -109,6 +114,10 @@ int RegimeCount = __REGIME_COUNT__;
 int RegimeFeatureCount = __REGIME_FEATURE_COUNT__;
 double RegimeCenters[__REGIME_COUNT__][__REGIME_FEATURE_COUNT__] = {__REGIME_CENTERS__};
 int RegimeFeatureIdx[] = {__REGIME_FEATURE_IDX__};
+const int MSG_REGIME = 3;
+int CurrentRegime = -1;
+double RegimeThresholds[__REGIME_COUNT__] = {__REGIME_THRESHOLDS__};
+int RegimeModelIdx[__REGIME_COUNT__] = {__REGIME_MODEL_IDX__};
 datetime LastModelLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
 int      UncertainLogHandle = INVALID_HANDLE;
@@ -325,6 +334,7 @@ int OnInit()
    if(StringLen(ModelOnnxFile) > 0 && FileIsExist(ModelOnnxFile))
       UseOnnxModel = true;
    MarketBookAdd(SymbolToTrade);
+   ShmRingInit("regime_ring", 1<<10);
    if(EnableDecisionLogging)
    {
       if(DecisionLogToSocket)
@@ -512,6 +522,27 @@ int GetRegime()
       }
    }
    return(best);
+}
+
+void PollRegimeRing()
+{
+   uchar payload[4];
+   int msg_type;
+   int len = ArraySize(payload);
+   while(ShmRingRead(msg_type, payload, len))
+   {
+      if(msg_type == MSG_REGIME && len > 0)
+      {
+         int reg = payload[0];
+         if(reg != CurrentRegime)
+         {
+            CurrentRegime = reg;
+            if(EnableDebugLogging)
+               Print("Regime updated: ", reg);
+         }
+      }
+      len = ArraySize(payload);
+   }
 }
 
 int TFIdx(int tf)
@@ -910,6 +941,8 @@ double CalcLots()
 
 double GetTradeThreshold()
 {
+   if(CurrentRegime >= 0 && CurrentRegime < ArraySize(RegimeThresholds))
+      return(RegimeThresholds[CurrentRegime]);
    if(ArraySize(ModelThreshold) == 24)
       return(ModelThreshold[TimeHour(TimeCurrent())]);
    return(DefaultThreshold);
@@ -1097,6 +1130,7 @@ bool HasOpenOrders()
 
 void OnTick()
 {
+   PollRegimeRing();
    // When ReloadModelInterval is set, periodically check for updated
    // coefficients written by ``online_trainer.py`` and reload them without
    // recompiling the EA.
@@ -1121,6 +1155,8 @@ void OnTick()
 
    UpdateFeatureHistory();
    int modelIdx = SelectExpert();
+   if(CurrentRegime >= 0 && CurrentRegime < ArraySize(RegimeModelIdx))
+      modelIdx = RegimeModelIdx[CurrentRegime];
    if(BanditSocket != INVALID_HANDLE)
    {
       int idx = QueryBanditModel();
