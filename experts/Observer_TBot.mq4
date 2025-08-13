@@ -110,6 +110,10 @@ PendingTrade AnomalyQueue[];
 
 uchar   pending_trades[][1];
 uchar   pending_metrics[][1];
+uchar   last_trade_payload[];
+bool    have_last_trade = false;
+uchar   last_metric_payload[];
+bool    have_last_metric = false;
 int     trade_backoff = 1;
 int     metric_backoff = 1;
 datetime next_trade_flush = 0;
@@ -884,15 +888,52 @@ bool SendTrade(uchar &payload[])
 {
    int len = ArraySize(payload);
    uchar out[];
-   ArrayResize(out, len + 1);
-   out[0] = (uchar)SCHEMA_VERSION;
-   ArrayCopy(out, payload, 1, 0, len);
+   bool send_full = true;
+   if(have_last_trade && ArraySize(last_trade_payload)==len)
+   {
+      int changes = 0;
+      for(int i=0; i<len; i++)
+         if(payload[i] != last_trade_payload[i])
+            changes++;
+      if(changes>0 && changes<256)
+      {
+         send_full = false;
+         ArrayResize(out, 3 + changes*3);
+         out[0] = (uchar)SCHEMA_VERSION;
+         out[1] = 1; // delta tag
+         out[2] = (uchar)changes;
+         int pos = 3;
+         for(int i=0; i<len; i++)
+         {
+            if(payload[i] != last_trade_payload[i])
+            {
+               out[pos]   = (uchar)(i>>8);
+               out[pos+1] = (uchar)(i & 0xFF);
+               out[pos+2] = payload[i];
+               pos += 3;
+            }
+         }
+      }
+   }
+   if(send_full)
+   {
+      ArrayResize(out, len + 2);
+      out[0] = (uchar)SCHEMA_VERSION;
+      out[1] = 0; // full tag
+      ArrayCopy(out, payload, 2, 0, len);
+   }
+   ArrayResize(last_trade_payload, len);
+   ArrayCopy(last_trade_payload, payload, 0, 0, len);
+   have_last_trade = true;
    if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
       return(true);
-   if(!FlightClientSend("trades", out, ArraySize(out)))
+   uchar zipped[];
+   if(!CryptEncode(CRYPT_ARCHIVE_GZIP, out, zipped))
+      ArrayCopy(zipped, out, 0, 0, ArraySize(out));
+   if(!FlightClientSend("trades", zipped, ArraySize(zipped)))
    {
       SocketErrors++;
-      EnqueueMessage(pending_trades, out);
+      EnqueueMessage(pending_trades, zipped);
       datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
       next_trade_flush = now + trade_backoff;
       return(false);
@@ -904,15 +945,52 @@ bool SendMetrics(uchar &payload[])
 {
    int len = ArraySize(payload);
    uchar out[];
-   ArrayResize(out, len + 1);
-   out[0] = (uchar)SCHEMA_VERSION;
-   ArrayCopy(out, payload, 1, 0, len);
+   bool send_full = true;
+   if(have_last_metric && ArraySize(last_metric_payload)==len)
+   {
+      int changes = 0;
+      for(int i=0; i<len; i++)
+         if(payload[i] != last_metric_payload[i])
+            changes++;
+      if(changes>0 && changes<256)
+      {
+         send_full = false;
+         ArrayResize(out, 3 + changes*3);
+         out[0] = (uchar)SCHEMA_VERSION;
+         out[1] = 1;
+         out[2] = (uchar)changes;
+         int pos = 3;
+         for(int i=0; i<len; i++)
+         {
+            if(payload[i] != last_metric_payload[i])
+            {
+               out[pos]   = (uchar)(i>>8);
+               out[pos+1] = (uchar)(i & 0xFF);
+               out[pos+2] = payload[i];
+               pos += 3;
+            }
+         }
+      }
+   }
+   if(send_full)
+   {
+      ArrayResize(out, len + 2);
+      out[0] = (uchar)SCHEMA_VERSION;
+      out[1] = 0;
+      ArrayCopy(out, payload, 2, 0, len);
+   }
+   ArrayResize(last_metric_payload, len);
+   ArrayCopy(last_metric_payload, payload, 0, 0, len);
+   have_last_metric = true;
    if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
       return(true);
-   if(!FlightClientSend("metrics", out, ArraySize(out)))
+   uchar zipped[];
+   if(!CryptEncode(CRYPT_ARCHIVE_GZIP, out, zipped))
+      ArrayCopy(zipped, out, 0, 0, ArraySize(out));
+   if(!FlightClientSend("metrics", zipped, ArraySize(zipped)))
    {
       SocketErrors++;
-      EnqueueMessage(pending_metrics, out);
+      EnqueueMessage(pending_metrics, zipped);
       datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
       next_metric_flush = now + metric_backoff;
       return(false);
