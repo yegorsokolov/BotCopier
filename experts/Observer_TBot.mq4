@@ -4,7 +4,7 @@
 
 #import "observer_proto.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, int decision_id, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, uchar &out[]);
 #import
 #import "flight_client.dll"
 bool FlightClientInit(string host, int port);
@@ -60,6 +60,13 @@ const int MSG_HELLO = 2;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
+
+uchar   pending_trades[][1];
+uchar   pending_metrics[][1];
+int     trade_backoff = 1;
+int     metric_backoff = 1;
+datetime next_trade_flush = 0;
+datetime next_metric_flush = 0;
 
 
 string GenId(int bytes)
@@ -150,6 +157,95 @@ void UpdateCpuLoad(uint elapsed_ms)
    CachedBookRefreshSeconds = interval;
 }
 
+
+void EnqueueMessage(uchar &queue[][], uchar &msg[])
+{
+   int idx = ArraySize(queue);
+   ArrayResize(queue, idx+1);
+   ArrayResize(queue[idx], ArraySize(msg));
+   ArrayCopy(queue[idx], msg);
+}
+
+void RemoveFirst(uchar &queue[][])
+{
+   int n = ArraySize(queue);
+   if(n <= 1)
+   {
+      ArrayResize(queue, 0);
+      return;
+   }
+   for(int i=0; i<n-1; i++)
+      ArrayCopy(queue[i], queue[i+1]);
+   ArrayResize(queue, n-1);
+}
+
+void FlushPending(datetime now)
+{
+   if(ArraySize(pending_trades) > 0 && now >= next_trade_flush)
+   {
+      if(FlightClientSend("trades", pending_trades[0], ArraySize(pending_trades[0])))
+      {
+         RemoveFirst(pending_trades);
+         trade_backoff = 1;
+         next_trade_flush = now;
+      }
+      else
+      {
+         SocketErrors++;
+         trade_backoff = MathMin(trade_backoff*2, 3600);
+         next_trade_flush = now + trade_backoff;
+      }
+   }
+
+   if(ArraySize(pending_metrics) > 0 && now >= next_metric_flush)
+   {
+      if(FlightClientSend("metrics", pending_metrics[0], ArraySize(pending_metrics[0])))
+      {
+         RemoveFirst(pending_metrics);
+         metric_backoff = 1;
+         next_metric_flush = now;
+      }
+      else
+      {
+         SocketErrors++;
+         metric_backoff = MathMin(metric_backoff*2, 3600);
+         next_metric_flush = now + metric_backoff;
+      }
+   }
+}
+
+void SaveQueue(string fname, uchar &queue[][])
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   for(int i=0; i<ArraySize(queue); i++)
+   {
+      int len = ArraySize(queue[i]);
+      FileWriteInteger(h, len);
+      FileWriteArray(h, queue[i], 0, len);
+   }
+   FileClose(h);
+}
+
+void LoadQueue(string fname, uchar &queue[][])
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   while(!FileIsEnding(h))
+   {
+      int len = FileReadInteger(h);
+      if(len <= 0)
+         break;
+      int idx = ArraySize(queue);
+      ArrayResize(queue, idx+1);
+      ArrayResize(queue[idx], len);
+      FileReadArray(h, queue[idx], 0, len);
+   }
+   FileClose(h);
+   FileDelete(fname);
+}
 
 double ExtractJsonNumber(string json, string key)
 {
@@ -311,6 +407,8 @@ int OnInit()
    StringToCharArray(hello, hello_payload);
    ShmRingWrite(MSG_HELLO, hello_payload, ArraySize(hello_payload) - 1);
    FlightClientInit(FlightServerHost, FlightServerPort);
+   LoadQueue(LogDirectoryName + "\\pending_trades.bin", pending_trades);
+   LoadQueue(LogDirectoryName + "\\pending_metrics.bin", pending_metrics);
    LoadModelState();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    string symbols_json = "[";
@@ -410,6 +508,8 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    FlushTradeBuffer();
+   SaveQueue(LogDirectoryName + "\\pending_trades.bin", pending_trades);
+   SaveQueue(LogDirectoryName + "\\pending_metrics.bin", pending_metrics);
    if(trade_log_handle!=INVALID_HANDLE)
    {
       FileClose(trade_log_handle);
@@ -635,6 +735,7 @@ void OnTimer()
 {
    FlushTradeBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   FlushPending(now);
 
    if(now - last_export < LearningExportIntervalMinutes*60)
       return;
@@ -666,6 +767,9 @@ bool SendTrade(uchar &payload[])
    if(!FlightClientSend("trades", out, ArraySize(out)))
    {
       SocketErrors++;
+      EnqueueMessage(pending_trades, out);
+      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+      next_trade_flush = now + trade_backoff;
       return(false);
    }
    return(true);
@@ -683,6 +787,9 @@ bool SendMetrics(uchar &payload[])
    if(!FlightClientSend("metrics", out, ArraySize(out)))
    {
       SocketErrors++;
+      EnqueueMessage(pending_metrics, out);
+      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+      next_metric_flush = now + metric_backoff;
       return(false);
    }
    return(true);
@@ -940,6 +1047,8 @@ void WriteMetrics(datetime ts)
    string fname = LogDirectoryName + "\\metrics.csv";
 
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
+   int trade_q_depth = ArraySize(pending_trades);
+   int metric_q_depth = ArraySize(pending_metrics);
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];
@@ -1015,13 +1124,13 @@ void WriteMetrics(datetime ts)
          if(profits[vb] < var95) var_breach_count++;
 
       string span_id = GenId(8);
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, TraceId, span_id);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, TraceId, span_id);
 
       uchar payload[];
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, payload);
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, payload);
       bool sent = false;
       if(len>0)
          sent = SendMetrics(payload);
@@ -1035,7 +1144,7 @@ void WriteMetrics(datetime ts)
                h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
                if(h!=INVALID_HANDLE)
                {
-                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;var_breach_count;trace_id;span_id");
+                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;trace_id;span_id");
                   if(_wr <= 0)
                      FileWriteErrors++;
                }
