@@ -1,0 +1,13 @@
+[Unit]
+Description=BotCopier Online Trainer
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/BotCopier
+ExecStart=/usr/bin/python3 scripts/online_trainer.py --csv logs/trades_raw.csv
+Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

@@ -661,9 +661,18 @@ Python dependencies and initialise a Wine prefix for MetaTrader:
 ./scripts/setup_ubuntu.sh
 ```
 
+The script installs and enables an `online-trainer.service` unit so the
+incremental trainer starts automatically at boot. Disable or re-enable it with:
+
+```bash
+sudo systemctl disable --now online-trainer.service
+sudo systemctl enable --now online-trainer.service
+```
+
 Example systemd unit files are provided under `docs/systemd/` for running
-`stream_listener.py` and `metrics_collector.py`. After copying them to
-`/etc/systemd/system/`, enable the services with:
+`stream_listener.py`, `metrics_collector.py` and the online trainer. After
+copying the listener and collector units to `/etc/systemd/system/`, enable the
+services with:
 
 ```bash
 sudo systemctl daemon-reload
@@ -673,7 +682,7 @@ sudo systemctl enable --now stream-listener.service metrics-collector.service
 Logs for these services can be viewed with:
 
 ```bash
-journalctl -u stream-listener.service -u metrics-collector.service
+journalctl -u stream-listener.service -u metrics-collector.service -u online-trainer.service
 ```
 
 Adjust the `WorkingDirectory` in the unit files to match where the repository
