@@ -105,6 +105,8 @@ double CachedBookImbalance = 0.0;
 datetime CachedBookTime = 0;
 double CachedNewsSentiment = 0.0;
 datetime CachedNewsTime = 0;
+double TrendEstimate = 0.0;
+double TrendVariance = 1.0;
 int EncoderWindow = __ENCODER_WINDOW__;
 int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
@@ -137,6 +139,23 @@ datetime LastAdaptRequest = 0;
 //----------------------------------------------------------------------
 // Model loading utilities
 //----------------------------------------------------------------------
+
+void UpdateKalman(double measurement)
+{
+   static bool initialized = false;
+   double Q = 1e-5;
+   double R = 1e-2;
+   if(!initialized)
+   {
+      TrendEstimate = measurement;
+      TrendVariance = 1.0;
+      initialized = true;
+   }
+   TrendVariance += Q;
+   double K = TrendVariance / (TrendVariance + R);
+   TrendEstimate = TrendEstimate + K * (measurement - TrendEstimate);
+   TrendVariance = (1 - K) * TrendVariance;
+}
 
 double ExtractJsonNumber(string json, string key)
 {
@@ -1131,6 +1150,7 @@ bool HasOpenOrders()
 void OnTick()
 {
    PollRegimeRing();
+   UpdateKalman(iClose(SymbolToTrade, 0, 0));
    // When ReloadModelInterval is set, periodically check for updated
    // coefficients written by ``online_trainer.py`` and reload them without
    // recompiling the EA.

@@ -497,6 +497,8 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
         "book_imbalance",
         "commission",
         "swap",
+        "trend_estimate",
+        "trend_variance",
     ]:
         if col not in df_logs.columns:
             df_logs[col] = 0.0
@@ -635,6 +637,8 @@ def _load_logs(
         "commission",
         "swap",
         "is_anomaly",
+        "trend_estimate",
+        "trend_variance",
     ]
 
     data_commits: list[str] = []
@@ -735,6 +739,8 @@ def _load_logs(
                     "margin_level",
                     "commission",
                     "swap",
+                    "trend_estimate",
+                    "trend_variance",
                 ]:
                     chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
                 chunk["is_anomaly"] = pd.to_numeric(chunk.get("is_anomaly", 0), errors="coerce").fillna(0)
@@ -1090,6 +1096,8 @@ def _extract_features(
         margin_level = _safe_float(r.get("margin_level", 0))
         commission = _safe_float(r.get("commission", 0))
         swap = _safe_float(r.get("swap", 0))
+        trend_est = _safe_float(r.get("trend_estimate", 0))
+        trend_var = _safe_float(r.get("trend_variance", 0))
 
         hour_sin = math.sin(2 * math.pi * t.hour / 24)
         hour_cos = math.cos(2 * math.pi * t.hour / 24)
@@ -1122,6 +1130,8 @@ def _extract_features(
             "book_imbalance": float(r.get("book_imbalance", 0) or 0),
             "commission": commission,
             "swap": swap,
+            "trend_estimate": trend_est,
+            "trend_variance": trend_var,
         }
 
         if calendar_events is not None:
