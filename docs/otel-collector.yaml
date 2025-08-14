@@ -10,9 +10,19 @@ exporters:
     insecure: true
   zipkin:
     endpoint: http://zipkin:9411/api/v2/spans
+  prometheus:
+    endpoint: "0.0.0.0:9464"
+  logging:
+    loglevel: info
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       exporters: [jaeger, zipkin]
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]
+    logs:
+      receivers: [otlp]
+      exporters: [logging]

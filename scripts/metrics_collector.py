@@ -12,21 +12,27 @@ from typing import Callable, Optional
 from asyncio import Queue
 from aiohttp import web
 
+import psutil
+
 import nats
 from google.protobuf.json_format import MessageToDict
 from proto import metric_event_pb2
 
 SCHEMA_VERSION = 1
 
-from opentelemetry import trace
+from opentelemetry import trace, metrics
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.metrics import Observation
 from opentelemetry.trace import (
     format_span_id,
     format_trace_id,
@@ -60,6 +66,51 @@ if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
+
+metric_readers = []
+if endpoint:
+    metric_readers.append(
+        PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=endpoint))
+    )
+meter_provider = MeterProvider(metric_readers=metric_readers, resource=resource)
+metrics.set_meter_provider(meter_provider)
+meter = metrics.get_meter(__name__)
+
+
+def _cpu_usage(_):
+    return [Observation(psutil.cpu_percent(interval=None))]
+
+
+def _mem_usage(_):
+    return [Observation(psutil.virtual_memory().percent)]
+
+
+def _net_io(_):
+    net = psutil.net_io_counters()
+    return [
+        Observation(net.bytes_sent, {"direction": "sent"}),
+        Observation(net.bytes_recv, {"direction": "recv"}),
+    ]
+
+
+meter.create_observable_gauge(
+    "system.cpu.percent",
+    [_cpu_usage],
+    unit="percent",
+    description="CPU usage percentage",
+)
+meter.create_observable_gauge(
+    "system.memory.percent",
+    [_mem_usage],
+    unit="percent",
+    description="Memory usage percentage",
+)
+meter.create_observable_gauge(
+    "system.network.bytes",
+    [_net_io],
+    unit="bytes",
+    description="Network I/O in bytes",
+)
 
 
 def _context_from_ids(trace_id: str, span_id: str):
