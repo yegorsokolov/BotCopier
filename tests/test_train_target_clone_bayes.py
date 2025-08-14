@@ -107,19 +107,19 @@ def _write_sample_log(file: Path):
         writer.writerow(fields)
         writer.writerows(rows)
 
-def test_optuna_study_serialization(tmp_path: Path):
+def test_bayes_study_serialization(tmp_path: Path):
     pytest.importorskip("optuna")
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     data_dir.mkdir()
     _write_sample_log(data_dir / "trades_sample.csv")
 
-    train(data_dir, out_dir, optuna_trials=1)
+    train(data_dir, out_dir, bayes_steps=1)
 
     model_file = out_dir / "model.json"
     assert model_file.exists()
     with open(model_file) as f:
         data = json.load(f)
-    assert "optuna_best_params" in data
-    assert "optuna_trials" in data and data["optuna_trials"]
-    assert data.get("optuna_study", {}).get("n_trials") == 1
+    assert "bayes_best_params" in data
+    assert "bayes_history" in data and data["bayes_history"]
+    assert data.get("bayes_study", {}).get("n_trials") == 1
