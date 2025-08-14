@@ -38,3 +38,8 @@ log "Creating Wine prefix for MetaTrader"
 export WINEPREFIX
 mkdir -p "$WINEPREFIX"
 wineboot --init
+
+log "Installing online trainer service"
+sudo cp docs/systemd/online-trainer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now online-trainer.service
