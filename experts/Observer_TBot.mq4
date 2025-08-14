@@ -547,7 +547,8 @@ int OnInit()
    for(int j=0; j<sym_cnt; j++)
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
-   DirectoryCreate(LogDirectoryName);
+   string log_dir = StringReplace(LogDirectoryName, "\\", "/");
+   DirectoryCreate(log_dir);
    // initialise shared memory ring buffer (1MB by default)
    ShmRingInit("tbot_events", 1<<20);
    string hello = StringFormat("{\"type\":\"hello\",\"schema_version\":%d}", SCHEMA_VERSION);
@@ -555,8 +556,8 @@ int OnInit()
    StringToCharArray(hello, hello_payload);
    ShmRingWrite(MSG_HELLO, hello_payload, ArraySize(hello_payload) - 1);
    FlightClientInit(FlightServerHost, FlightServerPort);
-   LoadQueue(LogDirectoryName + "\\pending_trades.bin", pending_trades);
-   LoadQueue(LogDirectoryName + "\\pending_metrics.bin", pending_metrics);
+   LoadQueue(log_dir + "/pending_trades.bin", pending_trades);
+   LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics);
    LoadModelState();
    LoadRiskWeights();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
@@ -575,7 +576,7 @@ int OnInit()
    run_info += "\"symbols\":" + symbols_json + ",";
    run_info += "\"mt4_build\":" + IntegerToString((int)TerminalInfoInteger(TERMINAL_BUILD));
    run_info += "}";
-   int info_handle = FileOpen(LogDirectoryName + "\\run_info.json", FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ);
+   int info_handle = FileOpen(log_dir + "/run_info.json", FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ);
    if(info_handle!=INVALID_HANDLE)
    {
       FileWriteString(info_handle, run_info);
@@ -585,7 +586,7 @@ int OnInit()
    CachedBookRefreshSeconds = BookRefreshSeconds;
 
    // Prefer SQLite backend, fall back to CSV
-   string db_fname = LogDirectoryName + "\\trades_raw.sqlite";
+   string db_fname = log_dir + "/trades_raw.sqlite";
    log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
    if(log_db_handle!=INVALID_HANDLE)
    {
@@ -609,7 +610,7 @@ int OnInit()
    else
    {
       // Final fallback to CSV
-      string log_fname = LogDirectoryName + "\\trades_raw.csv";
+      string log_fname = log_dir + "/trades_raw.csv";
       trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
       if(trade_log_handle!=INVALID_HANDLE)
       {
@@ -657,8 +658,8 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    FlushTradeBuffer();
-   SaveQueue(LogDirectoryName + "\\pending_trades.bin", pending_trades);
-   SaveQueue(LogDirectoryName + "\\pending_metrics.bin", pending_metrics);
+   SaveQueue(log_dir + "/pending_trades.bin", pending_trades);
+   SaveQueue(log_dir + "/pending_metrics.bin", pending_metrics);
    if(trade_log_handle!=INVALID_HANDLE)
    {
       FileClose(trade_log_handle);
@@ -1239,7 +1240,7 @@ void LogTrade(string action, int ticket, int magic, string source,
 
 void ExportLogs(datetime ts)
 {
-   string src = LogDirectoryName + "\\trades_raw.csv";
+   string src = log_dir + "/trades_raw.csv";
    if(!FileIsExist(src))
       return;
    string ts_str = TimeToString(ts, TIME_DATE|TIME_MINUTES);
@@ -1247,7 +1248,7 @@ void ExportLogs(datetime ts)
    ts_str = StringReplace(ts_str, ":", "");
    ts_str = StringReplace(ts_str, " ", "_");
    int last_id = NextEventId - 1;
-   string dest = LogDirectoryName + "\\" + ts_str + "_" + IntegerToString(last_id) + ".csv";
+   string dest = log_dir + "/" + ts_str + "_" + IntegerToString(last_id) + ".csv";
    int in_h = FileOpen(src, FILE_CSV|FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE, ';');
    if(in_h==INVALID_HANDLE)
       return;
@@ -1340,7 +1341,7 @@ void ExportLogs(datetime ts)
 void WriteMetrics(datetime ts)
 {
    int h = INVALID_HANDLE;
-   string fname = LogDirectoryName + "\\metrics.csv";
+   string fname = log_dir + "/metrics.csv";
 
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
    int trade_q_depth = ArraySize(pending_trades);
@@ -1464,7 +1465,7 @@ void WriteMetrics(datetime ts)
 
 void UpdateModelMetrics(datetime ts)
 {
-   string fname = LogDirectoryName + "\\metrics.csv";
+   string fname = log_dir + "/metrics.csv";
    int h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
    if(h==INVALID_HANDLE)
    {
@@ -1528,7 +1529,7 @@ void UpdateModelMetrics(datetime ts)
 
 void ManageMetrics(datetime ts)
 {
-   string fname = LogDirectoryName + "\\metrics.csv";
+   string fname = log_dir + "/metrics.csv";
    if(!FileIsExist(fname))
       return;
    int in_h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE, ';');
