@@ -385,6 +385,8 @@ def generate(
         'book_bid_vol': 'BookBidVol()',
         'book_ask_vol': 'BookAskVol()',
         'book_imbalance': 'BookImbalance()',
+        'trend_estimate': 'TrendEstimate',
+        'trend_variance': 'TrendVariance',
     }
 
     if lite_mode:

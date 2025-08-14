@@ -64,6 +64,8 @@ double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
 string   RiskParitySymbols[];
 double   RiskParityWeights[];
+double   trend_estimate = 0.0;
+double   trend_variance = 1.0;
 
 class PendingTrade
 {
@@ -100,6 +102,8 @@ public:
    double   commission;
    double   swap;
    double   risk_weight;
+   double   trend_estimate;
+   double   trend_variance;
    int      decision_id;
    string   comment_with_span;
    string   open_time_str;
@@ -200,6 +204,23 @@ void MapRemove(int key)
    int pos = ticket_map.Search(key);
    if(pos >= 0)
       ticket_map.Delete(pos);
+}
+
+void UpdateKalman(double measurement)
+{
+   static bool initialized = false;
+   double Q = 1e-5;
+   double R = 1e-2;
+   if(!initialized)
+   {
+      trend_estimate = measurement;
+      trend_variance = 1.0;
+      initialized = true;
+   }
+   trend_variance += Q;
+   double K = trend_variance / (trend_variance + R);
+   trend_estimate = trend_estimate + K * (measurement - trend_estimate);
+   trend_variance = (1 - K) * trend_variance;
 }
 
 double GetCpuLoad()
@@ -618,7 +639,7 @@ int OnInit()
             NextEventId = last_id + 1;
          if(need_header)
          {
-           string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight";
+          string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance";
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
@@ -796,6 +817,7 @@ void OnTick()
 {
    uint tick_start = GetTickCount();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   UpdateKalman(iClose(Symbol(), 0, 0));
    datetime ts = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    if(ts != ModelTimestamp)
    {
@@ -1001,7 +1023,7 @@ bool SendMetrics(uchar &payload[])
 void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 {
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f",
       t.id,
       TimeToString(t.time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
@@ -1011,7 +1033,8 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       TraceId, t.span_id, t.comment_with_span, t.remaining, t.slippage,
       (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol,
       t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom,
-      t.equity, t.margin_level, t.commission, t.swap, t.risk_weight);
+      t.equity, t.margin_level, t.commission, t.swap, t.risk_weight,
+      t.trend_estimate, t.trend_variance);
 
    uchar payload[];
    int len = SerializeTradeEvent(
@@ -1172,6 +1195,8 @@ void LogTrade(string action, int ticket, int magic, string source,
       t.swap = OrderSwap();
    }
    t.risk_weight = GetRiskWeight(symbol);
+   t.trend_estimate = trend_estimate;
+    t.trend_variance = trend_variance;
    string span_comment = "span=" + t.span_id;
    if(StringLen(comment) > 0)
       span_comment += ";" + comment;
