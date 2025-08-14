@@ -33,15 +33,19 @@ import psutil
 try:
     import pyarrow as pa
     import pyarrow.flight as flight
+    import pyarrow.parquet as pq
     if not hasattr(pa, "Table"):
         pa = None
         flight = None
+        pq = None
         import sys as _sys
         _sys.modules.pop("pyarrow", None)
         _sys.modules.pop("pyarrow.flight", None)
+        _sys.modules.pop("pyarrow.parquet", None)
 except Exception:  # pragma: no cover - optional dependency
     pa = None
     flight = None
+    pq = None
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import BayesianRidge, LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
@@ -1563,7 +1567,7 @@ def train(
     regress_lots: bool = False,
     early_stop: bool = False,
     encoder_file: Path | None = None,
-    cache_features: bool = False,
+    cache_features: bool = True,
     calendar_events: list[tuple[datetime, float]] | None = None,
     event_window: float = 60.0,
     calibration: str | None = None,
@@ -1624,7 +1628,6 @@ def train(
                 "optuna is not installed; skipping hyperparameter search"
             )
             bayes_steps = 0
-    cache_file = out_dir / "feature_cache.npz"
     enc_model: ContrastiveEncoder | None = None
     if use_encoder:
         try:
@@ -1635,37 +1638,73 @@ def train(
 
     existing_model = None
     last_event_id = 0
-    if incremental:
-        model_file = out_dir / "model.json"
-        if not model_file.exists():
-            raise FileNotFoundError(f"{model_file} not found for incremental training")
-        with open(model_file) as f:
+    json_path = out_dir / "model.json"
+    gz_path = out_dir / "model.json.gz"
+    model_file: Path | None = None
+    open_model = open
+    if gz_path.exists():
+        model_file = gz_path
+        open_model = gzip.open
+    elif json_path.exists():
+        model_file = json_path
+    if model_file is not None:
+        with open_model(model_file, "rt") as f:
             existing_model = json.load(f)
             last_event_id = int(existing_model.get("last_event_id", 0))
+    elif incremental:
+        raise FileNotFoundError(f"{json_path} not found for incremental training")
 
     features = labels = sl_targets = tp_targets = hours = lot_targets = event_times = None
     loaded_from_cache = False
     data_commits: list[str] = []
     data_checksums: list[str] = []
-    if cache_features and incremental and cache_file.exists() and existing_model is not None:
+    feature_cache_file = out_dir / "features.parquet"
+    if (
+        cache_features
+        and feature_cache_file.exists()
+        and existing_model is not None
+        and pq is not None
+    ):
         try:
-            cached = np.load(cache_file, allow_pickle=True)
-            cached_names = list(cached.get("feature_names", []))
-            if cached_names == existing_model.get("feature_names", []):
-                features = [dict(x) for x in cached["feature_dicts"]]
-                labels = cached["labels"]
-                sl_targets = cached["sl_targets"]
-                tp_targets = cached["tp_targets"]
-                lot_targets = cached.get("lot_targets")
-                hours = cached.get("hours")
-                event_times = cached.get("event_times")
-                if event_times is not None:
-                    event_times = np.array(event_times, dtype="datetime64[s]")
+            pf = pq.ParquetFile(feature_cache_file)
+            meta = pf.schema_arrow.metadata or {}
+            cached_names = json.loads(meta.get(b"feature_names", b"[]").decode())
+            cached_last_id = int(meta.get(b"last_event_id", b"0"))
+            if (
+                cached_names == existing_model.get("feature_names", [])
+                and cached_last_id == int(existing_model.get("last_event_id", 0))
+            ):
+                df_cache = pf.read().to_pandas()
+                labels = df_cache["label"].to_numpy()
+                features = df_cache[cached_names].to_dict("records")
+                sl_targets = (
+                    df_cache["sl_target"].to_numpy()
+                    if "sl_target" in df_cache.columns
+                    else np.zeros(len(df_cache))
+                )
+                tp_targets = (
+                    df_cache["tp_target"].to_numpy()
+                    if "tp_target" in df_cache.columns
+                    else np.zeros(len(df_cache))
+                )
+                lot_targets = (
+                    df_cache["lot_target"].to_numpy()
+                    if "lot_target" in df_cache.columns
+                    else np.zeros(len(df_cache))
+                )
+                hours = (
+                    df_cache["hours"].to_numpy(dtype=int)
+                    if "hours" in df_cache.columns
+                    else np.zeros(len(df_cache), dtype=int)
+                )
+                if "event_time" in df_cache.columns:
+                    event_times = df_cache["event_time"].to_numpy(dtype="datetime64[s]")
                 else:
                     event_times = np.array([], dtype="datetime64[s]")
                 loaded_from_cache = True
-        except Exception:
-            features = None
+                last_event_id = cached_last_id
+        except Exception as exc:
+            logging.warning("failed to load feature cache: %s", exc)
 
     price_map_total: dict[str, list[float]] = {}
     if features is None:
@@ -2067,20 +2106,26 @@ def train(
     X_train_lot = _encode_features(enc_model, X_train_lot)
     X_val_lot = _encode_features(enc_model, X_val_lot)
 
-    if cache_features and not loaded_from_cache:
-        feature_names_cache = feature_names
+    if cache_features and not loaded_from_cache and pq is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            cache_file,
-            feature_dicts=np.array(features, dtype=object),
-            labels=labels,
-            sl_targets=sl_targets,
-            tp_targets=tp_targets,
-            lot_targets=lot_targets,
-            hours=hours,
-            event_times=event_times,
-            feature_names=np.array(feature_names_cache),
+        df_cache = pd.DataFrame(
+            [{fn: feat.get(fn, 0.0) for fn in feature_names} for feat in features]
         )
+        df_cache["label"] = labels
+        df_cache["sl_target"] = sl_targets
+        df_cache["tp_target"] = tp_targets
+        df_cache["lot_target"] = lot_targets
+        df_cache["hours"] = hours
+        df_cache["event_time"] = pd.to_datetime(event_times)
+        table = pa.Table.from_pandas(df_cache)
+        meta = table.schema.metadata or {}
+        meta = {
+            **meta,
+            b"feature_names": json.dumps(feature_names).encode(),
+            b"last_event_id": str(last_event_id).encode(),
+        }
+        table = table.replace_schema_metadata(meta)
+        pq.write_table(table, feature_cache_file, compression="snappy")
 
     bayes_threshold = None
     if bayes_steps > 0:
@@ -3351,7 +3396,7 @@ def main():
     p.add_argument('--incremental', action='store_true', help='update existing model.json')
     p.add_argument('--start-event-id', type=int, default=0, help='only load rows with event_id greater than this value from SQLite logs')
     p.add_argument('--resume', action='store_true', help='resume from last processed event_id in existing model.json')
-    p.add_argument('--cache-features', action='store_true', help='reuse cached feature matrix')
+    p.add_argument('--no-cache', action='store_true', help='recompute features even if cached')
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--symbol-graph', help='JSON file describing symbol correlation graph')
@@ -3446,7 +3491,7 @@ def main():
             regress_lots=args.regress_lots,
             early_stop=args.early_stop,
             encoder_file=Path(args.encoder_file) if args.encoder_file else None,
-            cache_features=args.cache_features,
+            cache_features=not args.no_cache,
             calendar_events=events,
             event_window=args.event_window,
             calibration=args.calibration,
