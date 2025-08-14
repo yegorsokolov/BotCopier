@@ -231,20 +231,42 @@ def detect_resources():
     lite_mode = mem_gb < 4 or cores < 2
     heavy_mode = mem_gb >= 8 and cores >= 4
 
+    has_gpu = False
+    if _HAS_TORCH:
+        try:
+            has_gpu = bool(torch.cuda.is_available())
+        except Exception:
+            has_gpu = False
+    if not has_gpu:
+        try:
+            subprocess.run(
+                ["nvidia-smi"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            has_gpu = True
+        except Exception:
+            has_gpu = False
+
     def has(mod: str) -> bool:
         return importlib.util.find_spec(mod) is not None
 
     model_type = "logreg"
     if not lite_mode:
-        for mt, module in [
+        gpu_models = [
             ("transformer", "transformers"),
             ("tft", "pytorch_forecasting"),
             ("lstm", "torch"),
+        ]
+        cpu_models = [
             ("catboost", "catboost"),
             ("lgbm", "lightgbm"),
             ("xgboost", "xgboost"),
             ("random_forest", "sklearn"),
-        ]:
+        ]
+        preferred = gpu_models + cpu_models if has_gpu else cpu_models
+        for mt, module in preferred:
             if heavy_mode and has(module):
                 model_type = mt
                 break
@@ -257,6 +279,7 @@ def detect_resources():
         "bayes_steps": bayes_steps,
         "mem_gb": mem_gb,
         "cores": cores,
+        "has_gpu": has_gpu,
     }
 
 
