@@ -39,6 +39,7 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
 ## Workflow
 
 1. Run `Observer_TBot` inside MetaTrader to capture trade activity in `logs/`.
+   On Linux, logs default to `$XDG_DATA_HOME/botcopier/logs` (or `~/.local/share/botcopier/logs` if `XDG_DATA_HOME` is unset).
 2. Train a model from the collected logs:
    ```bash
    python scripts/train_target_clone.py --data-dir logs --out-dir models

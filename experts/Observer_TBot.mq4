@@ -15,6 +15,33 @@ bool ShmRingInit(string name, int size);
 bool ShmRingWrite(int msg_type, uchar &payload[], int len);
 #import
 
+#import "kernel32.dll"
+int GetEnvironmentVariableA(string name, uchar &buffer[], int size);
+#import
+
+string GetEnv(string name)
+{
+   uchar buffer[];
+   ArrayResize(buffer, 4096);
+   int len = GetEnvironmentVariableA(name, buffer, 4096);
+   if(len<=0 || len>=4096)
+      return "";
+   return CharArrayToString(buffer, 0, len, CP_ACP);
+}
+
+string DefaultLogDir()
+{
+   string base = GetEnv("XDG_DATA_HOME");
+   if(StringLen(base)==0)
+   {
+      string home = GetEnv("HOME");
+      if(StringLen(home)==0)
+         home = "";
+      base = home + "/.local/share";
+   }
+   return base + "/botcopier/logs";
+}
+
 extern string TargetMagicNumbers = "12345,23456";
 extern int    LearningExportIntervalMinutes = 15;
 extern int    PredictionWindowSeconds       = 60;
@@ -24,7 +51,7 @@ extern bool   EnableLiveCloneMode           = false;
 extern int    MaxModelsToRetain             = 3;
 extern int    MetricsRollingDays            = 7;
 extern int    MetricsDaysToKeep             = 30;
-extern string LogDirectoryName              = "observer_logs"; // resume event_id from existing logs, start at 1 if none
+extern string LogDirectoryName              = DefaultLogDir(); // resume event_id from existing logs, start at 1 if none
 extern bool   EnableDebugLogging            = false;
 extern bool   UseBrokerTime                 = true;
 extern string SymbolsToTrack                = ""; // empty=all
