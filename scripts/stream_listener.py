@@ -17,6 +17,9 @@ import time
 import pickle
 import subprocess
 import gzip
+import threading
+from datetime import datetime
+import psutil
 try:  # optional drift detection dependency
     from river.drift import ADWIN  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -181,6 +184,11 @@ LOG_FILES = {
     METRIC_MSG: Path("logs/metrics.csv"),
 }
 
+# system telemetry log
+TELEMETRY_LOG = Path("logs/system_telemetry.csv")
+
+current_trace_id = ""
+
 RUN_INFO_PATH = Path("logs/run_info.json")
 run_info_written = False
 
@@ -296,6 +304,37 @@ def write_run_info() -> None:
     run_info_written = True
 
 
+def capture_system_metrics() -> None:
+    """Capture CPU, memory and network stats with the latest trace id."""
+    global current_trace_id
+    cpu = psutil.cpu_percent(interval=None)
+    mem = psutil.virtual_memory().percent
+    net = psutil.net_io_counters()
+    record = {
+        "time": datetime.utcnow().isoformat(),
+        "cpu_percent": cpu,
+        "mem_percent": mem,
+        "bytes_sent": net.bytes_sent,
+        "bytes_recv": net.bytes_recv,
+        "trace_id": current_trace_id,
+    }
+    append_csv(TELEMETRY_LOG, record)
+
+
+def _system_monitor(interval: float = 5.0) -> None:
+    while True:
+        try:
+            capture_system_metrics()
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def start_system_monitor(interval: float = 5.0) -> None:
+    t = threading.Thread(target=_system_monitor, args=(interval,), daemon=True)
+    t.start()
+
+
 def _maybe_decompress(data: bytes) -> bytes:
     if len(data) > 2 and data[0] == 0x1F and data[1] == 0x8B:
         try:
@@ -358,6 +397,7 @@ def _context_from_ids(trace_id: str, span_id: str):
 
 
 def process_trade(msg) -> None:
+    global current_trace_id
     trace_id = _get(msg, "traceId", "trace_id") or ""
     span_id = ""
     try:
@@ -404,6 +444,7 @@ def process_trade(msg) -> None:
             pass
         logger.info(record, extra=extra)
         append_csv(LOG_FILES[TRADE_MSG], record)
+        current_trace_id = record.get("trace_id", "")
         if ws_trades:
             try:
                 ws_trades.send(json.dumps(record))
@@ -412,6 +453,7 @@ def process_trade(msg) -> None:
 
 
 def process_metric(msg) -> None:
+    global current_trace_id
     trace_id = _get(msg, "traceId", "trace_id") or ""
     span_id = _get(msg, "spanId", "span_id") or ""
     try:
@@ -445,6 +487,7 @@ def process_metric(msg) -> None:
             pass
         logger.info(record, extra=extra)
         append_csv(LOG_FILES[METRIC_MSG], record)
+        current_trace_id = record.get("trace_id", "")
         if ws_metrics:
             try:
                 ws_metrics.send(json.dumps(record))
@@ -479,6 +522,8 @@ def main() -> int:
     p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
     p.add_argument("--ring-path", default=os.getenv("TBOT_RING", "/tmp/tbot_events"), help="Path to shared memory ring buffer")
     args = p.parse_args()
+
+    start_system_monitor()
 
     if args.ws_url and create_connection:
         global ws_trades, ws_metrics

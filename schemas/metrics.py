@@ -28,6 +28,7 @@ class MetricEvent(BaseModel):
 
 METRIC_SCHEMA = pa.schema([
     ("schema_version", pa.int32()),
+    ("trace_id", pa.string()),
     ("time", pa.string()),
     ("magic", pa.int32()),
     ("win_rate", pa.float64()),

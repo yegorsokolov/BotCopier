@@ -4,6 +4,7 @@
   "namespace": "bot",
   "fields": [
     {"name": "schema_version", "type": "int"},
+    {"name": "trace_id", "type": "string", "default": ""},
     {"name": "time", "type": "string"},
     {"name": "magic", "type": "int"},
     {"name": "win_rate", "type": "double"},
