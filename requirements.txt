@@ -29,6 +29,7 @@ pytorch-forecasting; extra == "tft"
 
 # Optional extras
 xgboost; extra == "xgboost"
+# Hyperparameter search
 optuna; extra == "optuna"
 stable-baselines3; extra == "rl"
 sb3-contrib; extra == "rl"

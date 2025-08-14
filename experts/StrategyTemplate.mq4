@@ -50,6 +50,8 @@ double CalibrationIntercept = __CAL_INTERCEPT__;
 double ModelThreshold[] = {__HOURLY_THRESHOLDS__};
 double DefaultThreshold = __THRESHOLD__;
 double ProbabilityLookup[__MODEL_COUNT__][24] = {__PROBABILITY_TABLE__};
+string ThresholdSymbols[];
+double ThresholdTable[][24];
 double SLModelCoefficients[] = {__SL_COEFFICIENTS__};
 double SLModelIntercept = __SL_INTERCEPT__;
 double TPModelCoefficients[] = {__TP_COEFFICIENTS__};
@@ -253,6 +255,17 @@ bool ParseModelJson(string json)
    if(ArraySize(prob_tmp) == 24 && ArrayRange(ProbabilityLookup,0) > 0)
       for(int i=0;i<24;i++)
          ProbabilityLookup[0][i] = prob_tmp[i];
+   ExtractJsonStringArray(json, "\"threshold_symbols\"", ThresholdSymbols);
+   double th_tmp[];
+   ExtractJsonArray(json, "\"threshold_table\"", th_tmp);
+   int tsz = ArraySize(ThresholdSymbols);
+   if(tsz > 0)
+   {
+      ArrayResize(ThresholdTable, tsz);
+      int tcnt = MathMin(ArraySize(th_tmp), tsz*24);
+      for(int i=0;i<tcnt;i++)
+         ThresholdTable[i/24][i%24] = th_tmp[i];
+   }
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
    ExtractJsonArray(json, "\"lot_coefficients\"", LotModelCoefficients);
@@ -962,8 +975,14 @@ double GetTradeThreshold()
 {
    if(CurrentRegime >= 0 && CurrentRegime < ArraySize(RegimeThresholds))
       return(RegimeThresholds[CurrentRegime]);
+   int hr = TimeHour(TimeCurrent());
+   for(int i=0;i<ArraySize(ThresholdSymbols);i++)
+   {
+      if(ThresholdSymbols[i] == SymbolToTrade && ArrayRange(ThresholdTable,0) > i)
+         return(ThresholdTable[i][hr]);
+   }
    if(ArraySize(ModelThreshold) == 24)
-      return(ModelThreshold[TimeHour(TimeCurrent())]);
+      return(ModelThreshold[hr]);
    return(DefaultThreshold);
 }
 
