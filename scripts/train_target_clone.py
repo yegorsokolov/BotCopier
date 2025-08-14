@@ -28,8 +28,18 @@ import pandas as pd
 
 import numpy as np
 import psutil
-import pyarrow as pa
-import pyarrow.flight as flight
+try:
+    import pyarrow as pa
+    import pyarrow.flight as flight
+    if not hasattr(pa, "Table"):
+        pa = None
+        flight = None
+        import sys as _sys
+        _sys.modules.pop("pyarrow", None)
+        _sys.modules.pop("pyarrow.flight", None)
+except Exception:  # pragma: no cover - optional dependency
+    pa = None
+    flight = None
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.linear_model import BayesianRidge, LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
@@ -223,11 +233,11 @@ def detect_resources():
         and mem_gb >= 8
         and (cores or 0) >= 4
     )
-    optuna_trials = 20 if use_optuna else 0
+    bayes_steps = 20 if use_optuna else 0
     return {
         "lite_mode": lite_mode,
         "model_type": model_type,
-        "optuna_trials": optuna_trials,
+        "bayes_steps": bayes_steps,
     }
 
 
@@ -1325,6 +1335,7 @@ def _train_lite_mode(
     chunk_size: int = 50000,
     compress_model: bool = False,
     regime_model: dict | None = None,
+    flight_uri: str | None = None,
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
@@ -1334,6 +1345,7 @@ def _train_lite_mode(
     )
     last_event_id = 0
     encoder = None
+    enc_model = None
     if encoder_file is not None and encoder_file.exists():
         with open(encoder_file) as f:
             encoder = json.load(f)
@@ -1494,7 +1506,7 @@ def train(
     corr_window: int = 5,
     extra_price_series=None,
     symbol_graph: Path | None = None,
-    optuna_trials: int = 0,
+    bayes_steps: int = 0,
     regress_sl_tp: bool = False,
     regress_lots: bool = False,
     early_stop: bool = False,
@@ -1549,16 +1561,17 @@ def train(
             encoder_file=encoder_file,
             compress_model=compress_model,
             regime_model=regime_model,
+            flight_uri=flight_uri,
         )
         return
-    if optuna_trials > 0:
+    if bayes_steps > 0:
         try:
             import optuna  # type: ignore
         except Exception:  # pragma: no cover - optional dependency
             logging.warning(
                 "optuna is not installed; skipping hyperparameter search"
             )
-            optuna_trials = 0
+            bayes_steps = 0
     cache_file = out_dir / "feature_cache.npz"
     enc_model: ContrastiveEncoder | None = None
     if use_encoder:
@@ -1923,7 +1936,11 @@ def train(
     base_weight = np.ones(len(feat_train), dtype=float)
     if model_type in ("logreg", "bayes_logreg") and not grid_search:
         base_weight *= np.array(
-            [abs(f.get("profit", f.get("lots", 1.0))) for f in feat_train],
+            [
+                abs(f.get("profit")) if f.get("profit") not in (None, 0)
+                else abs(f.get("lots", 1.0))
+                for f in feat_train
+            ],
             dtype=float,
         )
     if unc_train_mask.size:
@@ -2006,8 +2023,8 @@ def train(
             feature_names=np.array(feature_names_cache),
         )
 
-    optuna_threshold = None
-    if optuna_trials > 0:
+    bayes_threshold = None
+    if bayes_steps > 0:
         available_models = ["logreg", "bayes_logreg", "random_forest", "xgboost", "nn"]
         try:
             import importlib.util
@@ -2091,10 +2108,10 @@ def train(
         study = optuna.create_study(
             direction="maximize", sampler=optuna.samplers.TPESampler(seed=42)
         )
-        study.optimize(_objective, n_trials=optuna_trials)
+        study.optimize(_objective, n_trials=bayes_steps)
         best_trial = study.best_trial
         model_type = best_trial.params.get("model_type", model_type)
-        optuna_threshold = float(best_trial.params.get("threshold", 0.5))
+        bayes_threshold = float(best_trial.params.get("threshold", 0.5))
         max_feats = min(len(feature_names), 10)
         sel_idx = [
             i
@@ -2757,14 +2774,14 @@ def train(
         lot_inter = reg_lot.intercept_
 
     if len(y_val) > 0:
-        if optuna_threshold is not None:
-            threshold = optuna_threshold
+        if bayes_threshold is not None:
+            threshold = bayes_threshold
         else:
             threshold, _ = _best_threshold(y_val, val_proba)
         val_preds = (val_proba >= threshold).astype(int)
         val_acc = float(accuracy_score(y_val, val_preds))
     else:
-        threshold = optuna_threshold if optuna_threshold is not None else 0.5
+        threshold = bayes_threshold if bayes_threshold is not None else 0.5
         val_acc = float("nan")
     train_preds = (train_proba >= threshold).astype(int)
     train_acc = float(accuracy_score(y_train, train_preds))
@@ -2857,14 +2874,14 @@ def train(
                 lot_coef = reg_lot.coef_
                 lot_inter = reg_lot.intercept_
             if len(y_val) > 0:
-                if optuna_threshold is not None:
-                    threshold = optuna_threshold
+                if bayes_threshold is not None:
+                    threshold = bayes_threshold
                 else:
                     threshold, _ = _best_threshold(y_val, val_proba)
                 val_preds = (val_proba >= threshold).astype(int)
                 val_acc = float(accuracy_score(y_val, val_preds))
             else:
-                threshold = optuna_threshold if optuna_threshold is not None else 0.5
+                threshold = bayes_threshold if bayes_threshold is not None else 0.5
                 val_acc = float("nan")
             train_preds = (train_proba >= threshold).astype(int)
             train_acc = float(accuracy_score(y_train, train_preds))
@@ -2957,10 +2974,10 @@ def train(
         model["encoder_dim"] = enc_model.layer.weight.shape[0]
         model["encoder_onnx"] = "encoder.onnx"
     if best_trial is not None and study is not None:
-        model["optuna_best_params"] = best_trial.params
-        model["optuna_best_score"] = float(best_trial.value)
-        model["optuna_study"] = {"n_trials": len(study.trials)}
-        model["optuna_trials"] = [
+        model["bayes_best_params"] = best_trial.params
+        model["bayes_best_score"] = float(best_trial.value)
+        model["bayes_study"] = {"n_trials": len(study.trials)}
+        model["bayes_history"] = [
             {"params": t.params, "value": float(t.value)} for t in study.trials
         ]
     if symbol_embeddings:
@@ -3234,10 +3251,10 @@ def main():
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--symbol-graph', help='JSON file describing symbol correlation graph')
     p.add_argument(
-        '--optuna-trials',
+        '--bayes-steps',
         type=int,
         default=0,
-        help='number of Optuna trials to tune model type, threshold and features',
+        help='number of Bayesian optimization steps to tune model type, threshold and features',
     )
     p.add_argument('--encoder-file', help='JSON file with pretrained encoder weights')
     p.add_argument('--regress-sl-tp', action='store_true', help='learn SL/TP distance regressors')
@@ -3292,8 +3309,8 @@ def main():
         resources = detect_resources()
         lite_mode = resources["lite_mode"]
         model_type = args.model_type or resources["model_type"]
-        optuna_trials = (
-            0 if lite_mode else (args.optuna_trials or resources["optuna_trials"])
+        bayes_steps = (
+            0 if lite_mode else (args.bayes_steps or resources["bayes_steps"])
         )
         train(
             Path(args.data_dir),
@@ -3319,7 +3336,7 @@ def main():
             sequence_length=args.sequence_length,
             corr_map=corr_map,
             corr_window=args.corr_window,
-            optuna_trials=optuna_trials,
+            bayes_steps=bayes_steps,
             regress_sl_tp=args.regress_sl_tp,
             regress_lots=args.regress_lots,
             early_stop=args.early_stop,
