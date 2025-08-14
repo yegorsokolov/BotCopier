@@ -218,7 +218,10 @@ def _load_logs(
         df_logs = table.to_pandas()
     else:
         dfs: List[pd.DataFrame] = []
-        for log_file in sorted(data_dir.glob("trades*.csv")):
+        log_files = sorted(data_dir.glob("trades_raw.csv"))
+        if not log_files:
+            log_files = sorted(data_dir.glob("trades*.csv"))
+        for log_file in log_files:
             df = pd.read_csv(
                 log_file,
                 sep=";",
@@ -490,6 +493,7 @@ def train(
         model_info = {
             "model_id": "rl_agent_dt",
             "algo": algo_key,
+            "rl_algo": algo_key,
             "trained_at": datetime.utcnow().isoformat(),
             "feature_names": vec.get_feature_names_out().tolist(),
             "sequence_length": int(seq_len),
