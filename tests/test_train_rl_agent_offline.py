@@ -122,7 +122,7 @@ def test_train_decision_transformer(tmp_path: Path) -> None:
     out_dir = tmp_path / "out"
     data_dir.mkdir()
     out_dir.mkdir()
-    _write_log(data_dir / "trades_1.csv")
+    _write_log(data_dir / "trades_raw.csv")
 
     train(data_dir, out_dir, algo="decision_transformer", training_steps=1)
 
@@ -131,5 +131,6 @@ def test_train_decision_transformer(tmp_path: Path) -> None:
     with open(model_file) as f:
         data = json.load(f)
     assert data.get("algo") == "decision_transformer"
+    assert data.get("rl_algo") == "decision_transformer"
     assert "transformer_weights" in data
     assert data.get("sequence_length", 0) > 0

@@ -319,6 +319,7 @@ def test_generate_transformer(tmp_path: Path):
             [[1.7], [1.8]],
             [0.2],
         ],
+        "rl_algo": "decision_transformer",
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
@@ -333,6 +334,7 @@ def test_generate_transformer(tmp_path: Path):
         content = f.read()
     assert "TransformerDenseWeights" in content
     assert "MagicNumber = 444" in content
+    assert "ModelOnnxFile = \"decision_transformer.onnx\"" in content
 
 
 def test_generate_hourly_thresholds(tmp_path: Path):

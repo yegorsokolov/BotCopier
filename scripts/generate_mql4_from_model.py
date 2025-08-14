@@ -296,7 +296,10 @@ def generate(
     output = output.replace('__ENCODER_WINDOW__', str(enc_window))
     output = output.replace('__ENCODER_DIM__', str(enc_dim))
     output = output.replace('__ENCODER_ONNX__', base.get('encoder_onnx', 'encoder.onnx'))
-    output = output.replace('__MODEL_ONNX__', base.get('onnx_file', ''))
+    onnx_file = base.get('onnx_file')
+    if not onnx_file and base.get('rl_algo') == 'decision_transformer':
+        onnx_file = 'decision_transformer.onnx'
+    output = output.replace('__MODEL_ONNX__', onnx_file or '')
 
     centers = base.get('encoder_centers', [])
     center_flat = ', '.join(_fmt(v) for row in centers for v in row)
