@@ -74,11 +74,26 @@ def generate(
     if gating_json:
         with open(gating_json, 'rt') as f:
             gating_data = json.load(f)
+
+    has_gpu_weights = any(
+        m.get('transformer_weights')
+        or m.get('lstm_weights')
+        or m.get('nn_weights')
+        for m in models
+    )
+    print(
+        'GPU-trained weights detected'
+        if has_gpu_weights
+        else 'No GPU-trained weights detected'
+    )
+
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(template_path) as f:
         template = f.read()
 
-    output = template.replace(
+    output = f"// GPU-trained weights: {'yes' if has_gpu_weights else 'no'}\n" + template
+
+    output = output.replace(
         'MagicNumber = 1234',
         f"MagicNumber = {base.get('magic', 9999)}",
     )
