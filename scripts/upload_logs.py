@@ -20,6 +20,19 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+import logging
+from typing import Any
+
+from opentelemetry import trace
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import format_trace_id, format_span_id
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,8 +46,51 @@ METRICS_FILE = LOG_DIR / "metrics.csv"
 MODEL_FILE = REPO_ROOT / "model.json"
 
 
+resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "upload_logs")})
+provider = TracerProvider(resource=resource)
+if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
+
+logger_provider = LoggerProvider(resource=resource)
+if endpoint:
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+set_logger_provider(logger_provider)
+handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
+        log: dict[str, Any] = {"level": record.levelname}
+        if isinstance(record.msg, dict):
+            log.update(record.msg)
+        else:
+            log["message"] = record.getMessage()
+        if hasattr(record, "trace_id"):
+            log["trace_id"] = format_trace_id(record.trace_id)
+        if hasattr(record, "span_id"):
+            log["span_id"] = format_span_id(record.span_id)
+        return json.dumps(log)
+
+
+logger = logging.getLogger(__name__)
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+
+def _log(msg: dict[str, Any]) -> None:
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    extra = {"trace_id": ctx.trace_id, "span_id": ctx.span_id}
+    logger.info(msg, extra=extra)
+
+
 def run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+    with tracer.start_as_current_span("run_cmd") as span:
+        subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+        _log({"cmd": cmd})
 
 
 def _sha256(path: Path) -> str:
@@ -52,72 +108,79 @@ def create_archive() -> Path | None:
     if not all(p.exists() for p in files):
         return None
 
-    commit = (
-        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT)
-        .decode()
-        .strip()
-    )
-    schema_version = os.environ.get("SCHEMA_VERSION", "1.0")
-    manifest = {
-        "commit": commit,
-        "schema_version": schema_version,
-        "files": {p.name: {"sha256": _sha256(p)} for p in files},
-    }
-    manifest_path = LOG_DIR / "manifest.json"
-    with manifest_path.open("w") as f:
-        json.dump(manifest, f, indent=2)
+    with tracer.start_as_current_span("create_archive") as span:
+        commit = (
+            subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT)
+            .decode()
+            .strip()
+        )
+        schema_version = os.environ.get("SCHEMA_VERSION", "1.0")
+        manifest = {
+            "commit": commit,
+            "schema_version": schema_version,
+            "files": {p.name: {"sha256": _sha256(p)} for p in files},
+        }
+        manifest_path = LOG_DIR / "manifest.json"
+        with manifest_path.open("w") as f:
+            json.dump(manifest, f, indent=2)
 
-    timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-    archive = LOG_DIR / f"run_{timestamp}.tar.gz"
-    with tarfile.open(archive, "w:gz") as tar:
+        timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        archive = LOG_DIR / f"run_{timestamp}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for p in files + [manifest_path]:
+                tar.add(p, arcname=p.name)
+
         for p in files + [manifest_path]:
-            tar.add(p, arcname=p.name)
+            p.unlink()
 
-    for p in files + [manifest_path]:
-        p.unlink()
-
-    return archive
+        _log({"event": "archive_created", "path": str(archive)})
+        return archive
 
 
 def main() -> int:
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        print("GITHUB_TOKEN environment variable is required", file=sys.stderr)
-        return 1
+    with tracer.start_as_current_span("upload_logs"):
+        token = os.environ.get("GITHUB_TOKEN")
+        if not token:
+            print("GITHUB_TOKEN environment variable is required", file=sys.stderr)
+            _log({"error": "missing_token"})
+            return 1
 
-    archive = create_archive()
-    if not archive:
-        print("Required log files are missing", file=sys.stderr)
-        return 0
+        archive = create_archive()
+        if not archive:
+            print("Required log files are missing", file=sys.stderr)
+            _log({"warning": "missing_logs"})
+            return 0
 
-    run(["git", "add", str(archive)])
-    status = (
-        subprocess.check_output(
-            ["git", "status", "--porcelain", str(archive)], cwd=REPO_ROOT
+        run(["git", "add", str(archive)])
+        status = (
+            subprocess.check_output(
+                ["git", "status", "--porcelain", str(archive)], cwd=REPO_ROOT
+            )
+            .decode()
+            .strip()
         )
-        .decode()
-        .strip()
-    )
-    if not status:
-        print("No changes to commit")
+        if not status:
+            print("No changes to commit")
+            _log({"info": "no_changes"})
+            return 0
+
+        commit_message = f"upload logs {dt.date.today().isoformat()}"
+        run(["git", "commit", "-m", commit_message])
+
+        origin_url = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"], cwd=REPO_ROOT
+        ).decode().strip()
+        if origin_url.startswith("https://"):
+            push_url = origin_url.replace("https://", f"https://{token}@")
+        elif origin_url.startswith("git@github.com:"):
+            repo_path = origin_url.split(":", 1)[1]
+            push_url = f"https://{token}@github.com/{repo_path}"
+        else:
+            push_url = origin_url
+
+        run(["git", "push", push_url, "HEAD"])
+        _log({"event": "logs_uploaded", "archive": str(archive)})
         return 0
-
-    commit_message = f"upload logs {dt.date.today().isoformat()}"
-    run(["git", "commit", "-m", commit_message])
-
-    origin_url = subprocess.check_output(
-        ["git", "remote", "get-url", "origin"], cwd=REPO_ROOT
-    ).decode().strip()
-    if origin_url.startswith("https://"):
-        push_url = origin_url.replace("https://", f"https://{token}@")
-    elif origin_url.startswith("git@github.com:"):
-        repo_path = origin_url.split(":", 1)[1]
-        push_url = f"https://{token}@github.com/{repo_path}"
-    else:
-        push_url = origin_url
-
-    run(["git", "push", push_url, "HEAD"])
-    return 0
 
 
 if __name__ == "__main__":

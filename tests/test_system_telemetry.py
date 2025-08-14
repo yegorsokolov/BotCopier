@@ -9,6 +9,7 @@ from scripts import stream_listener as sl
 
 def test_capture_system_metrics_includes_trace(monkeypatch):
     sl.current_trace_id = "trace123"
+    sl.current_span_id = "span456"
 
     monkeypatch.setattr(sl.psutil, "cpu_percent", lambda interval=None: 10.0)
     monkeypatch.setattr(sl.psutil, "virtual_memory", lambda: SimpleNamespace(percent=20.0))
@@ -30,6 +31,7 @@ def test_capture_system_metrics_includes_trace(monkeypatch):
     assert records
     rec = records[0]
     assert rec["trace_id"] == "trace123"
+    assert rec["span_id"] == "span456"
     assert rec["cpu_percent"] == 10.0
     assert rec["mem_percent"] == 20.0
     assert rec["bytes_sent"] == 1

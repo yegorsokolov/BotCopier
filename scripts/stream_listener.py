@@ -188,6 +188,7 @@ LOG_FILES = {
 TELEMETRY_LOG = Path("logs/system_telemetry.csv")
 
 current_trace_id = ""
+current_span_id = ""
 
 RUN_INFO_PATH = Path("logs/run_info.json")
 run_info_written = False
@@ -306,7 +307,7 @@ def write_run_info() -> None:
 
 def capture_system_metrics() -> None:
     """Capture CPU, memory and network stats with the latest trace id."""
-    global current_trace_id
+    global current_trace_id, current_span_id
     cpu = psutil.cpu_percent(interval=None)
     mem = psutil.virtual_memory().percent
     net = psutil.net_io_counters()
@@ -317,6 +318,7 @@ def capture_system_metrics() -> None:
         "bytes_sent": net.bytes_sent,
         "bytes_recv": net.bytes_recv,
         "trace_id": current_trace_id,
+        "span_id": current_span_id,
     }
     append_csv(TELEMETRY_LOG, record)
 
@@ -397,7 +399,7 @@ def _context_from_ids(trace_id: str, span_id: str):
 
 
 def process_trade(msg) -> None:
-    global current_trace_id
+    global current_trace_id, current_span_id
     trace_id = _get(msg, "traceId", "trace_id") or ""
     span_id = ""
     try:
@@ -445,6 +447,7 @@ def process_trade(msg) -> None:
         logger.info(record, extra=extra)
         append_csv(LOG_FILES[TRADE_MSG], record)
         current_trace_id = record.get("trace_id", "")
+        current_span_id = record.get("span_id", "")
         if ws_trades:
             try:
                 ws_trades.send(json.dumps(record))
@@ -453,7 +456,7 @@ def process_trade(msg) -> None:
 
 
 def process_metric(msg) -> None:
-    global current_trace_id
+    global current_trace_id, current_span_id
     trace_id = _get(msg, "traceId", "trace_id") or ""
     span_id = _get(msg, "spanId", "span_id") or ""
     try:
@@ -488,6 +491,7 @@ def process_metric(msg) -> None:
         logger.info(record, extra=extra)
         append_csv(LOG_FILES[METRIC_MSG], record)
         current_trace_id = record.get("trace_id", "")
+        current_span_id = record.get("span_id", "")
         if ws_metrics:
             try:
                 ws_metrics.send(json.dumps(record))
