@@ -139,6 +139,40 @@ python scripts/flight_server.py
 
 Sending 500 trade events as individual JSON posts took ~0.53s while uploading the same data as a single Arrow Flight batch finished in ~0.002s on this machine.
 
+### Consuming Cap'n Proto Messages
+
+The observer now serialises trade and metric events using
+[Cap'n Proto](https://capnproto.org/).  The snippet below demonstrates how to
+subscribe to the ``trades`` stream over NATS JetStream and decode messages:
+
+```python
+import asyncio
+import capnp
+import nats
+
+from proto import trade_capnp
+from scripts.stream_listener import _decode_event
+
+async def main():
+    nc = await nats.connect("nats://127.0.0.1:4222")
+    js = nc.jetstream()
+    prev = bytearray()
+
+    async def handler(msg):
+        _, body = _decode_event(msg.data, prev)
+        trade = trade_capnp.TradeEvent.from_bytes(body)
+        print(trade.symbol, trade.price)
+        await msg.ack()
+
+    await js.subscribe("trades", cb=handler)
+    await asyncio.Event().wait()
+
+asyncio.run(main())
+```
+
+Replace ``trade_capnp`` with ``metrics_capnp`` and subscribe to the
+``metrics`` subject to process metric updates in the same fashion.
+
 ## Tracing and Logging
 
 The observer, stream listener and training scripts emit OpenTelemetry traces and JSON logs. Configure exports via environment variables:

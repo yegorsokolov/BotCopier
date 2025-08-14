@@ -164,10 +164,10 @@ except Exception:  # pragma: no cover - minimal fallbacks
 
     trace = _TraceStub()
 
-try:  # protobufs generated from observer schema
-    from proto import trade_event_pb2, metric_event_pb2  # type: ignore
+try:  # Cap'n Proto schemas loaded at runtime
+    from proto import trade_capnp, metrics_capnp  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
-    trade_event_pb2 = metric_event_pb2 = None  # type: ignore
+    trade_capnp = metrics_capnp = None  # type: ignore
 
 try:
     from .shm_ring import ShmRing, TRADE_MSG, METRIC_MSG
@@ -588,10 +588,10 @@ def main() -> int:
                 continue
             try:
                 if msg_type == TRADE_MSG:
-                    trade = trade_event_pb2.TradeEvent.FromString(body)
+                    trade = trade_capnp.TradeEvent.from_bytes(body)
                     process_trade(trade)
                 elif msg_type == METRIC_MSG:
-                    metric = metric_event_pb2.MetricEvent.FromString(body)
+                    metric = metrics_capnp.Metrics.from_bytes(body)
                     process_metric(metric)
             except Exception:
                 continue
@@ -616,10 +616,13 @@ def main() -> int:
                 await msg.ack()
                 return
             try:
-                trade = trade_event_pb2.TradeEvent.FromString(body)
+                trade = trade_capnp.TradeEvent.from_bytes(body)
             except Exception:
-                await msg.ack()
-                return
+                try:
+                    trade = trade_capnp.TradeEvent.from_bytes_packed(body)
+                except Exception:
+                    await msg.ack()
+                    return
             process_trade(trade)
             await msg.ack()
 
@@ -638,10 +641,13 @@ def main() -> int:
                 await msg.ack()
                 return
             try:
-                metric = metric_event_pb2.MetricEvent.FromString(body)
+                metric = metrics_capnp.Metrics.from_bytes(body)
             except Exception:
-                await msg.ack()
-                return
+                try:
+                    metric = metrics_capnp.Metrics.from_bytes_packed(body)
+                except Exception:
+                    await msg.ack()
+                    return
             process_metric(metric)
             await msg.ack()
 
