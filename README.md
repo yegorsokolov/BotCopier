@@ -651,6 +651,33 @@ rg $TRACE_ID logs/*.json
 Matching `trace_id` values let you follow a decision from the logs to its span
 in Jaeger or Zipkin for deeper analysis.
 
+## Ubuntu Setup and Services
+
+Run `scripts/setup_ubuntu.sh` on an Ubuntu host to install system packages,
+Python dependencies and initialise a Wine prefix for MetaTrader:
+
+```bash
+./scripts/setup_ubuntu.sh
+```
+
+Example systemd unit files are provided under `docs/systemd/` for running
+`stream_listener.py` and `metrics_collector.py`. After copying them to
+`/etc/systemd/system/`, enable the services with:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now stream-listener.service metrics-collector.service
+```
+
+Logs for these services can be viewed with:
+
+```bash
+journalctl -u stream-listener.service -u metrics-collector.service
+```
+
+Adjust the `WorkingDirectory` in the unit files to match where the repository
+is located (e.g. `/opt/BotCopier`).
+
 ## Debugging Tips
 
 - Set `EnableDebugLogging` to `true` to print socket status and feature values.

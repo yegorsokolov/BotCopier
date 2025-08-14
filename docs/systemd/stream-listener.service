@@ -1,0 +1,13 @@
+[Unit]
+Description=BotCopier Stream Listener
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/BotCopier
+ExecStart=/usr/bin/python3 scripts/stream_listener.py
+Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
