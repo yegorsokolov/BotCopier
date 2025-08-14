@@ -45,7 +45,7 @@ from sklearn.linear_model import BayesianRidge, LogisticRegression, SGDClassifie
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
@@ -1992,6 +1992,13 @@ def train(
     for f in feat_val_lot:
         f["lots"] = 0.0
 
+    symbols_val_arr = (
+        np.array([f.get("symbol", "") for f in feat_val]) if feat_val else np.array([])
+    )
+    profits_val = (
+        np.array([f.get("profit", 0.0) for f in feat_val]) if feat_val else np.array([])
+    )
+
     if existing_model is not None:
         X_train = vec.transform(feat_train_clf)
     else:
@@ -2108,11 +2115,16 @@ def train(
             else:
                 val_proba = clf.predict(X_v).reshape(-1) if len(y_val) > 0 else np.empty(0)
 
-            thr = trial.suggest_float("threshold", 0.3, 0.7)
+            thr = trial.suggest_float("threshold", 0.0, 1.0)
             trial.set_user_attr("features", [feature_names[i] for i in sel_idx])
             if len(y_val) > 0:
                 preds = (val_proba >= thr).astype(int)
-                return accuracy_score(y_val, preds)
+                if profits_val.size == len(preds):
+                    return float(np.sum(profits_val[preds == 1]))
+                elif len(np.unique(y_val)) > 1:
+                    return roc_auc_score(y_val, preds)
+                else:
+                    return accuracy_score(y_val, preds)
             return 0.0
 
         study = optuna.create_study(
@@ -2822,6 +2834,35 @@ def train(
             t = threshold
         hourly_thresholds.append(float(t))
 
+    threshold_map: dict[str, List[float]] = {}
+    if len(y_val) > 0 and symbols_val_arr.size:
+        try:  # pragma: no cover - optional dependency
+            import optuna  # type: ignore
+        except Exception:
+            threshold_map = {}
+        else:
+            for sym in np.unique(symbols_val_arr):
+                sym_mask = symbols_val_arr == sym
+                sym_thr: List[float] = []
+                for h in range(24):
+                    mask = sym_mask & (hours_val_arr == h)
+                    if mask.any():
+                        def _thr_obj(trial: "optuna.trial.Trial") -> float:
+                            thr = trial.suggest_float("thr", 0.0, 1.0)
+                            preds = (val_proba[mask] >= thr).astype(int)
+                            if profits_val.size == len(preds):
+                                return float(np.sum(profits_val[mask][preds == 1]))
+                            elif len(np.unique(y_val[mask])) > 1:
+                                return roc_auc_score(y_val[mask], preds)
+                            else:
+                                return accuracy_score(y_val[mask], preds)
+                        study = optuna.create_study(direction="maximize")
+                        study.optimize(_thr_obj, n_trials=20)
+                        sym_thr.append(float(study.best_params.get("thr", threshold)))
+                    else:
+                        sym_thr.append(float(threshold))
+                threshold_map[str(sym)] = sym_thr
+
     # Compute SHAP feature importance on the training set
     keep_idx = list(range(len(feature_names)))
     try:
@@ -3000,6 +3041,16 @@ def train(
             "embedding_dim": graph_params.get("embedding_dim", 0),
         }
     model["hourly_thresholds"] = hourly_thresholds
+    if threshold_map:
+        thr_syms = sorted(threshold_map.keys())
+        model["threshold_symbols"] = thr_syms
+        flat_thr: List[float] = []
+        for s in thr_syms:
+            vals = threshold_map[s]
+            if len(vals) < 24:
+                vals = vals + [threshold] * (24 - len(vals))
+            flat_thr.extend(vals[:24])
+        model["threshold_table"] = flat_thr
     if calibration is not None:
         model["calibration_method"] = calibration
         if calibration == "sigmoid":
