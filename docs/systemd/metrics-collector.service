@@ -1,0 +1,13 @@
+[Unit]
+Description=BotCopier Metrics Collector
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/BotCopier
+ExecStart=/usr/bin/python3 scripts/metrics_collector.py
+Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
