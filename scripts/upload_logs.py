@@ -22,7 +22,12 @@ import tarfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOG_DIR = REPO_ROOT / "logs"
+
+if os.name != "nt" and (xdg := os.getenv("XDG_DATA_HOME")):
+    LOG_DIR = Path(xdg) / "botcopier" / "logs"
+else:
+    LOG_DIR = REPO_ROOT / "logs"
+
 TRADES_FILE = LOG_DIR / "trades_raw.csv"
 METRICS_FILE = LOG_DIR / "metrics.csv"
 MODEL_FILE = REPO_ROOT / "model.json"

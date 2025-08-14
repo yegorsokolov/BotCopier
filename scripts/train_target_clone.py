@@ -24,6 +24,8 @@ import importlib.util
 
 import os
 
+DEFAULT_DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "botcopier"
+
 import pandas as pd
 
 import numpy as np
@@ -202,12 +204,32 @@ def detect_resources():
     """Detect available resources and installed ML libraries."""
     try:
         mem_gb = psutil.virtual_memory().available / (1024 ** 3)
-        cores = psutil.cpu_count(logical=False) or psutil.cpu_count()
     except Exception:  # pragma: no cover - psutil errors
         mem_gb = 0.0
+    try:
+        cores = psutil.cpu_count(logical=False) or psutil.cpu_count()
+    except Exception:  # pragma: no cover - psutil errors
         cores = 0
 
-    lite_mode = mem_gb < 4 or (cores or 0) < 2
+    if mem_gb == 0.0:
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        mem_kb = float(line.split()[1])
+                        mem_gb = mem_kb / (1024 ** 2)
+                        break
+        except Exception:
+            pass
+    if cores == 0:
+        try:
+            with open("/proc/cpuinfo") as f:
+                cores = sum(1 for line in f if line.startswith("processor"))
+        except Exception:
+            pass
+
+    lite_mode = mem_gb < 4 or cores < 2
+    heavy_mode = mem_gb >= 8 and cores >= 4
 
     def has(mod: str) -> bool:
         return importlib.util.find_spec(mod) is not None
@@ -223,21 +245,18 @@ def detect_resources():
             ("xgboost", "xgboost"),
             ("random_forest", "sklearn"),
         ]:
-            if has(module):
+            if heavy_mode and has(module):
                 model_type = mt
                 break
 
-    use_optuna = (
-        not lite_mode
-        and has("optuna")
-        and mem_gb >= 8
-        and (cores or 0) >= 4
-    )
+    use_optuna = heavy_mode and has("optuna")
     bayes_steps = 20 if use_optuna else 0
     return {
         "lite_mode": lite_mode,
         "model_type": model_type,
         "bayes_steps": bayes_steps,
+        "mem_gb": mem_gb,
+        "cores": cores,
     }
 
 
@@ -3278,8 +3297,10 @@ def main():
     ctx = span.get_span_context()
     logger.info("start training", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
     p = argparse.ArgumentParser()
-    p.add_argument('--data-dir', required=True)
-    p.add_argument('--out-dir', required=True)
+    default_data_dir = DEFAULT_DATA_HOME / "data"
+    default_out_dir = DEFAULT_DATA_HOME
+    p.add_argument('--data-dir', default=str(default_data_dir))
+    p.add_argument('--out-dir', default=str(default_out_dir))
     p.add_argument('--flight-uri', default=os.environ.get('FLIGHT_URI'),
                    help='Arrow Flight server URI (default from FLIGHT_URI)')
     p.add_argument('--use-sma', action='store_true', help='include moving average feature')
