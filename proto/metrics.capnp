@@ -11,4 +11,7 @@ struct Metrics {
   fileWriteErrors @7 :Int32;
   socketErrors @8 :Int32;
   bookRefreshSeconds @9 :Int32;
+  varBreachCount @10 :Int32;
+  tradeQueueDepth @11 :Int32;
+  metricQueueDepth @12 :Int32;
 }

@@ -28,7 +28,11 @@ struct TradeEvent {
   bookImbalance @24 :Float64;
   slHitDist @25 :Float64;
   tpHitDist @26 :Float64;
-  decisionId @27 :Int32;
-  traceId @28 :Text;
-  spanId @29 :Text;
+  equity @27 :Float64;
+  marginLevel @28 :Float64;
+  commission @29 :Float64;
+  swap @30 :Float64;
+  decisionId @31 :Int32;
+  traceId @32 :Text;
+  spanId @33 :Text;
 }
