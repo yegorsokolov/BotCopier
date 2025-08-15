@@ -43,3 +43,12 @@ log "Installing online trainer service"
 sudo cp docs/systemd/online-trainer.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now online-trainer.service
+log "online-trainer.service status: $(systemctl is-active online-trainer.service)"
+
+log "Installing stream listener and metrics collector services"
+sudo cp docs/systemd/stream-listener.service docs/systemd/metrics-collector.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now stream-listener.service
+log "stream-listener.service status: $(systemctl is-active stream-listener.service)"
+sudo systemctl enable --now metrics-collector.service
+log "metrics-collector.service status: $(systemctl is-active metrics-collector.service)"
