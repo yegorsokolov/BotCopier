@@ -235,22 +235,32 @@ def detect_resources():
     lite_mode = mem_gb < 4 or cores < 2
     heavy_mode = mem_gb >= 8 and cores >= 4
 
+    gpu_mem_gb = 0.0
     has_gpu = False
     if _HAS_TORCH:
         try:
-            has_gpu = bool(torch.cuda.is_available())
+            if torch.cuda.is_available():
+                gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (
+                    1024 ** 3
+                )
+                has_gpu = True
         except Exception:
             has_gpu = False
     if not has_gpu:
         try:
-            subprocess.run(
-                ["nvidia-smi"],
-                stdout=subprocess.DEVNULL,
+            out = subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=memory.total",
+                    "--format=csv,noheader,nounits",
+                ],
                 stderr=subprocess.DEVNULL,
-                check=True,
+                text=True,
             )
+            gpu_mem_gb = float(out.splitlines()[0])
             has_gpu = True
         except Exception:
+            gpu_mem_gb = 0.0
             has_gpu = False
 
     def has(mod: str) -> bool:
@@ -259,9 +269,9 @@ def detect_resources():
     model_type = "logreg"
     if not lite_mode:
         gpu_models = [
-            ("transformer", "transformers"),
-            ("tft", "pytorch_forecasting"),
-            ("lstm", "torch"),
+            ("transformer", "transformers", 8.0),
+            ("tft", "pytorch_forecasting", 8.0),
+            ("lstm", "torch", 0.0),
         ]
         cpu_models = [
             ("catboost", "catboost"),
@@ -269,7 +279,14 @@ def detect_resources():
             ("xgboost", "xgboost"),
             ("random_forest", "sklearn"),
         ]
-        preferred = gpu_models + cpu_models if has_gpu else cpu_models
+        preferred = []
+        if has_gpu:
+            preferred.extend(
+                (mt, module)
+                for mt, module, min_mem in gpu_models
+                if gpu_mem_gb >= min_mem
+            )
+        preferred.extend(cpu_models)
         for mt, module in preferred:
             if heavy_mode and has(module):
                 model_type = mt
@@ -284,6 +301,7 @@ def detect_resources():
         "mem_gb": mem_gb,
         "cores": cores,
         "has_gpu": has_gpu,
+        "gpu_mem_gb": gpu_mem_gb,
     }
 
 
