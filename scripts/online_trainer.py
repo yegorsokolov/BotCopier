@@ -10,7 +10,9 @@ Whenever the coefficients change the script invokes
 reloaded by MetaTrader.
 
 This module intentionally keeps dependencies light so it can run alongside the
-MetaTrader terminal on modest hardware.
+MetaTrader terminal on modest hardware.  It also monitors CPU usage and
+throttles data consumption when system load is high to avoid overwhelming the
+host.
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from pathlib import Path
 from typing import Iterable, List, Dict, Any
 
 import numpy as np
+import psutil
 from sklearn.linear_model import SGDClassifier
 
 
@@ -127,6 +130,9 @@ class OnlineTrainer:
         pos = 0
         batch: List[Dict[str, Any]] = []
         while True:
+            load = psutil.cpu_percent(interval=None)
+            if load > 80.0:
+                time.sleep(3.0)
             if path.exists():
                 with path.open() as f:
                     f.seek(pos)
@@ -159,6 +165,9 @@ class OnlineTrainer:
                 continue
             batch.append(rec)
             if len(batch) >= self.batch_size:
+                load = psutil.cpu_percent(interval=None)
+                if load > 80.0:
+                    await asyncio.sleep(3.0)
                 self.update(batch)
                 batch.clear()
 
