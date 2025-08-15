@@ -13,6 +13,11 @@ from pathlib import Path
 import sys
 
 import asyncio
+try:
+    import uvloop
+    uvloop.install()
+except Exception:
+    pass
 import time
 import pickle
 import subprocess

@@ -127,6 +127,8 @@ A small web dashboard can display trades, metrics and training progress in real 
    ```
 5. Open <http://localhost:8000> in a browser and supply the token when prompted to view live updates.
 
+`uvloop` can be installed to accelerate asyncio event loops. `scripts/stream_listener.py` uses it automatically when available.
+
 ### Arrow Flight Logging
 
 `Observer_TBot` streams trade and metric events over [Apache Arrow Flight](https://arrow.apache.org/).

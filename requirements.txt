@@ -28,6 +28,7 @@ transformers
 pytorch-forecasting; extra == "tft"
 
 # Optional extras
+uvloop; extra == "uvloop"
 xgboost; extra == "xgboost"
 # Hyperparameter search
 optuna; extra == "optuna"
