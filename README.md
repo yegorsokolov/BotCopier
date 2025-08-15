@@ -323,9 +323,9 @@ python train_target_clone.py --data-dir "C:\\path\\to\\observer_logs" --out-dir 
 python generate_mql4_from_model.py models/model.json experts
 ```
 
-Pass ``--cache-features`` to reuse the previously extracted feature matrix when
-running incrementally. This avoids reprocessing large log files as long as the
-configured features match the cached ``feature_names``.
+Feature extraction results are cached to ``features.parquet`` and reused on
+subsequent runs when the ``feature_names`` and ``last_event_id`` in
+``model.json`` match. Use ``--no-cache`` to force recomputation if needed.
 
 When ``--incremental`` is used with the default ``logreg`` model, training
 updates the existing classifier in place by calling ``partial_fit`` on batches

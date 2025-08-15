@@ -1861,6 +1861,27 @@ def train(
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
+    if cache_features and not loaded_from_cache and pq is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        cache_feature_names = sorted({k for feat in features for k in feat})
+        df_cache = pd.DataFrame(
+            [{fn: feat.get(fn, 0.0) for fn in cache_feature_names} for feat in features]
+        )
+        df_cache["label"] = labels
+        df_cache["sl_target"] = sl_targets
+        df_cache["tp_target"] = tp_targets
+        df_cache["lot_target"] = lot_targets
+        df_cache["hours"] = hours
+        df_cache["event_time"] = pd.to_datetime(event_times)
+        table = pa.Table.from_pandas(df_cache)
+        meta = table.schema.metadata or {}
+        meta = {
+            **meta,
+            b"feature_names": json.dumps(cache_feature_names).encode(),
+            b"last_event_id": str(last_event_id).encode(),
+        }
+        table = table.replace_schema_metadata(meta)
+        pq.write_table(table, feature_cache_file, compression="snappy")
     risk_parity = _compute_risk_parity(price_map_total)
     regime_info = None
     reg_centers = None
@@ -2106,26 +2127,6 @@ def train(
     X_train_lot = _encode_features(enc_model, X_train_lot)
     X_val_lot = _encode_features(enc_model, X_val_lot)
 
-    if cache_features and not loaded_from_cache and pq is not None:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        df_cache = pd.DataFrame(
-            [{fn: feat.get(fn, 0.0) for fn in feature_names} for feat in features]
-        )
-        df_cache["label"] = labels
-        df_cache["sl_target"] = sl_targets
-        df_cache["tp_target"] = tp_targets
-        df_cache["lot_target"] = lot_targets
-        df_cache["hours"] = hours
-        df_cache["event_time"] = pd.to_datetime(event_times)
-        table = pa.Table.from_pandas(df_cache)
-        meta = table.schema.metadata or {}
-        meta = {
-            **meta,
-            b"feature_names": json.dumps(feature_names).encode(),
-            b"last_event_id": str(last_event_id).encode(),
-        }
-        table = table.replace_schema_metadata(meta)
-        pq.write_table(table, feature_cache_file, compression="snappy")
 
     bayes_threshold = None
     if bayes_steps > 0:
