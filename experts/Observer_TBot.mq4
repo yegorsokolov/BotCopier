@@ -575,7 +575,15 @@ int OnInit()
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
    string log_dir = StringReplace(LogDirectoryName, "\\", "/");
-   DirectoryCreate(log_dir);
+   if(!FileIsExist(log_dir))
+   {
+      if(FolderCreate(log_dir))
+         Print("Created log directory: " + log_dir);
+      else
+         Print("Failed to create log directory: " + log_dir);
+   }
+   else
+      Print("Log directory exists: " + log_dir);
    // initialise shared memory ring buffer (1MB by default)
    ShmRingInit("tbot_events", 1<<20);
    string hello = StringFormat("{\"type\":\"hello\",\"schema_version\":%d}", SCHEMA_VERSION);
