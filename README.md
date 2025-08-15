@@ -15,7 +15,9 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
     trail by `TrailingPips`.
   - `model_interface.mqh` – shared structures.
 - `scripts/` – helper Python scripts.
-  - `train_target_clone.py` – trains a model from exported logs.
+  - `train_target_clone.py` – trains a model from exported logs. It detects
+    available CPU, memory, GPU and free disk space (`disk_gb`) and switches to
+    lite mode when less than 5 GB remains.
   - `generate_mql4_from_model.py` – renders a new EA from a trained model description.
   - `evaluate_predictions.py` – basic log evaluation utility.
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.

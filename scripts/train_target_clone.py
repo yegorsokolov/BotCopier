@@ -18,6 +18,7 @@ from typing import Iterable, List, Optional
 import sqlite3
 import logging
 import subprocess
+import shutil
 import sys
 
 import importlib.util
@@ -232,7 +233,8 @@ def detect_resources():
         except Exception:
             pass
 
-    lite_mode = mem_gb < 4 or cores < 2
+    disk_gb = shutil.disk_usage("/").free / (1024 ** 3)
+    lite_mode = mem_gb < 4 or cores < 2 or disk_gb < 5
     heavy_mode = mem_gb >= 8 and cores >= 4
 
     gpu_mem_gb = 0.0
@@ -299,6 +301,7 @@ def detect_resources():
         "model_type": model_type,
         "bayes_steps": bayes_steps,
         "mem_gb": mem_gb,
+        "disk_gb": disk_gb,
         "cores": cores,
         "has_gpu": has_gpu,
         "gpu_mem_gb": gpu_mem_gb,
