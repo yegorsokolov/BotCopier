@@ -10,6 +10,15 @@ REPO_DIR="$(cd "$(dirname "$0")"/.. && pwd)"
 cd "$REPO_DIR"
 
 log "Updating package list"
+mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+if [ "$mem_kb" -lt $((2 * 1024 * 1024)) ]; then
+  sudo fallocate -l 2G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  log "Activated 2G swapfile due to low memory"
+fi
 sudo apt-get update
 
 log "Installing system packages"
