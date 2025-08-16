@@ -659,7 +659,10 @@ in Jaeger or Zipkin for deeper analysis.
 ## Ubuntu Setup and Services
 
 Run `scripts/setup_ubuntu.sh` on an Ubuntu host to install system packages,
-Python dependencies and initialise a Wine prefix for MetaTrader:
+Python dependencies and initialise a Wine prefix for MetaTrader. The script
+also installs and enables [Chrony](https://chrony.tuxfamily.org/) so the system
+clock remains synchronised. You can review synchronisation details in the
+output of `chronyc tracking`:
 
 ```bash
 ./scripts/setup_ubuntu.sh

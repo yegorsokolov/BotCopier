@@ -25,6 +25,13 @@ log "Installing system packages"
 sudo apt-get install -y build-essential python3 python3-pip wine64 \
   protobuf-compiler libcapnp-dev nats-server git
 
+log "Installing and enabling Chrony for time synchronization"
+sudo apt-get install -y chrony
+sudo systemctl enable --now chrony
+log "chrony service status: $(systemctl is-active chrony)"
+log "Chrony tracking summary"
+chronyc tracking || true
+
 log "Enabling and starting nats-server"
 sudo systemctl enable nats-server && sudo systemctl start nats-server
 
