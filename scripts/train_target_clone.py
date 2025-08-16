@@ -206,7 +206,7 @@ def _encode_features(model: ContrastiveEncoder | None, X: np.ndarray) -> np.ndar
 
 
 def detect_resources():
-    """Detect available resources and installed ML libraries."""
+    """Detect available resources (RAM, disk, cores, CPU frequency) and installed ML libraries."""
     try:
         mem_gb = psutil.virtual_memory().available / (1024 ** 3)
     except Exception:  # pragma: no cover - psutil errors
@@ -215,6 +215,20 @@ def detect_resources():
         cores = psutil.cpu_count(logical=False) or psutil.cpu_count()
     except Exception:  # pragma: no cover - psutil errors
         cores = 0
+
+    try:
+        cpu_mhz = psutil.cpu_freq().max
+    except Exception:  # pragma: no cover - psutil errors
+        cpu_mhz = 0.0
+    if not cpu_mhz:
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("cpu MHz"):
+                        cpu_mhz = float(line.split(":")[1].strip())
+                        break
+        except Exception:
+            pass
 
     if mem_gb == 0.0:
         try:
@@ -268,6 +282,8 @@ def detect_resources():
     def has(mod: str) -> bool:
         return importlib.util.find_spec(mod) is not None
 
+    CPU_MHZ_THRESHOLD = 2500.0
+
     model_type = "logreg"
     if not lite_mode:
         gpu_models = [
@@ -287,6 +303,7 @@ def detect_resources():
                 (mt, module)
                 for mt, module, min_mem in gpu_models
                 if gpu_mem_gb >= min_mem
+                and (cpu_mhz >= CPU_MHZ_THRESHOLD or mt == "lstm")
             )
         preferred.extend(cpu_models)
         for mt, module in preferred:
@@ -303,6 +320,7 @@ def detect_resources():
         "mem_gb": mem_gb,
         "disk_gb": disk_gb,
         "cores": cores,
+        "cpu_mhz": cpu_mhz,
         "has_gpu": has_gpu,
         "gpu_mem_gb": gpu_mem_gb,
     }
@@ -3386,7 +3404,13 @@ def main():
     span = tracer.start_span("train_target_clone")
     ctx = span.get_span_context()
     logger.info("start training", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(
+        description=(
+            "Train model from exported features. Automatically detects hardware resources, "
+            "including CPU frequency (cpu_mhz). Transformer and TFT models are only "
+            "enabled when cpu_mhz is at least 2500 MHz."
+        )
+    )
     default_data_dir = DEFAULT_DATA_HOME / "data"
     default_out_dir = DEFAULT_DATA_HOME
     p.add_argument('--data-dir', default=str(default_data_dir))
