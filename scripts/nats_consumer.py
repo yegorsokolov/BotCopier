@@ -109,7 +109,12 @@ def main() -> int:
     p.add_argument("--metrics-sqlite")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
-    logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
+    level = getattr(logging, args.log_level.upper(), logging.INFO)
+    try:  # prefer systemd journal if available
+        from systemd.journal import JournalHandler
+        logging.basicConfig(handlers=[JournalHandler()], level=level)
+    except Exception:  # pragma: no cover - fallback to file logging
+        logging.basicConfig(filename="nats_consumer.log", level=level)
     asyncio.run(_run(args))
     return 0
 

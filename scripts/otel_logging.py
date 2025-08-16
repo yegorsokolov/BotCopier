@@ -40,9 +40,18 @@ def setup_logging(service_name: str, level: int = logging.INFO) -> trace.Tracer:
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
     trace.set_tracer_provider(provider)
 
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s [trace_id=%(trace_id)s span_id=%(span_id)s] %(message)s",
-    )
+    try:  # prefer systemd journal if available
+        from systemd.journal import JournalHandler
+        logging.basicConfig(
+            level=level,
+            handlers=[JournalHandler()],
+            format="%(asctime)s %(levelname)s [trace_id=%(trace_id)s span_id=%(span_id)s] %(message)s",
+        )
+    except Exception:  # pragma: no cover - fallback to file logging
+        logging.basicConfig(
+            level=level,
+            filename=f"{service_name}.log",
+            format="%(asctime)s %(levelname)s [trace_id=%(trace_id)s span_id=%(span_id)s] %(message)s",
+        )
     logging.getLogger().addFilter(TraceContextFilter())
     return trace.get_tracer(service_name)
