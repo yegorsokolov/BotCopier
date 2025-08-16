@@ -23,12 +23,42 @@ import json
 import subprocess
 import sys
 import time
+import os
+import threading
 from pathlib import Path
 from typing import Iterable, List, Dict, Any
 
 import numpy as np
 import psutil
 from sklearn.linear_model import SGDClassifier
+
+try:  # optional systemd notification support
+    from systemd import daemon
+except Exception:  # pragma: no cover - systemd not installed
+    daemon = None
+
+
+def _sd_notify_ready() -> None:
+    if daemon is not None:
+        daemon.sd_notify("READY=1")
+
+
+def _start_watchdog_thread() -> None:
+    if daemon is None:
+        return
+    try:
+        usec = int(os.getenv("WATCHDOG_USEC", "0"))
+    except ValueError:
+        usec = 0
+    interval = usec / 2_000_000 if usec else 30
+    def _loop() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                daemon.sd_notify("WATCHDOG=1")
+            except Exception:
+                pass
+    threading.Thread(target=_loop, daemon=True).start()
 
 
 class OnlineTrainer:
@@ -187,6 +217,8 @@ def main(argv: List[str] | None = None) -> None:
     args = p.parse_args(argv)
 
     trainer = OnlineTrainer(args.model, args.batch_size, not args.no_generate)
+    _sd_notify_ready()
+    _start_watchdog_thread()
     if args.csv:
         trainer.tail_csv(args.csv)
     else:

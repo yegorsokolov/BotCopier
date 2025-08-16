@@ -695,6 +695,15 @@ journalctl -u stream-listener.service -u metrics-collector.service -u online-tra
 Adjust the `WorkingDirectory` in the unit files to match where the repository
 is located (e.g. `/opt/BotCopier`).
 
+### Watchdog
+
+The example units enable systemd's watchdog by setting `WatchdogSec=60`. Each
+Python service notifies systemd when it has finished initialising and continues
+to send heartbeat messages so the manager can restart the service if it stops
+responding. The ping interval is derived from the `WATCHDOG_USEC` environment
+variable provided by systemd. Tune the watchdog by changing `WatchdogSec` in the
+unit files.
+
 ## Debugging Tips
 
 - Set `EnableDebugLogging` to `true` to print socket status and feature values.

@@ -25,6 +25,11 @@ import gzip
 import threading
 from datetime import datetime
 import psutil
+
+try:  # optional systemd notification support
+    from systemd import daemon
+except Exception:  # pragma: no cover - systemd not installed
+    daemon = None
 try:  # optional drift detection dependency
     from river.drift import ADWIN  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -56,6 +61,17 @@ except Exception:  # pragma: no cover - optional dependency
     WebSocket = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+def _sd_notify_ready() -> None:
+    if daemon is not None:
+        daemon.sd_notify("READY=1")
+
+
+async def _watchdog_task(interval: float) -> None:
+    while True:
+        await asyncio.sleep(interval)
+        if daemon is not None:
+            daemon.sd_notify("WATCHDOG=1")
 
 try:  # optional OpenTelemetry dependencies
     from opentelemetry import trace
@@ -607,6 +623,14 @@ def main() -> int:
         return 0
 
     async def _run() -> None:
+        watchdog_interval = None
+        if daemon is not None:
+            try:
+                watchdog_interval = int(os.getenv("WATCHDOG_USEC", "0")) / 2_000_000
+            except ValueError:
+                watchdog_interval = None
+            if watchdog_interval:
+                asyncio.create_task(_watchdog_task(watchdog_interval))
         nc = await nats.connect(args.servers)
         js = nc.jetstream()
 
@@ -666,6 +690,7 @@ def main() -> int:
         write_run_info()
         for pth in LOG_FILES.values():
             pth.parent.mkdir(parents=True, exist_ok=True)
+        _sd_notify_ready()
         await asyncio.Future()
 
     try:
