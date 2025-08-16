@@ -456,6 +456,16 @@ Logs are written to the directory specified by the EA parameter `LogDirectoryNam
 Trade events are stored in a small in-memory buffer before being flushed to `trades_raw.csv` on each timer tick or when the buffer reaches `LogBufferSize` lines.  Set `EnableDebugLogging` to `true` to enable verbose output and force immediate writes for easier debugging.
 Metrics entries older than the number of days specified by `MetricsDaysToKeep` (default 30) are removed automatically during log export.
 
+### Resume Behaviour
+
+The observer keeps track of the last processed event id in
+`model_online.json`.  After flushing trade or metric buffers this file is
+updated atomically with the current `last_event_id` so that progress can be
+resumed after a restart.  On start-up the counter is validated against any
+existing log files to avoid duplicating event ids.  When logs are exported the
+state file is copied alongside the rotated log files and should be included in
+any uploads.
+
 ### Run Metadata
 
 On start-up the observer EA writes `run_info.json` in the directory specified by `LogDirectoryName`.  The file records the `CommitHash` input, model version, broker, list of tracked symbols and the MT4 build.
