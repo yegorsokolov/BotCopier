@@ -41,7 +41,7 @@ FIELDS = [
 ]
 
 
-async def _writer_task(db_file: Path, queue: Queue) -> None:
+async def _writer_task(db_file: Path, queue: Queue, batch_size: int) -> None:
     """Write queued rows to ``db_file``."""
 
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -51,15 +51,25 @@ async def _writer_task(db_file: Path, queue: Queue) -> None:
     conn.execute(
         f"CREATE TABLE IF NOT EXISTS logs ({','.join([f'{c} TEXT' for c in FIELDS])})"
     )
+    # Improve write performance on slow disks
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     insert_sql = f"INSERT INTO logs ({cols}) VALUES ({placeholders})"
+    pending: list[list[str]] = []
     try:
         while True:
             row = await queue.get()
             if row is None:
                 break
-            conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
-            conn.commit()
+            pending.append([row.get(f, "") for f in FIELDS])
+            if len(pending) >= batch_size:
+                conn.executemany(insert_sql, pending)
+                conn.commit()
+                pending.clear()
             queue.task_done()
+        if pending:
+            conn.executemany(insert_sql, pending)
+            conn.commit()
     finally:
         conn.close()
 
@@ -82,7 +92,7 @@ async def _handle_conn(reader: StreamReader, writer: StreamWriter, queue: Queue)
         await writer.wait_closed()
 
 
-def listen_once(host: str, port: int, db_file: Path) -> None:
+def listen_once(host: str, port: int, db_file: Path, batch_size: int = 100) -> None:
     """Accept a single connection and process it until closed."""
 
     async def _run() -> None:
@@ -94,7 +104,7 @@ def listen_once(host: str, port: int, db_file: Path) -> None:
             done.set()
 
         server = await asyncio.start_server(wrapped, host, port)
-        writer_task = asyncio.create_task(_writer_task(db_file, queue))
+        writer_task = asyncio.create_task(_writer_task(db_file, queue, batch_size))
         async with server:
             await done.wait()
 
@@ -105,7 +115,7 @@ def listen_once(host: str, port: int, db_file: Path) -> None:
     asyncio.run(_run())
 
 
-def serve(host: str, port: int, db_file: Path) -> None:
+def serve(host: str, port: int, db_file: Path, batch_size: int = 100) -> None:
     """Accept multiple connections concurrently."""
 
     async def _run() -> None:
@@ -113,7 +123,7 @@ def serve(host: str, port: int, db_file: Path) -> None:
         server = await asyncio.start_server(
             lambda r, w: _handle_conn(r, w, queue), host, port
         )
-        writer_task = asyncio.create_task(_writer_task(db_file, queue))
+        writer_task = asyncio.create_task(_writer_task(db_file, queue, batch_size))
         async with server:
             await server.serve_forever()
 
@@ -129,9 +139,15 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--db", required=True, help="output SQLite file")
+    p.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="number of rows to buffer before committing",
+    )
     args = p.parse_args()
 
-    serve(args.host, args.port, Path(args.db))
+    serve(args.host, args.port, Path(args.db), args.batch_size)
 
 
 if __name__ == "__main__":
