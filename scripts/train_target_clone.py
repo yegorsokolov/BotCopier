@@ -247,6 +247,7 @@ def detect_resources():
         except Exception:
             pass
 
+    # Estimate free disk space to adjust behavior on low-storage systems
     disk_gb = shutil.disk_usage("/").free / (1024 ** 3)
     lite_mode = mem_gb < 4 or cores < 2 or disk_gb < 5
     heavy_mode = mem_gb >= 8 and cores >= 4
