@@ -435,6 +435,82 @@ void LoadModelState()
       NextEventId = last_id + 1;
 }
 
+void SaveModelState()
+{
+   string tmp = ModelStateFile + ".tmp";
+   int h = FileOpen(tmp, FILE_WRITE|FILE_TXT|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   string json = StringFormat("{\"last_event_id\":%d}", NextEventId - 1);
+   int _wr = FileWrite(h, json);
+   if(_wr <= 0)
+      FileWriteErrors++;
+   FileClose(h);
+   FileDelete(ModelStateFile);
+   FileMove(tmp, ModelStateFile, FILE_COMMON);
+}
+
+int GetMaxEventIdFromLogs(string dir)
+{
+   int max_id = 0;
+   string fname = dir + "/trades_raw.csv";
+   if(FileIsExist(fname))
+   {
+      int h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE, ';');
+      if(h!=INVALID_HANDLE)
+      {
+         string last_line = "";
+         while(!FileIsEnding(h))
+         {
+            string line = FileReadString(h);
+            if(StringLen(line) > 0)
+               last_line = line;
+         }
+         FileClose(h);
+         if(StringLen(last_line) > 0)
+         {
+            string parts[];
+            if(StringSplit(last_line, ';', parts) > 0)
+            {
+               int id = (int)StringToInteger(parts[0]);
+               if(id > max_id)
+                  max_id = id;
+            }
+         }
+      }
+   }
+   string file = "";
+   int handle = FileFindFirst(dir + "/*.*", file);
+   if(handle!=INVALID_HANDLE)
+   {
+      do
+      {
+         if(StringFind(file, "trades_raw.csv") >= 0)
+            continue;
+         int pos = -1;
+         if(StringSubstr(file, StringLen(file)-4, 4) == ".csv")
+            pos = StringLen(file)-4;
+         else if(StringLen(file) >= 7 && StringSubstr(file, StringLen(file)-7, 7) == ".csv.gz")
+            pos = StringLen(file)-7;
+         if(pos >= 0)
+         {
+            string name = StringSubstr(file, 0, pos);
+            string parts2[];
+            int cnt = StringSplit(name, '_', parts2);
+            if(cnt > 0)
+            {
+               int id2 = (int)StringToInteger(parts2[cnt-1]);
+               if(id2 > max_id)
+                  max_id = id2;
+            }
+         }
+      }
+      while(FileFindNext(handle, file));
+      FileFindClose(handle);
+   }
+   return(max_id);
+}
+
 void LoadRiskWeights()
 {
    int h = FileOpen(ModelFileName, FILE_READ|FILE_SHARE_READ|FILE_COMMON);
@@ -594,6 +670,9 @@ int OnInit()
    LoadQueue(log_dir + "/pending_trades.bin", pending_trades);
    LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics);
    LoadModelState();
+   int max_id = GetMaxEventIdFromLogs(log_dir);
+   if(max_id >= NextEventId)
+      NextEventId = max_id + 1;
    LoadRiskWeights();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    string symbols_json = "[";
@@ -693,6 +772,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    FlushTradeBuffer();
+   FlushMetricBuffer();
    SaveQueue(log_dir + "/pending_trades.bin", pending_trades);
    SaveQueue(log_dir + "/pending_metrics.bin", pending_metrics);
    if(trade_log_handle!=INVALID_HANDLE)
@@ -921,6 +1001,7 @@ void OnTimer()
 {
    ProcessAnomalyQueue();
    FlushTradeBuffer();
+   FlushMetricBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    FlushPending(now);
 
@@ -1279,7 +1360,8 @@ void ExportLogs(datetime ts)
    ts_str = StringReplace(ts_str, ":", "");
    ts_str = StringReplace(ts_str, " ", "_");
    int last_id = NextEventId - 1;
-   string dest = log_dir + "/" + ts_str + "_" + IntegerToString(last_id) + ".csv";
+   string base = log_dir + "/" + ts_str + "_" + IntegerToString(last_id);
+   string dest = base + ".csv";
    int in_h = FileOpen(src, FILE_CSV|FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE, ';');
    if(in_h==INVALID_HANDLE)
       return;
@@ -1324,9 +1406,11 @@ void ExportLogs(datetime ts)
          _wr = FileWrite(out_h, lines[i]);
          if(_wr <= 0) FileWriteErrors++;
       }
-      FileClose(out_h);
+   FileClose(out_h);
    }
    FileDelete(src);
+
+   FileCopy(ModelStateFile, base + ".state.json", FILE_COMMON);
 
    // Compress the rotated file and remove the original
    int rh = FileOpen(dest, FILE_READ|FILE_BIN);
@@ -1617,4 +1701,10 @@ void FlushTradeBuffer()
    }
    FileFlush(trade_log_handle);
    ArrayResize(trade_log_buffer, 0);
+   SaveModelState();
+}
+
+void FlushMetricBuffer()
+{
+   SaveModelState();
 }
