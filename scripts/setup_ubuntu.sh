@@ -41,6 +41,7 @@ python3 -m pip install --upgrade pip
 
 log "Installing Python dependencies"
 pip3 install --no-cache-dir -r requirements.txt
+pip3 install --no-cache-dir pyarrow
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   log "CUDA-capable GPU detected, installing onnxruntime-gpu"
@@ -69,3 +70,9 @@ sudo systemctl enable --now stream-listener.service
 log "stream-listener.service status: $(systemctl is-active stream-listener.service)"
 sudo systemctl enable --now metrics-collector.service
 log "metrics-collector.service status: $(systemctl is-active metrics-collector.service)"
+
+log "Installing Flight server service"
+sudo cp docs/systemd/flight-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now flight-server.service
+log "flight-server.service status: $(systemctl is-active flight-server.service)"

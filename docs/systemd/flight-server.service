@@ -1,0 +1,13 @@
+[Unit]
+Description=BotCopier Arrow Flight Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/BotCopier
+ExecStart=/usr/bin/python3 scripts/flight_server.py
+Restart=on-failure
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
