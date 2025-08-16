@@ -9,11 +9,12 @@ JSON file.
 import argparse
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.feature_extraction import DictVectorizer
+from sklearn.linear_model import LogisticRegression
 
 try:  # optional dependency
     import hdbscan  # type: ignore
@@ -28,8 +29,25 @@ def detect_regimes(
     out_file: Path,
     clusters: int = 3,
     algorithm: str = "kmeans",
+    model_json: Optional[Path] = None,
 ) -> None:
-    """Cluster feature vectors and write regime IDs and centers to ``out_file``."""
+    """Cluster feature vectors and write regime IDs and centers to ``out_file``.
+
+    Parameters
+    ----------
+    data_dir:
+        Directory containing trade logs.
+    out_file:
+        File where raw clustering output will be written.
+    clusters:
+        Number of clusters to detect when using KMeans.
+    algorithm:
+        Clustering algorithm name (``kmeans`` or ``hdbscan``).
+    model_json:
+        Optional path to a model JSON file. When provided, the detected
+        regime information and gating weights are merged into this file so
+        that downstream utilities can embed them into generated strategies.
+    """
     rows_df, _, _ = _load_logs(data_dir)
     feats, *_ = _extract_features(rows_df.to_dict("records"))
     if not feats:
@@ -58,6 +76,9 @@ def detect_regimes(
         labels = km.fit_predict(X_scaled)
         centers_arr = km.cluster_centers_
 
+    gating_clf = LogisticRegression(max_iter=200, multi_class="multinomial")
+    gating_clf.fit(X_scaled, labels)
+
     model = {
         "feature_names": vec.get_feature_names_out().tolist(),
         "mean": mean.astype(float).tolist(),
@@ -65,8 +86,28 @@ def detect_regimes(
         "centers": centers_arr.astype(float).tolist(),
         "labels": labels.astype(int).tolist(),
         "algorithm": algorithm,
+        "gating_coefficients": gating_clf.coef_.astype(float).tolist(),
+        "gating_intercepts": gating_clf.intercept_.astype(float).tolist(),
     }
     out_file.write_text(json.dumps(model))
+
+    if model_json is not None:
+        update = {
+            "regime_feature_names": model["feature_names"],
+            "regime_centers": model["centers"],
+            "gating_coefficients": model["gating_coefficients"],
+            "gating_intercepts": model["gating_intercepts"],
+            "mean": model["mean"],
+            "std": model["std"],
+        }
+        existing = {}
+        if model_json.exists():
+            try:
+                existing = json.loads(model_json.read_text())
+            except Exception:
+                existing = {}
+        existing.update(update)
+        model_json.write_text(json.dumps(existing))
 
 
 def main() -> None:
@@ -80,8 +121,15 @@ def main() -> None:
         default="kmeans",
         help="clustering algorithm",
     )
+    p.add_argument("--model-json", type=Path, default=Path("model.json"))
     args = p.parse_args()
-    detect_regimes(args.data_dir, args.out_file, args.clusters, args.algorithm)
+    detect_regimes(
+        args.data_dir,
+        args.out_file,
+        args.clusters,
+        args.algorithm,
+        args.model_json,
+    )
 
 
 if __name__ == "__main__":
