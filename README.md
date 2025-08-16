@@ -635,6 +635,7 @@ plt.show()
 - Ensure the MT4 terminal has permission to write files in `MQL4\Files`.
 - When running Python scripts, verify the paths to log files and models are correct.
 - Use the Experts and Journal tabs inside MT4 for additional debugging information.
+- For services managed by systemd, view logs with `journalctl -u <service>`.
 
 ### Trace Correlation
 

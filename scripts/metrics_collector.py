@@ -8,6 +8,12 @@ import os
 import sqlite3
 import logging
 from pathlib import Path
+
+try:  # prefer systemd journal if available
+    from systemd.journal import JournalHandler
+    logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
+except Exception:  # pragma: no cover - fallback to file logging
+    logging.basicConfig(filename="metrics_collector.log", level=logging.INFO)
 from typing import Callable, Optional
 from asyncio import Queue
 from aiohttp import web
