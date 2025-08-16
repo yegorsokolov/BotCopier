@@ -32,6 +32,7 @@ import gzip
 import threading
 from datetime import datetime
 import psutil
+from types import SimpleNamespace
 
 try:  # optional systemd notification support
     from systemd import daemon
@@ -45,6 +46,12 @@ try:  # optional NATS dependency
     import nats  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     nats = None
+try:  # optional Arrow Flight dependency
+    import pyarrow as pa  # type: ignore
+    import pyarrow.flight as flight  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    pa = None  # type: ignore
+    flight = None  # type: ignore
 try:  # pydantic validation schemas
     from pydantic import ValidationError  # type: ignore
     from schemas.trades import TradeEvent  # type: ignore
@@ -553,6 +560,8 @@ def main() -> int:
     p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
     p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
     p.add_argument("--ring-path", default=os.getenv("TBOT_RING", "/tmp/tbot_events"), help="Path to shared memory ring buffer")
+    p.add_argument("--flight-host", help="Arrow Flight server host")
+    p.add_argument("--flight-port", type=int, default=8815)
     args = p.parse_args()
 
     start_system_monitor()
@@ -627,6 +636,35 @@ def main() -> int:
                     process_metric(metric)
             except Exception:
                 continue
+        return 0
+
+    if args.flight_host and flight is not None:
+        async def _flight_run() -> None:
+            client = flight.FlightClient(f"grpc://{args.flight_host}:{args.flight_port}")
+
+            async def poll(path: str, handler) -> None:
+                last = 0
+                while True:
+                    try:
+                        desc = flight.FlightDescriptor.for_path(path)
+                        info = client.get_flight_info(desc)
+                        reader = client.do_get(info.endpoints[0].ticket)
+                        table = reader.read_all()
+                        rows = table.to_pylist()
+                        for row in rows[last:]:
+                            handler(SimpleNamespace(**row))
+                        last = len(rows)
+                    except Exception:
+                        await asyncio.sleep(1)
+                        continue
+                    await asyncio.sleep(1)
+
+            _sd_notify_ready()
+            await asyncio.gather(
+                poll("trades", process_trade), poll("metrics", process_metric)
+            )
+
+        asyncio.run(_flight_run())
         return 0
 
     async def _run() -> None:

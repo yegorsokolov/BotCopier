@@ -29,6 +29,11 @@ import nats
 from google.protobuf.json_format import MessageToDict
 from proto import metric_event_pb2
 
+try:  # optional Arrow Flight dependency
+    import pyarrow.flight as flight  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    flight = None  # type: ignore
+
 SCHEMA_VERSION = 1
 
 from opentelemetry import trace, metrics
@@ -213,6 +218,8 @@ def serve(
     http_host: str = "127.0.0.1",
     http_port: Optional[int] = None,
     prom_port: Optional[int] = None,
+    flight_host: str | None = None,
+    flight_port: int = 8815,
 ) -> None:
     async def _run() -> None:
         queue: Queue = Queue()
@@ -275,10 +282,80 @@ def serve(
             prom_updater = lambda _row: None
             prom_runner = None
 
-        nc = await nats.connect(servers)
-        js = nc.jetstream()
         writer_task = asyncio.create_task(_writer_task(db_file, queue, prom_updater))
         _sd_notify_ready()
+
+        if flight_host and flight is not None:
+            client = flight.FlightClient(f"grpc://{flight_host}:{flight_port}")
+
+            async def poll() -> None:
+                last = 0
+                while True:
+                    try:
+                        desc = flight.FlightDescriptor.for_path("metrics")
+                        info = client.get_flight_info(desc)
+                        reader = client.do_get(info.endpoints[0].ticket)
+                        table = reader.read_all()
+                        rows = table.to_pylist()
+                        for row in rows[last:]:
+                            trace_id = row.get("trace_id", "")
+                            span_id = row.get("span_id", "")
+                            ctx_in = _context_from_ids(trace_id, span_id)
+                            with tracer.start_as_current_span("metrics_message", context=ctx_in) as span:
+                                ctx = span.get_span_context()
+                                row.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+                                row.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+                                extra = {}
+                                try:
+                                    extra["trace_id"] = int(row["trace_id"], 16)
+                                    extra["span_id"] = int(row["span_id"], 16)
+                                except (KeyError, ValueError):
+                                    pass
+                                logger.info(row, extra=extra)
+                                await queue.put(row)
+                        last = len(rows)
+                    except Exception:
+                        await asyncio.sleep(1)
+                        continue
+                    await asyncio.sleep(1)
+
+            asyncio.create_task(poll())
+        else:
+            nc = await nats.connect(servers)
+            js = nc.jetstream()
+            sub = await js.subscribe("metrics", durable="metrics_collector")
+
+            async def nats_loop() -> None:
+                async for msg in sub.messages:
+                    version = msg.data[0]
+                    if version != SCHEMA_VERSION:
+                        logger.warning(
+                            "schema version %d mismatch (expected %d)",
+                            version,
+                            SCHEMA_VERSION,
+                        )
+                        await msg.ack()
+                        continue
+                    m = metric_event_pb2.MetricEvent.FromString(msg.data[1:])
+                    obj = MessageToDict(m, preserving_proto_field_name=True)
+                    trace_id = obj.get("trace_id", "")
+                    span_id = obj.get("span_id", "")
+                    ctx_in = _context_from_ids(trace_id, span_id)
+                    with tracer.start_as_current_span("metrics_message", context=ctx_in) as span:
+                        ctx = span.get_span_context()
+                        obj.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+                        obj.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+                        extra = {}
+                        try:
+                            extra["trace_id"] = int(obj["trace_id"], 16)
+                            extra["span_id"] = int(obj["span_id"], 16)
+                        except (KeyError, ValueError):
+                            pass
+                        logger.info(obj, extra=extra)
+                        await queue.put(obj)
+                    await msg.ack()
+
+            asyncio.create_task(nats_loop())
 
         async def metrics_handler(request: web.Request) -> web.Response:
             limit_param = request.query.get("limit", "100")
@@ -307,45 +384,7 @@ def serve(
         else:
             runner = None
 
-        sub = await js.subscribe("metrics", durable="metrics_collector")
-        try:
-            async for msg in sub.messages:
-                version = msg.data[0]
-                if version != SCHEMA_VERSION:
-                    logger.warning(
-                        "schema version %d mismatch (expected %d)",
-                        version,
-                        SCHEMA_VERSION,
-                    )
-                    await msg.ack()
-                    continue
-                m = metric_event_pb2.MetricEvent.FromString(msg.data[1:])
-                obj = MessageToDict(m, preserving_proto_field_name=True)
-                trace_id = obj.get("trace_id", "")
-                span_id = obj.get("span_id", "")
-                ctx_in = _context_from_ids(trace_id, span_id)
-                with tracer.start_as_current_span("metrics_message", context=ctx_in) as span:
-                    ctx = span.get_span_context()
-                    obj.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
-                    obj.setdefault("span_id", span_id or format_span_id(ctx.span_id))
-                    extra = {}
-                    try:
-                        extra["trace_id"] = int(obj["trace_id"], 16)
-                        extra["span_id"] = int(obj["span_id"], 16)
-                    except (KeyError, ValueError):
-                        pass
-                    logger.info(obj, extra=extra)
-                    await queue.put(obj)
-                await msg.ack()
-        finally:
-            await sub.unsubscribe()
-            await queue.join()
-            queue.put_nowait(None)
-            await writer_task
-            if runner is not None:
-                await runner.cleanup()
-            if prom_runner is not None:
-                await prom_runner.cleanup()
+        await asyncio.Future()
 
     asyncio.run(_run())
 
@@ -353,6 +392,8 @@ def serve(
 def main() -> None:
     p = argparse.ArgumentParser(description="Collect metric messages into SQLite")
     p.add_argument("--servers", default="nats://127.0.0.1:4222", help="NATS server URLs")
+    p.add_argument("--flight-host", help="Arrow Flight server host")
+    p.add_argument("--flight-port", type=int, default=8815)
     p.add_argument("--db", required=True, help="output SQLite file")
     p.add_argument("--http-host", default="127.0.0.1")
     p.add_argument("--http-port", type=int, help="serve metrics via HTTP on this port")
@@ -369,6 +410,8 @@ def main() -> None:
         args.http_host,
         args.http_port,
         args.prom_port,
+        args.flight_host,
+        args.flight_port,
     )
 
 

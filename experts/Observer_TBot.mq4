@@ -983,20 +983,18 @@ bool SendTrade(uchar &payload[])
    ArrayResize(last_trade_payload, len);
    ArrayCopy(last_trade_payload, payload, 0, 0, len);
    have_last_trade = true;
-   if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
-      return(true);
    uchar zipped[];
    if(!CryptEncode(CRYPT_ARCHIVE_GZIP, out, zipped))
       ArrayCopy(zipped, out, 0, 0, ArraySize(out));
-   if(!FlightClientSend("trades", zipped, ArraySize(zipped)))
-   {
-      SocketErrors++;
-      EnqueueMessage(pending_trades, zipped);
-      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-      next_trade_flush = now + trade_backoff;
-      return(false);
-   }
-   return(true);
+   if(FlightClientSend("trades", zipped, ArraySize(zipped)))
+      return(true);
+   SocketErrors++;
+   if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
+      return(true);
+   EnqueueMessage(pending_trades, zipped);
+   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   next_trade_flush = now + trade_backoff;
+   return(false);
 }
 
 bool SendMetrics(uchar &payload[])
@@ -1040,20 +1038,18 @@ bool SendMetrics(uchar &payload[])
    ArrayResize(last_metric_payload, len);
    ArrayCopy(last_metric_payload, payload, 0, 0, len);
    have_last_metric = true;
-   if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
-      return(true);
    uchar zipped[];
    if(!CryptEncode(CRYPT_ARCHIVE_GZIP, out, zipped))
       ArrayCopy(zipped, out, 0, 0, ArraySize(out));
-   if(!FlightClientSend("metrics", zipped, ArraySize(zipped)))
-   {
-      SocketErrors++;
-      EnqueueMessage(pending_metrics, zipped);
-      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-      next_metric_flush = now + metric_backoff;
-      return(false);
-   }
-   return(true);
+   if(FlightClientSend("metrics", zipped, ArraySize(zipped)))
+      return(true);
+   SocketErrors++;
+   if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
+      return(true);
+   EnqueueMessage(pending_metrics, zipped);
+   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+   next_metric_flush = now + metric_backoff;
+   return(false);
 }
 
 void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
