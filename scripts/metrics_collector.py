@@ -14,6 +14,11 @@ from aiohttp import web
 
 import psutil
 
+try:  # optional systemd notification support
+    from systemd import daemon
+except Exception:  # pragma: no cover - systemd not installed
+    daemon = None
+
 import nats
 from google.protobuf.json_format import MessageToDict
 from proto import metric_event_pb2
@@ -75,6 +80,18 @@ if endpoint:
 meter_provider = MeterProvider(metric_readers=metric_readers, resource=resource)
 metrics.set_meter_provider(meter_provider)
 meter = metrics.get_meter(__name__)
+
+
+def _sd_notify_ready() -> None:
+    if daemon is not None:
+        daemon.sd_notify("READY=1")
+
+
+async def _watchdog_task(interval: float) -> None:
+    while True:
+        await asyncio.sleep(interval)
+        if daemon is not None:
+            daemon.sd_notify("WATCHDOG=1")
 
 
 def _cpu_usage(_):
@@ -194,6 +211,14 @@ def serve(
     async def _run() -> None:
         queue: Queue = Queue()
         prom_updater: Callable[[dict], None]
+        watchdog_interval = None
+        if daemon is not None:
+            try:
+                watchdog_interval = int(os.getenv("WATCHDOG_USEC", "0")) / 2_000_000
+            except ValueError:
+                watchdog_interval = None
+            if watchdog_interval:
+                asyncio.create_task(_watchdog_task(watchdog_interval))
 
         if prom_port is not None:
             from prometheus_client import (
@@ -247,6 +272,7 @@ def serve(
         nc = await nats.connect(servers)
         js = nc.jetstream()
         writer_task = asyncio.create_task(_writer_task(db_file, queue, prom_updater))
+        _sd_notify_ready()
 
         async def metrics_handler(request: web.Request) -> web.Response:
             limit_param = request.query.get("limit", "100")
