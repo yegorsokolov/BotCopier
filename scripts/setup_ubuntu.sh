@@ -11,7 +11,8 @@ cd "$REPO_DIR"
 
 log "Updating package list"
 mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-if [ "$mem_kb" -lt $((2 * 1024 * 1024)) ]; then
+log "Detected ${mem_kb} kB of total memory"
+if [ "$(grep MemTotal /proc/meminfo | awk '{print $2}')" -lt 2097152 ]; then
   sudo fallocate -l 2G /swapfile
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile
