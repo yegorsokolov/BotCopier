@@ -330,6 +330,14 @@ def generate(
     output = output.replace('__REGIME_COUNT__', str(len(reg_centers) or 1))
     output = output.replace('__REGIME_FEATURE_COUNT__', str(len(reg_feat_idx) or 1))
     output = output.replace('__REGIME_FEATURE_IDX__', reg_feat_idx_str)
+    reg_model_idx = base.get('regime_model_idx')
+    if not reg_model_idx and reg_centers:
+        reg_model_idx = list(range(len(reg_centers)))
+    reg_model_idx_str = ', '.join(str(int(i)) for i in (reg_model_idx or [0]))
+    output = output.replace('__REGIME_MODEL_IDX__', reg_model_idx_str)
+    reg_thr = base.get('regime_thresholds') or []
+    reg_thr_str = ', '.join(_fmt(t) for t in reg_thr) if reg_thr else ''
+    output = output.replace('__REGIME_THRESHOLDS__', reg_thr_str)
 
     mean_vals = base.get('mean', base.get('feature_mean', []))
     std_vals = base.get('std', base.get('feature_std', []))

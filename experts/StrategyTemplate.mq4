@@ -1010,7 +1010,7 @@ void CalcStops(double &sl_dist, double &tp_dist)
    tp_dist = PredictTPDistance();
 }
 
-void LogDecision(double &feats[], double prob, string action)
+void LogDecision(double &feats[], double prob, string action, int modelIdx, int regime)
 {
    if(!EnableDecisionLogging)
       return;
@@ -1025,20 +1025,20 @@ void LogDecision(double &feats[], double prob, string action)
    datetime now = TimeCurrent();
    if(DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals);
       FileFlush(DecisionLogHandle);
    }
    double thr = GetTradeThreshold();
    bool uncertain = MathAbs(prob - thr) <= UncertaintyMargin;
    if(uncertain && UncertainLogHandle != INVALID_HANDLE)
    {
-      FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
+      FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals);
       FileFlush(UncertainLogHandle);
    }
    if(DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"features\":[%s]}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, feat_vals);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"features\":[%s]}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
@@ -1193,9 +1193,11 @@ void OnTick()
    }
 
    UpdateFeatureHistory();
+   int reg = GetRegime();
+   CurrentRegime = reg;
    int modelIdx = SelectExpert();
-   if(CurrentRegime >= 0 && CurrentRegime < ArraySize(RegimeModelIdx))
-      modelIdx = RegimeModelIdx[CurrentRegime];
+   if(reg >= 0 && reg < ArraySize(RegimeModelIdx))
+      modelIdx = RegimeModelIdx[reg];
    if(BanditSocket != INVALID_HANDLE)
    {
       int idx = QueryBanditModel();
@@ -1232,7 +1234,7 @@ void OnTick()
    {
       Print("Skipping trade due to high predictive variance: " + DoubleToString(pv, 6));
       int decision_id = NextDecisionId;
-      LogDecision(feats, prob, "skip");
+      LogDecision(feats, prob, "skip", modelIdx, reg);
       if(UncertainLogHandle != INVALID_HANDLE)
       {
          double sl_dist, tp_dist;
@@ -1244,7 +1246,7 @@ void OnTick()
             feat_vals += DoubleToString(feats[i], 5);
          }
          datetime now = TimeCurrent();
-         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, sl_dist, tp_dist, feat_vals);
+         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, sl_dist, tp_dist, modelIdx, reg, feat_vals);
          FileFlush(UncertainLogHandle);
       }
       return;
@@ -1256,7 +1258,7 @@ void OnTick()
    double thr = GetTradeThreshold();
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
-   LogDecision(feats, prob, action);
+   LogDecision(feats, prob, action, modelIdx, reg);
    string order_comment = StringFormat("model=%d|decision_id=%d", modelIdx, decision_id);
    if(prob > thr)
    {
