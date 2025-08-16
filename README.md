@@ -128,7 +128,7 @@ A small web dashboard can display trades, metrics and training progress in real 
    ```
 5. Open <http://localhost:8000> in a browser and supply the token when prompted to view live updates.
 
-`uvloop` can be installed to accelerate asyncio event loops. `scripts/stream_listener.py` uses it automatically when available.
+`uvloop` can be installed (`pip install uvloop` or `pip install '.[uvloop]'`) to accelerate asyncio event loops. `scripts/stream_listener.py` uses it automatically when available.
 
 ### Arrow Flight Logging
 

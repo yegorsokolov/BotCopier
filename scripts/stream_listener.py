@@ -2,6 +2,12 @@
 """Listen for observer events from NATS JetStream and append them to CSV logs."""
 from __future__ import annotations
 
+try:
+    import uvloop
+    uvloop.install()
+except Exception:
+    pass
+
 import argparse
 import csv
 import json
@@ -19,11 +25,6 @@ from pathlib import Path
 import sys
 
 import asyncio
-try:
-    import uvloop
-    uvloop.install()
-except Exception:
-    pass
 import time
 import pickle
 import subprocess

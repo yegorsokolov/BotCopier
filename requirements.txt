@@ -28,7 +28,7 @@ transformers
 pytorch-forecasting; extra == "tft"
 
 # Optional extras
-uvloop; extra == "uvloop"
+uvloop; extra == "uvloop"  # faster asyncio event loop
 xgboost; extra == "xgboost"
 # Hyperparameter search
 optuna; extra == "optuna"
