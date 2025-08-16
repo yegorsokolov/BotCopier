@@ -10,9 +10,10 @@ Whenever the coefficients change the script invokes
 reloaded by MetaTrader.
 
 This module intentionally keeps dependencies light so it can run alongside the
-MetaTrader terminal on modest hardware.  It also monitors CPU usage and
-throttles data consumption when system load is high to avoid overwhelming the
-host.
+MetaTrader terminal on modest hardware.  Before processing each batch the
+trainer samples CPU usage with :func:`psutil.cpu_percent`.  If system load
+exceeds 80% it sleeps briefly to yield the processor, adaptively throttling
+consumption to avoid overwhelming the host.
 """
 from __future__ import annotations
 
@@ -181,9 +182,15 @@ class OnlineTrainer:
                         row["y"] = row.get("y") or row.get("label")
                         batch.append(row)
                         if len(batch) >= self.batch_size:
+                            load = psutil.cpu_percent(interval=None)
+                            if load > 80.0:
+                                time.sleep(3.0)
                             self.update(batch)
                             batch.clear()
             if batch:
+                load = psutil.cpu_percent(interval=None)
+                if load > 80.0:
+                    time.sleep(3.0)
                 self.update(batch)
                 batch.clear()
             time.sleep(1.0)
