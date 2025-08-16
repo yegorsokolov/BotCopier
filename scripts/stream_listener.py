@@ -8,6 +8,12 @@ import json
 import logging
 import os
 import platform
+
+try:  # prefer systemd journal if available
+    from systemd.journal import JournalHandler
+    logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
+except Exception:  # pragma: no cover - fallback to file logging
+    logging.basicConfig(filename="stream_listener.log", level=logging.INFO)
 import pkgutil
 from pathlib import Path
 import sys

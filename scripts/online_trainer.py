@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import csv
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -27,6 +28,12 @@ import os
 import threading
 from pathlib import Path
 from typing import Iterable, List, Dict, Any
+
+try:  # prefer systemd journal if available
+    from systemd.journal import JournalHandler
+    logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
+except Exception:  # pragma: no cover - fallback to file logging
+    logging.basicConfig(filename="online_trainer.log", level=logging.INFO)
 
 import numpy as np
 import psutil
