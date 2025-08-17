@@ -36,5 +36,7 @@
   },
   "symbol_embeddings": {},
   "risk_parity_symbols": [],
-  "risk_parity_weights": []
+  "risk_parity_weights": [],
+  "risk_covariance_symbols": [],
+  "risk_covariance_matrix": []
 }

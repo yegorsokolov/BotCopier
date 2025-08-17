@@ -390,6 +390,17 @@ def generate(
         output = output.replace('__SYM_EMB_SYMBOLS__', '')
         output = output.replace('__SYM_EMB_VALUES__', '')
 
+    rps = base.get('risk_parity_symbols', [])
+    rpw = base.get('risk_parity_weights', [])
+    if rps and rpw:
+        sym_str = ', '.join(f'"{s}"' for s in rps)
+        weight_str = ', '.join(_fmt(float(w)) for w in rpw)
+    else:
+        sym_str = ''
+        weight_str = ''
+    output = output.replace('__RISK_PARITY_SYMBOLS__', sym_str)
+    output = output.replace('__RISK_PARITY_WEIGHTS__', weight_str)
+
     cal_events = base.get('calendar_events', [])
     if cal_events:
         time_vals = ', '.join(
