@@ -285,37 +285,23 @@ def detect_resources():
 
     CPU_MHZ_THRESHOLD = 2500.0
 
-    model_type = "logreg"
-    if not lite_mode:
-        gpu_models = [
-            ("transformer", "transformers", 8.0),
-            ("tft", "pytorch_forecasting", 8.0),
-            ("lstm", "torch", 0.0),
-        ]
-        cpu_models = [
-            ("catboost", "catboost"),
-            ("lgbm", "lightgbm"),
-            ("xgboost", "xgboost"),
-            ("random_forest", "sklearn"),
-        ]
-        preferred = []
-        if has_gpu:
-            preferred.extend(
-                (mt, module)
-                for mt, module, min_mem in gpu_models
-                if gpu_mem_gb >= min_mem
-                and (cpu_mhz >= CPU_MHZ_THRESHOLD or mt == "lstm")
-            )
-        preferred.extend(cpu_models)
-        for mt, module in preferred:
-            if heavy_mode and has(module):
-                model_type = mt
-                break
+    if lite_mode:
+        model_type = "logreg"
+    else:
+        model_type = "transformer"
+        if not (
+            has_gpu
+            and has("transformers")
+            and gpu_mem_gb >= 8.0
+            and cpu_mhz >= CPU_MHZ_THRESHOLD
+        ):
+            model_type = "logreg"
 
     use_optuna = heavy_mode and has("optuna")
     bayes_steps = 20 if use_optuna else 0
     return {
         "lite_mode": lite_mode,
+        "heavy_mode": heavy_mode,
         "model_type": model_type,
         "bayes_steps": bayes_steps,
         "mem_gb": mem_gb,
@@ -3104,6 +3090,7 @@ def train(
         "trained_at": datetime.utcnow().isoformat(),
         "feature_names": feature_names,
         "model_type": model_type,
+        "training_mode": "lite" if lite_mode else "heavy",
         "weighted": sample_weight is not None,
         "train_accuracy": train_acc,
         "val_accuracy": val_acc,
@@ -3326,6 +3313,7 @@ def train(
         and _has_sufficient_ram()
         and "coefficients" in model
         and "intercept" in model
+        and not lite_mode
     ):
         try:
             temp_model = out_dir / "model_supervised.json"
@@ -3402,6 +3390,8 @@ def train(
 
 
 def main():
+    resources = detect_resources()
+    print(json.dumps(resources, indent=2))
     span = tracer.start_span("train_target_clone")
     ctx = span.get_span_context()
     logger.info("start training", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
@@ -3503,8 +3493,21 @@ def main():
             higher_tfs = [tf.strip() for tf in args.higher_timeframes.split(',') if tf.strip()]
         else:
             higher_tfs = None
-        resources = detect_resources()
         lite_mode = resources["lite_mode"]
+        heavy_mode = resources["heavy_mode"]
+        if lite_mode:
+            args.use_macd = False
+            args.use_atr = False
+            args.use_bollinger = False
+            args.use_stochastic = False
+            args.use_adx = False
+            args.grid_search = False
+        else:
+            args.use_macd = True
+            args.use_atr = True
+            args.use_bollinger = True
+            args.use_stochastic = True
+            args.use_adx = True
         model_type = args.model_type or resources["model_type"]
         bayes_steps = (
             0 if lite_mode else (args.bayes_steps or resources["bayes_steps"])

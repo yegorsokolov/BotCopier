@@ -43,6 +43,15 @@ log "Installing Python dependencies"
 pip3 install --no-cache-dir -r requirements.txt
 pip3 install --no-cache-dir pyarrow
 
+log "Detecting hardware resources and training mode"
+python3 - <<'PY' | while read line; do log "$line"; done
+from scripts.train_target_clone import detect_resources
+import json
+res = detect_resources()
+print(json.dumps(res))
+print("training_mode=" + ("lite" if res["lite_mode"] else "heavy"))
+PY
+
 if command -v nvidia-smi >/dev/null 2>&1; then
   log "CUDA-capable GPU detected, installing onnxruntime-gpu"
   pip3 install --no-cache-dir onnxruntime-gpu
