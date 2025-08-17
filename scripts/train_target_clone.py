@@ -1011,8 +1011,9 @@ def _load_feature_cache(out_dir: Path, existing: dict | None):
         meta = pf.schema_arrow.metadata or {}
         names = json.loads(meta.get(b"feature_names", b"[]").decode())
         last_id = int(meta.get(b"last_event_id", b"0"))
+        existing_names = existing.get("feature_names", [])
         if (
-            names == existing.get("feature_names", [])
+            set(existing_names).issubset(set(names))
             and last_id == int(existing.get("last_event_id", 0))
         ):
             df_cache = pf.read().to_pandas()
@@ -1807,6 +1808,7 @@ def train(
     loaded_from_cache = False
     data_commits: list[str] = []
     data_checksums: list[str] = []
+
     if cache_features:
         loaded = _load_feature_cache(out_dir, existing_model)
         if loaded is not None:
@@ -1823,7 +1825,7 @@ def train(
             loaded_from_cache = True
 
     price_map_total: dict[str, list[float]] = {}
-    if features is None:
+    if not loaded_from_cache:
         rows_iter, data_commits, data_checksums = _load_logs(
             data_dir, lite_mode=True, flight_uri=flight_uri
         )
@@ -1895,17 +1897,14 @@ def train(
             if time_list
             else np.array([], dtype="datetime64[s]")
         )
+        # feature cache will be saved later once final feature names are known
     else:
-        encoder = None
-        if encoder_file is not None and encoder_file.exists():
-            with open(encoder_file) as f:
-                encoder = json.load(f)
-        if loaded_from_cache:
-            rows_df, _, _ = _load_logs(data_dir, flight_uri=flight_uri)
-            if "event_id" in rows_df.columns:
-                max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
-                if not pd.isna(max_id):
-                    last_event_id = max(last_event_id, int(max_id))
+        # even when loading from cache, capture latest event_id for model metadata
+        rows_df, _, _ = _load_logs(data_dir, flight_uri=flight_uri)
+        if "event_id" in rows_df.columns:
+            max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
+            if not pd.isna(max_id):
+                last_event_id = max(last_event_id, int(max_id))
     # append labeled uncertain decisions
     base_len = len(features)
     ufile = uncertain_file or (data_dir / "uncertain_decisions_labeled.csv")
@@ -1934,20 +1933,6 @@ def train(
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
-    if cache_features and not loaded_from_cache:
-        cache_feature_names = sorted({k for feat in features for k in feat})
-        _save_feature_cache(
-            out_dir,
-            cache_feature_names,
-            features,
-            labels,
-            sl_targets,
-            tp_targets,
-            lot_targets,
-            hours,
-            event_times,
-            last_event_id,
-        )
     risk_parity = _compute_risk_parity(price_map_total)
     regime_info = None
     reg_centers = None
@@ -2205,6 +2190,20 @@ def train(
     )
     X_train_lot = _encode_features(enc_model, X_train_lot)
     X_val_lot = _encode_features(enc_model, X_val_lot)
+
+    if cache_features and not loaded_from_cache and features:
+        _save_feature_cache(
+            out_dir,
+            feature_names,
+            features,
+            labels,
+            sl_targets,
+            tp_targets,
+            lot_targets,
+            hours,
+            event_times,
+            last_event_id,
+        )
 
 
     bayes_threshold = None
@@ -3505,7 +3504,12 @@ def main():
     p.add_argument('--use-encoder', action='store_true', help='apply pretrained contrastive encoder')
     p.add_argument('--uncertain-file', help='CSV with labeled uncertain decisions')
     p.add_argument('--uncertain-weight', type=float, default=2.0, help='sample weight multiplier for labeled uncertainties')
-    p.add_argument('--decay-half-life', type=float, default=30.0, help='half-life in days for sample weight decay')
+    p.add_argument(
+        '--half-life-days',
+        type=float,
+        default=30.0,
+        help='half-life in days for sample weight decay',
+    )
     args = p.parse_args()
     with trace.use_span(span, end_on_exit=True):
         global START_EVENT_ID
@@ -3592,7 +3596,7 @@ def main():
             use_encoder=args.use_encoder,
             uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
             uncertain_weight=args.uncertain_weight,
-            decay_half_life=args.decay_half_life,
+            decay_half_life=args.half_life_days,
             rl_finetune=resources["enable_rl"],
             symbol_graph=symbol_graph,
         )
