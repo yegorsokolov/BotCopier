@@ -210,10 +210,14 @@ async def _writer_task(
             row = await queue.get()
             if row is None:
                 break
-            conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
-            conn.commit()
-            if prom_updater is not None:
-                prom_updater(row)
+            try:
+                conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
+                conn.commit()
+            except Exception as e:  # pragma: no cover - disk or schema issues
+                logger.error({"error": "file write failure", "details": str(e)})
+            else:
+                if prom_updater is not None:
+                    prom_updater(row)
             queue.task_done()
     finally:
         conn.close()
@@ -275,6 +279,16 @@ def serve(
                 "Host memory utilisation",
                 registry=registry,
             )
+            metric_queue_g = Gauge(
+                "bot_metric_queue_depth",
+                "Arrow Flight metric queue depth",
+                registry=registry,
+            )
+            trade_queue_g = Gauge(
+                "bot_trade_queue_depth",
+                "Arrow Flight trade queue depth",
+                registry=registry,
+            )
 
             async def prom_handler(_request: web.Request) -> web.Response:
                 data = generate_latest(registry)
@@ -329,6 +343,16 @@ def serve(
                         book_refresh_g.set(float(v))
                     except (TypeError, ValueError):
                         pass
+                if (v := row.get("metric_queue_depth")) is not None:
+                    try:
+                        metric_queue_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("trade_queue_depth")) is not None:
+                    try:
+                        trade_queue_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
 
             prom_updater = _prom_updater
         else:
@@ -368,7 +392,8 @@ def serve(
                             logger.info(row, extra=extra)
                             await queue.put(row)
                     last = len(rows)
-                except Exception:
+                except Exception as e:  # pragma: no cover - network issues
+                    logger.warning({"error": "socket error", "details": str(e)})
                     await asyncio.sleep(1)
                     continue
                 await asyncio.sleep(1)

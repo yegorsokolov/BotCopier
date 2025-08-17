@@ -2,7 +2,7 @@
 
 ## Viewing logs
 
-The Python services write structured logs to the systemd journal when available. On Ubuntu use `journalctl` to inspect them:
+The Python services write structured logs to the systemd journal when available. Socket send failures and disk write errors are reported here so they can be alerted on. On Ubuntu use `journalctl` to inspect them:
 
 ```bash
 sudo journalctl -u stream-listener.service -f
@@ -29,4 +29,8 @@ scrape_configs:
       - targets: ['localhost:8001']
 ```
 
-CPU and memory utilisation metrics are collected using `psutil` and exported alongside bot performance gauges.
+CPU and memory utilisation metrics are collected using `psutil` and exported alongside bot performance gauges. Arrow Flight queue depth is reported via `bot_metric_queue_depth` and `bot_trade_queue_depth` gauges so backpressure on the message bus is visible.
+
+## Grafana dashboard
+
+Import `grafana/metrics_dashboard.json` into Grafana to visualise the Prometheus data. The dashboard includes CPU and memory usage, Arrow Flight queue depth and error counters for socket and file write failures.

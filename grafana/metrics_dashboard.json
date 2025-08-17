@@ -54,6 +54,30 @@
       "targets": [
         {"expr": "bot_book_refresh_seconds"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Host CPU %",
+      "id": 7,
+      "targets": [
+        {"expr": "system_cpu_percent"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Host Memory %",
+      "id": 8,
+      "targets": [
+        {"expr": "system_memory_percent"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Flight Metric Queue Depth",
+      "id": 9,
+      "targets": [
+        {"expr": "bot_metric_queue_depth"}
+      ]
     }
   ]
 }
