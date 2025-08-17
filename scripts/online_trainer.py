@@ -243,7 +243,7 @@ class OnlineTrainer:
         y = [int(rec["y"]) for rec in batch]
         return np.asarray(X), np.asarray(y)
 
-    def update(self, batch: List[Dict[str, Any]]) -> None:
+    def update(self, batch: List[Dict[str, Any]]) -> bool:
         with tracer.start_as_current_span("train_batch") as span:
             X, y = self._vectorise(batch)
             if not hasattr(self.clf, "classes_"):
@@ -266,6 +266,7 @@ class OnlineTrainer:
                 },
                 extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
             )
+            return changed
 
     # ------------------------------------------------------------------
     # Data sources
