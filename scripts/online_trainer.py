@@ -143,6 +143,8 @@ class OnlineTrainer:
         self.training_mode = "lite"
         self.cpu_threshold = 80.0
         self.sleep_seconds = 3.0
+        self.half_life_days = 0.0
+        self.weight_decay: Dict[str, Any] | None = None
         if self.model_path.exists():
             self._load()
         elif detect_resources:
@@ -176,6 +178,8 @@ class OnlineTrainer:
         self.model_type = data.get("model_type", self.model_type)
         coef = data.get("coefficients")
         intercept = data.get("intercept")
+        self.half_life_days = float(data.get("half_life_days", 0.0))
+        self.weight_decay = data.get("weight_decay")
         if self.feature_names and coef is not None and intercept is not None:
             n = len(self.feature_names)
             self.clf.partial_fit(np.zeros((1, n)), [0], classes=np.array([0, 1]))
@@ -194,6 +198,10 @@ class OnlineTrainer:
             "feature_flags": self.feature_flags,
             "model_type": self.model_type,
         }
+        if self.half_life_days:
+            payload["half_life_days"] = self.half_life_days
+        if self.weight_decay:
+            payload["weight_decay"] = self.weight_decay
         self.model_path.write_text(json.dumps(payload))
 
     def _maybe_generate(self) -> None:

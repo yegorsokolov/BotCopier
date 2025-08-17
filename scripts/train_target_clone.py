@@ -1720,7 +1720,7 @@ def train(
     use_encoder: bool = False,
     uncertain_file: Path | None = None,
     uncertain_weight: float = 2.0,
-    decay_half_life: float = 30.0,
+    decay_half_life: float | None = None,
     news_sentiment_file: Path | None = None,
     rl_finetune: bool = False,
 ):
@@ -1818,6 +1818,9 @@ def train(
 
     existing_model = None
     last_event_id = 0
+    provided_half_life = decay_half_life
+    if decay_half_life is None:
+        decay_half_life = 0.0
     json_path = out_dir / "model.json"
     gz_path = out_dir / "model.json.gz"
     model_file: Path | None = None
@@ -1831,6 +1834,11 @@ def train(
         with open_model(model_file, "rt") as f:
             existing_model = json.load(f)
             last_event_id = int(existing_model.get("last_event_id", 0))
+            if decay_half_life == 0.0 and provided_half_life is None:
+                decay_half_life = float(
+                    existing_model.get("half_life_days")
+                    or existing_model.get("weight_decay", {}).get("half_life_days", 0.0)
+                )
     elif incremental:
         raise FileNotFoundError(f"{json_path} not found for incremental training")
 
@@ -2417,6 +2425,7 @@ def train(
             "mode": mode,
         }
         model["feature_flags"] = feature_flags
+        model["half_life_days"] = float(decay_half_life or 0.0)
         if weight_decay_info:
             model["weight_decay"] = weight_decay_info
         if ae_info:
@@ -2558,6 +2567,7 @@ def train(
         model["regime_model_idx"] = [m.get("regime", i) for i, m in enumerate(regime_models)]
         model["mode"] = mode
         model["feature_flags"] = feature_flags
+        model["half_life_days"] = float(decay_half_life or 0.0)
         if weight_decay_info:
             model["weight_decay"] = weight_decay_info
         if ae_info:
@@ -3279,6 +3289,7 @@ def train(
         model["teacher_accuracy"] = val_acc
         if student_val_acc is not None:
             model["student_accuracy"] = student_val_acc
+    model["half_life_days"] = float(decay_half_life or 0.0)
     if weight_decay_info:
         model["weight_decay"] = weight_decay_info
     if ae_info:
@@ -3614,7 +3625,6 @@ def main():
     p.add_argument(
         '--half-life-days',
         type=float,
-        default=30.0,
         help='half-life in days for sample weight decay',
     )
     args = p.parse_args()
