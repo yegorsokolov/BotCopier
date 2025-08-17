@@ -4,7 +4,7 @@
 
 #import "observer_capnp.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_logging, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, uchar &out[]);
 #import
 #import "flight_client.dll"
 bool FlightClientInit(string host, int port);
@@ -84,6 +84,7 @@ int      NextEventId = 1;
 datetime ModelTimestamp = 0;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
+int      FallbackEvents = 0;
 const int SCHEMA_VERSION = 1;
 const int MSG_TRADE = 0;
 const int MSG_METRIC = 1;
@@ -380,6 +381,7 @@ void FlushPending(datetime now)
          {
             string line = ArraySize(pending_trade_lines) > 0 ? pending_trade_lines[0] : "";
             FallbackLog("trades", pending_trades[0], line);
+            FallbackEvents++;
             RemoveFirst(pending_trades);
             RemoveFirstStr(pending_trade_lines);
             trade_retry_count = FallbackRetryThreshold;
@@ -407,6 +409,7 @@ void FlushPending(datetime now)
          {
             string line = ArraySize(pending_metric_lines) > 0 ? pending_metric_lines[0] : "";
             FallbackLog("metrics", pending_metrics[0], line);
+            FallbackEvents++;
             RemoveFirst(pending_metrics);
             RemoveFirstStr(pending_metric_lines);
             metric_retry_count = FallbackRetryThreshold;
@@ -1643,13 +1646,13 @@ void WriteMetrics(datetime ts)
 
       string span_id = GenId(8);
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, TraceId, span_id);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, TraceId, span_id);
 
       uchar payload[];
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, payload);
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, payload);
       bool sent = false;
       if(len>0)
          sent = SendMetrics(payload, line);
