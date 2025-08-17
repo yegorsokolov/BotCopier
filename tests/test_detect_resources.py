@@ -1,5 +1,16 @@
 import importlib
 import types
+import sys
+
+try:  # pragma: no cover - optional dependency
+    import pyarrow  # type: ignore
+except Exception:  # pragma: no cover - pyarrow not installed
+    sys.modules.setdefault(
+        "pyarrow", types.SimpleNamespace(Table=None, __version__="0", schema=lambda *a, **k: None)
+    )
+    sys.modules.setdefault("pyarrow.flight", types.SimpleNamespace())
+    sys.modules.setdefault("pyarrow.parquet", types.SimpleNamespace())
+
 import scripts.train_target_clone as tc
 
 
@@ -10,6 +21,10 @@ class DummyVM:
 class DummyCPUFreq:
     def __init__(self, m):
         self.max = m
+
+
+class DummySwap:
+    total = 2 * 1024**3
 
 
 def _make_torch(mem):
@@ -31,13 +46,14 @@ def _make_torch(mem):
 
 
 def _fake_find_spec(name):
-    if name in {"transformers", "pytorch_forecasting", "torch", "sklearn"}:
+    if name in {"transformers", "pytorch_forecasting", "torch", "sklearn", "stable_baselines3"}:
         return types.SimpleNamespace()
     return _orig_find_spec(name)
 
 
 def test_detect_resources_gpu_threshold(monkeypatch):
     monkeypatch.setattr(tc.psutil, "virtual_memory", lambda: DummyVM)
+    monkeypatch.setattr(tc.psutil, "swap_memory", lambda: DummySwap)
     monkeypatch.setattr(tc.psutil, "cpu_count", lambda logical=False: 8)
     monkeypatch.setattr(tc.psutil, "cpu_freq", lambda: DummyCPUFreq(3000))
     monkeypatch.setattr(
@@ -53,15 +69,19 @@ def test_detect_resources_gpu_threshold(monkeypatch):
     assert res["gpu_mem_gb"] == 4
     assert res["model_type"] == "logreg"
     assert res["cpu_mhz"] == 3000
+    assert res["swap_gb"] == 2
+    assert res["mode"] == "heavy"
 
     monkeypatch.setattr(tc, "torch", _make_torch(12 * 1024**3))
     res = tc.detect_resources()
     assert res["gpu_mem_gb"] == 12
     assert res["model_type"] == "transformer"
+    assert res["mode"] == "rl"
 
 
 def test_detect_resources_low_disk(monkeypatch):
     monkeypatch.setattr(tc.psutil, "virtual_memory", lambda: DummyVM)
+    monkeypatch.setattr(tc.psutil, "swap_memory", lambda: DummySwap)
     monkeypatch.setattr(tc.psutil, "cpu_count", lambda logical=False: 8)
     monkeypatch.setattr(tc.psutil, "cpu_freq", lambda: DummyCPUFreq(3000))
     monkeypatch.setattr(
@@ -70,10 +90,12 @@ def test_detect_resources_low_disk(monkeypatch):
     res = tc.detect_resources()
     assert res["disk_gb"] == 4
     assert res["lite_mode"]
+    assert res["mode"] == "lite"
 
 
 def test_detect_resources_cpu_threshold(monkeypatch):
     monkeypatch.setattr(tc.psutil, "virtual_memory", lambda: DummyVM)
+    monkeypatch.setattr(tc.psutil, "swap_memory", lambda: DummySwap)
     monkeypatch.setattr(tc.psutil, "cpu_count", lambda logical=False: 8)
     monkeypatch.setattr(tc.psutil, "cpu_freq", lambda: DummyCPUFreq(2000))
     monkeypatch.setattr(
@@ -87,3 +109,4 @@ def test_detect_resources_cpu_threshold(monkeypatch):
     res = tc.detect_resources()
     assert res["cpu_mhz"] == 2000
     assert res["model_type"] == "logreg"
+    assert res["mode"] == "rl"
