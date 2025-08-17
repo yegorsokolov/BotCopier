@@ -151,8 +151,12 @@ class OnlineTrainer:
             try:
                 res = detect_resources()
                 self.training_mode = res.get("mode", self.training_mode)
+                self.feature_flags["order_book"] = res.get("heavy_mode", False)
             except Exception:
                 pass
+        self.feature_flags.setdefault(
+            "order_book", self.training_mode not in ("lite",)
+        )
         self._apply_mode()
 
     def _apply_mode(self) -> None:
@@ -175,6 +179,8 @@ class OnlineTrainer:
         self.training_mode = data.get("mode") or data.get("training_mode", "lite")
         self.feature_names = data.get("feature_names", [])
         self.feature_flags = data.get("feature_flags", {})
+        if "order_book" not in self.feature_flags:
+            self.feature_flags["order_book"] = self.training_mode not in ("lite",)
         self.model_type = data.get("model_type", self.model_type)
         coef = data.get("coefficients")
         intercept = data.get("intercept")
@@ -210,7 +216,7 @@ class OnlineTrainer:
         script = Path(__file__).resolve().with_name("generate_mql4_from_model.py")
         experts_dir = Path(__file__).resolve().parents[1] / "experts"
         cmd = [sys.executable, str(script), str(self.model_path), str(experts_dir)]
-        if self.training_mode == "lite":
+        if not self.feature_flags.get("order_book", False):
             cmd.append("--lite-mode")
         subprocess.run(cmd, check=False)
 
@@ -218,6 +224,8 @@ class OnlineTrainer:
     # Incremental training
     # ------------------------------------------------------------------
     def _ensure_features(self, keys: Iterable[str]) -> None:
+        if not self.feature_flags.get("order_book", False):
+            keys = [k for k in keys if not k.startswith("book_")]
         new_feats = [k for k in keys if k not in self.feature_names and k != "y"]
         if not new_feats:
             return
