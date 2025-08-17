@@ -1063,7 +1063,20 @@ int QueryBanditModel()
    uchar bytes[];
    StringToCharArray("CHOOSE\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
    if(SocketSend(BanditSocket, bytes, ArraySize(bytes)-1) <= 0)
-      return(0);
+   {
+      SocketClose(BanditSocket);
+      BanditSocket = SocketCreate();
+      if(BanditSocket == INVALID_HANDLE ||
+         !SocketConnect(BanditSocket, BanditRouterHost, BanditRouterPort, 1000))
+      {
+         if(BanditSocket != INVALID_HANDLE)
+            SocketClose(BanditSocket);
+         BanditSocket = INVALID_HANDLE;
+         return(0);
+      }
+      if(SocketSend(BanditSocket, bytes, ArraySize(bytes)-1) <= 0)
+         return(0);
+   }
    uchar resp[16];
    int got = SocketRead(BanditSocket, resp, 15, 1000);
    if(got <= 0) return(0);
@@ -1079,7 +1092,20 @@ void SendBanditReward(int modelIdx, double reward)
    string msg = StringFormat("REWARD %d %.2f\n", modelIdx, reward);
    uchar bytes[];
    StringToCharArray(msg, bytes, 0, WHOLE_ARRAY, CP_UTF8);
-   SocketSend(BanditSocket, bytes, ArraySize(bytes)-1);
+   if(SocketSend(BanditSocket, bytes, ArraySize(bytes)-1) <= 0)
+   {
+      SocketClose(BanditSocket);
+      BanditSocket = SocketCreate();
+      if(BanditSocket == INVALID_HANDLE ||
+         !SocketConnect(BanditSocket, BanditRouterHost, BanditRouterPort, 1000))
+      {
+         if(BanditSocket != INVALID_HANDLE)
+            SocketClose(BanditSocket);
+         BanditSocket = INVALID_HANDLE;
+         return;
+      }
+      SocketSend(BanditSocket, bytes, ArraySize(bytes)-1);
+   }
 }
 
 void LogAdaptationEvent(int regime, double &oldCoeffs[], double &newCoeffs[], double oldInt, double newInt)
