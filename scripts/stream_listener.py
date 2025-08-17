@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Listen for observer events from NATS JetStream and append them to CSV logs."""
+"""Listen for observer events from Arrow Flight and append them to CSV logs."""
 from __future__ import annotations
 
 try:
@@ -42,10 +42,6 @@ try:  # optional drift detection dependency
     from river.drift import ADWIN  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     ADWIN = None  # type: ignore
-try:  # optional NATS dependency
-    import nats  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    nats = None
 try:  # optional Arrow Flight dependency
     import pyarrow as pa  # type: ignore
     import pyarrow.flight as flight  # type: ignore
@@ -556,11 +552,10 @@ def process_metric(msg) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Listen for observer events")
-    p.add_argument("--servers", default="nats://127.0.0.1:4222", help="NATS server URLs")
     p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
     p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
     p.add_argument("--ring-path", default=os.getenv("TBOT_RING", "/tmp/tbot_events"), help="Path to shared memory ring buffer")
-    p.add_argument("--flight-host", help="Arrow Flight server host")
+    p.add_argument("--flight-host", default="127.0.0.1", help="Arrow Flight server host")
     p.add_argument("--flight-port", type=int, default=8815)
     args = p.parse_args()
 
@@ -638,108 +633,33 @@ def main() -> int:
                 continue
         return 0
 
-    if args.flight_host and flight is not None:
-        async def _flight_run() -> None:
-            client = flight.FlightClient(f"grpc://{args.flight_host}:{args.flight_port}")
+    async def _flight_run() -> None:
+        client = flight.FlightClient(f"grpc://{args.flight_host}:{args.flight_port}")
 
-            async def poll(path: str, handler) -> None:
-                last = 0
-                while True:
-                    try:
-                        desc = flight.FlightDescriptor.for_path(path)
-                        info = client.get_flight_info(desc)
-                        reader = client.do_get(info.endpoints[0].ticket)
-                        table = reader.read_all()
-                        rows = table.to_pylist()
-                        for row in rows[last:]:
-                            handler(SimpleNamespace(**row))
-                        last = len(rows)
-                    except Exception:
-                        await asyncio.sleep(1)
-                        continue
+        async def poll(path: str, handler) -> None:
+            last = 0
+            while True:
+                try:
+                    desc = flight.FlightDescriptor.for_path(path)
+                    info = client.get_flight_info(desc)
+                    reader = client.do_get(info.endpoints[0].ticket)
+                    table = reader.read_all()
+                    rows = table.to_pylist()
+                    for row in rows[last:]:
+                        handler(SimpleNamespace(**row))
+                    last = len(rows)
+                except Exception:
                     await asyncio.sleep(1)
+                    continue
+                await asyncio.sleep(1)
 
-            _sd_notify_ready()
-            await asyncio.gather(
-                poll("trades", process_trade), poll("metrics", process_metric)
-            )
-
-        asyncio.run(_flight_run())
-        return 0
-
-    async def _run() -> None:
-        watchdog_interval = None
-        if daemon is not None:
-            try:
-                watchdog_interval = int(os.getenv("WATCHDOG_USEC", "0")) / 2_000_000
-            except ValueError:
-                watchdog_interval = None
-            if watchdog_interval:
-                asyncio.create_task(_watchdog_task(watchdog_interval))
-        nc = await nats.connect(args.servers)
-        js = nc.jetstream()
-
-        async def trade_handler(msg):
-            decoded = _decode_event(msg.data, trade_prev)
-            if not decoded:
-                await msg.ack()
-                return
-            version, body = decoded
-            if version != SCHEMA_VERSION:
-                logger.warning(
-                    "schema version %d mismatch (expected %d)",
-                    version,
-                    SCHEMA_VERSION,
-                )
-                await msg.ack()
-                return
-            try:
-                trade = trade_capnp.TradeEvent.from_bytes(body)
-            except Exception:
-                try:
-                    trade = trade_capnp.TradeEvent.from_bytes_packed(body)
-                except Exception:
-                    await msg.ack()
-                    return
-            process_trade(trade)
-            await msg.ack()
-
-        async def metric_handler(msg):
-            decoded = _decode_event(msg.data, metric_prev)
-            if not decoded:
-                await msg.ack()
-                return
-            version, body = decoded
-            if version != SCHEMA_VERSION:
-                logger.warning(
-                    "schema version %d mismatch (expected %d)",
-                    version,
-                    SCHEMA_VERSION,
-                )
-                await msg.ack()
-                return
-            try:
-                metric = metrics_capnp.Metrics.from_bytes(body)
-            except Exception:
-                try:
-                    metric = metrics_capnp.Metrics.from_bytes_packed(body)
-                except Exception:
-                    await msg.ack()
-                    return
-            process_metric(metric)
-            await msg.ack()
-
-        await js.subscribe("trades", durable="stream_listener_trades", cb=trade_handler)
-        await js.subscribe("metrics", durable="stream_listener_metrics", cb=metric_handler)
-
-        write_run_info()
-        for pth in LOG_FILES.values():
-            pth.parent.mkdir(parents=True, exist_ok=True)
         _sd_notify_ready()
-        await asyncio.Future()
+        await asyncio.gather(
+            poll("trades", process_trade), poll("metrics", process_metric)
+        )
 
     try:
-        asyncio.run(_run())
+        asyncio.run(_flight_run())
     finally:
         if ws_trades:
             try:
