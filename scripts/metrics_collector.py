@@ -81,6 +81,7 @@ FIELDS = [
     "var_breach_count",
     "trade_queue_depth",
     "metric_queue_depth",
+    "fallback_events",
     "trace_id",
     "span_id",
 ]
@@ -263,6 +264,11 @@ def serve(
             file_err_c = Counter(
                 "bot_file_write_errors_total", "File write error count", registry=registry
             )
+            fallback_event_c = Counter(
+                "bot_fallback_events_total",
+                "Fallback logging event count",
+                registry=registry,
+            )
             cpu_load_g = Gauge("bot_cpu_load", "CPU load", registry=registry)
             book_refresh_g = Gauge(
                 "bot_book_refresh_seconds",
@@ -351,6 +357,11 @@ def serve(
                 if (v := row.get("trade_queue_depth")) is not None:
                     try:
                         trade_queue_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("fallback_events")) is not None:
+                    try:
+                        fallback_event_c.inc(float(v))
                     except (TypeError, ValueError):
                         pass
 

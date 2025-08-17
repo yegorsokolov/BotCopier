@@ -78,6 +78,14 @@
       "targets": [
         {"expr": "bot_metric_queue_depth"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Flight Fallback Events",
+      "id": 10,
+      "targets": [
+        {"expr": "bot_fallback_events_total"}
+      ]
     }
   ]
 }
