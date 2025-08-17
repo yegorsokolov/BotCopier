@@ -3643,6 +3643,7 @@ def main():
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
     p.add_argument('--regime-model', help='JSON file with precomputed regime centers')
+    p.add_argument('--regime-json', help='regime detection JSON produced by detect_regime.py')
     p.add_argument('--moe', action='store_true', help='train mixture-of-experts model per symbol')
     p.add_argument('--federated-server', help='URL of federated averaging server')
     p.add_argument('--use-encoder', action='store_true', help='apply pretrained contrastive encoder')
@@ -3715,7 +3716,13 @@ def main():
             prune_threshold=args.prune_threshold,
             prune_warn=args.prune_warn,
             compress_model=args.compress_model,
-            regime_model_file=Path(args.regime_model) if args.regime_model else None,
+            regime_model_file=(
+                Path(args.regime_json)
+                if args.regime_json
+                else Path(args.regime_model)
+                if args.regime_model
+                else None
+            ),
             moe=args.moe,
             flight_uri=args.flight_uri,
             use_encoder=args.use_encoder,

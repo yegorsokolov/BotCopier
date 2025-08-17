@@ -81,6 +81,8 @@ def generate(
     if gating_json:
         with open(gating_json, 'rt') as f:
             gating_data = json.load(f)
+    if gating_data and 'feature_names' not in gating_data:
+        gating_data['feature_names'] = base.get('feature_names', [])
 
     has_gpu_weights = any(
         m.get('transformer_weights')
