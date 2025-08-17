@@ -33,4 +33,8 @@ CPU and memory utilisation metrics are collected using `psutil` and exported alo
 
 ## Grafana dashboard
 
-Import `grafana/metrics_dashboard.json` into Grafana to visualise the Prometheus data. The dashboard includes CPU and memory usage, Arrow Flight queue depth and error counters for socket and file write failures.
+Import `metrics_dashboard.json` from the `docs/` directory into Grafana to visualise the Prometheus data. The dashboard includes CPU and memory usage, Arrow Flight queue depth and error counters for socket and file write failures.
+
+## OpenTelemetry exporter
+
+`otel-exporter.yaml` provides a minimal OTLP exporter configuration that forwards traces, metrics and logs to a collector running on `localhost:4318`.

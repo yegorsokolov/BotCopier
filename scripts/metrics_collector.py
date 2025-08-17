@@ -417,9 +417,34 @@ def serve(
             rows = [dict(zip(FIELDS, r)) for r in reversed(rows)]
             return web.json_response(rows)
 
+        async def ingest_handler(request: web.Request) -> web.Response:
+            try:
+                data = await request.json()
+            except Exception:
+                return web.Response(status=400, text="invalid json")
+            trace_id = data.get("trace_id", "")
+            span_id = data.get("span_id", "")
+            ctx_in = _context_from_ids(trace_id, span_id)
+            with tracer.start_as_current_span("metrics_http_ingest", context=ctx_in) as span:
+                ctx = span.get_span_context()
+                data.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+                data.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+                extra = {}
+                try:
+                    extra["trace_id"] = int(data["trace_id"], 16)
+                    extra["span_id"] = int(data["span_id"], 16)
+                except (KeyError, ValueError):
+                    pass
+                logger.info(data, extra=extra)
+                await queue.put(data)
+            return web.json_response({"status": "ok"})
+
         if http_port is not None:
             app = web.Application()
-            app.add_routes([web.get("/metrics", metrics_handler)])
+            app.add_routes([
+                web.get("/metrics", metrics_handler),
+                web.post("/ingest", ingest_handler),
+            ])
             runner = web.AppRunner(app)
             await runner.setup()
             site = web.TCPSite(runner, http_host, http_port)

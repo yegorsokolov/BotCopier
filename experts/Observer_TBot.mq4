@@ -83,7 +83,7 @@ string   trade_log_buffer[];
 int      NextEventId = 1;
 datetime ModelTimestamp = 0;
 int      FileWriteErrors = 0;
-int      FlightErrors = 0;
+int      SocketErrors = 0;
 const int SCHEMA_VERSION = 1;
 const int MSG_TRADE = 0;
 const int MSG_METRIC = 1;
@@ -347,8 +347,14 @@ void FallbackLog(string tag, uchar &payload[], string line)
       {
          out_line = CharArrayToString(payload, 0, ArraySize(payload));
       }
-      FileWrite(h, out_line);
+      int _wr = FileWrite(h, out_line);
+      if(_wr <= 0)
+         FileWriteErrors++;
       FileClose(h);
+   }
+   else
+   {
+      FileWriteErrors++;
    }
 }
 
@@ -366,7 +372,7 @@ void FlushPending(datetime now)
       }
       else
       {
-         FlightErrors++;
+         SocketErrors++;
          trade_retry_count++;
          trade_backoff = MathMin(trade_backoff*2, 3600);
          next_trade_flush = now + trade_backoff;
@@ -393,7 +399,7 @@ void FlushPending(datetime now)
       }
       else
       {
-         FlightErrors++;
+         SocketErrors++;
          metric_retry_count++;
          metric_backoff = MathMin(metric_backoff*2, 3600);
          next_metric_flush = now + metric_backoff;
@@ -1166,10 +1172,10 @@ bool SendTrade(uchar &payload[])
       ArrayCopy(zipped, out, 0, 0, ArraySize(out));
    if(FlightClientSend("trades", zipped, ArraySize(zipped)))
       return(true);
-   FlightErrors++;
+   SocketErrors++;
    if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
       return(true);
-   FlightErrors++;
+   SocketErrors++;
    EnqueuePending(pending_trades, pending_trade_lines, zipped, line);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_trade_flush = now + trade_backoff;
@@ -1222,10 +1228,10 @@ bool SendMetrics(uchar &payload[], string line)
       ArrayCopy(zipped, out, 0, 0, ArraySize(out));
    if(FlightClientSend("metrics", zipped, ArraySize(zipped)))
       return(true);
-   FlightErrors++;
+   SocketErrors++;
    if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
       return(true);
-   FlightErrors++;
+   SocketErrors++;
    EnqueuePending(pending_metrics, pending_metric_lines, zipped, line);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_metric_flush = now + metric_backoff;
@@ -1637,13 +1643,13 @@ void WriteMetrics(datetime ts)
 
       string span_id = GenId(8);
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, FlightErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, TraceId, span_id);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, TraceId, span_id);
 
       uchar payload[];
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, FlightErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, payload);
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, payload);
       bool sent = false;
       if(len>0)
          sent = SendMetrics(payload, line);
