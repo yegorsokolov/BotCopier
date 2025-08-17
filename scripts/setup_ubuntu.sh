@@ -12,13 +12,17 @@ cd "$REPO_DIR"
 log "Updating package list"
 mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 log "Detected ${mem_kb} kB of total memory"
-if [ "$(grep MemTotal /proc/meminfo | awk '{print $2}')" -lt 2097152 ]; then
-  sudo fallocate -l 2G /swapfile
+SWAP_GB=${SWAP_GB:-0}
+if [ "$SWAP_GB" -eq 0 ] && [ "$mem_kb" -lt 2097152 ]; then
+  SWAP_GB=2
+fi
+if [ "$SWAP_GB" -gt 0 ]; then
+  sudo fallocate -l ${SWAP_GB}G /swapfile
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile
   sudo swapon /swapfile
   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-  log "Activated 2G swapfile due to low memory"
+  log "Activated ${SWAP_GB}G swapfile"
 fi
 sudo apt-get update
 
@@ -44,11 +48,12 @@ pip3 install --no-cache-dir -r requirements.txt
 pip3 install --no-cache-dir pyarrow
 
 log "Detecting hardware resources and training mode"
-python3 - <<'PY' | while read line; do log "$line"; done
+python3 - <<'PY' | tee hardware.log | while read line; do log "$line"; done
 from scripts.train_target_clone import detect_resources
 import json
 res = detect_resources()
 print(json.dumps(res))
+print("mode=" + res.get("mode", "unknown"))
 print("training_mode=" + ("lite" if res["lite_mode"] else "heavy"))
 PY
 

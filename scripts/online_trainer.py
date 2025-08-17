@@ -97,7 +97,7 @@ class OnlineTrainer:
             data = json.loads(self.model_path.read_text())
         except Exception:
             return
-        self.training_mode = data.get("training_mode", "lite")
+        self.training_mode = data.get("mode") or data.get("training_mode", "lite")
         self.feature_names = data.get("feature_names", [])
         coef = data.get("coefficients")
         intercept = data.get("intercept")
@@ -114,6 +114,7 @@ class OnlineTrainer:
             "coefficients": self.clf.coef_[0].tolist(),
             "intercept": float(self.clf.intercept_[0]),
             "training_mode": self.training_mode,
+            "mode": self.training_mode,
         }
         self.model_path.write_text(json.dumps(payload))
 

@@ -207,11 +207,22 @@ def _encode_features(model: ContrastiveEncoder | None, X: np.ndarray) -> np.ndar
 
 
 def detect_resources():
-    """Detect available resources (RAM, disk, cores, CPU frequency) and installed ML libraries."""
+    """Detect available resources and suggest an operating mode.
+
+    The returned dictionary contains RAM, swap, disk and CPU information along
+    with GPU capabilities.  Based on these metrics and available ML libraries a
+    ``mode`` string is provided that callers can use to toggle heavy features or
+    optional refinement steps.
+    """
+
     try:
-        mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+        mem_gb = psutil.virtual_memory().available / (1024**3)
     except Exception:  # pragma: no cover - psutil errors
         mem_gb = 0.0
+    try:
+        swap_gb = psutil.swap_memory().total / (1024**3)
+    except Exception:  # pragma: no cover - psutil errors
+        swap_gb = 0.0
     try:
         cores = psutil.cpu_count(logical=False) or psutil.cpu_count()
     except Exception:  # pragma: no cover - psutil errors
@@ -237,7 +248,7 @@ def detect_resources():
                 for line in f:
                     if line.startswith("MemTotal:"):
                         mem_kb = float(line.split()[1])
-                        mem_gb = mem_kb / (1024 ** 2)
+                        mem_gb = mem_kb / (1024**2)
                         break
         except Exception:
             pass
@@ -249,7 +260,7 @@ def detect_resources():
             pass
 
     # Estimate free disk space to adjust behavior on low-storage systems
-    disk_gb = shutil.disk_usage("/").free / (1024 ** 3)
+    disk_gb = shutil.disk_usage("/").free / (1024**3)
     lite_mode = mem_gb < 4 or cores < 2 or disk_gb < 5
     heavy_mode = mem_gb >= 8 and cores >= 4
 
@@ -259,7 +270,7 @@ def detect_resources():
         try:
             if torch.cuda.is_available():
                 gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (
-                    1024 ** 3
+                    1024**3
                 )
                 has_gpu = True
         except Exception:
@@ -300,17 +311,34 @@ def detect_resources():
 
     use_optuna = heavy_mode and has("optuna")
     bayes_steps = 20 if use_optuna else 0
+
+    enable_rl = heavy_mode and has_gpu and gpu_mem_gb >= 8.0 and has("stable_baselines3")
+
+    if enable_rl:
+        mode = "rl"
+    elif lite_mode:
+        mode = "lite"
+    elif model_type != "logreg":
+        mode = "deep"
+    elif heavy_mode:
+        mode = "heavy"
+    else:
+        mode = "standard"
+
     return {
         "lite_mode": lite_mode,
         "heavy_mode": heavy_mode,
         "model_type": model_type,
         "bayes_steps": bayes_steps,
         "mem_gb": mem_gb,
+        "swap_gb": swap_gb,
         "disk_gb": disk_gb,
         "cores": cores,
         "cpu_mhz": cpu_mhz,
         "has_gpu": has_gpu,
         "gpu_mem_gb": gpu_mem_gb,
+        "enable_rl": enable_rl,
+        "mode": mode,
     }
 
 
@@ -1613,6 +1641,7 @@ def train(
     prune_threshold: float = 0.0,
     prune_warn: float = 0.5,
     lite_mode: bool = False,
+    mode: str = "lite",
     compress_model: bool = False,
     regime_model_file: Path | None = None,
     moe: bool = False,
@@ -1622,6 +1651,7 @@ def train(
     uncertain_weight: float = 2.0,
     decay_half_life: float = 30.0,
     news_sentiment_file: Path | None = None,
+    rl_finetune: bool = False,
 ):
     """Train a simple classifier model from the log directory."""
     news_data = _load_news_sentiment(news_sentiment_file) if news_sentiment_file else None
@@ -3132,6 +3162,7 @@ def train(
         "feature_names": feature_names,
         "model_type": model_type,
         "training_mode": "lite" if lite_mode else "heavy",
+        "mode": mode,
         "weighted": sample_weight is not None,
         "train_accuracy": train_acc,
         "val_accuracy": val_acc,
@@ -3349,14 +3380,7 @@ def train(
         model["lot_intercept"] = float(lot_inter)
 
     # Optional RL refinement
-    if (
-        HAS_SB3
-        and _has_sufficient_gpu()
-        and _has_sufficient_ram()
-        and "coefficients" in model
-        and "intercept" in model
-        and not lite_mode
-    ):
+    if rl_finetune and HAS_SB3 and "coefficients" in model and "intercept" in model:
         try:
             temp_model = out_dir / "model_supervised.json"
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -3570,6 +3594,7 @@ def main():
             prune_threshold=args.prune_threshold,
             prune_warn=args.prune_warn,
             lite_mode=lite_mode,
+            mode=resources["mode"],
             compress_model=args.compress_model,
             regime_model_file=Path(args.regime_model) if args.regime_model else None,
             moe=args.moe,
@@ -3578,6 +3603,7 @@ def main():
             uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
             uncertain_weight=args.uncertain_weight,
             decay_half_life=args.decay_half_life,
+            rl_finetune=resources["enable_rl"],
             symbol_graph=symbol_graph,
         )
         if args.federated_server:

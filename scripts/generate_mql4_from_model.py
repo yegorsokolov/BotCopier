@@ -557,7 +557,8 @@ def main():
                 data = json.load(f)
             except Exception:
                 data = {}
-        if data.get('training_mode') == 'lite':
+        mode = data.get('mode') or data.get('training_mode')
+        if mode == 'lite':
             args.lite_mode = True
     generate(
         [Path(m) for m in args.model_json],
