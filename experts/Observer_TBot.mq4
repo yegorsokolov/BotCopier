@@ -4,7 +4,7 @@
 
 #import "observer_capnp.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_logging, uchar &out[]);
 #import
 #import "flight_client.dll"
 bool FlightClientInit(string host, int port);
@@ -17,6 +17,7 @@ bool ShmRingWrite(int msg_type, uchar &payload[], int len);
 
 #import "kernel32.dll"
 int GetEnvironmentVariableA(string name, uchar &buffer[], int size);
+int WinExec(string cmd, int uCmdShow);
 #import
 
 string GetEnv(string name)
@@ -67,6 +68,7 @@ extern string OtelEndpoint                = "";
 extern string ModelStateFile              = "model_online.json";
 extern string FlightServerHost            = "127.0.0.1";
 extern int    FlightServerPort            = 8815;
+extern int    FallbackRetryThreshold      = 5;
 
 int timer_handle;
 
@@ -140,7 +142,9 @@ public:
 PendingTrade AnomalyQueue[];
 
 uchar   pending_trades[][1];
+string  pending_trade_lines[];
 uchar   pending_metrics[][1];
+string  pending_metric_lines[];
 uchar   last_trade_payload[];
 bool    have_last_trade = false;
 uchar   last_metric_payload[];
@@ -149,6 +153,8 @@ int     trade_backoff = 1;
 int     metric_backoff = 1;
 datetime next_trade_flush = 0;
 datetime next_metric_flush = 0;
+int     trade_retry_count = 0;
+int     metric_retry_count = 0;
 
 void EnqueueAnomaly(PendingTrade &t)
 {
@@ -293,6 +299,59 @@ void RemoveFirst(uchar &queue[][])
    ArrayResize(queue, n-1);
 }
 
+void RemoveFirstStr(string &queue[])
+{
+   int n = ArraySize(queue);
+   if(n <= 1)
+   {
+      ArrayResize(queue, 0);
+      return;
+   }
+   for(int i=0; i<n-1; i++)
+      queue[i] = queue[i+1];
+   ArrayResize(queue, n-1);
+}
+
+void EnqueuePending(uchar &queue[][], string &lines[], uchar &msg[], string line)
+{
+   int idx = ArraySize(queue);
+   ArrayResize(queue, idx+1);
+   ArrayResize(queue[idx], ArraySize(msg));
+   ArrayCopy(queue[idx], msg);
+   ArrayResize(lines, idx+1);
+   lines[idx] = line;
+}
+
+bool LogToJournald(string tag, string line)
+{
+   string cmd = StringFormat("cmd.exe /c echo %s | systemd-cat -t %s", line, tag);
+   int r = WinExec(cmd, 0);
+   return(r > 31);
+}
+
+void FallbackLog(string tag, uchar &payload[], string line)
+{
+   if(StringLen(line)>0 && LogToJournald("botcopier-" + tag, line))
+      return;
+
+   string dir = StringReplace(LogDirectoryName, "\\", "/");
+   string fname = dir + "/" + tag + "_fallback.log";
+   int h = FileOpen(fname, FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ);
+   if(h==INVALID_HANDLE)
+      h = FileOpen(fname, FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE);
+   if(h!=INVALID_HANDLE)
+   {
+      FileSeek(h, 0, SEEK_END);
+      string out_line = line;
+      if(StringLen(out_line)==0)
+      {
+         out_line = CharArrayToString(payload, 0, ArraySize(payload));
+      }
+      FileWrite(h, out_line);
+      FileClose(h);
+   }
+}
+
 void FlushPending(datetime now)
 {
    if(ArraySize(pending_trades) > 0 && now >= next_trade_flush)
@@ -300,14 +359,25 @@ void FlushPending(datetime now)
       if(FlightClientSend("trades", pending_trades[0], ArraySize(pending_trades[0])))
       {
          RemoveFirst(pending_trades);
+         RemoveFirstStr(pending_trade_lines);
          trade_backoff = 1;
          next_trade_flush = now;
+         trade_retry_count = 0;
       }
       else
       {
          SocketErrors++;
+         trade_retry_count++;
          trade_backoff = MathMin(trade_backoff*2, 3600);
          next_trade_flush = now + trade_backoff;
+         if(trade_retry_count >= FallbackRetryThreshold)
+         {
+            string line = ArraySize(pending_trade_lines) > 0 ? pending_trade_lines[0] : "";
+            FallbackLog("trades", pending_trades[0], line);
+            RemoveFirst(pending_trades);
+            RemoveFirstStr(pending_trade_lines);
+            trade_retry_count = FallbackRetryThreshold;
+         }
       }
    }
 
@@ -316,14 +386,25 @@ void FlushPending(datetime now)
       if(FlightClientSend("metrics", pending_metrics[0], ArraySize(pending_metrics[0])))
       {
          RemoveFirst(pending_metrics);
+         RemoveFirstStr(pending_metric_lines);
          metric_backoff = 1;
          next_metric_flush = now;
+         metric_retry_count = 0;
       }
       else
       {
          SocketErrors++;
+         metric_retry_count++;
          metric_backoff = MathMin(metric_backoff*2, 3600);
          next_metric_flush = now + metric_backoff;
+         if(metric_retry_count >= FallbackRetryThreshold)
+         {
+            string line = ArraySize(pending_metric_lines) > 0 ? pending_metric_lines[0] : "";
+            FallbackLog("metrics", pending_metrics[0], line);
+            RemoveFirst(pending_metrics);
+            RemoveFirstStr(pending_metric_lines);
+            metric_retry_count = FallbackRetryThreshold;
+         }
       }
    }
 }
@@ -1073,13 +1154,13 @@ bool SendTrade(uchar &payload[])
    if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
       return(true);
    SocketErrors++;
-   EnqueueMessage(pending_trades, zipped);
+   EnqueuePending(pending_trades, pending_trade_lines, zipped, line);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_trade_flush = now + trade_backoff;
    return(false);
 }
 
-bool SendMetrics(uchar &payload[])
+bool SendMetrics(uchar &payload[], string line)
 {
    int len = ArraySize(payload);
    uchar out[];
@@ -1129,7 +1210,7 @@ bool SendMetrics(uchar &payload[])
    if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
       return(true);
    SocketErrors++;
-   EnqueueMessage(pending_metrics, zipped);
+   EnqueuePending(pending_metrics, pending_metric_lines, zipped, line);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_metric_flush = now + metric_backoff;
    return(false);
@@ -1538,16 +1619,17 @@ void WriteMetrics(datetime ts)
          if(profits[vb] < var95) var_breach_count++;
 
       string span_id = GenId(8);
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, TraceId, span_id);
+      int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, TraceId, span_id);
 
       uchar payload[];
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, payload);
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, fallback_flag, payload);
       bool sent = false;
       if(len>0)
-         sent = SendMetrics(payload);
+         sent = SendMetrics(payload, line);
       if(!sent)
       {
          if(h==INVALID_HANDLE)
@@ -1558,7 +1640,7 @@ void WriteMetrics(datetime ts)
                h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
                if(h!=INVALID_HANDLE)
                {
-                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;trace_id;span_id");
+                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;fallback_logging;trace_id;span_id");
                   if(_wr <= 0)
                      FileWriteErrors++;
                }
