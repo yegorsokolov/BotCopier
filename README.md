@@ -17,10 +17,11 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
  - `scripts/` – helper Python scripts.
   - `train_target_clone.py` – trains a model from exported logs. Its
     `detect_resources()` helper reports available CPU, memory, GPU and free disk
-    space via `disk_gb`, automatically enabling lite mode when less than 5 GB
-    remains. Heavy indicators such as SMA, RSI, MACD and ATR are enabled
-    automatically on capable machines and the chosen features are written to
-    `model.json` for reproducibility.
+    space via `disk_gb`.  When resources are constrained (e.g. <5 GB free disk or
+    low RAM) the script falls back to a lightweight logistic-regression path.
+    On more powerful machines it automatically enables heavy indicators such as
+    SMA, RSI, MACD and ATR and may select deeper transformer models.  The chosen
+    mode and feature flags are written to `model.json` for reproducibility.
   - `generate_mql4_from_model.py` – renders a new EA from a trained model description.
   - `evaluate_predictions.py` – basic log evaluation utility.
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
@@ -49,8 +50,11 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    ```bash
    python scripts/train_target_clone.py --data-dir logs --out-dir models
    ```
-   The script automatically selects resource-intensive indicators based on
-   available hardware, so manual `--use-foo` flags are no longer required.
+   The script inspects CPU, RAM, GPU and disk space and enables advanced
+   indicators or deep models only when sufficient resources are available.
+   On constrained VPS instances it defaults to a lean configuration with a
+   small model and minimal features, so manual `--use-foo` flags are no longer
+   required.
 3. Generate an EA from the trained model:
    ```bash
    python scripts/generate_mql4_from_model.py models/model.json experts
@@ -353,13 +357,14 @@ subsequent runs can keep learning from where the last run left off.
 
 ### Lite Mode
 
-Very large log datasets can exhaust memory when processed all at once. Use
-``--lite-mode`` to stream feature batches and train an ``SGDClassifier``
-incrementally via ``partial_fit``. Heavy extras such as higher time‑frame
-indicators and SHAP importance calculations are disabled to minimise resource
-usage. Peak memory consumption becomes roughly proportional to the batch size
-(``_load_logs`` reads 50k rows per batch by default). Batches of 10k–50k rows
-usually provide a good balance between memory usage and convergence speed.
+Very large log datasets can exhaust memory when processed all at once. On
+machines with limited RAM or disk space the training script automatically
+streams feature batches and trains an ``SGDClassifier`` incrementally via
+``partial_fit``. Heavy extras such as higher time‑frame indicators and SHAP
+importance calculations are disabled to minimise resource usage. Peak memory
+consumption becomes roughly proportional to the batch size (``_load_logs`` reads
+50k rows per batch by default). Batches of 10k–50k rows usually provide a good
+balance between memory usage and convergence speed.
 
 Compile the generated MQ4 file and the observer will begin evaluating predictions from that model.
 
