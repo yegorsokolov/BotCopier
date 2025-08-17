@@ -143,16 +143,23 @@ class OnlineTrainer:
         self.training_mode = "lite"
         self.cpu_threshold = 80.0
         self.sleep_seconds = 3.0
-        if detect_resources:
-            try:
-                res = detect_resources()
-                if res.get("lite_mode"):
-                    self.cpu_threshold = 50.0
-                    self.sleep_seconds = 6.0
-            except Exception:
-                pass
         if self.model_path.exists():
             self._load()
+        elif detect_resources:
+            try:
+                res = detect_resources()
+                self.training_mode = res.get("mode", self.training_mode)
+            except Exception:
+                pass
+        self._apply_mode()
+
+    def _apply_mode(self) -> None:
+        if self.training_mode == "lite":
+            self.cpu_threshold = 50.0
+            self.sleep_seconds = 6.0
+        else:
+            self.cpu_threshold = 80.0
+            self.sleep_seconds = 3.0
 
     # ------------------------------------------------------------------
     # Model persistence
@@ -175,6 +182,7 @@ class OnlineTrainer:
             self.clf.coef_ = np.array([coef])
             self.clf.intercept_ = np.array([intercept])
             self._prev_coef = list(coef) + [intercept]
+        self._apply_mode()
 
     def _save(self) -> None:
         payload = {
