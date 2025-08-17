@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Arrow Flight server exposing trade and metric streams.
 
-The server stores incoming record batches in memory and supports two
-paths:
+Incoming record batches are retained in memory for clients and mirrored
+to both SQLite databases and Parquet datasets. Two logical paths are
+served:
 
 * ``trades``
 * ``metrics``

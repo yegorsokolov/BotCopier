@@ -45,6 +45,7 @@ python3 -m pip install --upgrade pip
 
 log "Installing Python dependencies"
 pip3 install --no-cache-dir -r requirements.txt
+# pyarrow is required for Arrow Flight support
 pip3 install --no-cache-dir pyarrow
 
 log "Detecting hardware resources and training mode"
