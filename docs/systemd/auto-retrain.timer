@@ -1,0 +1,9 @@
+[Unit]
+Description=Scheduled Auto Retrain
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,10 @@
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
+
+import json
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -21,19 +25,15 @@ def _create_tick_file(dir_path: Path) -> Path:
     return tick_file
 
 
-def _create_model(dir_path: Path, name: str, metric_value: float, coeff: float) -> Path:
+def _create_model(dir_path: Path, name: str, coeff: float) -> Path:
     model_dir = dir_path / name
     model_dir.mkdir()
     model_file = model_dir / f"{name}.json"
     model_file.write_text(json.dumps({"coefficients": [coeff], "threshold": 0.0}))
-    with open(model_dir / "evaluation.json", "w") as f:
-        json.dump({"accuracy": metric_value}, f)
     return model_file
 
 
-def _create_model_risk(
-    dir_path: Path, name: str, expected: float, downside: float, coeff: float
-) -> Path:
+def _create_model_risk(dir_path: Path, name: str, expected: float, downside: float, coeff: float) -> Path:
     model_dir = dir_path / name
     model_dir.mkdir()
     model_file = model_dir / f"{name}.json"
@@ -50,21 +50,15 @@ def _create_model_risk(
     return model_file
 
 
-def test_promote_uses_backtest_metric(tmp_path: Path):
+def test_promote_by_sharpe(tmp_path: Path):
     tick_file = _create_tick_file(tmp_path)
-    m1 = _create_model(tmp_path, "model_a", 0.9, 1.0)
-    m2 = _create_model(tmp_path, "model_b", 0.9, -1.0)
+    m1 = _create_model(tmp_path, "model_a", 1.0)
+    m2 = _create_model(tmp_path, "model_b", -1.0)
     run_backtest(m1, tick_file)
     run_backtest(m2, tick_file)
 
     best_dir = tmp_path / "best"
-    promote(
-        tmp_path,
-        best_dir,
-        max_models=1,
-        metric="accuracy",
-        backtest_metric="sharpe",
-    )
+    promote(tmp_path, best_dir, max_models=1, metric="sharpe")
 
     assert (best_dir / m1.name).exists()
 
@@ -77,30 +71,12 @@ def test_promote_risk_reward(tmp_path: Path):
     run_backtest(m2, tick_file)
 
     best_dir = tmp_path / "best"
-    promote(
-        tmp_path,
-        best_dir,
-        max_models=1,
-        metric="risk_reward",
-        backtest_metric="sharpe",
-    )
+    promote(tmp_path, best_dir, max_models=1, metric="risk_reward")
 
     assert (best_dir / m1.name).exists()
 
 
-def test_promote_backtest_threshold(tmp_path: Path):
-    tick_file = _create_tick_file(tmp_path)
-    m = _create_model(tmp_path, "model_a", 0.9, -1.0)
-    run_backtest(m, tick_file)
-
+def test_promote_requires_models(tmp_path: Path):
     best_dir = tmp_path / "best"
     with pytest.raises(ValueError):
-        promote(
-            tmp_path,
-            best_dir,
-            max_models=1,
-            metric="accuracy",
-            backtest_metric="sharpe",
-            min_backtest=0.0,
-        )
-
+        promote(tmp_path, best_dir, max_models=1, metric="sharpe")

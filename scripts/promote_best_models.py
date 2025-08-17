@@ -68,65 +68,53 @@ def promote(
     best_dir: Path,
     max_models: int,
     metric: str,
-    backtest_metric: str = "sharpe",
-    min_backtest: float = float("-inf"),
     files_dir: Optional[Path] = None,
 ) -> None:
     """Copy the top ``max_models`` from ``models_dir`` to ``best_dir``.
 
-    ``evaluation.json`` files are expected to reside next to each model.  The
-    pair ``(metric, backtest_metric)`` obtained from these reports determines
-    the ranking.  Models failing the ``min_backtest`` threshold are skipped.  If
-    ``files_dir`` is provided the highest ranked model is also published to that
-    directory so running strategies reload the new parameters.
+    Models are ranked purely by the supplied backtest ``metric`` which is read
+    from each model's ``evaluation.json`` (falling back to ``model.json`` when
+    necessary).  If ``files_dir`` is provided the promoted models are also
+    published so running strategies can reload the new parameters.
     """
 
     best_dir.mkdir(parents=True, exist_ok=True)
 
     candidates = []
     for m in models_dir.rglob("model_*.json"):
-        metrics = _load_metrics(m)
         score = _score_for_model(m, metric)
-        bscore = float(metrics.get(backtest_metric, 0.0))
-        if bscore < min_backtest:
-            print(f"Skipping {m} due to low {backtest_metric}: {bscore}")
-            continue
-        candidates.append((score, bscore, m))
+        candidates.append((score, m))
 
     if not candidates:
-        raise ValueError("no models passed backtest threshold")
+        raise ValueError("no models found")
 
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    candidates.sort(key=lambda x: x[0], reverse=True)
 
-    for idx, (score, bscore, m) in enumerate(candidates[:max_models]):
+    for score, m in candidates[:max_models]:
         dest = best_dir / m.name
         shutil.copy(m, dest)
-        print(
-            f"Promoted {m} (metric={score}, {backtest_metric}={bscore}) to {dest}")
-        if idx == 0 and files_dir is not None:
+        print(f"Promoted {m} ({metric}={score}) to {dest}")
+        if files_dir is not None:
             publish(dest, files_dir)
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('models_dir')
-    p.add_argument('best_dir')
-    p.add_argument('--max-models', type=int, default=3)
-    p.add_argument('--metric', default='success_pct',
-                   help='metric key to sort by')
-    p.add_argument('--backtest-metric', default='sharpe',
-                   help='backtest metric key to sort by')
-    p.add_argument('--min-backtest', type=float, default=float('-inf'),
-                   help='minimum backtest metric to allow promotion')
-    p.add_argument('--files-dir', help='MT4 Files directory to publish model')
+    p.add_argument("models_dir")
+    p.add_argument("best_dir")
+    p.add_argument("--max-models", type=int, default=3)
+    p.add_argument(
+        "--metric",
+        default="sharpe",
+        help="backtest metric key to sort by",
+    )
+    p.add_argument("--files-dir", help="MT4 Files directory to publish model")
     args = p.parse_args()
     promote(
         Path(args.models_dir),
         Path(args.best_dir),
         args.max_models,
         args.metric,
-        args.backtest_metric,
-        args.min_backtest,
         Path(args.files_dir) if args.files_dir else None,
     )
 

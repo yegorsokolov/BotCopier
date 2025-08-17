@@ -1,0 +1,9 @@
+[Unit]
+Description=Schedule Promotion of Best Models
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -305,6 +305,18 @@ def run_backtest(
     return result
 
 
+def backtest_model(model_path: Path, log_file: Path) -> Dict[str, float]:
+    """Convenience helper to backtest ``model_path`` against ``log_file``.
+
+    The function delegates to :func:`run_backtest` and returns the resulting
+    Sharpe ratio and win rate.  The evaluation JSON next to ``model_path`` is
+    updated as a side effect.
+    """
+
+    metrics = run_backtest(model_path, log_file)
+    return {"sharpe": metrics.get("sharpe", 0.0), "win_rate": metrics.get("win_rate", 0.0)}
+
+
 def check_performance(
     metrics: Dict[str, float],
     min_win_rate: float = 0.0,
