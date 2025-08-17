@@ -2086,10 +2086,14 @@ def train(
     # ------------------------------------------------------------------
     symbol_embeddings: dict[str, list[float]] = {}
     graph_params = None
-    if symbol_graph and _HAS_TORCH and _HAS_PYG:
+    if symbol_graph:
         try:
             with open(symbol_graph) as f_g:
                 graph_params = json.load(f_g)
+        except Exception as exc:  # pragma: no cover - file errors
+            logging.warning("failed to load symbol graph: %s", exc)
+    if graph_params and _HAS_TORCH and _HAS_PYG:
+        try:
             symbols = graph_params.get("symbols", [])
             edge_index = torch.tensor(
                 graph_params.get("edge_index", []), dtype=torch.long
@@ -2122,6 +2126,19 @@ def train(
                 graph_params["embedding_dim"] = emb.shape[1]
         except Exception as exc:  # pragma: no cover - optional dependency
             logging.warning("symbol embedding computation failed: %s", exc)
+
+    if graph_params:
+        symbols = graph_params.get("symbols", [])
+        metrics = graph_params.get("metrics", {})
+        sym_metrics: dict[str, dict[str, float]] = {}
+        for m_name, vals in metrics.items():
+            for i, sym in enumerate(symbols):
+                sym_metrics.setdefault(sym, {})[m_name] = float(vals[i])
+        for feat in features:
+            mvals = sym_metrics.get(feat.get("symbol"))
+            if mvals:
+                for m_name, m_val in mvals.items():
+                    feat[f"graph_{m_name}"] = m_val
 
     if existing_model is not None:
         vec = DictVectorizer(sparse=False)
@@ -3367,6 +3384,7 @@ def train(
             "edge_index": graph_params.get("edge_index", []),
             "edge_weight": graph_params.get("edge_weight", []),
             "embedding_dim": graph_params.get("embedding_dim", 0),
+            "metrics": graph_params.get("metrics", {}),
         }
     model["hourly_thresholds"] = hourly_thresholds
     if threshold_map:

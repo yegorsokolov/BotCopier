@@ -390,6 +390,21 @@ def generate(
         output = output.replace('__SYM_EMB_SYMBOLS__', '')
         output = output.replace('__SYM_EMB_VALUES__', '')
 
+    graph_data = base.get('graph', {})
+    metrics = graph_data.get('metrics') or {}
+    if metrics:
+        g_symbols = graph_data.get('symbols', [])
+        sym_list = ', '.join(f'"{s}"' for s in g_symbols)
+        deg_vals = metrics.get('degree', [0.0] * len(g_symbols))
+        pr_vals = metrics.get('pagerank', [0.0] * len(g_symbols))
+        output = output.replace('__GRAPH_SYMBOLS__', sym_list)
+        output = output.replace('__GRAPH_DEGREE__', ', '.join(_fmt(v) for v in deg_vals))
+        output = output.replace('__GRAPH_PAGERANK__', ', '.join(_fmt(v) for v in pr_vals))
+    else:
+        output = output.replace('__GRAPH_SYMBOLS__', '')
+        output = output.replace('__GRAPH_DEGREE__', '')
+        output = output.replace('__GRAPH_PAGERANK__', '')
+
     rps = base.get('risk_parity_symbols', [])
     rpw = base.get('risk_parity_weights', [])
     if rps and rpw:
@@ -503,6 +518,10 @@ def generate(
                     expr = f'PairCorrelation("{parts[0]}", "{parts[1]}")'
                 elif len(parts) == 1:
                     expr = f'PairCorrelation("{parts[0]}")'
+            elif name == 'graph_degree':
+                expr = 'GraphDegree()'
+            elif name == 'graph_pagerank':
+                expr = 'GraphPagerank()'
             elif name.startswith('ae') and name[2:].isdigit():
                 idx_ae = int(name[2:])
                 expr = f'GetEncodedFeature({idx_ae})'
