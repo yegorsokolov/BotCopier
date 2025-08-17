@@ -1513,6 +1513,7 @@ def _train_lite_mode(
     compress_model: bool = False,
     regime_model: dict | None = None,
     flight_uri: str | None = None,
+    mode: str = "lite",
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
@@ -1615,6 +1616,8 @@ def _train_lite_mode(
         "feature_names": feature_names,
         "model_type": "logreg",
         "weighted": False,
+        "training_mode": "lite",
+        "mode": mode,
         "train_accuracy": float("nan"),
         "val_accuracy": float("nan"),
         "threshold": 0.5,
@@ -1752,6 +1755,7 @@ def train(
             compress_model=compress_model,
             regime_model=regime_model,
             flight_uri=flight_uri,
+            mode=mode,
         )
         return
     feature_flags = {
@@ -3536,8 +3540,10 @@ def main():
         else:
             higher_tfs = None
         lite_mode = resources["lite_mode"]
-        use_sma = use_rsi = use_macd = use_atr = use_bollinger = use_stochastic = use_adx = not lite_mode
-        grid_search = args.grid_search and not lite_mode
+        heavy_mode = resources["heavy_mode"]
+        use_sma = use_rsi = use_macd = use_atr = use_bollinger = use_stochastic = use_adx = heavy_mode
+        use_volume = heavy_mode
+        grid_search = args.grid_search and heavy_mode
         model_type = args.model_type or resources["model_type"]
         bayes_steps = 0 if lite_mode else (args.bayes_steps or resources["bayes_steps"])
         train(
@@ -3552,6 +3558,7 @@ def main():
             use_bollinger=use_bollinger,
             use_stochastic=use_stochastic,
             use_adx=use_adx,
+            use_volume=use_volume,
             higher_timeframes=higher_tfs,
             volatility_series=vol_data,
             grid_search=grid_search,
