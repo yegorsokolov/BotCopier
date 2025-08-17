@@ -54,7 +54,11 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    indicators or deep models only when sufficient resources are available.
    On constrained VPS instances it defaults to a lean configuration with a
    small model and minimal features, so manual `--use-foo` flags are no longer
-   required.
+   required. Extracted features are cached in `out_dir/features.parquet` along
+   with the `feature_names` and `last_event_id`. When these match the existing
+   model, subsequent runs reuse the cache and skip feature generation for faster
+   reproducible training. Use the `--half-life-days` flag to weight recent trades
+   more heavily via an exponential decay (set to `0` to disable).
 3. Generate an EA from the trained model:
    ```bash
    python scripts/generate_mql4_from_model.py models/model.json experts
