@@ -92,6 +92,9 @@ double RiskParityWeights[] = {__RISK_PARITY_WEIGHTS__};
 datetime CalendarTimes[] = {__CALENDAR_TIMES__};
 double CalendarImpacts[] = {__CALENDAR_IMPACTS__};
 int EventWindowMinutes = __EVENT_WINDOW__;
+string GraphSymbols[] = {__GRAPH_SYMBOLS__};
+double GraphDegreeVals[] = {__GRAPH_DEGREE__};
+double GraphPagerankVals[] = {__GRAPH_PAGERANK__};
 double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
 int FeatureHistorySize = 0;
 int CachedTimeframes[] = {__CACHE_TIMEFRAMES__};
@@ -677,6 +680,22 @@ double PairCorrelation(string sym1, string sym2="", int window=5)
    if(den1 <= 0 || den2 <= 0)
       return(0.0);
    return(num / MathSqrt(den1 * den2));
+}
+
+double GraphDegree()
+{
+   for(int i=0; i<ArraySize(GraphSymbols); i++)
+      if(GraphSymbols[i] == SymbolToTrade)
+         return(GraphDegreeVals[i]);
+   return(0.0);
+}
+
+double GraphPagerank()
+{
+   for(int i=0; i<ArraySize(GraphSymbols); i++)
+      if(GraphSymbols[i] == SymbolToTrade)
+         return(GraphPagerankVals[i]);
+   return(0.0);
 }
 
 double GetNewsSentiment()
