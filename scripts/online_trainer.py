@@ -40,6 +40,52 @@ import numpy as np
 import psutil
 from sklearn.linear_model import SGDClassifier
 
+from opentelemetry import trace
+from opentelemetry._logs import set_logger_provider
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import format_span_id, format_trace_id
+
+resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "online_trainer")})
+provider = TracerProvider(resource=resource)
+if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+trace.set_tracer_provider(provider)
+tracer = trace.get_tracer(__name__)
+
+logger_provider = LoggerProvider(resource=resource)
+if endpoint:
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint))
+    )
+set_logger_provider(logger_provider)
+otel_handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log = {"level": record.levelname}
+        if isinstance(record.msg, dict):
+            log.update(record.msg)
+        else:
+            log["message"] = record.getMessage()
+        if hasattr(record, "trace_id"):
+            log["trace_id"] = format_trace_id(record.trace_id)
+        if hasattr(record, "span_id"):
+            log["span_id"] = format_span_id(record.span_id)
+        return json.dumps(log)
+
+
+logger = logging.getLogger(__name__)
+otel_handler.setFormatter(JsonFormatter())
+logger.addHandler(otel_handler)
+logger.setLevel(logging.INFO)
+
 try:  # optional systemd notification support
     from systemd import daemon
 except Exception:  # pragma: no cover - systemd not installed
@@ -150,17 +196,28 @@ class OnlineTrainer:
         return np.asarray(X), np.asarray(y)
 
     def update(self, batch: List[Dict[str, Any]]) -> None:
-        X, y = self._vectorise(batch)
-        if not hasattr(self.clf, "classes_"):
-            self.clf.partial_fit(X, y, classes=np.array([0, 1]))
-        else:
-            self.clf.partial_fit(X, y)
-        coef = self.clf.coef_[0].tolist()
-        intercept = float(self.clf.intercept_[0])
-        if self._prev_coef != coef + [intercept]:
-            self._prev_coef = coef + [intercept]
-            self._save()
-            self._maybe_generate()
+        with tracer.start_as_current_span("train_batch") as span:
+            X, y = self._vectorise(batch)
+            if not hasattr(self.clf, "classes_"):
+                self.clf.partial_fit(X, y, classes=np.array([0, 1]))
+            else:
+                self.clf.partial_fit(X, y)
+            coef = self.clf.coef_[0].tolist()
+            intercept = float(self.clf.intercept_[0])
+            changed = self._prev_coef != coef + [intercept]
+            if changed:
+                self._prev_coef = coef + [intercept]
+                self._save()
+                self._maybe_generate()
+            ctx = span.get_span_context()
+            logger.info(
+                {
+                    "event": "batch_update",
+                    "size": len(batch),
+                    "coefficients_changed": changed,
+                },
+                extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
+            )
 
     # ------------------------------------------------------------------
     # Data sources

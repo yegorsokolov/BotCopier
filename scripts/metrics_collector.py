@@ -265,6 +265,16 @@ def serve(
                 "Cached book refresh interval",
                 registry=registry,
             )
+            host_cpu_g = Gauge(
+                "system_cpu_percent",
+                "Host CPU utilisation",
+                registry=registry,
+            )
+            host_mem_g = Gauge(
+                "system_memory_percent",
+                "Host memory utilisation",
+                registry=registry,
+            )
 
             async def prom_handler(_request: web.Request) -> web.Response:
                 data = generate_latest(registry)
@@ -276,6 +286,17 @@ def serve(
             await prom_runner.setup()
             prom_site = web.TCPSite(prom_runner, http_host, prom_port)
             await prom_site.start()
+
+            async def _sample_host_metrics() -> None:
+                while True:
+                    try:
+                        host_cpu_g.set(psutil.cpu_percent(interval=None))
+                        host_mem_g.set(psutil.virtual_memory().percent)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(5)
+
+            asyncio.create_task(_sample_host_metrics())
 
             def _prom_updater(row: dict) -> None:
                 if (v := row.get("win_rate")) is not None:
