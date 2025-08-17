@@ -4,7 +4,7 @@
 
 #import "observer_capnp.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, uchar &out[]);
 #import
 #import "flight_client.dll"
 bool FlightClientInit(string host, int port);
@@ -1072,6 +1072,7 @@ bool SendTrade(uchar &payload[])
    SocketErrors++;
    if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
       return(true);
+   SocketErrors++;
    EnqueueMessage(pending_trades, zipped);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_trade_flush = now + trade_backoff;
@@ -1127,6 +1128,7 @@ bool SendMetrics(uchar &payload[])
    SocketErrors++;
    if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
       return(true);
+   SocketErrors++;
    EnqueueMessage(pending_metrics, zipped);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_metric_flush = now + metric_backoff;
@@ -1536,13 +1538,13 @@ void WriteMetrics(datetime ts)
          if(profits[vb] < var95) var_breach_count++;
 
       string span_id = GenId(8);
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, TraceId, span_id);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, TraceId, span_id);
 
       uchar payload[];
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, payload);
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, payload);
       bool sent = false;
       if(len>0)
          sent = SendMetrics(payload);
@@ -1556,9 +1558,13 @@ void WriteMetrics(datetime ts)
                h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
                if(h!=INVALID_HANDLE)
                {
-                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;trace_id;span_id");
+                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;trace_id;span_id");
                   if(_wr <= 0)
                      FileWriteErrors++;
+               }
+               else
+               {
+                  FileWriteErrors++;
                }
             }
             else

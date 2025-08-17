@@ -30,6 +30,30 @@
       "targets": [
         {"expr": "bot_socket_errors_total"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "File Write Errors",
+      "id": 4,
+      "targets": [
+        {"expr": "bot_file_write_errors_total"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CPU Load",
+      "id": 5,
+      "targets": [
+        {"expr": "bot_cpu_load"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Book Refresh Seconds",
+      "id": 6,
+      "targets": [
+        {"expr": "bot_book_refresh_seconds"}
+      ]
     }
   ]
 }

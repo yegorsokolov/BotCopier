@@ -244,8 +244,18 @@ scrape_configs:
       - targets: ['localhost:9000']
 ```
 
-Import `grafana/metrics_dashboard.json` into Grafana to visualise win rate, drawdown
-and socket error counts.
+On Ubuntu the tools are available via APT:
+
+```bash
+sudo apt-get install prometheus grafana
+sudo cp grafana/prometheus.yml /etc/prometheus/prometheus.yml
+sudo systemctl enable --now prometheus grafana-server
+```
+
+Prometheus will now collect metrics such as CPU load, book refresh interval,
+file write errors and socket errors from the collector. Import
+`grafana/metrics_dashboard.json` into Grafana to visualise win rate, drawdown and
+these new metrics.
 
 ### Anomaly Monitoring
 
