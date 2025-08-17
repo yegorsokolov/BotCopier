@@ -404,7 +404,7 @@ def serve(
                             await queue.put(row)
                     last = len(rows)
                 except Exception as e:  # pragma: no cover - network issues
-                    logger.warning({"error": "socket error", "details": str(e)})
+                    logger.warning({"error": "flight error", "details": str(e)})
                     await asyncio.sleep(1)
                     continue
                 await asyncio.sleep(1)

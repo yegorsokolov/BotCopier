@@ -382,9 +382,7 @@ void FlushPending(datetime now)
             string line = ArraySize(pending_trade_lines) > 0 ? pending_trade_lines[0] : "";
             FallbackLog("trades", pending_trades[0], line);
             FallbackEvents++;
-            RemoveFirst(pending_trades);
-            RemoveFirstStr(pending_trade_lines);
-            trade_retry_count = FallbackRetryThreshold;
+            trade_retry_count = 0;
          }
       }
    }
@@ -410,9 +408,7 @@ void FlushPending(datetime now)
             string line = ArraySize(pending_metric_lines) > 0 ? pending_metric_lines[0] : "";
             FallbackLog("metrics", pending_metrics[0], line);
             FallbackEvents++;
-            RemoveFirst(pending_metrics);
-            RemoveFirstStr(pending_metric_lines);
-            metric_retry_count = FallbackRetryThreshold;
+            metric_retry_count = 0;
          }
       }
    }

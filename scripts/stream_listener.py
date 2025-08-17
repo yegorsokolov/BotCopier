@@ -609,7 +609,7 @@ def main() -> int:
                         handler(SimpleNamespace(**row))
                     last = len(rows)
                 except Exception as e:  # pragma: no cover - network issues
-                    logger.warning({"error": "socket error", "details": str(e), "path": path})
+                    logger.warning({"error": "flight error", "details": str(e), "path": path})
                     await asyncio.sleep(1)
                     continue
                 await asyncio.sleep(1)
