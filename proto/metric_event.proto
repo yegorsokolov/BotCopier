@@ -11,6 +11,9 @@ message MetricEvent {
   double sharpe = 7;
   int32 file_write_errors = 8;
   int32 socket_errors = 9;
-  int32 book_refresh_seconds = 10;
-  int32 var_breach_count = 11;
+  double cpu_load = 10;
+  int32 book_refresh_seconds = 11;
+  int32 var_breach_count = 12;
+  int32 trade_queue_depth = 13;
+  int32 metric_queue_depth = 14;
 }

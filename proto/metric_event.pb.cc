@@ -32,8 +32,11 @@ PROTOBUF_CONSTEXPR MetricEvent::MetricEvent(
   , /*decltype(_impl_.sharpe_)*/0
   , /*decltype(_impl_.file_write_errors_)*/0
   , /*decltype(_impl_.socket_errors_)*/0
+  , /*decltype(_impl_.cpu_load_)*/0
   , /*decltype(_impl_.book_refresh_seconds_)*/0
   , /*decltype(_impl_.var_breach_count_)*/0
+  , /*decltype(_impl_.trade_queue_depth_)*/0
+  , /*decltype(_impl_.metric_queue_depth_)*/0
   , /*decltype(_impl_._cached_size_)*/{}} {}
 struct MetricEventDefaultTypeInternal {
   PROTOBUF_CONSTEXPR MetricEventDefaultTypeInternal()
@@ -65,8 +68,11 @@ const uint32_t TableStruct_metric_5fevent_2eproto::offsets[] PROTOBUF_SECTION_VA
   PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.sharpe_),
   PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.file_write_errors_),
   PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.socket_errors_),
+  PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.cpu_load_),
   PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.book_refresh_seconds_),
   PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.var_breach_count_),
+  PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.trade_queue_depth_),
+  PROTOBUF_FIELD_OFFSET(::tbot::MetricEvent, _impl_.metric_queue_depth_),
 };
 static const ::_pbi::MigrationSchema schemas[] PROTOBUF_SECTION_VARIABLE(protodesc_cold) = {
   { 0, -1, -1, sizeof(::tbot::MetricEvent)},
@@ -77,17 +83,19 @@ static const ::_pb::Message* const file_default_instances[] = {
 };
 
 const char descriptor_table_protodef_metric_5fevent_2eproto[] PROTOBUF_SECTION_VARIABLE(protodesc_cold) =
-  "\n\022metric_event.proto\022\004tbot\"\361\001\n\013MetricEve"
+  "\n\022metric_event.proto\022\004tbot\"\272\002\n\013MetricEve"
   "nt\022\014\n\004time\030\001 \001(\t\022\r\n\005magic\030\002 \001(\005\022\020\n\010win_r"
   "ate\030\003 \001(\001\022\022\n\navg_profit\030\004 \001(\001\022\023\n\013trade_c"
   "ount\030\005 \001(\005\022\020\n\010drawdown\030\006 \001(\001\022\016\n\006sharpe\030\007"
   " \001(\001\022\031\n\021file_write_errors\030\010 \001(\005\022\025\n\rsocke"
-  "t_errors\030\t \001(\005\022\034\n\024book_refresh_seconds\030\n"
-  " \001(\005\022\030\n\020var_breach_count\030\013 \001(\005b\006proto3"
+  "t_errors\030\t \001(\005\022\020\n\010cpu_load\030\n \001(\001\022\034\n\024book"
+  "_refresh_seconds\030\013 \001(\005\022\030\n\020var_breach_cou"
+  "nt\030\014 \001(\005\022\031\n\021trade_queue_depth\030\r \001(\005\022\032\n\022m"
+  "etric_queue_depth\030\016 \001(\005b\006proto3"
   ;
 static ::_pbi::once_flag descriptor_table_metric_5fevent_2eproto_once;
 const ::_pbi::DescriptorTable descriptor_table_metric_5fevent_2eproto = {
-    false, false, 278, descriptor_table_protodef_metric_5fevent_2eproto,
+    false, false, 351, descriptor_table_protodef_metric_5fevent_2eproto,
     "metric_event.proto",
     &descriptor_table_metric_5fevent_2eproto_once, nullptr, 0, 1,
     schemas, file_default_instances, TableStruct_metric_5fevent_2eproto::offsets,
@@ -127,8 +135,11 @@ MetricEvent::MetricEvent(const MetricEvent& from)
     , decltype(_impl_.sharpe_){}
     , decltype(_impl_.file_write_errors_){}
     , decltype(_impl_.socket_errors_){}
+    , decltype(_impl_.cpu_load_){}
     , decltype(_impl_.book_refresh_seconds_){}
     , decltype(_impl_.var_breach_count_){}
+    , decltype(_impl_.trade_queue_depth_){}
+    , decltype(_impl_.metric_queue_depth_){}
     , /*decltype(_impl_._cached_size_)*/{}};
 
   _internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
@@ -141,8 +152,8 @@ MetricEvent::MetricEvent(const MetricEvent& from)
       _this->GetArenaForAllocation());
   }
   ::memcpy(&_impl_.win_rate_, &from._impl_.win_rate_,
-    static_cast<size_t>(reinterpret_cast<char*>(&_impl_.var_breach_count_) -
-    reinterpret_cast<char*>(&_impl_.win_rate_)) + sizeof(_impl_.var_breach_count_));
+    static_cast<size_t>(reinterpret_cast<char*>(&_impl_.metric_queue_depth_) -
+    reinterpret_cast<char*>(&_impl_.win_rate_)) + sizeof(_impl_.metric_queue_depth_));
   // @@protoc_insertion_point(copy_constructor:tbot.MetricEvent)
 }
 
@@ -160,8 +171,11 @@ inline void MetricEvent::SharedCtor(
     , decltype(_impl_.sharpe_){0}
     , decltype(_impl_.file_write_errors_){0}
     , decltype(_impl_.socket_errors_){0}
+    , decltype(_impl_.cpu_load_){0}
     , decltype(_impl_.book_refresh_seconds_){0}
     , decltype(_impl_.var_breach_count_){0}
+    , decltype(_impl_.trade_queue_depth_){0}
+    , decltype(_impl_.metric_queue_depth_){0}
     , /*decltype(_impl_._cached_size_)*/{}
   };
   _impl_.time_.InitDefault();
@@ -196,8 +210,8 @@ void MetricEvent::Clear() {
 
   _impl_.time_.ClearToEmpty();
   ::memset(&_impl_.win_rate_, 0, static_cast<size_t>(
-      reinterpret_cast<char*>(&_impl_.var_breach_count_) -
-      reinterpret_cast<char*>(&_impl_.win_rate_)) + sizeof(_impl_.var_breach_count_));
+      reinterpret_cast<char*>(&_impl_.metric_queue_depth_) -
+      reinterpret_cast<char*>(&_impl_.win_rate_)) + sizeof(_impl_.metric_queue_depth_));
   _internal_metadata_.Clear<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>();
 }
 
@@ -281,18 +295,42 @@ const char* MetricEvent::_InternalParse(const char* ptr, ::_pbi::ParseContext* c
         } else
           goto handle_unusual;
         continue;
-      // int32 book_refresh_seconds = 10;
+      // double cpu_load = 10;
       case 10:
-        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 80)) {
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 81)) {
+          _impl_.cpu_load_ = ::PROTOBUF_NAMESPACE_ID::internal::UnalignedLoad<double>(ptr);
+          ptr += sizeof(double);
+        } else
+          goto handle_unusual;
+        continue;
+      // int32 book_refresh_seconds = 11;
+      case 11:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 88)) {
           _impl_.book_refresh_seconds_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint32(&ptr);
           CHK_(ptr);
         } else
           goto handle_unusual;
         continue;
-      // int32 var_breach_count = 11;
-      case 11:
-        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 88)) {
+      // int32 var_breach_count = 12;
+      case 12:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 96)) {
           _impl_.var_breach_count_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint32(&ptr);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // int32 trade_queue_depth = 13;
+      case 13:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 104)) {
+          _impl_.trade_queue_depth_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint32(&ptr);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // int32 metric_queue_depth = 14;
+      case 14:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 112)) {
+          _impl_.metric_queue_depth_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint32(&ptr);
           CHK_(ptr);
         } else
           goto handle_unusual;
@@ -400,16 +438,38 @@ uint8_t* MetricEvent::_InternalSerialize(
     target = ::_pbi::WireFormatLite::WriteInt32ToArray(9, this->_internal_socket_errors(), target);
   }
 
-  // int32 book_refresh_seconds = 10;
-  if (this->_internal_book_refresh_seconds() != 0) {
+  // double cpu_load = 10;
+  static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
+  double tmp_cpu_load = this->_internal_cpu_load();
+  uint64_t raw_cpu_load;
+  memcpy(&raw_cpu_load, &tmp_cpu_load, sizeof(tmp_cpu_load));
+  if (raw_cpu_load != 0) {
     target = stream->EnsureSpace(target);
-    target = ::_pbi::WireFormatLite::WriteInt32ToArray(10, this->_internal_book_refresh_seconds(), target);
+    target = ::_pbi::WireFormatLite::WriteDoubleToArray(10, this->_internal_cpu_load(), target);
   }
 
-  // int32 var_breach_count = 11;
+  // int32 book_refresh_seconds = 11;
+  if (this->_internal_book_refresh_seconds() != 0) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteInt32ToArray(11, this->_internal_book_refresh_seconds(), target);
+  }
+
+  // int32 var_breach_count = 12;
   if (this->_internal_var_breach_count() != 0) {
     target = stream->EnsureSpace(target);
-    target = ::_pbi::WireFormatLite::WriteInt32ToArray(11, this->_internal_var_breach_count(), target);
+    target = ::_pbi::WireFormatLite::WriteInt32ToArray(12, this->_internal_var_breach_count(), target);
+  }
+
+  // int32 trade_queue_depth = 13;
+  if (this->_internal_trade_queue_depth() != 0) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteInt32ToArray(13, this->_internal_trade_queue_depth(), target);
+  }
+
+  // int32 metric_queue_depth = 14;
+  if (this->_internal_metric_queue_depth() != 0) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteInt32ToArray(14, this->_internal_metric_queue_depth(), target);
   }
 
   if (PROTOBUF_PREDICT_FALSE(_internal_metadata_.have_unknown_fields())) {
@@ -491,14 +551,33 @@ size_t MetricEvent::ByteSizeLong() const {
     total_size += ::_pbi::WireFormatLite::Int32SizePlusOne(this->_internal_socket_errors());
   }
 
-  // int32 book_refresh_seconds = 10;
+  // double cpu_load = 10;
+  static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
+  double tmp_cpu_load = this->_internal_cpu_load();
+  uint64_t raw_cpu_load;
+  memcpy(&raw_cpu_load, &tmp_cpu_load, sizeof(tmp_cpu_load));
+  if (raw_cpu_load != 0) {
+    total_size += 1 + 8;
+  }
+
+  // int32 book_refresh_seconds = 11;
   if (this->_internal_book_refresh_seconds() != 0) {
     total_size += ::_pbi::WireFormatLite::Int32SizePlusOne(this->_internal_book_refresh_seconds());
   }
 
-  // int32 var_breach_count = 11;
+  // int32 var_breach_count = 12;
   if (this->_internal_var_breach_count() != 0) {
     total_size += ::_pbi::WireFormatLite::Int32SizePlusOne(this->_internal_var_breach_count());
+  }
+
+  // int32 trade_queue_depth = 13;
+  if (this->_internal_trade_queue_depth() != 0) {
+    total_size += ::_pbi::WireFormatLite::Int32SizePlusOne(this->_internal_trade_queue_depth());
+  }
+
+  // int32 metric_queue_depth = 14;
+  if (this->_internal_metric_queue_depth() != 0) {
+    total_size += ::_pbi::WireFormatLite::Int32SizePlusOne(this->_internal_metric_queue_depth());
   }
 
   return MaybeComputeUnknownFieldsSize(total_size, &_impl_._cached_size_);
@@ -562,11 +641,24 @@ void MetricEvent::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PR
   if (from._internal_socket_errors() != 0) {
     _this->_internal_set_socket_errors(from._internal_socket_errors());
   }
+  static_assert(sizeof(uint64_t) == sizeof(double), "Code assumes uint64_t and double are the same size.");
+  double tmp_cpu_load = from._internal_cpu_load();
+  uint64_t raw_cpu_load;
+  memcpy(&raw_cpu_load, &tmp_cpu_load, sizeof(tmp_cpu_load));
+  if (raw_cpu_load != 0) {
+    _this->_internal_set_cpu_load(from._internal_cpu_load());
+  }
   if (from._internal_book_refresh_seconds() != 0) {
     _this->_internal_set_book_refresh_seconds(from._internal_book_refresh_seconds());
   }
   if (from._internal_var_breach_count() != 0) {
     _this->_internal_set_var_breach_count(from._internal_var_breach_count());
+  }
+  if (from._internal_trade_queue_depth() != 0) {
+    _this->_internal_set_trade_queue_depth(from._internal_trade_queue_depth());
+  }
+  if (from._internal_metric_queue_depth() != 0) {
+    _this->_internal_set_metric_queue_depth(from._internal_metric_queue_depth());
   }
   _this->_internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
 }
@@ -592,8 +684,8 @@ void MetricEvent::InternalSwap(MetricEvent* other) {
       &other->_impl_.time_, rhs_arena
   );
   ::PROTOBUF_NAMESPACE_ID::internal::memswap<
-      PROTOBUF_FIELD_OFFSET(MetricEvent, _impl_.var_breach_count_)
-      + sizeof(MetricEvent::_impl_.var_breach_count_)
+      PROTOBUF_FIELD_OFFSET(MetricEvent, _impl_.metric_queue_depth_)
+      + sizeof(MetricEvent::_impl_.metric_queue_depth_)
       - PROTOBUF_FIELD_OFFSET(MetricEvent, _impl_.win_rate_)>(
           reinterpret_cast<char*>(&_impl_.win_rate_),
           reinterpret_cast<char*>(&other->_impl_.win_rate_));

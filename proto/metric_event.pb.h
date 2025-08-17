@@ -186,8 +186,11 @@ class MetricEvent final :
     kSharpeFieldNumber = 7,
     kFileWriteErrorsFieldNumber = 8,
     kSocketErrorsFieldNumber = 9,
-    kBookRefreshSecondsFieldNumber = 10,
-    kVarBreachCountFieldNumber = 11,
+    kCpuLoadFieldNumber = 10,
+    kBookRefreshSecondsFieldNumber = 11,
+    kVarBreachCountFieldNumber = 12,
+    kTradeQueueDepthFieldNumber = 13,
+    kMetricQueueDepthFieldNumber = 14,
   };
   // string time = 1;
   void clear_time();
@@ -275,7 +278,16 @@ class MetricEvent final :
   void _internal_set_socket_errors(int32_t value);
   public:
 
-  // int32 book_refresh_seconds = 10;
+  // double cpu_load = 10;
+  void clear_cpu_load();
+  double cpu_load() const;
+  void set_cpu_load(double value);
+  private:
+  double _internal_cpu_load() const;
+  void _internal_set_cpu_load(double value);
+  public:
+
+  // int32 book_refresh_seconds = 11;
   void clear_book_refresh_seconds();
   int32_t book_refresh_seconds() const;
   void set_book_refresh_seconds(int32_t value);
@@ -284,13 +296,31 @@ class MetricEvent final :
   void _internal_set_book_refresh_seconds(int32_t value);
   public:
 
-  // int32 var_breach_count = 11;
+  // int32 var_breach_count = 12;
   void clear_var_breach_count();
   int32_t var_breach_count() const;
   void set_var_breach_count(int32_t value);
   private:
   int32_t _internal_var_breach_count() const;
   void _internal_set_var_breach_count(int32_t value);
+  public:
+
+  // int32 trade_queue_depth = 13;
+  void clear_trade_queue_depth();
+  int32_t trade_queue_depth() const;
+  void set_trade_queue_depth(int32_t value);
+  private:
+  int32_t _internal_trade_queue_depth() const;
+  void _internal_set_trade_queue_depth(int32_t value);
+  public:
+
+  // int32 metric_queue_depth = 14;
+  void clear_metric_queue_depth();
+  int32_t metric_queue_depth() const;
+  void set_metric_queue_depth(int32_t value);
+  private:
+  int32_t _internal_metric_queue_depth() const;
+  void _internal_set_metric_queue_depth(int32_t value);
   public:
 
   // @@protoc_insertion_point(class_scope:tbot.MetricEvent)
@@ -310,8 +340,11 @@ class MetricEvent final :
     double sharpe_;
     int32_t file_write_errors_;
     int32_t socket_errors_;
+    double cpu_load_;
     int32_t book_refresh_seconds_;
     int32_t var_breach_count_;
+    int32_t trade_queue_depth_;
+    int32_t metric_queue_depth_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -538,7 +571,27 @@ inline void MetricEvent::set_socket_errors(int32_t value) {
   // @@protoc_insertion_point(field_set:tbot.MetricEvent.socket_errors)
 }
 
-// int32 book_refresh_seconds = 10;
+// double cpu_load = 10;
+inline void MetricEvent::clear_cpu_load() {
+  _impl_.cpu_load_ = 0;
+}
+inline double MetricEvent::_internal_cpu_load() const {
+  return _impl_.cpu_load_;
+}
+inline double MetricEvent::cpu_load() const {
+  // @@protoc_insertion_point(field_get:tbot.MetricEvent.cpu_load)
+  return _internal_cpu_load();
+}
+inline void MetricEvent::_internal_set_cpu_load(double value) {
+  
+  _impl_.cpu_load_ = value;
+}
+inline void MetricEvent::set_cpu_load(double value) {
+  _internal_set_cpu_load(value);
+  // @@protoc_insertion_point(field_set:tbot.MetricEvent.cpu_load)
+}
+
+// int32 book_refresh_seconds = 11;
 inline void MetricEvent::clear_book_refresh_seconds() {
   _impl_.book_refresh_seconds_ = 0;
 }
@@ -558,7 +611,7 @@ inline void MetricEvent::set_book_refresh_seconds(int32_t value) {
   // @@protoc_insertion_point(field_set:tbot.MetricEvent.book_refresh_seconds)
 }
 
-// int32 var_breach_count = 11;
+// int32 var_breach_count = 12;
 inline void MetricEvent::clear_var_breach_count() {
   _impl_.var_breach_count_ = 0;
 }
@@ -576,6 +629,46 @@ inline void MetricEvent::_internal_set_var_breach_count(int32_t value) {
 inline void MetricEvent::set_var_breach_count(int32_t value) {
   _internal_set_var_breach_count(value);
   // @@protoc_insertion_point(field_set:tbot.MetricEvent.var_breach_count)
+}
+
+// int32 trade_queue_depth = 13;
+inline void MetricEvent::clear_trade_queue_depth() {
+  _impl_.trade_queue_depth_ = 0;
+}
+inline int32_t MetricEvent::_internal_trade_queue_depth() const {
+  return _impl_.trade_queue_depth_;
+}
+inline int32_t MetricEvent::trade_queue_depth() const {
+  // @@protoc_insertion_point(field_get:tbot.MetricEvent.trade_queue_depth)
+  return _internal_trade_queue_depth();
+}
+inline void MetricEvent::_internal_set_trade_queue_depth(int32_t value) {
+  
+  _impl_.trade_queue_depth_ = value;
+}
+inline void MetricEvent::set_trade_queue_depth(int32_t value) {
+  _internal_set_trade_queue_depth(value);
+  // @@protoc_insertion_point(field_set:tbot.MetricEvent.trade_queue_depth)
+}
+
+// int32 metric_queue_depth = 14;
+inline void MetricEvent::clear_metric_queue_depth() {
+  _impl_.metric_queue_depth_ = 0;
+}
+inline int32_t MetricEvent::_internal_metric_queue_depth() const {
+  return _impl_.metric_queue_depth_;
+}
+inline int32_t MetricEvent::metric_queue_depth() const {
+  // @@protoc_insertion_point(field_get:tbot.MetricEvent.metric_queue_depth)
+  return _internal_metric_queue_depth();
+}
+inline void MetricEvent::_internal_set_metric_queue_depth(int32_t value) {
+  
+  _impl_.metric_queue_depth_ = value;
+}
+inline void MetricEvent::set_metric_queue_depth(int32_t value) {
+  _internal_set_metric_queue_depth(value);
+  // @@protoc_insertion_point(field_set:tbot.MetricEvent.metric_queue_depth)
 }
 
 #ifdef __GNUC__

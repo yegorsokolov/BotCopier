@@ -71,7 +71,11 @@ FIELDS = [
     "expectancy",
     "file_write_errors",
     "socket_errors",
+    "cpu_load",
     "book_refresh_seconds",
+    "var_breach_count",
+    "trade_queue_depth",
+    "metric_queue_depth",
     "trace_id",
     "span_id",
 ]
@@ -248,6 +252,15 @@ def serve(
             socket_err_c = Counter(
                 "bot_socket_errors_total", "Socket error count", registry=registry
             )
+            file_err_c = Counter(
+                "bot_file_write_errors_total", "File write error count", registry=registry
+            )
+            cpu_load_g = Gauge("bot_cpu_load", "CPU load", registry=registry)
+            book_refresh_g = Gauge(
+                "bot_book_refresh_seconds",
+                "Cached book refresh interval",
+                registry=registry,
+            )
 
             async def prom_handler(_request: web.Request) -> web.Response:
                 data = generate_latest(registry)
@@ -274,6 +287,21 @@ def serve(
                 if (v := row.get("socket_errors")) is not None:
                     try:
                         socket_err_c.inc(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("file_write_errors")) is not None:
+                    try:
+                        file_err_c.inc(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("cpu_load")) is not None:
+                    try:
+                        cpu_load_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("book_refresh_seconds")) is not None:
+                    try:
+                        book_refresh_g.set(float(v))
                     except (TypeError, ValueError):
                         pass
 
