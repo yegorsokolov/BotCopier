@@ -200,15 +200,9 @@ try:  # Cap'n Proto schemas loaded at runtime
 except Exception:  # pragma: no cover - optional dependency
     trade_capnp = metrics_capnp = None  # type: ignore
 
-try:
-    from .shm_ring import ShmRing, TRADE_MSG, METRIC_MSG
-except Exception:  # pragma: no cover - package relative import fallback
-    from shm_ring import ShmRing, TRADE_MSG, METRIC_MSG
-
 SCHEMA_VERSION = 1
 TRADE_MSG = 0
 METRIC_MSG = 1
-HELLO_MSG = 2
 
 LOG_FILES = {
     TRADE_MSG: Path("logs/trades_raw.csv"),
@@ -554,7 +548,6 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Listen for observer events")
     p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
     p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
-    p.add_argument("--ring-path", default=os.getenv("TBOT_RING", "/tmp/tbot_events"), help="Path to shared memory ring buffer")
     p.add_argument("--flight-host", default="127.0.0.1", help="Arrow Flight server host")
     p.add_argument("--flight-port", type=int, default=8815)
     args = p.parse_args()
@@ -571,67 +564,9 @@ def main() -> int:
             ws_trades = None
             ws_metrics = None
 
-    # Try shared memory ring first
-    ring = None
-    try:
-        ring = ShmRing.open(args.ring_path)
-    except Exception:
-        ring = None
-
-    if ring is not None:
-        while True:
-            msg = ring.pop()
-            if msg is None:
-                time.sleep(0.01)
-                continue
-            msg_type, payload = msg
-            if msg_type != HELLO_MSG:
-                logger.warning("expected hello packet")
-                return 1
-            try:
-                info = json.loads(payload.tobytes().decode())
-            except Exception:
-                logger.warning("invalid hello packet")
-                return 1
-            version = info.get("schema_version")
-            if version != SCHEMA_VERSION:
-                logger.warning(
-                    "schema version %s mismatch (expected %d)",
-                    version,
-                    SCHEMA_VERSION,
-                )
-                return 1
-            break
-        write_run_info()
-        for pth in LOG_FILES.values():
-            pth.parent.mkdir(parents=True, exist_ok=True)
-        while True:
-            msg = ring.pop()
-            if msg is None:
-                time.sleep(0.01)
-                continue
-            msg_type, payload = msg
-            decoded = _decode_event(bytes(payload), trade_prev if msg_type == TRADE_MSG else metric_prev)
-            if not decoded:
-                continue
-            version, body = decoded
-            if version != SCHEMA_VERSION:
-                logger.warning(
-                    "schema version %d mismatch (expected %d)",
-                    version,
-                    SCHEMA_VERSION,
-                )
-                continue
-            try:
-                if msg_type == TRADE_MSG:
-                    trade = trade_capnp.TradeEvent.from_bytes(body)
-                    process_trade(trade)
-                elif msg_type == METRIC_MSG:
-                    metric = metrics_capnp.Metrics.from_bytes(body)
-                    process_metric(metric)
-            except Exception:
-                continue
-        return 0
+    write_run_info()
+    for pth in LOG_FILES.values():
+        pth.parent.mkdir(parents=True, exist_ok=True)
 
     async def _flight_run() -> None:
         client = flight.FlightClient(f"grpc://{args.flight_host}:{args.flight_port}")

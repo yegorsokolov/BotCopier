@@ -28,6 +28,8 @@ try:  # prefer systemd journal if available
 except Exception:  # pragma: no cover - fallback to stderr
     logging.basicConfig(level=logging.INFO)
 
+logger = logging.getLogger(__name__)
+
 
 class FlightServer(flight.FlightServerBase):
     """Arrow Flight server persisting streams to disk.
@@ -98,7 +100,7 @@ class FlightServer(flight.FlightServerBase):
             conn = self._sqlite[path]
             conn.executemany(self._sqlite_sql[path], [list(r.values()) for r in rows])
             conn.commit()
-            logging.info("stored %d %s rows", batch.num_rows, path)
+            logger.info("stored %d %s rows", batch.num_rows, path)
 
     # ------------------------------------------------------------------
     def do_get(
