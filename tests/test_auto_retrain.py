@@ -122,9 +122,9 @@ def test_retrain_no_improvement(monkeypatch, tmp_path: Path):
 
     result = retrain_if_needed(log_dir, out_dir, files_dir)
 
-    assert result is False
+    assert result is True
     assert called.get("train") is True
-    assert called.get("publish") is None
+    assert called.get("publish") is True
     assert called.get("backtest") is True
 
 

@@ -999,6 +999,72 @@ def _load_news_sentiment(file: Path) -> dict[str, list[tuple[datetime, float]]]:
     return data
 
 
+def _load_feature_cache(out_dir: Path, existing: dict | None):
+    """Return cached features if metadata matches ``existing`` model."""
+    if pq is None or existing is None:
+        return None
+    cache_file = out_dir / "features.parquet"
+    if not cache_file.exists():
+        return None
+    try:
+        pf = pq.ParquetFile(cache_file)
+        meta = pf.schema_arrow.metadata or {}
+        names = json.loads(meta.get(b"feature_names", b"[]").decode())
+        last_id = int(meta.get(b"last_event_id", b"0"))
+        if (
+            names == existing.get("feature_names", [])
+            and last_id == int(existing.get("last_event_id", 0))
+        ):
+            df_cache = pf.read().to_pandas()
+            labels = df_cache["label"].to_numpy()
+            feats = df_cache[names].to_dict("records")
+            sl = df_cache.get("sl_target", pd.Series([])).to_numpy()
+            tp = df_cache.get("tp_target", pd.Series([])).to_numpy()
+            lots = df_cache.get("lot_target", pd.Series([])).to_numpy()
+            hrs = df_cache.get("hours", pd.Series([], dtype=int)).to_numpy(dtype=int)
+            times = df_cache.get("event_time", pd.Series([], dtype="datetime64[s]")).to_numpy(
+                dtype="datetime64[s]"
+            )
+            return feats, labels, sl, tp, lots, hrs, times, last_id
+    except Exception:
+        return None
+    return None
+
+
+def _save_feature_cache(
+    out_dir: Path,
+    feature_names: list[str],
+    features: list[dict[str, float]],
+    labels: np.ndarray,
+    sl: np.ndarray,
+    tp: np.ndarray,
+    lots: np.ndarray,
+    hours: np.ndarray,
+    times: np.ndarray,
+    last_event_id: int,
+):
+    """Persist extracted features to a compressed Parquet file."""
+    if pq is None:
+        return
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df_cache = pd.DataFrame(
+        [{fn: feat.get(fn, 0.0) for fn in feature_names} for feat in features]
+    )
+    df_cache["label"] = labels
+    df_cache["sl_target"] = sl
+    df_cache["tp_target"] = tp
+    df_cache["lot_target"] = lots
+    df_cache["hours"] = hours
+    df_cache["event_time"] = pd.to_datetime(times)
+    table = pa.Table.from_pandas(df_cache)
+    meta = {
+        b"feature_names": json.dumps(feature_names).encode(),
+        b"last_event_id": str(last_event_id).encode(),
+    }
+    table = table.replace_schema_metadata(meta)
+    pq.write_table(table, out_dir / "features.parquet", compression="gzip")
+
+
 def _read_last_event_id(out_dir: Path) -> int:
     """Read ``last_event_id`` from an existing model file in ``out_dir``."""
     json_path = out_dir / "model.json"
@@ -1737,148 +1803,53 @@ def train(
     loaded_from_cache = False
     data_commits: list[str] = []
     data_checksums: list[str] = []
-    feature_cache_file = out_dir / "features.parquet"
-    if (
-        cache_features
-        and feature_cache_file.exists()
-        and existing_model is not None
-        and pq is not None
-    ):
-        try:
-            pf = pq.ParquetFile(feature_cache_file)
-            meta = pf.schema_arrow.metadata or {}
-            cached_names = json.loads(meta.get(b"feature_names", b"[]").decode())
-            cached_last_id = int(meta.get(b"last_event_id", b"0"))
-            if (
-                cached_names == existing_model.get("feature_names", [])
-                and cached_last_id == int(existing_model.get("last_event_id", 0))
-            ):
-                df_cache = pf.read().to_pandas()
-                labels = df_cache["label"].to_numpy()
-                features = df_cache[cached_names].to_dict("records")
-                sl_targets = (
-                    df_cache["sl_target"].to_numpy()
-                    if "sl_target" in df_cache.columns
-                    else np.zeros(len(df_cache))
-                )
-                tp_targets = (
-                    df_cache["tp_target"].to_numpy()
-                    if "tp_target" in df_cache.columns
-                    else np.zeros(len(df_cache))
-                )
-                lot_targets = (
-                    df_cache["lot_target"].to_numpy()
-                    if "lot_target" in df_cache.columns
-                    else np.zeros(len(df_cache))
-                )
-                hours = (
-                    df_cache["hours"].to_numpy(dtype=int)
-                    if "hours" in df_cache.columns
-                    else np.zeros(len(df_cache), dtype=int)
-                )
-                if "event_time" in df_cache.columns:
-                    event_times = df_cache["event_time"].to_numpy(dtype="datetime64[s]")
-                else:
-                    event_times = np.array([], dtype="datetime64[s]")
-                loaded_from_cache = True
-                last_event_id = cached_last_id
-        except Exception as exc:
-            logging.warning("failed to load feature cache: %s", exc)
-
-    price_map_total: dict[str, list[float]] = {}
-    if features is None:
-        if lite_mode:
-            rows_iter, data_commits, data_checksums = _load_logs(
-                data_dir, lite_mode=True, flight_uri=flight_uri
-            )
-            encoder = None
-            if encoder_file is not None and encoder_file.exists():
-                with open(encoder_file) as f:
-                    encoder = json.load(f)
-            features = []
-            labels_list: list[np.ndarray] = []
-            sl_list: list[np.ndarray] = []
-            tp_list: list[np.ndarray] = []
-            hours_list: list[np.ndarray] = []
-            lot_list: list[np.ndarray] = []
-            time_list: list[np.ndarray] = []
-            price_map_total: dict[str, list[float]] = {}
-            for chunk in rows_iter:
-                (
-                    f_chunk,
-                    l_chunk,
-                    sl_chunk,
-                    tp_chunk,
-                    h_chunk,
-                    lot_chunk,
-                    t_chunk,
-                    p_chunk,
-                ) = _extract_features(
-                    chunk.to_dict("records"),
-                    use_sma=use_sma,
-                    sma_window=sma_window,
-                    use_rsi=use_rsi,
-                    rsi_period=rsi_period,
-                    use_macd=use_macd,
-                    use_atr=use_atr,
-                    atr_period=atr_period,
-                    use_bollinger=use_bollinger,
-                    boll_window=boll_window,
-                    use_stochastic=use_stochastic,
-                    use_adx=use_adx,
-                    use_volume=use_volume,
-                    volatility=volatility_series,
-                    higher_timeframes=higher_timeframes,
-                    corr_map=corr_map,
-                    corr_window=corr_window,
-                    extra_price_series=extra_price_series,
-                    encoder=encoder,
-                    calendar_events=calendar_events,
-                    event_window=event_window,
-                    news_sentiment=news_data,
-                )
-                for sym, prices in p_chunk.items():
-                    price_map_total.setdefault(sym, []).extend(prices)
-                features.extend(f_chunk)
-                labels_list.append(l_chunk)
-                sl_list.append(sl_chunk)
-                tp_list.append(tp_chunk)
-                hours_list.append(h_chunk)
-                lot_list.append(lot_chunk)
-                time_list.append(t_chunk)
-            labels = np.concatenate(labels_list) if labels_list else np.array([])
-            sl_targets = np.concatenate(sl_list) if sl_list else np.array([])
-            tp_targets = np.concatenate(tp_list) if tp_list else np.array([])
-            hours = (
-                np.concatenate(hours_list) if hours_list else np.array([], dtype=int)
-            )
-            lot_targets = np.concatenate(lot_list) if lot_list else np.array([])
-            event_times = (
-                np.concatenate(time_list)
-                if time_list
-                else np.array([], dtype="datetime64[s]")
-            )
-        else:
-            rows_df, data_commits, data_checksums = _load_logs(data_dir, flight_uri=flight_uri)
-            if "event_id" in rows_df.columns:
-                max_id = pd.to_numeric(rows_df["event_id"], errors="coerce").max()
-                if not pd.isna(max_id):
-                    last_event_id = max(last_event_id, int(max_id))
-            encoder = None
-            if encoder_file is not None and encoder_file.exists():
-                with open(encoder_file) as f:
-                    encoder = json.load(f)
+    if cache_features:
+        loaded = _load_feature_cache(out_dir, existing_model)
+        if loaded is not None:
             (
                 features,
                 labels,
                 sl_targets,
                 tp_targets,
-                hours,
                 lot_targets,
+                hours,
                 event_times,
-                price_map_total,
+                last_event_id,
+            ) = loaded
+            loaded_from_cache = True
+
+    price_map_total: dict[str, list[float]] = {}
+    if features is None:
+        rows_iter, data_commits, data_checksums = _load_logs(
+            data_dir, lite_mode=True, flight_uri=flight_uri
+        )
+        encoder = None
+        if encoder_file is not None and encoder_file.exists():
+            with open(encoder_file) as f:
+                encoder = json.load(f)
+        features = []
+        labels_list: list[np.ndarray] = []
+        sl_list: list[np.ndarray] = []
+        tp_list: list[np.ndarray] = []
+        hours_list: list[np.ndarray] = []
+        lot_list: list[np.ndarray] = []
+        time_list: list[np.ndarray] = []
+        for chunk in rows_iter:
+            if "event_id" in chunk.columns:
+                max_id = pd.to_numeric(chunk["event_id"], errors="coerce").max()
+                if not pd.isna(max_id):
+                    last_event_id = max(last_event_id, int(max_id))
+            (
+                f_chunk,
+                l_chunk,
+                sl_chunk,
+                tp_chunk,
+                h_chunk,
+                lot_chunk,
+                t_chunk,
+                p_chunk,
             ) = _extract_features(
-                rows_df.to_dict("records"),
+                chunk.to_dict("records"),
                 use_sma=use_sma,
                 sma_window=sma_window,
                 use_rsi=use_rsi,
@@ -1901,6 +1872,25 @@ def train(
                 event_window=event_window,
                 news_sentiment=news_data,
             )
+            for sym, prices in p_chunk.items():
+                price_map_total.setdefault(sym, []).extend(prices)
+            features.extend(f_chunk)
+            labels_list.append(l_chunk)
+            sl_list.append(sl_chunk)
+            tp_list.append(tp_chunk)
+            hours_list.append(h_chunk)
+            lot_list.append(lot_chunk)
+            time_list.append(t_chunk)
+        labels = np.concatenate(labels_list) if labels_list else np.array([])
+        sl_targets = np.concatenate(sl_list) if sl_list else np.array([])
+        tp_targets = np.concatenate(tp_list) if tp_list else np.array([])
+        hours = np.concatenate(hours_list) if hours_list else np.array([], dtype=int)
+        lot_targets = np.concatenate(lot_list) if lot_list else np.array([])
+        event_times = (
+            np.concatenate(time_list)
+            if time_list
+            else np.array([], dtype="datetime64[s]")
+        )
     else:
         encoder = None
         if encoder_file is not None and encoder_file.exists():
@@ -1940,27 +1930,20 @@ def train(
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
-    if cache_features and not loaded_from_cache and pq is not None:
-        out_dir.mkdir(parents=True, exist_ok=True)
+    if cache_features and not loaded_from_cache:
         cache_feature_names = sorted({k for feat in features for k in feat})
-        df_cache = pd.DataFrame(
-            [{fn: feat.get(fn, 0.0) for fn in cache_feature_names} for feat in features]
+        _save_feature_cache(
+            out_dir,
+            cache_feature_names,
+            features,
+            labels,
+            sl_targets,
+            tp_targets,
+            lot_targets,
+            hours,
+            event_times,
+            last_event_id,
         )
-        df_cache["label"] = labels
-        df_cache["sl_target"] = sl_targets
-        df_cache["tp_target"] = tp_targets
-        df_cache["lot_target"] = lot_targets
-        df_cache["hours"] = hours
-        df_cache["event_time"] = pd.to_datetime(event_times)
-        table = pa.Table.from_pandas(df_cache)
-        meta = table.schema.metadata or {}
-        meta = {
-            **meta,
-            b"feature_names": json.dumps(cache_feature_names).encode(),
-            b"last_event_id": str(last_event_id).encode(),
-        }
-        table = table.replace_schema_metadata(meta)
-        pq.write_table(table, feature_cache_file, compression="snappy")
     risk_parity = _compute_risk_parity(price_map_total)
     regime_info = None
     reg_centers = None
