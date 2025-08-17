@@ -85,6 +85,9 @@ datetime ModelTimestamp = 0;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
 int      FallbackEvents = 0;
+int      TradeQueueDepth = 0;
+int      MetricQueueDepth = 0;
+string   log_dir = "";
 const int SCHEMA_VERSION = 1;
 const int MSG_TRADE = 0;
 const int MSG_METRIC = 1;
@@ -367,6 +370,7 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_trades);
          RemoveFirstStr(pending_trade_lines);
+         TradeQueueDepth = ArraySize(pending_trades);
          trade_backoff = 1;
          next_trade_flush = now;
          trade_retry_count = 0;
@@ -393,6 +397,7 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_metrics);
          RemoveFirstStr(pending_metric_lines);
+         MetricQueueDepth = ArraySize(pending_metrics);
          metric_backoff = 1;
          next_metric_flush = now;
          metric_retry_count = 0;
@@ -736,7 +741,7 @@ int OnInit()
    for(int j=0; j<sym_cnt; j++)
       track_symbols[j] = StringTrimLeft(StringTrimRight(parts[j]));
 
-   string log_dir = StringReplace(LogDirectoryName, "\\", "/");
+   log_dir = StringReplace(LogDirectoryName, "\\", "/");
    if(!FileIsExist(log_dir))
    {
       if(FolderCreate(log_dir))
@@ -755,6 +760,8 @@ int OnInit()
    FlightClientInit(FlightServerHost, FlightServerPort);
    LoadQueue(log_dir + "/pending_trades.bin", pending_trades);
    LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics);
+   TradeQueueDepth = ArraySize(pending_trades);
+   MetricQueueDepth = ArraySize(pending_metrics);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
    if(max_id >= NextEventId)
@@ -1176,6 +1183,7 @@ bool SendTrade(uchar &payload[])
       return(true);
    SocketErrors++;
    EnqueuePending(pending_trades, pending_trade_lines, zipped, line);
+   TradeQueueDepth = ArraySize(pending_trades);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_trade_flush = now + trade_backoff;
    return(false);
@@ -1232,6 +1240,7 @@ bool SendMetrics(uchar &payload[], string line)
       return(true);
    SocketErrors++;
    EnqueuePending(pending_metrics, pending_metric_lines, zipped, line);
+   MetricQueueDepth = ArraySize(pending_metrics);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_metric_flush = now + metric_backoff;
    return(false);
@@ -1564,8 +1573,8 @@ void WriteMetrics(datetime ts)
    string fname = log_dir + "/metrics.csv";
 
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
-   int trade_q_depth = ArraySize(pending_trades);
-   int metric_q_depth = ArraySize(pending_metrics);
+   int trade_q_depth = TradeQueueDepth;
+   int metric_q_depth = MetricQueueDepth;
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];

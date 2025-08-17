@@ -263,6 +263,27 @@ handler.setFormatter(JsonFormatter())
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
+
+class TraceAdapter(logging.LoggerAdapter):
+    """Inject current trace/span IDs into log records."""
+
+    def process(self, msg, kwargs):
+        extra = kwargs.get("extra", {})
+        if current_trace_id:
+            try:
+                extra.setdefault("trace_id", int(current_trace_id, 16))
+            except ValueError:
+                pass
+        if current_span_id:
+            try:
+                extra.setdefault("span_id", int(current_span_id, 16))
+            except ValueError:
+                pass
+        kwargs["extra"] = extra
+        return msg, kwargs
+
+logger = TraceAdapter(logger, {})
+
 # optional dashboard websocket connections
 ws_trades: WebSocket | None = None
 ws_metrics: WebSocket | None = None
