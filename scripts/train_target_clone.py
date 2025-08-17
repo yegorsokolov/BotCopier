@@ -2428,11 +2428,6 @@ def train(
                 [dt.isoformat(), float(imp)] for dt, imp in calendar_events
             ]
             model["event_window"] = float(event_window)
-        model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
-        open_func = gzip.open if compress_model else open
-        with open_func(model_path, "wt") as f:
-            json.dump(model, f)
-        print(f"Model written to {model_path}")
         return
 
     if regime_info is not None:
@@ -2473,6 +2468,62 @@ def train(
                     "feature_names": feature_names,
                 }
             )
+        # compute probabilities on train/validation sets
+        def _regime_proba(X_mat: np.ndarray) -> np.ndarray:
+            reg_preds = gating_clf.predict(X_mat)
+            proba = np.zeros(len(reg_preds))
+            for rm in regime_models:
+                r = rm["regime"]
+                mask = reg_preds == r
+                if mask.any():
+                    coef = np.array(rm["coefficients"], dtype=float)
+                    inter = float(rm["intercept"])
+                    z = X_mat[mask].dot(coef) + inter
+                    proba[mask] = 1.0 / (1.0 + np.exp(-z))
+            return proba
+
+        train_feat = [dict(f) for f in feat_train]
+        for f in train_feat:
+            f.pop("profit", None)
+            f.pop("regime", None)
+            for k in list(f.keys()):
+                if k.startswith("regime_"):
+                    f.pop(k, None)
+        X_train_all = vec.transform(train_feat)
+        X_train_all = _encode_features(enc_model, X_train_all)
+        proba_train = _regime_proba(X_train_all)
+
+        val_feat = [dict(f) for f in feat_val]
+        for f in val_feat:
+            f.pop("profit", None)
+            f.pop("regime", None)
+            for k in list(f.keys()):
+                if k.startswith("regime_"):
+                    f.pop(k, None)
+        X_val_all = (
+            _encode_features(enc_model, vec.transform(val_feat))
+            if val_feat
+            else np.empty((0, X_train_all.shape[1]))
+        )
+        proba_val = _regime_proba(X_val_all) if len(val_feat) else np.array([])
+        if len(y_val) > 0:
+            threshold, _ = _best_threshold(y_val, proba_val)
+            val_preds = (proba_val >= threshold).astype(int)
+            val_acc = float(accuracy_score(y_val, val_preds))
+        else:
+            threshold = 0.5
+            val_acc = float("nan")
+        train_preds = (proba_train >= threshold).astype(int)
+        train_acc = float(accuracy_score(y_train, train_preds))
+        hours_val_arr = np.array(hours_val, dtype=int) if len(hours_val) else np.array([], dtype=int)
+        hourly_thresholds: List[float] = []
+        for h in range(24):
+            idx = np.where(hours_val_arr == h)[0]
+            if len(idx) > 0:
+                t, _ = _best_threshold(y_val[idx], proba_val[idx])
+            else:
+                t = threshold
+            hourly_thresholds.append(float(t))
 
         model = {
             "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
@@ -2485,9 +2536,20 @@ def train(
                 "intercepts": gating_clf.intercept_.astype(np.float32).tolist(),
             },
             "regime_models": regime_models,
+            "coefficients": gating_clf.coef_[0].astype(np.float32).tolist(),
+            "intercept": float(gating_clf.intercept_[0]),
+            "train_accuracy": train_acc,
+            "val_accuracy": val_acc,
+            "threshold": threshold,
+            "accuracy": val_acc,
+            "num_samples": int(labels.shape[0])
+            + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
+            "feature_importance": {},
+            "weighted": sample_weight is not None,
             "last_event_id": int(last_event_id),
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
+            "hourly_thresholds": hourly_thresholds,
         }
         model["regime_centers"] = regime_info.get("centers", [])
         model["regime_feature_names"] = regime_info.get("feature_names", [])
@@ -2511,6 +2573,20 @@ def train(
         with open_func(model_path, "wt") as f:
             json.dump(model, f)
         print(f"Model written to {model_path}")
+        if "coefficients" in model and "intercept" in model:
+            w = np.array(model["coefficients"], dtype=float)
+            b = float(model["intercept"])
+            init = {
+                "weights": [
+                    (w / 2.0).tolist(),
+                    (-w / 2.0).tolist(),
+                ],
+                "intercepts": [b / 2.0, -b / 2.0],
+                "feature_names": model.get("feature_names", []),
+            }
+            with open(out_dir / "policy_init.json", "w") as f_init:
+                json.dump(init, f_init, indent=2)
+            print(f"Initial policy written to {out_dir / 'policy_init.json'}")
         return
 
     if stack_models:
