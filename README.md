@@ -18,7 +18,9 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
   - `train_target_clone.py` – trains a model from exported logs. Its
     `detect_resources()` helper reports available CPU, memory, GPU and free disk
     space via `disk_gb`, automatically enabling lite mode when less than 5 GB
-    remains.
+    remains. Heavy indicators such as SMA, RSI, MACD and ATR are enabled
+    automatically on capable machines and the chosen features are written to
+    `model.json` for reproducibility.
   - `generate_mql4_from_model.py` – renders a new EA from a trained model description.
   - `evaluate_predictions.py` – basic log evaluation utility.
   - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
@@ -47,6 +49,8 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    ```bash
    python scripts/train_target_clone.py --data-dir logs --out-dir models
    ```
+   The script automatically selects resource-intensive indicators based on
+   available hardware, so manual `--use-foo` flags are no longer required.
 3. Generate an EA from the trained model:
    ```bash
    python scripts/generate_mql4_from_model.py models/model.json experts

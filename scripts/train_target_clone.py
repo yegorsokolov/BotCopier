@@ -1533,6 +1533,17 @@ def _train_lite_mode(
         "classes": [int(c) for c in clf.classes_],
         "last_event_id": int(last_event_id),
     }
+    model["feature_flags"] = {
+        "sma": use_sma,
+        "rsi": use_rsi,
+        "macd": use_macd,
+        "atr": use_atr,
+        "bollinger": use_bollinger,
+        "stochastic": use_stochastic,
+        "adx": use_adx,
+        "volume": use_volume,
+        "higher_timeframes": [],
+    }
     if ae_info:
         model["autoencoder"] = ae_info
     if regime_model is not None and reg_centers is not None:
@@ -1646,6 +1657,17 @@ def train(
             flight_uri=flight_uri,
         )
         return
+    feature_flags = {
+        "sma": use_sma,
+        "rsi": use_rsi,
+        "macd": use_macd,
+        "atr": use_atr,
+        "bollinger": use_bollinger,
+        "stochastic": use_stochastic,
+        "adx": use_adx,
+        "volume": use_volume,
+        "higher_timeframes": higher_timeframes or [],
+    }
     if bayes_steps > 0:
         try:
             import optuna  # type: ignore
@@ -2333,6 +2355,7 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
         }
+        model["feature_flags"] = feature_flags
         if weight_decay_info:
             model["weight_decay"] = weight_decay_info
         if ae_info:
@@ -2407,6 +2430,7 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
         }
+        model["feature_flags"] = feature_flags
         if weight_decay_info:
             model["weight_decay"] = weight_decay_info
         if ae_info:
@@ -3103,6 +3127,7 @@ def train(
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
     }
+    model["feature_flags"] = feature_flags
     if risk_parity:
         model["risk_parity_symbols"] = list(risk_parity.keys())
         model["risk_parity_weights"] = [float(risk_parity[s]) for s in risk_parity]
@@ -3408,15 +3433,8 @@ def main():
     p.add_argument('--out-dir', default=str(default_out_dir))
     p.add_argument('--flight-uri', default=os.environ.get('FLIGHT_URI'),
                    help='Arrow Flight server URI (default from FLIGHT_URI)')
-    p.add_argument('--use-sma', action='store_true', help='include moving average feature')
     p.add_argument('--sma-window', type=int, default=5)
-    p.add_argument('--use-rsi', action='store_true', help='include RSI feature')
     p.add_argument('--rsi-period', type=int, default=14)
-    p.add_argument('--use-macd', action='store_true', help='include MACD feature')
-    p.add_argument('--use-atr', action='store_true', help='include ATR feature')
-    p.add_argument('--use-bollinger', action='store_true', help='include Bollinger Bands feature')
-    p.add_argument('--use-stochastic', action='store_true', help='include Stochastic Oscillator feature')
-    p.add_argument('--use-adx', action='store_true', help='include ADX feature')
     p.add_argument(
         '--higher-timeframes',
         help='comma separated higher timeframes e.g. H1,H4',
@@ -3494,39 +3512,25 @@ def main():
         else:
             higher_tfs = None
         lite_mode = resources["lite_mode"]
-        heavy_mode = resources["heavy_mode"]
-        if lite_mode:
-            args.use_macd = False
-            args.use_atr = False
-            args.use_bollinger = False
-            args.use_stochastic = False
-            args.use_adx = False
-            args.grid_search = False
-        else:
-            args.use_macd = True
-            args.use_atr = True
-            args.use_bollinger = True
-            args.use_stochastic = True
-            args.use_adx = True
+        use_sma = use_rsi = use_macd = use_atr = use_bollinger = use_stochastic = use_adx = not lite_mode
+        grid_search = args.grid_search and not lite_mode
         model_type = args.model_type or resources["model_type"]
-        bayes_steps = (
-            0 if lite_mode else (args.bayes_steps or resources["bayes_steps"])
-        )
+        bayes_steps = 0 if lite_mode else (args.bayes_steps or resources["bayes_steps"])
         train(
             Path(args.data_dir),
             Path(args.out_dir),
-            use_sma=args.use_sma,
+            use_sma=use_sma,
             sma_window=args.sma_window,
-            use_rsi=args.use_rsi,
+            use_rsi=use_rsi,
             rsi_period=args.rsi_period,
-            use_macd=args.use_macd,
-            use_atr=args.use_atr,
-            use_bollinger=args.use_bollinger,
-            use_stochastic=args.use_stochastic,
-            use_adx=args.use_adx,
+            use_macd=use_macd,
+            use_atr=use_atr,
+            use_bollinger=use_bollinger,
+            use_stochastic=use_stochastic,
+            use_adx=use_adx,
             higher_timeframes=higher_tfs,
             volatility_series=vol_data,
-            grid_search=args.grid_search,
+            grid_search=grid_search,
             c_values=args.c_values,
             model_type=model_type,
             n_estimators=args.n_estimators,
