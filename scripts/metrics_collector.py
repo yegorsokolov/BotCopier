@@ -247,65 +247,38 @@ def serve(
                 asyncio.create_task(_watchdog_task(watchdog_interval))
 
         if prom_port is not None:
-            from prometheus_client import (
-                CONTENT_TYPE_LATEST,
-                CollectorRegistry,
-                Counter,
-                Gauge,
-                generate_latest,
-            )
+            from prometheus_client import Counter, Gauge, start_http_server
 
-            registry = CollectorRegistry()
-            win_rate_g = Gauge("bot_win_rate", "Win rate", registry=registry)
-            drawdown_g = Gauge("bot_drawdown", "Drawdown", registry=registry)
+            start_http_server(prom_port, addr=http_host)
+            win_rate_g = Gauge("bot_win_rate", "Win rate")
+            drawdown_g = Gauge("bot_drawdown", "Drawdown")
             socket_err_c = Counter(
-                "bot_socket_errors_total", "Socket error count", registry=registry
+                "bot_socket_errors_total", "Socket error count"
             )
             file_err_c = Counter(
-                "bot_file_write_errors_total", "File write error count", registry=registry
+                "bot_file_write_errors_total", "File write error count"
             )
             fallback_event_c = Counter(
                 "bot_fallback_events_total",
                 "Fallback logging event count",
-                registry=registry,
             )
-            cpu_load_g = Gauge("bot_cpu_load", "CPU load", registry=registry)
+            cpu_load_g = Gauge("bot_cpu_load", "CPU load")
             book_refresh_g = Gauge(
                 "bot_book_refresh_seconds",
                 "Cached book refresh interval",
-                registry=registry,
             )
             host_cpu_g = Gauge(
-                "system_cpu_percent",
-                "Host CPU utilisation",
-                registry=registry,
+                "system_cpu_percent", "Host CPU utilisation"
             )
             host_mem_g = Gauge(
-                "system_memory_percent",
-                "Host memory utilisation",
-                registry=registry,
+                "system_memory_percent", "Host memory utilisation"
             )
             metric_queue_g = Gauge(
-                "bot_metric_queue_depth",
-                "Arrow Flight metric queue depth",
-                registry=registry,
+                "bot_metric_queue_depth", "Arrow Flight metric queue depth"
             )
             trade_queue_g = Gauge(
-                "bot_trade_queue_depth",
-                "Arrow Flight trade queue depth",
-                registry=registry,
+                "bot_trade_queue_depth", "Arrow Flight trade queue depth"
             )
-
-            async def prom_handler(_request: web.Request) -> web.Response:
-                data = generate_latest(registry)
-                return web.Response(body=data, content_type=CONTENT_TYPE_LATEST)
-
-            prom_app = web.Application()
-            prom_app.add_routes([web.get("/metrics", prom_handler)])
-            prom_runner = web.AppRunner(prom_app)
-            await prom_runner.setup()
-            prom_site = web.TCPSite(prom_runner, http_host, prom_port)
-            await prom_site.start()
 
             async def _sample_host_metrics() -> None:
                 while True:
@@ -368,7 +341,6 @@ def serve(
             prom_updater = _prom_updater
         else:
             prom_updater = lambda _row: None
-            prom_runner = None
 
         writer_task = asyncio.create_task(_writer_task(db_file, queue, prom_updater))
         _sd_notify_ready()

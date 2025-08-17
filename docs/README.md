@@ -27,3 +27,25 @@ Downstream components read these flags to stay in sync:
 This metadata is persisted in ``model.json`` so that models trained on one
 machine can be safely deployed on another with different capabilities.
 
+## Observability
+
+Runtime services emit structured logs to the systemd journal when available. Inspect them with:
+
+```
+sudo journalctl -u stream-listener.service -f
+sudo journalctl -u metrics-collector.service -f
+```
+
+Without systemd the services fall back to local ``*.log`` files.
+
+When :mod:`scripts.metrics_collector` is launched with ``--prom-port`` it exposes Prometheus gauges and counters. Add the endpoint to your scrape configuration:
+
+```
+scrape_configs:
+  - job_name: botcopier
+    static_configs:
+      - targets: ['localhost:8001']
+```
+
+Grafana dashboards can then be built on top of the Prometheus data. Import ``docs/metrics_dashboard.json`` for a starter layout showing CPU/memory usage, Arrow Flight queue depth and error counters.
+
