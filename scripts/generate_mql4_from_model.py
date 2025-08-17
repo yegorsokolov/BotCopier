@@ -322,18 +322,22 @@ def generate(
     output = output.replace('__ENCODER_CENTER_COUNT__', str(len(centers)))
 
     reg_centers = base.get('regime_centers', [])
+    if not reg_centers:
+        reg_centers = [[0.0]] * len(models)
     reg_feat_names = base.get('regime_feature_names', [])
     reg_feat_idx = [feature_names.index(f) for f in reg_feat_names if f in feature_names]
-    reg_center_flat = ', '.join('{' + ', '.join(_fmt(v) for v in c) + '}' for c in reg_centers) if reg_centers else '{0}'
-    reg_feat_idx_str = ', '.join(str(i) for i in reg_feat_idx) if reg_feat_idx else '0'
+    if not reg_feat_idx:
+        reg_feat_idx = [0]
+    reg_center_flat = ', '.join('{' + ', '.join(_fmt(v) for v in c) + '}' for c in reg_centers)
+    reg_feat_idx_str = ', '.join(str(i) for i in reg_feat_idx)
     output = output.replace('__REGIME_CENTERS__', reg_center_flat)
-    output = output.replace('__REGIME_COUNT__', str(len(reg_centers) or 1))
-    output = output.replace('__REGIME_FEATURE_COUNT__', str(len(reg_feat_idx) or 1))
+    output = output.replace('__REGIME_COUNT__', str(len(reg_centers)))
+    output = output.replace('__REGIME_FEATURE_COUNT__', str(len(reg_feat_idx)))
     output = output.replace('__REGIME_FEATURE_IDX__', reg_feat_idx_str)
     reg_model_idx = base.get('regime_model_idx')
-    if not reg_model_idx and reg_centers:
-        reg_model_idx = list(range(len(reg_centers)))
-    reg_model_idx_str = ', '.join(str(int(i)) for i in (reg_model_idx or [0]))
+    if not reg_model_idx:
+        reg_model_idx = list(range(len(models)))
+    reg_model_idx_str = ', '.join(str(int(i)) for i in reg_model_idx)
     output = output.replace('__REGIME_MODEL_IDX__', reg_model_idx_str)
     reg_thr = base.get('regime_thresholds') or []
     reg_thr_str = ', '.join(_fmt(t) for t in reg_thr) if reg_thr else ''

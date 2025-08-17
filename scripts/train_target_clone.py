@@ -55,6 +55,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 
 import requests
 
@@ -1933,22 +1934,35 @@ def train(
     risk_parity = _compute_risk_parity(price_map_total)
     regime_info = None
     reg_centers = None
-    if regime_model_file and regime_model_file.exists():
-        with open(regime_model_file) as f:
-            regime_info = json.load(f)
+    try:
+        from sklearn.cluster import KMeans
+
+        feat_reg = [dict(f) for f in features]
+        for f in feat_reg:
+            f.pop("profit", None)
+            for k in list(f.keys()):
+                if k.startswith("regime"):
+                    f.pop(k, None)
         vec_reg = DictVectorizer(sparse=False)
-        vec_reg.fit([{n: 0.0} for n in regime_info.get("feature_names", [])])
-        Xr = vec_reg.transform(features)
-        reg_mean = np.array(regime_info.get("mean", []), dtype=float)
-        reg_std = np.array(regime_info.get("std", []), dtype=float)
-        reg_std[reg_std == 0] = 1.0
-        Xr = (Xr - reg_mean) / reg_std
-        reg_centers = np.array(regime_info.get("centers", []), dtype=float)
-        if reg_centers.size:
-            dists = ((Xr[:, None, :] - reg_centers[None, :, :]) ** 2).sum(axis=2)
-            regimes = dists.argmin(axis=1)
+        Xr = vec_reg.fit_transform(feat_reg)
+        n_reg = min(3, len(feat_reg))
+        if n_reg > 1:
+            kmeans = KMeans(n_clusters=n_reg, random_state=42, n_init=10)
+            regimes = kmeans.fit_predict(Xr)
             for i, r in enumerate(regimes):
-                features[i][f"regime_{int(r)}"] = 1.0
+                features[i]["regime"] = int(r)
+            reg_centers = kmeans.cluster_centers_
+            reg_mean = Xr.mean(axis=0)
+            reg_std = Xr.std(axis=0)
+            reg_std[reg_std == 0] = 1.0
+            regime_info = {
+                "feature_names": vec_reg.get_feature_names_out().tolist(),
+                "mean": reg_mean.astype(np.float32).tolist(),
+                "std": reg_std.astype(np.float32).tolist(),
+                "centers": reg_centers.astype(np.float32).tolist(),
+            }
+    except Exception as exc:
+        logging.warning("regime clustering failed: %s", exc)
     ae_info = None
     ae_feature_order = ["price", "sl", "tp", "lots", "spread", "slippage"]
     ae_matrix = np.array(
@@ -2376,7 +2390,7 @@ def train(
         print(f"Model written to {model_path}")
         return
 
-    if regime_model_file and regime_model_file.exists():
+    if regime_info is not None:
         regimes = np.array([int(f.get("regime", 0)) for f in features])
         all_feat = [dict(f) for f in features]
         for f in all_feat:
@@ -2430,6 +2444,9 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
         }
+        model["regime_centers"] = regime_info.get("centers", [])
+        model["regime_feature_names"] = regime_info.get("feature_names", [])
+        model["regime_model_idx"] = [m.get("regime", i) for i, m in enumerate(regime_models)]
         model["feature_flags"] = feature_flags
         if weight_decay_info:
             model["weight_decay"] = weight_decay_info

@@ -1193,11 +1193,13 @@ void OnTick()
    }
 
    UpdateFeatureHistory();
-   int reg = GetRegime();
-   CurrentRegime = reg;
    int modelIdx = SelectExpert();
+   int reg = modelIdx;
+   CurrentRegime = reg;
    if(reg >= 0 && reg < ArraySize(RegimeModelIdx))
       modelIdx = RegimeModelIdx[reg];
+   if(EnableDebugLogging)
+      Print("Regime=", reg, " Model=", modelIdx);
    if(BanditSocket != INVALID_HANDLE)
    {
       int idx = QueryBanditModel();
