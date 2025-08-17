@@ -26,7 +26,7 @@ template_path = (
 def generate(
     model_jsons: Union[Path, Iterable[Path]],
     out_dir: Path,
-    lite_mode: bool = False,
+    lite_mode: bool | None = None,
     gating_json: Optional[Path] = None,
 ):
     """Render an MQL4 strategy using one or more base models.
@@ -38,7 +38,8 @@ def generate(
     out_dir : Path
         Directory where the generated MQL4 file will be written.
     lite_mode : bool, optional
-        If True, exclude order book features.
+        If True, exclude order book features. If ``None`` the mode is inferred
+        from ``model.json`` metadata.
     gating_json : Path, optional
         Optional JSON file produced by ``meta_strategy.py`` containing
         ``gating_coefficients`` and ``gating_intercepts``. When provided,
@@ -71,6 +72,12 @@ def generate(
             else:
                 models.append(data)
     base = models[0]
+    if lite_mode is None:
+        mode = base.get('mode') or base.get('training_mode')
+        lite_mode = not (mode and mode in ('heavy', 'deep', 'rl'))
+        ff = base.get('feature_flags', {})
+        if 'order_book' in ff:
+            lite_mode = not ff.get('order_book', False)
     if gating_json:
         with open(gating_json, 'rt') as f:
             gating_data = json.load(f)
@@ -556,22 +563,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('model_json', nargs='+')
     p.add_argument('out_dir')
-    p.add_argument('--lite-mode', action='store_true')
+    p.add_argument('--lite-mode', action='store_true', default=None,
+                   help='Force lite mode; otherwise inferred from model.json')
     p.add_argument('--gating-json')
     args = p.parse_args()
-    if not args.lite_mode:
-        for path in args.model_json:
-            pth = Path(path)
-            open_func = gzip.open if str(pth).endswith('.gz') else open
-            try:
-                with open_func(pth, 'rt') as f:
-                    data = json.load(f)
-            except Exception:
-                data = {}
-            mode = data.get('mode') or data.get('training_mode')
-            if mode == 'lite':
-                args.lite_mode = True
-                break
     generate(
         [Path(m) for m in args.model_json],
         Path(args.out_dir),

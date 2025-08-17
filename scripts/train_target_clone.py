@@ -1147,6 +1147,7 @@ def _extract_features(
     use_stochastic=False,
     use_adx=False,
     use_volume=False,
+    use_orderbook=False,
     volatility=None,
     higher_timeframes=None,
     *,
@@ -1210,7 +1211,14 @@ def _extract_features(
 
     start_time = time.perf_counter()
     psutil.cpu_percent(interval=None)
-    heavy_order = ["multi_tf", "use_adx", "use_stochastic", "use_bollinger", "use_atr"]
+    heavy_order = [
+        "multi_tf",
+        "order_book",
+        "use_adx",
+        "use_stochastic",
+        "use_bollinger",
+        "use_atr",
+    ]
 
     for r in rows:
         if r.get("action", "").upper() != "OPEN":
@@ -1293,14 +1301,20 @@ def _extract_features(
             "slippage": slippage,
             "equity": account_equity,
             "margin_level": margin_level,
-            "book_bid_vol": float(r.get("book_bid_vol", 0) or 0),
-            "book_ask_vol": float(r.get("book_ask_vol", 0) or 0),
-            "book_imbalance": float(r.get("book_imbalance", 0) or 0),
             "commission": commission,
             "swap": swap,
             "trend_estimate": trend_est,
             "trend_variance": trend_var,
         }
+
+        if use_orderbook:
+            feat.update(
+                {
+                    "book_bid_vol": float(r.get("book_bid_vol", 0) or 0),
+                    "book_ask_vol": float(r.get("book_ask_vol", 0) or 0),
+                    "book_imbalance": float(r.get("book_imbalance", 0) or 0),
+                }
+            )
 
         if calendar_events is not None:
             flag = 0.0
@@ -1428,6 +1442,8 @@ def _extract_features(
                     use_stochastic = False
                 elif feat_name == "use_adx":
                     use_adx = False
+                elif feat_name == "order_book":
+                    use_orderbook = False
                 elif feat_name == "multi_tf":
                     higher_timeframes = []
                     tf_prices.clear()
@@ -1502,6 +1518,7 @@ def _train_lite_mode(
     use_stochastic: bool = False,
     use_adx: bool = False,
     use_volume: bool = False,
+    use_orderbook: bool = False,
     volatility_series=None,
     corr_map=None,
     corr_window: int = 5,
@@ -1573,6 +1590,7 @@ def _train_lite_mode(
             use_stochastic=use_stochastic,
             use_adx=use_adx,
             use_volume=use_volume,
+            use_orderbook=use_orderbook,
             volatility=volatility_series,
             higher_timeframes=None,
             corr_map=corr_map,
@@ -1642,6 +1660,7 @@ def _train_lite_mode(
         "stochastic": use_stochastic,
         "adx": use_adx,
         "volume": use_volume,
+        "order_book": use_orderbook,
         "higher_timeframes": [],
     }
     if ae_info:
@@ -1685,6 +1704,7 @@ def train(
     use_stochastic: bool | None = None,
     use_adx: bool | None = None,
     use_volume: bool | None = None,
+    use_orderbook: bool | None = None,
     volatility_series=None,
     higher_timeframes: list[str] | None = None,
     grid_search: bool | None = None,
@@ -1755,11 +1775,14 @@ def train(
         use_adx = heavy_mode
     if use_volume is None:
         use_volume = heavy_mode
+    if use_orderbook is None:
+        use_orderbook = heavy_mode
     if lite_mode:
         regime_model = None
         if regime_model_file and regime_model_file.exists():
             with open(regime_model_file) as f:
                 regime_model = json.load(f)
+        use_orderbook = False
         _train_lite_mode(
             data_dir,
             out_dir,
@@ -1775,6 +1798,7 @@ def train(
             use_stochastic=use_stochastic,
             use_adx=use_adx,
             use_volume=use_volume,
+            use_orderbook=use_orderbook,
             volatility_series=volatility_series,
             corr_map=corr_map,
             corr_window=corr_window,
@@ -1798,6 +1822,7 @@ def train(
         "stochastic": use_stochastic,
         "adx": use_adx,
         "volume": use_volume,
+        "order_book": use_orderbook,
         "higher_timeframes": higher_timeframes or [],
     }
     if bayes_steps > 0:
@@ -1906,6 +1931,7 @@ def train(
                 use_stochastic=use_stochastic,
                 use_adx=use_adx,
                 use_volume=use_volume,
+                use_orderbook=use_orderbook,
                 volatility=volatility_series,
                 higher_timeframes=higher_timeframes,
                 corr_map=corr_map,
