@@ -6,6 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.promote_best_models import promote
+from scripts.backtest_strategy import run_backtest
 
 
 def _create_tick_file(dir_path: Path) -> Path:
@@ -52,7 +53,9 @@ def _create_model_risk(
 def test_promote_uses_backtest_metric(tmp_path: Path):
     tick_file = _create_tick_file(tmp_path)
     m1 = _create_model(tmp_path, "model_a", 0.9, 1.0)
-    _create_model(tmp_path, "model_b", 0.9, -1.0)
+    m2 = _create_model(tmp_path, "model_b", 0.9, -1.0)
+    run_backtest(m1, tick_file)
+    run_backtest(m2, tick_file)
 
     best_dir = tmp_path / "best"
     promote(
@@ -60,7 +63,6 @@ def test_promote_uses_backtest_metric(tmp_path: Path):
         best_dir,
         max_models=1,
         metric="accuracy",
-        tick_file=tick_file,
         backtest_metric="sharpe",
     )
 
@@ -70,7 +72,9 @@ def test_promote_uses_backtest_metric(tmp_path: Path):
 def test_promote_risk_reward(tmp_path: Path):
     tick_file = _create_tick_file(tmp_path)
     m1 = _create_model_risk(tmp_path, "model_a", 5.0, 1.0, 1.0)
-    _create_model_risk(tmp_path, "model_b", 4.0, 1.0, 1.0)
+    m2 = _create_model_risk(tmp_path, "model_b", 4.0, 1.0, 1.0)
+    run_backtest(m1, tick_file)
+    run_backtest(m2, tick_file)
 
     best_dir = tmp_path / "best"
     promote(
@@ -78,7 +82,6 @@ def test_promote_risk_reward(tmp_path: Path):
         best_dir,
         max_models=1,
         metric="risk_reward",
-        tick_file=tick_file,
         backtest_metric="sharpe",
     )
 
@@ -87,7 +90,8 @@ def test_promote_risk_reward(tmp_path: Path):
 
 def test_promote_backtest_threshold(tmp_path: Path):
     tick_file = _create_tick_file(tmp_path)
-    _create_model(tmp_path, "model_a", 0.9, -1.0)
+    m = _create_model(tmp_path, "model_a", 0.9, -1.0)
+    run_backtest(m, tick_file)
 
     best_dir = tmp_path / "best"
     with pytest.raises(ValueError):
@@ -96,7 +100,6 @@ def test_promote_backtest_threshold(tmp_path: Path):
             best_dir,
             max_models=1,
             metric="accuracy",
-            tick_file=tick_file,
             backtest_metric="sharpe",
             min_backtest=0.0,
         )

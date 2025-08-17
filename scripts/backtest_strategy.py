@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from statistics import mean, pstdev
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Optional
 
 
 @dataclass
@@ -259,8 +259,16 @@ def update_metrics_csv(metrics: Dict[str, float], metrics_file: Path, magic: int
         )
 
 
-def run_backtest(params_file: Path, tick_file: Path) -> Dict[str, float]:
-    """Convenience wrapper combining the individual steps."""
+def run_backtest(
+    params_file: Path, tick_file: Path, evaluation_out: Optional[Path] = None
+) -> Dict[str, float]:
+    """Convenience wrapper combining the individual steps.
+
+    Besides returning the computed metrics the function also persists a
+    backtest summary to ``evaluation.json`` located next to ``params_file``.
+    Existing data in that file is preserved and merely updated with the new
+    metrics so that offline scores (e.g. accuracy) remain available.
+    """
 
     params = load_strategy_params(params_file)
     ticks = load_ticks(tick_file)
@@ -273,6 +281,27 @@ def run_backtest(params_file: Path, tick_file: Path) -> Dict[str, float]:
         params.get("fee", 0.0),
     )
     result["magic"] = params.get("magic", 0)
+
+    # Persist metrics for auditing.  Merge with existing evaluation file
+    # instead of overwriting so that other statistics (e.g. accuracy) survive
+    # repeated backtests.
+    eval_path = evaluation_out or params_file.parent / "evaluation.json"
+    existing: Dict[str, float] = {}
+    if eval_path.exists():
+        try:
+            with open(eval_path) as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                existing = {k: float(v) for k, v in loaded.items() if isinstance(v, (int, float))}
+        except Exception:
+            existing = {}
+    existing.update(result)
+    try:
+        with open(eval_path, "w") as f:
+            json.dump(existing, f, indent=2)
+    except Exception:  # pragma: no cover - best effort persistence
+        pass
+
     return result
 
 
