@@ -2,18 +2,18 @@
 """Incrementally update a model from streaming trade events.
 
 The trainer is designed to run continuously.  It tails
-``logs/trades_raw.csv`` or consumes newline-delimited JSON records from a
-socket.  After each batch it updates an :class:`~sklearn.linear_model.SGDClassifier`
-using :meth:`partial_fit` and persists the coefficients to ``model.json``.
-Whenever the coefficients change the script invokes
-``generate_mql4_from_model.py`` so the corresponding Expert Advisor can be
-reloaded by MetaTrader.
+``logs/trades_raw.csv``, consumes newline-delimited JSON records from a
+socket or subscribes to an Arrow Flight stream.  After each batch it updates
+an :class:`~sklearn.linear_model.SGDClassifier` using :meth:`partial_fit` and
+persists the coefficients to ``model.json``.  Whenever the coefficients change
+the script invokes ``generate_mql4_from_model.py`` so the corresponding Expert
+Advisor can be reloaded by MetaTrader.
 
-This module intentionally keeps dependencies light so it can run alongside the
-MetaTrader terminal on modest hardware.  Before processing each batch the
-trainer samples CPU usage with :func:`psutil.cpu_percent`.  If system load
-exceeds 80% it sleeps briefly to yield the processor, adaptively throttling
-consumption to avoid overwhelming the host.
+Hardware capabilities are sampled via :func:`detect_resources` to determine an
+appropriate throttling level.  On lightweight VPS hosts the trainer yields
+the CPU more aggressively, preventing it from overwhelming the terminal.
+During processing the current load is checked with
+``psutil.cpu_percent`` and the worker sleeps when the threshold is exceeded.
 """
 from __future__ import annotations
 
@@ -39,6 +39,14 @@ except Exception:  # pragma: no cover - fallback to file logging
 import numpy as np
 import psutil
 from sklearn.linear_model import SGDClassifier
+
+try:  # detect resources to adapt behaviour on weaker hardware
+    if __package__:
+        from .train_target_clone import detect_resources  # type: ignore
+    else:  # pragma: no cover - script executed directly
+        from train_target_clone import detect_resources  # type: ignore
+except Exception:  # pragma: no cover - detection optional
+    detect_resources = None  # type: ignore
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -131,6 +139,16 @@ class OnlineTrainer:
         self.feature_names: List[str] = []
         self._prev_coef: List[float] | None = None
         self.training_mode = "lite"
+        self.cpu_threshold = 80.0
+        self.sleep_seconds = 3.0
+        if detect_resources:
+            try:
+                res = detect_resources()
+                if res.get("lite_mode"):
+                    self.cpu_threshold = 50.0
+                    self.sleep_seconds = 6.0
+            except Exception:
+                pass
         if self.model_path.exists():
             self._load()
 
@@ -230,8 +248,8 @@ class OnlineTrainer:
         batch: List[Dict[str, Any]] = []
         while True:
             load = psutil.cpu_percent(interval=None)
-            if load > 80.0:
-                time.sleep(3.0)
+            if load > self.cpu_threshold:
+                time.sleep(self.sleep_seconds)
             if path.exists():
                 with path.open() as f:
                     f.seek(pos)
@@ -244,14 +262,14 @@ class OnlineTrainer:
                         batch.append(row)
                         if len(batch) >= self.batch_size:
                             load = psutil.cpu_percent(interval=None)
-                            if load > 80.0:
-                                time.sleep(3.0)
+                            if load > self.cpu_threshold:
+                                time.sleep(self.sleep_seconds)
                             self.update(batch)
                             batch.clear()
             if batch:
                 load = psutil.cpu_percent(interval=None)
-                if load > 80.0:
-                    time.sleep(3.0)
+                if load > self.cpu_threshold:
+                    time.sleep(self.sleep_seconds)
                 self.update(batch)
                 batch.clear()
             time.sleep(1.0)
@@ -271,10 +289,55 @@ class OnlineTrainer:
             batch.append(rec)
             if len(batch) >= self.batch_size:
                 load = psutil.cpu_percent(interval=None)
-                if load > 80.0:
-                    await asyncio.sleep(3.0)
+                if load > self.cpu_threshold:
+                    await asyncio.sleep(self.sleep_seconds)
                 self.update(batch)
                 batch.clear()
+
+    def consume_flight(self, host: str, port: int, path: str = "trades") -> None:
+        """Subscribe to an Arrow Flight stream of trade events."""
+        try:  # pragma: no cover - optional dependency
+            import pyarrow.flight as flight
+        except Exception as exc:  # pragma: no cover - pyarrow missing
+            raise RuntimeError("pyarrow is required for Flight consumption") from exc
+
+        client = flight.FlightClient(f"grpc://{host}:{port}")
+        descriptor = flight.FlightDescriptor.for_path(path)
+        offset = 0
+        batch: List[Dict[str, Any]] = []
+        while True:
+            load = psutil.cpu_percent(interval=None)
+            if load > self.cpu_threshold:
+                time.sleep(self.sleep_seconds)
+                continue
+            try:
+                info = client.get_flight_info(descriptor)
+                reader = client.do_get(info.endpoints[0].ticket)
+                table = reader.read_all()
+                reader.close()
+            except Exception:
+                time.sleep(1.0)
+                continue
+            if table.num_rows > offset:
+                for row in table.slice(offset).to_pylist():
+                    if "y" not in row and "label" not in row:
+                        continue
+                    row["y"] = row.get("y") or row.get("label")
+                    batch.append(row)
+                    if len(batch) >= self.batch_size:
+                        load = psutil.cpu_percent(interval=None)
+                        if load > self.cpu_threshold:
+                            time.sleep(self.sleep_seconds)
+                        self.update(batch)
+                        batch.clear()
+                offset = table.num_rows
+            if batch:
+                load = psutil.cpu_percent(interval=None)
+                if load > self.cpu_threshold:
+                    time.sleep(self.sleep_seconds)
+                self.update(batch)
+                batch.clear()
+            time.sleep(1.0)
 
 
 def main(argv: List[str] | None = None) -> None:
@@ -282,8 +345,10 @@ def main(argv: List[str] | None = None) -> None:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--csv", type=Path, help="Path to trades_raw.csv to follow")
     g.add_argument("--socket", help="host:port for JSON line stream")
+    g.add_argument("--flight", help="host:port for Arrow Flight stream")
     p.add_argument("--model", type=Path, default=Path("model.json"))
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--flight-path", default="trades", help="Flight path name")
     p.add_argument(
         "--no-generate",
         action="store_true",
@@ -296,9 +361,12 @@ def main(argv: List[str] | None = None) -> None:
     _start_watchdog_thread()
     if args.csv:
         trainer.tail_csv(args.csv)
-    else:
+    elif args.socket:
         host, port = args.socket.split(":", 1)
         asyncio.run(trainer.consume_socket(host, int(port)))
+    else:
+        host, port = args.flight.split(":", 1)
+        trainer.consume_flight(host, int(port), args.flight_path)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
