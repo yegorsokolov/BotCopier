@@ -1672,23 +1672,23 @@ def train(
     data_dir: Path,
     out_dir: Path,
     *,
-    use_sma: bool = False,
+    use_sma: bool | None = None,
     sma_window: int = 5,
-    use_rsi: bool = False,
+    use_rsi: bool | None = None,
     rsi_period: int = 14,
-    use_macd: bool = False,
-    use_atr: bool = False,
+    use_macd: bool | None = None,
+    use_atr: bool | None = None,
     atr_period: int = 14,
-    use_bollinger: bool = False,
+    use_bollinger: bool | None = None,
     boll_window: int = 20,
-    use_stochastic: bool = False,
-    use_adx: bool = False,
-    use_volume: bool = False,
+    use_stochastic: bool | None = None,
+    use_adx: bool | None = None,
+    use_volume: bool | None = None,
     volatility_series=None,
     higher_timeframes: list[str] | None = None,
-    grid_search: bool = False,
+    grid_search: bool | None = None,
     c_values=None,
-    model_type: str = "logreg",
+    model_type: str | None = None,
     n_estimators: int = 100,
     learning_rate: float = 0.1,
     max_depth: int = 3,
@@ -1698,7 +1698,7 @@ def train(
     corr_window: int = 5,
     extra_price_series=None,
     symbol_graph: Path | None = None,
-    bayes_steps: int = 0,
+    bayes_steps: int | None = None,
     regress_sl_tp: bool = False,
     regress_lots: bool = False,
     early_stop: bool = False,
@@ -1710,8 +1710,8 @@ def train(
     stack_models: list[str] | None = None,
     prune_threshold: float = 0.0,
     prune_warn: float = 0.5,
-    lite_mode: bool = False,
-    mode: str = "lite",
+    lite_mode: bool | None = None,
+    mode: str | None = None,
     compress_model: bool = False,
     regime_model_file: Path | None = None,
     moe: bool = False,
@@ -1725,6 +1725,35 @@ def train(
 ):
     """Train a simple classifier model from the log directory."""
     news_data = _load_news_sentiment(news_sentiment_file) if news_sentiment_file else None
+    # Automatically select features and model based on hardware capabilities
+    resources = detect_resources()
+    heavy_mode = resources["heavy_mode"]
+    if lite_mode is None:
+        lite_mode = resources["lite_mode"]
+    if mode is None:
+        mode = resources["mode"]
+    if model_type is None:
+        model_type = resources["model_type"]
+    if bayes_steps is None:
+        bayes_steps = 0 if resources["lite_mode"] else resources["bayes_steps"]
+    if grid_search is None:
+        grid_search = heavy_mode
+    if use_sma is None:
+        use_sma = heavy_mode
+    if use_rsi is None:
+        use_rsi = heavy_mode
+    if use_macd is None:
+        use_macd = heavy_mode
+    if use_atr is None:
+        use_atr = heavy_mode
+    if use_bollinger is None:
+        use_bollinger = heavy_mode
+    if use_stochastic is None:
+        use_stochastic = heavy_mode
+    if use_adx is None:
+        use_adx = heavy_mode
+    if use_volume is None:
+        use_volume = heavy_mode
     if lite_mode:
         regime_model = None
         if regime_model_file and regime_model_file.exists():
@@ -3494,7 +3523,6 @@ def main():
     p.add_argument('--early-stop', action='store_true', help='enable early stopping for neural nets')
     p.add_argument('--calibration', choices=['sigmoid', 'isotonic'], help='probability calibration method')
     p.add_argument('--stack', help='comma separated list of model types to stack')
-    p.add_argument('--model-type', help='force model type such as bayes_logreg')
     p.add_argument('--prune-threshold', type=float, default=0.0, help='drop features with SHAP importance below this value')
     p.add_argument('--prune-warn', type=float, default=0.5, help='warn if more than this fraction of features are pruned')
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
@@ -3543,31 +3571,15 @@ def main():
             higher_tfs = [tf.strip() for tf in args.higher_timeframes.split(',') if tf.strip()]
         else:
             higher_tfs = None
-        lite_mode = resources["lite_mode"]
-        heavy_mode = resources["heavy_mode"]
-        use_sma = use_rsi = use_macd = use_atr = use_bollinger = use_stochastic = use_adx = heavy_mode
-        use_volume = heavy_mode
-        grid_search = args.grid_search and heavy_mode
-        model_type = args.model_type or resources["model_type"]
-        bayes_steps = 0 if lite_mode else (args.bayes_steps or resources["bayes_steps"])
         train(
             Path(args.data_dir),
             Path(args.out_dir),
-            use_sma=use_sma,
             sma_window=args.sma_window,
-            use_rsi=use_rsi,
             rsi_period=args.rsi_period,
-            use_macd=use_macd,
-            use_atr=use_atr,
-            use_bollinger=use_bollinger,
-            use_stochastic=use_stochastic,
-            use_adx=use_adx,
-            use_volume=use_volume,
             higher_timeframes=higher_tfs,
             volatility_series=vol_data,
-            grid_search=grid_search,
+            grid_search=args.grid_search or None,
             c_values=args.c_values,
-            model_type=model_type,
             n_estimators=args.n_estimators,
             learning_rate=args.learning_rate,
             max_depth=args.max_depth,
@@ -3575,7 +3587,7 @@ def main():
             sequence_length=args.sequence_length,
             corr_map=corr_map,
             corr_window=args.corr_window,
-            bayes_steps=bayes_steps,
+            bayes_steps=args.bayes_steps or None,
             regress_sl_tp=args.regress_sl_tp,
             regress_lots=args.regress_lots,
             early_stop=args.early_stop,
@@ -3587,8 +3599,6 @@ def main():
             stack_models=[s.strip() for s in args.stack.split(',')] if args.stack else None,
             prune_threshold=args.prune_threshold,
             prune_warn=args.prune_warn,
-            lite_mode=lite_mode,
-            mode=resources["mode"],
             compress_model=args.compress_model,
             regime_model_file=Path(args.regime_model) if args.regime_model else None,
             moe=args.moe,
