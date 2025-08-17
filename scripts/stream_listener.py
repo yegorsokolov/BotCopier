@@ -292,8 +292,14 @@ def _save_adwin() -> None:
         ADWIN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with ADWIN_STATE_PATH.open("wb") as f:
             pickle.dump(adwin_detectors, f)
-    except Exception:
-        pass
+    except Exception as e:  # pragma: no cover - disk issues
+        logger.error(
+            {
+                "error": "file write failure",
+                "path": str(ADWIN_STATE_PATH),
+                "details": str(e),
+            }
+        )
 
 def _trigger_retrain() -> None:
     try:
@@ -308,11 +314,20 @@ def append_csv(path: Path, record: dict) -> None:
     """Append ``record`` to ``path`` writing a header row when the file is new."""
     path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = path.exists()
-    with path.open("a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=record.keys())
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(record)
+    try:
+        with path.open("a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=record.keys())
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(record)
+    except OSError as e:  # pragma: no cover - disk full or permissions
+        logger.error(
+            {
+                "error": "file write failure",
+                "path": str(path),
+                "details": str(e),
+            }
+        )
 
 
 def write_run_info() -> None:
@@ -324,10 +339,19 @@ def write_run_info() -> None:
         "python_version": platform.python_version(),
         "libraries": sorted(m.name for m in pkgutil.iter_modules()),
     }
-    RUN_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with RUN_INFO_PATH.open("w") as f:
-        json.dump(info, f, indent=2)
-    run_info_written = True
+    try:
+        RUN_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with RUN_INFO_PATH.open("w") as f:
+            json.dump(info, f, indent=2)
+        run_info_written = True
+    except OSError as e:  # pragma: no cover - disk issues
+        logger.error(
+            {
+                "error": "file write failure",
+                "path": str(RUN_INFO_PATH),
+                "details": str(e),
+            }
+        )
 
 
 def capture_system_metrics() -> None:
@@ -476,8 +500,8 @@ def process_trade(msg) -> None:
         if ws_trades:
             try:
                 ws_trades.send(json.dumps(record))
-            except Exception:
-                pass
+            except Exception as e:  # pragma: no cover - best effort
+                logger.warning({"error": "websocket send failed", "details": str(e)})
 
 
 def process_metric(msg) -> None:
@@ -520,8 +544,8 @@ def process_metric(msg) -> None:
         if ws_metrics:
             try:
                 ws_metrics.send(json.dumps(record))
-            except Exception:
-                pass
+            except Exception as e:  # pragma: no cover
+                logger.warning({"error": "websocket send failed", "details": str(e)})
         if ADWIN is not None:
             drift_features = []
             for feat in MONITOR_FEATURES:
@@ -560,7 +584,8 @@ def main() -> int:
             headers = [f"Authorization: Bearer {args.api_token}"] if args.api_token else []
             ws_trades = create_connection(f"{args.ws_url}/ws/trades", header=headers)
             ws_metrics = create_connection(f"{args.ws_url}/ws/metrics", header=headers)
-        except Exception:
+        except Exception as e:  # pragma: no cover - network issues
+            logger.warning({"error": "websocket connect failed", "details": str(e)})
             ws_trades = None
             ws_metrics = None
 
@@ -583,7 +608,8 @@ def main() -> int:
                     for row in rows[last:]:
                         handler(SimpleNamespace(**row))
                     last = len(rows)
-                except Exception:
+                except Exception as e:  # pragma: no cover - network issues
+                    logger.warning({"error": "socket error", "details": str(e), "path": path})
                     await asyncio.sleep(1)
                     continue
                 await asyncio.sleep(1)
