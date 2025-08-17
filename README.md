@@ -318,6 +318,13 @@ python generate_mql4_from_model.py models/model_a.json models/model_b.json exper
 `train_target_clone.py` now selects an appropriate model and enabled features
 based on a hardware probe, so manual `--model-type` flags are no longer needed.
 
+The detected `mode` and feature flags are stored in `model.json`. Downstream
+tools read these to mirror the training environment automatically. For example,
+`generate_mql4_from_model.py` enables `--lite-mode` when the model was trained in
+lite mode, and `scripts/online_trainer.py` throttles CPU usage more aggressively
+on constrained VPS hosts. This hardware-aware workflow lets Ubuntu deployments
+scale model complexity and feature usage without extra flags.
+
 Pass ``--regress-sl-tp`` to also fit linear models predicting stop loss and take
 profit distances. The coefficients are saved in ``model.json`` and generated
 strategies will automatically place orders with these predicted values.

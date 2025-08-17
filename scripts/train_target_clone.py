@@ -1631,6 +1631,7 @@ def _train_lite_mode(
         "intercept": float(clf.intercept_[0]),
         "classes": [int(c) for c in clf.classes_],
         "last_event_id": int(last_event_id),
+        "mode": mode,
     }
     model["feature_flags"] = {
         "sma": use_sma,
@@ -2413,6 +2414,7 @@ def train(
             "last_event_id": int(last_event_id),
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
+            "mode": mode,
         }
         model["feature_flags"] = feature_flags
         if weight_decay_info:
@@ -2554,6 +2556,7 @@ def train(
         model["regime_centers"] = regime_info.get("centers", [])
         model["regime_feature_names"] = regime_info.get("feature_names", [])
         model["regime_model_idx"] = [m.get("regime", i) for i, m in enumerate(regime_models)]
+        model["mode"] = mode
         model["feature_flags"] = feature_flags
         if weight_decay_info:
             model["weight_decay"] = weight_decay_info

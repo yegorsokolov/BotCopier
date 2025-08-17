@@ -560,16 +560,18 @@ def main():
     p.add_argument('--gating-json')
     args = p.parse_args()
     if not args.lite_mode:
-        first = Path(args.model_json[0])
-        open_func = gzip.open if str(first).endswith('.gz') else open
-        with open_func(first, 'rt') as f:
+        for path in args.model_json:
+            pth = Path(path)
+            open_func = gzip.open if str(pth).endswith('.gz') else open
             try:
-                data = json.load(f)
+                with open_func(pth, 'rt') as f:
+                    data = json.load(f)
             except Exception:
                 data = {}
-        mode = data.get('mode') or data.get('training_mode')
-        if mode == 'lite':
-            args.lite_mode = True
+            mode = data.get('mode') or data.get('training_mode')
+            if mode == 'lite':
+                args.lite_mode = True
+                break
     generate(
         [Path(m) for m in args.model_json],
         Path(args.out_dir),
