@@ -390,7 +390,7 @@ int OnInit()
          if(DecisionLogHandle != INVALID_HANDLE)
          {
             if(FileSize(DecisionLogHandle) == 0)
-               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;features");
+               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;features");
             FileSeek(DecisionLogHandle, 0, SEEK_END);
          }
          else
@@ -401,7 +401,7 @@ int OnInit()
    if(UncertainLogHandle != INVALID_HANDLE)
    {
       if(FileSize(UncertainLogHandle) == 0)
-         FileWrite(UncertainLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;features");
+         FileWrite(UncertainLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;features");
       FileSeek(UncertainLogHandle, 0, SEEK_END);
    }
    else

@@ -30,6 +30,7 @@ def detect_regimes(
     clusters: int = 3,
     algorithm: str = "kmeans",
     model_json: Optional[Path] = None,
+    assignments_csv: Optional[Path] = None,
 ) -> None:
     """Cluster feature vectors and write regime IDs and centers to ``out_file``.
 
@@ -91,6 +92,9 @@ def detect_regimes(
     }
     out_file.write_text(json.dumps(model))
 
+    if assignments_csv is not None:
+        rows_df.assign(regime=labels).to_csv(assignments_csv, index=False)
+
     if model_json is not None:
         update = {
             "regime_feature_names": model["feature_names"],
@@ -122,6 +126,7 @@ def main() -> None:
         help="clustering algorithm",
     )
     p.add_argument("--model-json", type=Path, default=Path("model.json"))
+    p.add_argument("--assignments", type=Path, help="CSV file to write per-sample regime IDs")
     args = p.parse_args()
     detect_regimes(
         args.data_dir,
@@ -129,6 +134,7 @@ def main() -> None:
         args.clusters,
         args.algorithm,
         args.model_json,
+        args.assignments,
     )
 
 
