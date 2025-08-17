@@ -91,7 +91,17 @@ def generate(
     with open(template_path) as f:
         template = f.read()
 
-    output = f"// GPU-trained weights: {'yes' if has_gpu_weights else 'no'}\n" + template
+    enabled_feats: List[str] = []
+    for m in models:
+        for k, v in (m.get('feature_flags') or {}).items():
+            if v and k not in enabled_feats:
+                enabled_feats.append(k)
+    feats_comment = (
+        "// features: " + ", ".join(sorted(enabled_feats)) + "\n" if enabled_feats else ""
+    )
+    output = (
+        f"// GPU-trained weights: {'yes' if has_gpu_weights else 'no'}\n" + feats_comment + template
+    )
 
     output = output.replace(
         'MagicNumber = 1234',

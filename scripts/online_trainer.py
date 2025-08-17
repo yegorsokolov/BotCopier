@@ -137,6 +137,8 @@ class OnlineTrainer:
         self.run_generator = run_generator
         self.clf = SGDClassifier(loss="log_loss")
         self.feature_names: List[str] = []
+        self.feature_flags: Dict[str, bool] = {}
+        self.model_type: str = "logreg"
         self._prev_coef: List[float] | None = None
         self.training_mode = "lite"
         self.cpu_threshold = 80.0
@@ -163,6 +165,8 @@ class OnlineTrainer:
             return
         self.training_mode = data.get("mode") or data.get("training_mode", "lite")
         self.feature_names = data.get("feature_names", [])
+        self.feature_flags = data.get("feature_flags", {})
+        self.model_type = data.get("model_type", self.model_type)
         coef = data.get("coefficients")
         intercept = data.get("intercept")
         if self.feature_names and coef is not None and intercept is not None:
@@ -179,6 +183,8 @@ class OnlineTrainer:
             "intercept": float(self.clf.intercept_[0]),
             "training_mode": self.training_mode,
             "mode": self.training_mode,
+            "feature_flags": self.feature_flags,
+            "model_type": self.model_type,
         }
         self.model_path.write_text(json.dumps(payload))
 

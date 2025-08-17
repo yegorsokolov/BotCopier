@@ -315,8 +315,8 @@ merged and the generated EA averages the probabilities from each model:
 python generate_mql4_from_model.py models/model_a.json models/model_b.json experts
 ```
 
-Pass `--model-type catboost` to train a CatBoost model when the `catboost`
-package is installed.
+`train_target_clone.py` now selects an appropriate model and enabled features
+based on a hardware probe, so manual `--model-type` flags are no longer needed.
 
 Pass ``--regress-sl-tp`` to also fit linear models predicting stop loss and take
 profit distances. The coefficients are saved in ``model.json`` and generated
