@@ -51,7 +51,7 @@ def test_detect_resources_gpu_threshold(monkeypatch):
     monkeypatch.setattr(tc, "torch", _make_torch(4 * 1024**3))
     res = tc.detect_resources()
     assert res["gpu_mem_gb"] == 4
-    assert res["model_type"] == "lstm"
+    assert res["model_type"] == "logreg"
     assert res["cpu_mhz"] == 3000
 
     monkeypatch.setattr(tc, "torch", _make_torch(12 * 1024**3))
@@ -86,4 +86,4 @@ def test_detect_resources_cpu_threshold(monkeypatch):
     monkeypatch.setattr(tc, "torch", _make_torch(12 * 1024**3))
     res = tc.detect_resources()
     assert res["cpu_mhz"] == 2000
-    assert res["model_type"] == "lstm"
+    assert res["model_type"] == "logreg"

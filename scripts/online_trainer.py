@@ -84,6 +84,7 @@ class OnlineTrainer:
         self.clf = SGDClassifier(loss="log_loss")
         self.feature_names: List[str] = []
         self._prev_coef: List[float] | None = None
+        self.training_mode = "lite"
         if self.model_path.exists():
             self._load()
 
@@ -96,6 +97,7 @@ class OnlineTrainer:
             data = json.loads(self.model_path.read_text())
         except Exception:
             return
+        self.training_mode = data.get("training_mode", "lite")
         self.feature_names = data.get("feature_names", [])
         coef = data.get("coefficients")
         intercept = data.get("intercept")
@@ -111,6 +113,7 @@ class OnlineTrainer:
             "feature_names": self.feature_names,
             "coefficients": self.clf.coef_[0].tolist(),
             "intercept": float(self.clf.intercept_[0]),
+            "training_mode": self.training_mode,
         }
         self.model_path.write_text(json.dumps(payload))
 
@@ -119,10 +122,10 @@ class OnlineTrainer:
             return
         script = Path(__file__).resolve().with_name("generate_mql4_from_model.py")
         experts_dir = Path(__file__).resolve().parents[1] / "experts"
-        subprocess.run(
-            [sys.executable, str(script), str(self.model_path), str(experts_dir)],
-            check=False,
-        )
+        cmd = [sys.executable, str(script), str(self.model_path), str(experts_dir)]
+        if self.training_mode == "lite":
+            cmd.append("--lite-mode")
+        subprocess.run(cmd, check=False)
 
     # ------------------------------------------------------------------
     # Incremental training

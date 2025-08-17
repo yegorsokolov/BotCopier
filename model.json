@@ -10,6 +10,7 @@
       "1": {"algorithm": "PPO", "parameters": {}}
     }
   },
+  "training_mode": "lite",
   "drift_metric": 0.0,
   "teacher_accuracy": 0.0,
   "student_coefficients": [0.0],
