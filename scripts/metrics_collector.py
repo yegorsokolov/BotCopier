@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Listen for metric messages and store them in a SQLite database."""
 
+try:
+    import uvloop
+    uvloop.install()
+except Exception:
+    pass
+
 import argparse
 import asyncio
 import json
