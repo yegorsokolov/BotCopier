@@ -58,7 +58,9 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    with the `feature_names` and `last_event_id`. When these match the existing
    model, subsequent runs reuse the cache and skip feature generation for faster
    reproducible training. Use the `--half-life-days` flag to weight recent trades
-   more heavily via an exponential decay (set to `0` to disable).
+   more heavily via an exponential decay (set to `0` to disable). The chosen
+   decay half-life is stored in `model.json` so future training runs and online
+   updates apply the same weighting automatically.
 3. Generate an EA from the trained model:
    ```bash
    python scripts/generate_mql4_from_model.py models/model.json experts

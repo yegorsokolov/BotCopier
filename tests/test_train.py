@@ -10,6 +10,7 @@ import subprocess
 import pandas as pd
 import pytest
 import importlib.util
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import HAS_NUMPY, HAS_TF
@@ -157,6 +158,90 @@ def _write_log_many(file: Path, count: int = 10):
             "0",
             "0",
         ])
+    with open(file, "w", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(fields)
+        writer.writerows(rows)
+
+
+def _write_decay_log(file: Path) -> None:
+    fields = [
+        "schema_version",
+        "event_id",
+        "event_time",
+        "broker_time",
+        "local_time",
+        "action",
+        "ticket",
+        "magic",
+        "source",
+        "symbol",
+        "order_type",
+        "lots",
+        "price",
+        "sl",
+        "tp",
+        "profit",
+        "spread",
+        "comment",
+        "remaining_lots",
+        "slippage",
+        "volume",
+        "sl_hit_dist",
+        "tp_hit_dist",
+    ]
+    rows = [
+        [
+            "1",
+            "1",
+            "2024.01.01 00:00:00",
+            "",
+            "",
+            "OPEN",
+            "1",
+            "",
+            "",
+            "EURUSD",
+            "0",
+            "0.1",
+            "1.0000",
+            "0.9000",
+            "1.1000",
+            "0",
+            "2",
+            "",
+            "0.1",
+            "0.0001",
+            "100",
+            "0",
+            "0",
+        ],
+        [
+            "1",
+            "2",
+            "2024.02.01 00:00:00",
+            "",
+            "",
+            "OPEN",
+            "2",
+            "",
+            "",
+            "EURUSD",
+            "1",
+            "0.1",
+            "2.0000",
+            "1.9000",
+            "2.1000",
+            "0",
+            "2",
+            "",
+            "0.1",
+            "0.0001",
+            "100",
+            "0",
+            "0",
+        ],
+    ]
     with open(file, "w", newline="") as f:
         writer = csv.writer(f, delimiter=";")
         writer.writerow(fields)
@@ -338,6 +423,42 @@ def test_load_logs_reads_manifest(tmp_path: Path):
     _, commits, checksums = _load_logs(data_dir)
     assert commits == ["def"]
     assert checksums == [checksum]
+
+
+def test_half_life_influences_recent_trades(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_decay_log(log_file)
+
+    out_long = tmp_path / "out_long"
+    out_short = tmp_path / "out_short"
+    train(data_dir, out_long, decay_half_life=1000, lite_mode=False)
+    train(data_dir, out_short, decay_half_life=1, lite_mode=False)
+
+    with open(out_long / "model.json") as f:
+        model_long = json.load(f)
+    with open(out_short / "model.json") as f:
+        model_short = json.load(f)
+
+    times = np.array([
+        np.datetime64("2024-01-01T00:00:00"),
+        np.datetime64("2024-02-01T00:00:00"),
+    ])
+
+    ref_long = np.datetime64(model_long["weight_decay"]["ref_time"])
+    age_long = (ref_long - times).astype("timedelta64[s]").astype(float) / (24 * 3600)
+    decay_long = 0.5 ** (age_long / model_long["half_life_days"])
+
+    ref_short = np.datetime64(model_short["weight_decay"]["ref_time"])
+    age_short = (ref_short - times).astype("timedelta64[s]").astype(float) / (24 * 3600)
+    decay_short = 0.5 ** (age_short / model_short["half_life_days"])
+
+    ratio_long = decay_long[1] / decay_long[0]
+    ratio_short = decay_short[1] / decay_short[0]
+    assert ratio_short > ratio_long
+    assert model_short.get("half_life_days") == 1
+    assert model_long.get("half_life_days") == 1000
 
 
 def test_load_logs_filters_invalid_rows(tmp_path: Path):
