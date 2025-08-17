@@ -1045,25 +1045,28 @@ def _save_feature_cache(
     last_event_id: int,
 ):
     """Persist extracted features to a compressed Parquet file."""
-    if pq is None:
+    if pq is None or pa is None:
         return
-    out_dir.mkdir(parents=True, exist_ok=True)
-    df_cache = pd.DataFrame(
-        [{fn: feat.get(fn, 0.0) for fn in feature_names} for feat in features]
-    )
-    df_cache["label"] = labels
-    df_cache["sl_target"] = sl
-    df_cache["tp_target"] = tp
-    df_cache["lot_target"] = lots
-    df_cache["hours"] = hours
-    df_cache["event_time"] = pd.to_datetime(times)
-    table = pa.Table.from_pandas(df_cache)
-    meta = {
-        b"feature_names": json.dumps(feature_names).encode(),
-        b"last_event_id": str(last_event_id).encode(),
-    }
-    table = table.replace_schema_metadata(meta)
-    pq.write_table(table, out_dir / "features.parquet", compression="gzip")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        df_cache = pd.DataFrame(
+            [{fn: feat.get(fn, 0.0) for fn in feature_names} for feat in features]
+        )
+        df_cache["label"] = labels
+        df_cache["sl_target"] = sl
+        df_cache["tp_target"] = tp
+        df_cache["lot_target"] = lots
+        df_cache["hours"] = hours
+        df_cache["event_time"] = pd.to_datetime(times)
+        table = pa.Table.from_pandas(df_cache)
+        meta = {
+            b"feature_names": json.dumps(feature_names).encode(),
+            b"last_event_id": str(last_event_id).encode(),
+        }
+        table = table.replace_schema_metadata(meta)
+        pq.write_table(table, out_dir / "features.parquet", compression="gzip")
+    except Exception:
+        return
 
 
 def _read_last_event_id(out_dir: Path) -> int:
@@ -1110,8 +1113,10 @@ def _risk_parity_weights(cov: np.ndarray, max_iter: int = 1000, tol: float = 1e-
     return w
 
 
-def _compute_risk_parity(price_map: dict[str, list[float]], window: int = 100) -> dict[str, float]:
-    """Return risk-parity weights given ``price_map`` of symbol->prices."""
+def _compute_risk_parity(
+    price_map: dict[str, list[float]], window: int = 100
+) -> tuple[dict[str, float], np.ndarray, list[str]]:
+    """Return risk-parity weights and covariance given ``price_map``."""
     returns: dict[str, pd.Series] = {}
     for sym, prices in price_map.items():
         if len(prices) > 1:
@@ -1121,16 +1126,18 @@ def _compute_risk_parity(price_map: dict[str, list[float]], window: int = 100) -
             if not s.empty:
                 returns[sym] = s.reset_index(drop=True)
     if len(returns) < 2:
-        # Single symbol – allocate full weight
         if len(returns) == 1:
             sym = next(iter(returns))
-            return {sym: 1.0}
-        return {}
+            s = returns[sym]
+            cov = np.array([[float(s.var())]])
+            return {sym: 1.0}, cov, [sym]
+        return {}, np.array([]), []
     df = pd.DataFrame(returns)
     cov = df.cov().values
     weights = _risk_parity_weights(cov)
     symbols = list(df.columns)
-    return {sym: float(w) for sym, w in zip(symbols, weights)}
+    weight_map = {sym: float(w) for sym, w in zip(symbols, weights)}
+    return weight_map, cov, symbols
 
 
 def _extract_features(
@@ -1997,7 +2004,7 @@ def train(
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
-    risk_parity = _compute_risk_parity(price_map_total)
+    risk_parity, cov_matrix, cov_symbols = _compute_risk_parity(price_map_total)
     regime_info = None
     reg_centers = None
     try:
@@ -3309,6 +3316,8 @@ def train(
     if risk_parity:
         model["risk_parity_symbols"] = list(risk_parity.keys())
         model["risk_parity_weights"] = [float(risk_parity[s]) for s in risk_parity]
+        model["risk_covariance_symbols"] = cov_symbols
+        model["risk_covariance_matrix"] = cov_matrix.tolist()
     if student_coef is not None and student_inter is not None:
         model["student_coefficients"] = student_coef
         model["student_intercept"] = student_inter

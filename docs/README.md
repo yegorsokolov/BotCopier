@@ -27,6 +27,15 @@ Downstream components read these flags to stay in sync:
 This metadata is persisted in ``model.json`` so that models trained on one
 machine can be safely deployed on another with different capabilities.
 
+## Risk-Parity Allocation
+
+Training also estimates a covariance matrix across traded symbols and derives
+``risk_parity_weights``.  These weights scale position sizes so that each
+symbol contributes equally to portfolio risk, moderating overall exposure
+when one market becomes unusually volatile.  The resulting symbol list,
+weights and covariance matrix are exported in ``model.json`` and embedded
+into generated strategies so live trading mirrors the balanced allocation.
+
 ## Observability
 
 Runtime services emit structured logs to the systemd journal when available. Inspect them with:

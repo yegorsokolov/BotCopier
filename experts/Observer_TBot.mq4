@@ -971,6 +971,9 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    double slippage = trans.price - req.price;
    double equity   = AccountEquity();
    double margin   = AccountMarginLevel();
+   double risk_weight = GetRiskWeight(symbol);
+   lots *= risk_weight;
+   remaining *= risk_weight;
 
    if(entry==DEAL_ENTRY_IN || entry==DEAL_ENTRY_INOUT)
    {
@@ -980,7 +983,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       LogTrade(event_id, "OPEN", ticket, magic, "mt4", symbol, order_type,
                lots, price, req.price, sl, tp, 0.0, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), 0,
-               bid_vol, ask_vol, book_imb, slippage, equity, margin);
+               bid_vol, ask_vol, book_imb, slippage, equity, margin, risk_weight);
       if(!IsTracked(ticket))
          AddTicket(ticket);
       else if(entry==DEAL_ENTRY_INOUT && remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
@@ -994,7 +997,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          LogTrade(event_id, "MODIFY", ticket, magic, "mt4", symbol, order_type,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
-                  bid_vol2, ask_vol2, book_imb2, slippage, equity, margin);
+                  bid_vol2, ask_vol2, book_imb2, slippage, equity, margin, risk_weight);
       }
    }
    else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
@@ -1010,7 +1013,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       LogTrade(event_id, "CLOSE", ticket, magic, "mt4", symbol, order_type,
                lots, price, req.price, sl, tp, profit, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), open_time,
-               bid_vol3, ask_vol3, book_imb3, slippage, equity, margin);
+               bid_vol3, ask_vol3, book_imb3, slippage, equity, margin, risk_weight);
       if(IsTracked(ticket) && remaining==0.0)
          RemoveTicket(ticket);
       else if(remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
@@ -1024,7 +1027,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          LogTrade(event_id, "MODIFY", ticket, magic, "mt4", symbol, order_type,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
-                  bid_vol4, ask_vol4, book_imb4, slippage, equity, margin);
+                  bid_vol4, ask_vol4, book_imb4, slippage, equity, margin, risk_weight);
       }
    }
 
@@ -1066,11 +1069,13 @@ void OnTick()
          int event_id = NextEventId++;
          double equity = AccountEquity();
          double margin = AccountMarginLevel();
+         double risk_weight = GetRiskWeight(OrderSymbol());
+         double lots = OrderLots() * risk_weight;
          LogTrade(event_id, "OPEN", ticket, OrderMagicNumber(), "mt4", OrderSymbol(), OrderType(),
-                  OrderLots(), OrderOpenPrice(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
-                  0.0, profit_after, OrderLots(), now, OrderComment(),
+                  lots, OrderOpenPrice(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
+                  0.0, profit_after, lots, now, OrderComment(),
                   iVolume(OrderSymbol(), 0, 0), 0, bid_vol, ask_vol, book_imb,
-                  0.0, equity, margin);
+                  0.0, equity, margin, risk_weight);
          AddTicket(ticket);
       }
    }
@@ -1091,12 +1096,14 @@ void OnTick()
              int event_id = NextEventId++;
              double equity = AccountEquity();
              double margin = AccountMarginLevel();
+             double risk_weight = GetRiskWeight(OrderSymbol());
+             double lots = OrderLots() * risk_weight;
              LogTrade(event_id, "CLOSE", ticket, OrderMagicNumber(), "mt4", OrderSymbol(),
-                       OrderType(), OrderLots(), OrderClosePrice(), OrderClosePrice(), OrderStopLoss(),
+                       OrderType(), lots, OrderClosePrice(), OrderClosePrice(), OrderStopLoss(),
                        OrderTakeProfit(), OrderProfit()+OrderSwap()+OrderCommission(),
                        profit_after2, 0.0, now, OrderComment(),
                        iVolume(OrderSymbol(), 0, 0), OrderOpenTime(),
-                       bid_vol, ask_vol, book_imb, 0.0, equity, margin);
+                       bid_vol, ask_vol, book_imb, 0.0, equity, margin, risk_weight);
          }
          RemoveTicket(ticket);
          t--; // adjust index after removal
@@ -1384,7 +1391,8 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
               double profit_after, double remaining, datetime time_event,
               string comment, double volume, datetime open_time,
               double book_bid_vol, double book_ask_vol, double book_imbalance,
-              double slippage, double equity, double margin_level)
+              double slippage, double equity, double margin_level,
+              double risk_weight)
   {
    PendingTrade t;
    t.id = event_id;
@@ -1421,7 +1429,7 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
       t.commission = OrderCommission();
       t.swap = OrderSwap();
    }
-   t.risk_weight = GetRiskWeight(symbol);
+   t.risk_weight = risk_weight;
    t.trend_estimate = trend_estimate;
     t.trend_variance = trend_variance;
    string span_comment = "span=" + t.span_id;
