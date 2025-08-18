@@ -58,3 +58,24 @@ scrape_configs:
 
 Grafana dashboards can then be built on top of the Prometheus data. Import ``docs/metrics_dashboard.json`` for a starter layout showing CPU/memory usage, Arrow Flight queue depth and error counters.
 
+## Active Learning
+
+Strategies exported from this project can highlight trades where the model is
+unsure of the correct action. When the absolute difference between the model
+probability and the trade threshold is below ``UncertaintyMargin`` a snapshot of
+the current feature vector is written to ``uncertain_decisions.csv``.
+
+These records can be labeled offline with::
+
+    python scripts/label_uncertain.py
+
+The resulting ``uncertain_decisions_labeled.csv`` is supplied to
+``scripts/train_target_clone.py`` via ``--uncertain-file``. During training the
+script multiplies the weight of these rows (configurable with
+``--uncertain-weight``) so the newly labeled examples influence the next model
+more heavily.
+
+This loop—log uncertain decisions, label them and retrain—provides a lightweight
+form of active learning that incrementally improves the strategy where it
+previously hesitated.
+

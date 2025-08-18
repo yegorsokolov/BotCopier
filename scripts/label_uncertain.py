@@ -14,7 +14,12 @@ from pathlib import Path
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Label uncertain decisions")
-    parser.add_argument("input", help="CSV file with uncertain decisions")
+    parser.add_argument(
+        "input",
+        nargs="?",
+        default="uncertain_decisions.csv",
+        help="CSV file with uncertain decisions",
+    )
     parser.add_argument(
         "output",
         nargs="?",
@@ -38,6 +43,12 @@ def main() -> None:
         fieldnames = reader.fieldnames or []
         for row in reader:
             if args.label is None:
+                info = {
+                    "action": row.get("action", ""),
+                    "prob": row.get("probability", ""),
+                    "thr": row.get("threshold", ""),
+                }
+                print(f"Action: {info['action']} prob={info['prob']} thr={info['thr']}")
                 print(f"Features: {row.get('features', '')}")
                 lbl = input("Label (0/1): ").strip() or "0"
             else:
