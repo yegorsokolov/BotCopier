@@ -2001,6 +2001,8 @@ def train(
             lot_targets = np.concatenate([lot_targets, zeros])
             event_times = np.concatenate([event_times, np.full(len(extra_feats), now_ts)])
             added = len(extra_feats)
+    if added:
+        logger.info("loaded %d labeled uncertain decisions from %s", added, ufile)
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
@@ -2209,6 +2211,11 @@ def train(
         )
     if unc_train_mask.size:
         base_weight *= np.where(unc_train_mask > 0, uncertain_weight, 1.0)
+        logger.info(
+            "emphasizing %d uncertain samples with weight %.2f",
+            int(unc_train_mask.sum()),
+            uncertain_weight,
+        )
     if decay_half_life > 0 and event_times is not None and event_times.size:
         ref_time = event_times.max()
         age_days = (

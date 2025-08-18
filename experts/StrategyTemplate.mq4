@@ -404,7 +404,7 @@ int OnInit()
    if(UncertainLogHandle != INVALID_HANDLE)
    {
       if(FileSize(UncertainLogHandle) == 0)
-         FileWrite(UncertainLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;features");
+         FileWrite(UncertainLogHandle, "event_id;timestamp;model_version;action;probability;threshold;sl_dist;tp_dist;model_idx;regime;features");
       FileSeek(UncertainLogHandle, 0, SEEK_END);
    }
    else
@@ -1051,7 +1051,9 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    bool uncertain = MathAbs(prob - thr) <= UncertaintyMargin;
    if(uncertain && UncertainLogHandle != INVALID_HANDLE)
    {
-      FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals);
+      // capture feature snapshot for active learning
+      FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS),
+                ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, feat_vals);
       FileFlush(UncertainLogHandle);
    }
    if(DecisionSocket != INVALID_HANDLE)
