@@ -213,14 +213,16 @@ async def _writer_task(
             row = await queue.get()
             if row is None:
                 break
-            try:
-                conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
-                conn.commit()
-            except Exception as e:  # pragma: no cover - disk or schema issues
-                logger.error({"error": "file write failure", "details": str(e)})
-            else:
-                if prom_updater is not None:
-                    prom_updater(row)
+            ctx_in = _context_from_ids(row.get("trace_id", ""), row.get("span_id", ""))
+            with tracer.start_as_current_span("metrics_store", context=ctx_in):
+                try:
+                    conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
+                    conn.commit()
+                except Exception as e:  # pragma: no cover - disk or schema issues
+                    logger.error({"error": "file write failure", "details": str(e)})
+                else:
+                    if prom_updater is not None:
+                        prom_updater(row)
             queue.task_done()
     finally:
         conn.close()
@@ -249,9 +251,25 @@ def serve(
                 asyncio.create_task(_watchdog_task(watchdog_interval))
 
         if prom_port is not None:
-            from prometheus_client import Counter, Gauge, start_http_server
+            from prometheus_client import (
+                Counter,
+                Gauge,
+                generate_latest,
+                CONTENT_TYPE_LATEST,
+            )
 
-            start_http_server(prom_port, addr=http_host)
+            prom_app = web.Application()
+
+            async def prom_handler(_request: web.Request) -> web.Response:
+                return web.Response(
+                    body=generate_latest(), content_type=CONTENT_TYPE_LATEST
+                )
+
+            prom_app.add_routes([web.get("/metrics", prom_handler)])
+            prom_runner = web.AppRunner(prom_app)
+            await prom_runner.setup()
+            prom_site = web.TCPSite(prom_runner, http_host, prom_port)
+            await prom_site.start()
             win_rate_g = Gauge("bot_win_rate", "Win rate")
             drawdown_g = Gauge("bot_drawdown", "Drawdown")
             socket_err_c = Counter(
@@ -425,7 +443,7 @@ def serve(
 
         asyncio.create_task(poll())
 
-        async def metrics_handler(request: web.Request) -> web.Response:
+        async def history_handler(request: web.Request) -> web.Response:
             limit_param = request.query.get("limit", "100")
             try:
                 limit = int(limit_param)
@@ -467,7 +485,7 @@ def serve(
         if http_port is not None:
             app = web.Application()
             app.add_routes([
-                web.get("/metrics", metrics_handler),
+                web.get("/history", history_handler),
                 web.post("/ingest", ingest_handler),
             ])
             runner = web.AppRunner(app)

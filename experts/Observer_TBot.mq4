@@ -1743,6 +1743,7 @@ void WriteMetrics(datetime ts)
 
       string span_id = GenId(8);
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
+      // emit file/socket errors and retry counts for monitoring
       string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size, trade_retry_count, metric_retry_count, TraceId, span_id);
 
       uchar payload[];

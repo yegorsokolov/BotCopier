@@ -47,16 +47,32 @@ sudo journalctl -u metrics-collector.service -f
 
 Without systemd the services fall back to local ``*.log`` files.
 
-When :mod:`scripts.metrics_collector` is launched with ``--prom-port`` it exposes Prometheus gauges and counters. Add the endpoint to your scrape configuration:
+When :mod:`scripts.metrics_collector` is launched with ``--prom-port`` it exposes Prometheus gauges and counters on ``/metrics``. Add the endpoint to your scrape configuration:
 
 ```
 scrape_configs:
   - job_name: botcopier
+    metrics_path: /metrics
     static_configs:
       - targets: ['localhost:8001']
 ```
 
 Grafana dashboards can then be built on top of the Prometheus data. Import ``docs/metrics_dashboard.json`` for a starter layout showing CPU/memory usage, Arrow Flight queue depth and error counters.
+
+To visualise OpenTelemetry traces in Jaeger run the all-in-one image with OTLP ingestion enabled:
+
+```
+docker run --rm -p 4318:4318 -p 16686:16686 \
+  jaegertracing/all-in-one:latest --collector.otlp.enabled=true
+```
+
+Point services at the collector by setting:
+
+```
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+Traces will then appear in the Jaeger UI at ``http://localhost:16686``.
 
 ## Active Learning
 
