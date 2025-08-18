@@ -63,7 +63,8 @@ Grafana dashboards can then be built on top of the Prometheus data. Import ``doc
 Strategies exported from this project can highlight trades where the model is
 unsure of the correct action. When the absolute difference between the model
 probability and the trade threshold is below ``UncertaintyMargin`` a snapshot of
-the current feature vector is written to ``uncertain_decisions.csv``.
+the current feature vector is written to ``uncertain_decisions.csv`` along with
+an empty ``label`` column ready for later annotation.
 
 These records can be labeled offline with::
 

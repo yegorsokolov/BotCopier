@@ -3716,8 +3716,16 @@ def main():
     p.add_argument('--moe', action='store_true', help='train mixture-of-experts model per symbol')
     p.add_argument('--federated-server', help='URL of federated averaging server')
     p.add_argument('--use-encoder', action='store_true', help='apply pretrained contrastive encoder')
-    p.add_argument('--uncertain-file', help='CSV with labeled uncertain decisions')
-    p.add_argument('--uncertain-weight', type=float, default=2.0, help='sample weight multiplier for labeled uncertainties')
+    p.add_argument(
+        '--uncertain-file',
+        help='CSV with labeled uncertain decisions to emphasize during training',
+    )
+    p.add_argument(
+        '--uncertain-weight',
+        type=float,
+        default=2.0,
+        help='sample weight multiplier for labeled uncertainties',
+    )
     p.add_argument(
         '--half-life-days',
         type=float,

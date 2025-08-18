@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Label uncertain model decisions.
 
-Reads ``uncertain_decisions.csv`` and writes ``uncertain_decisions_labeled.csv``
-with an additional ``label`` column. Labels may be provided interactively or
-set for all rows via ``--label`` to support simple heuristic labeling.
+Reads ``uncertain_decisions.csv`` produced by the Expert Advisor and writes a
+new ``uncertain_decisions_labeled.csv`` with the ``label`` column populated. The
+input file already contains an empty ``label`` field for each record; this tool
+fills it either interactively or via ``--label`` to support simple heuristic
+labeling.
 """
 from __future__ import annotations
 
