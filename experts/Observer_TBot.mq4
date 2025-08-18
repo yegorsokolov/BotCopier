@@ -316,7 +316,7 @@ void RemoveFirstStr(string &queue[])
    ArrayResize(queue, n-1);
 }
 
-void EnqueuePending(uchar &queue[][], string &lines[], uchar &msg[], string line)
+void EnqueuePending(uchar &queue[][], string &lines[], uchar &msg[], string line, string wal_fname)
 {
    int idx = ArraySize(queue);
    ArrayResize(queue, idx+1);
@@ -324,6 +324,7 @@ void EnqueuePending(uchar &queue[][], string &lines[], uchar &msg[], string line
    ArrayCopy(queue[idx], msg);
    ArrayResize(lines, idx+1);
    lines[idx] = line;
+   AppendWal(wal_fname, msg);
 }
 
 bool LogToJournald(string tag, string line)
@@ -370,6 +371,7 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_trades);
          RemoveFirstStr(pending_trade_lines);
+         PopWal(log_dir + "/pending_trades.wal");
          TradeQueueDepth = ArraySize(pending_trades);
          trade_backoff = 1;
          next_trade_flush = now;
@@ -397,6 +399,7 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_metrics);
          RemoveFirstStr(pending_metric_lines);
+         PopWal(log_dir + "/pending_metrics.wal");
          MetricQueueDepth = ArraySize(pending_metrics);
          metric_backoff = 1;
          next_metric_flush = now;
@@ -450,6 +453,65 @@ void LoadQueue(string fname, uchar &queue[][])
    }
    FileClose(h);
    FileDelete(fname);
+}
+
+void AppendWal(string fname, uchar &payload[])
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_WRITE|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   FileSeek(h, 0, SEEK_END);
+   int len = ArraySize(payload);
+   FileWriteInteger(h, len);
+   FileWriteArray(h, payload, 0, len);
+   FileClose(h);
+}
+
+void LoadWal(string fname, uchar &queue[][])
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   while(!FileIsEnding(h))
+   {
+      int len = FileReadInteger(h);
+      if(len <= 0)
+         break;
+      int idx = ArraySize(queue);
+      ArrayResize(queue, idx+1);
+      ArrayResize(queue[idx], len);
+      FileReadArray(h, queue[idx], 0, len);
+   }
+   FileClose(h);
+}
+
+void PopWal(string fname)
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   int len = FileReadInteger(h);
+   if(len <= 0)
+   {
+      FileClose(h);
+      FileDelete(fname);
+      return;
+   }
+   FileSeek(h, len, SEEK_CUR);
+   int rest = FileSize(h) - FileTell(h);
+   uchar buffer[];
+   if(rest > 0)
+   {
+      ArrayResize(buffer, rest);
+      FileReadArray(h, buffer, 0, rest);
+   }
+   FileClose(h);
+   int w = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
+   if(w==INVALID_HANDLE)
+      return;
+   if(rest > 0)
+      FileWriteArray(w, buffer, 0, rest);
+   FileClose(w);
 }
 
 double ExtractJsonNumber(string json, string key)
@@ -757,11 +819,13 @@ int OnInit()
    uchar hello_payload[];
    StringToCharArray(hello, hello_payload);
    ShmRingWrite(MSG_HELLO, hello_payload, ArraySize(hello_payload) - 1);
-   FlightClientInit(FlightServerHost, FlightServerPort);
    LoadQueue(log_dir + "/pending_trades.bin", pending_trades);
    LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics);
+   LoadWal(log_dir + "/pending_trades.wal", pending_trades);
+   LoadWal(log_dir + "/pending_metrics.wal", pending_metrics);
    TradeQueueDepth = ArraySize(pending_trades);
    MetricQueueDepth = ArraySize(pending_metrics);
+   FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
    if(max_id >= NextEventId)
@@ -1189,7 +1253,7 @@ bool SendTrade(uchar &payload[])
    if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
       return(true);
    SocketErrors++;
-   EnqueuePending(pending_trades, pending_trade_lines, zipped, line);
+   EnqueuePending(pending_trades, pending_trade_lines, zipped, line, log_dir + "/pending_trades.wal");
    TradeQueueDepth = ArraySize(pending_trades);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_trade_flush = now + trade_backoff;
@@ -1246,7 +1310,7 @@ bool SendMetrics(uchar &payload[], string line)
    if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
       return(true);
    SocketErrors++;
-   EnqueuePending(pending_metrics, pending_metric_lines, zipped, line);
+   EnqueuePending(pending_metrics, pending_metric_lines, zipped, line, log_dir + "/pending_metrics.wal");
    MetricQueueDepth = ArraySize(pending_metrics);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_metric_flush = now + metric_backoff;
