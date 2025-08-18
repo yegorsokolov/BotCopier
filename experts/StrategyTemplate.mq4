@@ -20,6 +20,7 @@ extern bool   EnableDecisionLogging = true;
 extern bool   DecisionLogToSocket = false;
 extern string DecisionLogFile = "decisions.csv";
 extern string UncertainDecisionFile = "uncertain_decisions.csv";
+extern bool   ReplayDecisions = false;
 extern double UncertaintyMargin = 0.05;
 extern double MaxPredictiveVariance = 0.1;
 extern string DecisionLogSocketHost = "127.0.0.1";
@@ -433,6 +434,7 @@ int OnInit()
       else
          Print("Adaptation log open failed: ", GetLastError());
    }
+   ReplayDecisionLog();
    return(INIT_SUCCEEDED);
 }
 
@@ -811,6 +813,78 @@ double ComputeNNScore()
       z += NNLayer2Weights[j] * h;
    }
    return(1.0 / (1.0 + MathExp(-z)));
+}
+
+double ReplayProbability(double &feats[], int modelIdx)
+{
+   if(ModelHiddenSize > 0)
+   {
+      int hidden = ModelHiddenSize;
+      int inputCount = ArraySize(NNLayer1Weights) / hidden;
+      double z = NNLayer2Bias;
+      for(int j=0; j<hidden; j++)
+      {
+         double h = NNLayer1Bias[j];
+         for(int i=0; i<inputCount && i<ArraySize(feats); i++)
+            h += NNLayer1Weights[j*inputCount + i] * feats[i];
+         if(h < 0) h = 0;
+         z += NNLayer2Weights[j] * h;
+      }
+      return(1.0 / (1.0 + MathExp(-z)));
+   }
+   double z = ModelIntercepts[modelIdx];
+   int n = MathMin(FeatureCount, ArraySize(feats));
+   for(int i=0; i<n; i++)
+      z += ModelCoefficients[modelIdx][i] * feats[i];
+   z = CalibrationCoef*z + CalibrationIntercept;
+   return(1.0 / (1.0 + MathExp(-z)));
+}
+
+void ReplayDecisionLog()
+{
+   if(!ReplayDecisions)
+      return;
+   int h = FileOpen(DecisionLogFile, FILE_CSV|FILE_READ|FILE_TXT|FILE_SHARE_READ, ';');
+   if(h == INVALID_HANDLE)
+      return;
+   if(!FileIsEnding(h))
+   {
+      string first = FileReadString(h);
+      if(StringFind(first, "event_id") >= 0)
+      {
+         for(int i=0; i<9 && !FileIsEnding(h); i++)
+            FileReadString(h);
+      }
+      else
+         FileSeek(h, 0, SEEK_SET);
+   }
+   while(!FileIsEnding(h))
+   {
+      int event_id = (int)FileReadNumber(h);
+      string ts = FileReadString(h);
+      string mver = FileReadString(h);
+      string action = FileReadString(h);
+      double old_prob = FileReadNumber(h);
+      double sl = FileReadNumber(h);
+      double tp = FileReadNumber(h);
+      int mIdx = (int)FileReadNumber(h);
+      int reg = (int)FileReadNumber(h);
+      string feat_str = FileReadString(h);
+      string parts[];
+      int cnt = StringSplit(feat_str, ',', parts);
+      double feats[];
+      ArrayResize(feats, cnt);
+      for(int i=0; i<cnt; i++)
+         feats[i] = StrToDouble(parts[i]);
+      double new_prob = ReplayProbability(feats, mIdx);
+      bool old_dec = old_prob >= DefaultThreshold;
+      bool new_dec = new_prob >= DefaultThreshold;
+      if(old_dec != new_dec)
+         Print("Replay divergence event ", event_id,
+               ": old=", DoubleToString(old_prob,3),
+               " new=", DoubleToString(new_prob,3));
+   }
+   FileClose(h);
 }
 
 void UpdateFeatureHistory()

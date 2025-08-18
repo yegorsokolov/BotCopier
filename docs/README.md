@@ -79,3 +79,20 @@ This loop—log uncertain decisions, label them and retrain—provides a lightwe
 form of active learning that incrementally improves the strategy where it
 previously hesitated.
 
+## Decision Replay
+
+When migrating to a more capable VM or heavier model it can be helpful to
+re-evaluate historical trades.  Use ``scripts/replay_decisions.py`` to recompute
+probabilities from an archived ``decisions.csv`` against a new ``model.json``::
+
+    python scripts/replay_decisions.py decisions.csv model.json --output divergences.csv
+
+The optional output file lists trades where the new model would have chosen a
+different side.  Feed this back into training to emphasise corrections::
+
+    python scripts/train_target_clone.py --replay-file divergences.csv --replay-weight 3
+
+Exported experts also accept ``ReplayDecisions=true``.  When enabled, the EA
+scans ``DecisionLogFile`` at start-up and prints any discrepancies between the
+old and new probabilities, providing immediate feedback after upgrades.
+
