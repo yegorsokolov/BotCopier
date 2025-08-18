@@ -102,6 +102,14 @@ class FlightServer(flight.FlightServerBase):
             conn.executemany(self._sqlite_sql[path], [list(r.values()) for r in rows])
             conn.commit()
             logger.info("stored %d %s rows", batch.num_rows, path)
+            try:
+                if path == "trades":
+                    ack_id = batch.column("event_id")[0].as_py()
+                else:
+                    ack_id = batch.column("time")[0].as_py()
+                writer.write_metadata(pa.py_buffer(str(ack_id).encode()))
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     def do_get(

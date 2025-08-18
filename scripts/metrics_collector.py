@@ -81,6 +81,8 @@ FIELDS = [
     "var_breach_count",
     "trade_queue_depth",
     "metric_queue_depth",
+    "trade_retry_count",
+    "metric_retry_count",
     "fallback_events",
     "trace_id",
     "span_id",
@@ -279,6 +281,21 @@ def serve(
             trade_queue_g = Gauge(
                 "bot_trade_queue_depth", "Arrow Flight trade queue depth"
             )
+            wal_size_g = Gauge(
+                "bot_wal_bytes", "Total WAL size in bytes"
+            )
+            trade_retry_g = Gauge(
+                "bot_trade_retry_count", "Trade send retry count"
+            )
+            metric_retry_g = Gauge(
+                "bot_metric_retry_count", "Metric send retry count"
+            )
+            wal_dir = Path(
+                os.getenv(
+                    "BOTCOPIER_LOG_DIR",
+                    Path.home() / ".local/share/botcopier/logs",
+                )
+            )
 
             async def _sample_host_metrics() -> None:
                 while True:
@@ -290,6 +307,21 @@ def serve(
                     await asyncio.sleep(5)
 
             asyncio.create_task(_sample_host_metrics())
+
+            async def _sample_wal_metrics() -> None:
+                while True:
+                    try:
+                        size = 0
+                        for fn in ("pending_trades.wal", "pending_metrics.wal"):
+                            fp = wal_dir / fn
+                            if fp.exists():
+                                size += fp.stat().st_size
+                        wal_size_g.set(size)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(5)
+
+            asyncio.create_task(_sample_wal_metrics())
 
             def _prom_updater(row: dict) -> None:
                 if (v := row.get("win_rate")) is not None:
@@ -330,6 +362,16 @@ def serve(
                 if (v := row.get("trade_queue_depth")) is not None:
                     try:
                         trade_queue_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("trade_retry_count")) is not None:
+                    try:
+                        trade_retry_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("metric_retry_count")) is not None:
+                    try:
+                        metric_retry_g.set(float(v))
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("fallback_events")) is not None:
