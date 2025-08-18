@@ -123,6 +123,9 @@ def test_graph_features(tmp_path: Path) -> None:
 
     graph_file = tmp_path / "graph.json"
     build_graph(feat_csv, graph_file)
+    graph_parquet = tmp_path / "graph.parquet"
+    build_graph(feat_csv, graph_parquet)
+    assert graph_parquet.exists()
 
     train(
         data_dir,

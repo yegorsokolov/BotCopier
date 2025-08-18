@@ -2,9 +2,11 @@
 """Build a weighted symbol graph from precomputed correlation features.
 
 This utility aggregates ``corr_*`` features exported by
-``train_target_clone.py`` into an undirected weighted graph.  It then derives
-simple node metrics (currently degree and PageRank centrality) which can be
-consumed by the training pipeline as additional features.
+``train_target_clone.py`` into an undirected weighted graph.  It derives
+simple node metrics (currently degree and PageRank centrality) and, when
+``torch_geometric`` is available, Node2Vec embeddings.  The resulting graph can
+be written to JSON or Parquet and consumed by the training pipeline as
+additional features.
 
 The input file is expected to be a CSV or Parquet table containing at least the
 columns ``symbol`` and one or more ``corr_<PEER>`` columns.  Each row
@@ -37,6 +39,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+try:  # pragma: no cover - optional dependency
+    import torch
+    from torch_geometric.nn import Node2Vec  # type: ignore
+    _HAS_PYG = True
+except Exception:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore
+    Node2Vec = None  # type: ignore
+    _HAS_PYG = False
 
 def _compute_pagerank(adj: np.ndarray, alpha: float = 0.85, tol: float = 1e-6) -> np.ndarray:
     """Compute PageRank scores for a weighted adjacency matrix."""
@@ -99,7 +109,7 @@ def build_graph(feat_path: Path, out_path: Path) -> dict:
     degree = adj.sum(axis=1)
     pagerank = _compute_pagerank(adj)
 
-    graph = {
+    graph: dict = {
         "symbols": symbols,
         "edge_index": edge_index,
         "edge_weight": edge_weight,
@@ -109,16 +119,54 @@ def build_graph(feat_path: Path, out_path: Path) -> dict:
         },
     }
 
+    # Optional Node2Vec embeddings
+    if _HAS_PYG and edge_index:
+        try:  # pragma: no cover - heavy optional dependency
+            ei = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+            node2vec = Node2Vec(
+                ei, embedding_dim=8, walk_length=5, context_size=3, walks_per_node=10
+            )
+            optim = torch.optim.Adam(node2vec.parameters(), lr=0.01)
+            loader = node2vec.loader(batch_size=32, shuffle=True)
+            for _ in range(10):
+                for pos_rw, neg_rw in loader:
+                    optim.zero_grad()
+                    loss = node2vec.loss(pos_rw, neg_rw)
+                    loss.backward()
+                    optim.step()
+            emb = node2vec.embedding.weight.detach().cpu().numpy()
+            graph["embedding_dim"] = emb.shape[1]
+            graph["embeddings"] = {
+                sym: emb[i].astype(float).tolist() for i, sym in enumerate(symbols)
+            }
+        except Exception:
+            pass
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(graph, f, indent=2)
+    if out_path.suffix == ".parquet":
+        df_out = pd.DataFrame({
+            "symbol": symbols,
+            "degree": degree,
+            "pagerank": pagerank,
+        })
+        if graph.get("embeddings"):
+            emb = np.array([graph["embeddings"][s] for s in symbols], dtype=float)
+            for j in range(emb.shape[1]):
+                df_out[f"emb_{j}"] = emb[:, j]
+        try:  # pragma: no cover - optional dependency
+            df_out.to_parquet(out_path)
+        except Exception:  # fall back to JSON if parquet support missing
+            df_out.to_json(out_path, orient="records")
+    else:
+        with open(out_path, "w") as f:
+            json.dump(graph, f, indent=2)
     return graph
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--features", required=True, help="CSV/Parquet file with corr_* features")
-    p.add_argument("--out", required=True, help="Output JSON file for graph")
+    p.add_argument("--out", required=True, help="Output JSON or Parquet file for graph")
     args = p.parse_args()
     build_graph(Path(args.features), Path(args.out))
 

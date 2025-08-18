@@ -2117,7 +2117,10 @@ def train(
                 graph_params = json.load(f_g)
         except Exception as exc:  # pragma: no cover - file errors
             logging.warning("failed to load symbol graph: %s", exc)
-    if graph_params and _HAS_TORCH and _HAS_PYG:
+    if graph_params:
+        for sym, vec in (graph_params.get("embeddings") or {}).items():
+            symbol_embeddings[sym] = [float(v) for v in vec]
+    if graph_params and not symbol_embeddings and _HAS_TORCH and _HAS_PYG:
         try:
             symbols = graph_params.get("symbols", [])
             edge_index = torch.tensor(
@@ -2143,14 +2146,17 @@ def train(
                 emb = node2vec.embedding.weight.detach().cpu().numpy()
                 for i, sym in enumerate(symbols):
                     symbol_embeddings[sym] = emb[i].astype(float).tolist()
-                for feat in features:
-                    vec = symbol_embeddings.get(feat.get("symbol"))
-                    if vec is not None:
-                        for j, v in enumerate(vec):
-                            feat[f"sym_emb_{j}"] = float(v)
                 graph_params["embedding_dim"] = emb.shape[1]
         except Exception as exc:  # pragma: no cover - optional dependency
             logging.warning("symbol embedding computation failed: %s", exc)
+    if symbol_embeddings:
+        for feat in features:
+            vec = symbol_embeddings.get(feat.get("symbol"))
+            if vec is not None:
+                for j, v in enumerate(vec):
+                    feat[f"sym_emb_{j}"] = float(v)
+        if graph_params and not graph_params.get("embedding_dim"):
+            graph_params["embedding_dim"] = len(next(iter(symbol_embeddings.values())))
 
     if graph_params:
         symbols = graph_params.get("symbols", [])
