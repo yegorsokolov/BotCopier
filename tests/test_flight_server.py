@@ -20,7 +20,7 @@ def test_flight_server_roundtrip():
 
     # send a metrics batch
     m_desc = flight.FlightDescriptor.for_path("metrics")
-    m_writer, _ = client.do_put(m_desc, METRIC_SCHEMA)
+    m_writer, m_reader = client.do_put(m_desc, METRIC_SCHEMA)
     m_batch = pa.record_batch([
         pa.array([1]),
         pa.array(["2024-01-01T00:00:00"]),
@@ -35,11 +35,12 @@ def test_flight_server_roundtrip():
         pa.array([5]),
     ], schema=METRIC_SCHEMA)
     m_writer.write_batch(m_batch)
+    ack_buf = m_reader.read()
+    assert ack_buf.to_pybytes() == b"2024-01-01T00:00:00"
     m_writer.close()
 
     # send a trade batch
     t_desc = flight.FlightDescriptor.for_path("trades")
-    t_writer, _ = client.do_put(t_desc, TRADE_SCHEMA)
     t_batch = pa.record_batch([
         pa.array([1]),  # schema_version
         pa.array([1]),  # event_id
@@ -72,7 +73,11 @@ def test_flight_server_roundtrip():
         pa.array([0.0]),
         pa.array([0]),
     ], schema=TRADE_SCHEMA)
+    t_writer, t_reader = client.do_put(t_desc, TRADE_SCHEMA)
+
     t_writer.write_batch(t_batch)
+    t_ack_buf = t_reader.read()
+    assert t_ack_buf.to_pybytes() == b"1"
     t_writer.close()
 
     # verify metrics
