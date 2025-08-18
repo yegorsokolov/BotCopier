@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """Simple bandit router using Thompson Sampling or UCB.
 
-The router listens on a TCP port and responds to simple commands:
+The router exposes a tiny HTTP API:
 
-    CHOOSE\n         -> returns an integer model index on its own line
-    REWARD <idx> <reward>\n
-         -> updates the specified model with a reward (1 for win, 0 for loss)
+* ``GET /choose``   – returns the next model index to use
+* ``POST /reward``  – update the chosen model with binary win/loss feedback
 
 State is persisted to ``bandit_state.json`` by default so exploration can be
-rolled back by deleting the file.
+reset by deleting the file.
 """
 import argparse
 import json
 import math
 import os
 import random
-import socketserver
 import threading
 from typing import List
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+import uvicorn
 
 
 class BanditRouter:
@@ -94,52 +96,42 @@ class BanditRouter:
             self._save_state()
 
 
-class BanditTCPHandler(socketserver.StreamRequestHandler):
-    def handle(self) -> None:  # type: ignore[override]
-        data = self.rfile.readline().decode().strip().split()
-        if not data:
-            return
-        cmd = data[0].upper()
-        if cmd == "CHOOSE":
-            idx = self.server.router.choose()  # type: ignore[attr-defined]
-            self.wfile.write(f"{idx}\n".encode())
-        elif cmd == "REWARD" and len(data) >= 3:
-            try:
-                idx = int(data[1])
-                reward = float(data[2])
-            except ValueError:
-                self.wfile.write(b"ERR\n")
-                return
-            self.server.router.update(idx, reward)  # type: ignore[attr-defined]
-            self.wfile.write(b"OK\n")
-        else:
-            self.wfile.write(b"ERR\n")
+class Reward(BaseModel):
+    model: int
+    reward: float
 
 
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
+def create_app(router: BanditRouter) -> FastAPI:
+    app = FastAPI()
 
-    def __init__(self, server_address, RequestHandlerClass, router):
-        super().__init__(server_address, RequestHandlerClass)
-        self.router = router
+    @app.get("/choose")
+    def choose() -> dict[str, int]:
+        return {"model": router.choose()}
+
+    @app.post("/reward")
+    def reward(update: Reward) -> dict[str, str]:
+        router.update(update.model, update.reward)
+        return {"status": "ok"}
+
+    return app
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bandit model router")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9100)
-    parser.add_argument("--models", type=int, default=1,
-                        help="number of models to route between")
-    parser.add_argument("--method", choices=["thompson", "ucb"], default="thompson")
+    parser.add_argument(
+        "--models", type=int, default=1, help="number of models to route between"
+    )
+    parser.add_argument(
+        "--method", choices=["thompson", "ucb"], default="thompson"
+    )
     parser.add_argument("--state-file", default="bandit_state.json")
     args = parser.parse_args()
 
     router = BanditRouter(args.models, args.method, args.state_file)
-    with ThreadedTCPServer((args.host, args.port), BanditTCPHandler, router) as srv:
-        try:
-            srv.serve_forever()
-        except KeyboardInterrupt:
-            pass
+    app = create_app(router)
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

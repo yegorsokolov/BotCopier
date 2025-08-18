@@ -96,3 +96,31 @@ Exported experts also accept ``ReplayDecisions=true``.  When enabled, the EA
 scans ``DecisionLogFile`` at start-up and prints any discrepancies between the
 old and new probabilities, providing immediate feedback after upgrades.
 
+## Bandit Router
+
+``scripts/bandit_router.py`` exposes a lightweight HTTP service that chooses
+which model to trade based on historical win rates.  Each tick the strategy
+queries ``/choose`` to obtain the next regime index and then reports trade
+outcomes back to ``/reward`` with ``{"model": idx, "reward": 1|0}``.
+
+Rewards are accumulated using Thompson Sampling or UCB and persisted to
+``bandit_state.json`` so exploration survives restarts.  Delete the file to
+reset the router.
+
+To keep the router running automatically create a systemd unit such as::
+
+    [Unit]
+    Description=Model bandit router
+    After=network.target
+
+    [Service]
+    ExecStart=/usr/bin/python3 /path/to/scripts/bandit_router.py --models 3
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target
+
+On simpler setups an ``@reboot`` cron entry achieves the same effect::
+
+    @reboot /usr/bin/python3 /path/to/scripts/bandit_router.py --models 3 >> bandit.log 2>&1
+
