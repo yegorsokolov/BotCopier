@@ -53,7 +53,7 @@ from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 
@@ -167,6 +167,17 @@ def _has_sufficient_gpu(min_gb: float = 1.0) -> bool:
     except Exception:
         pass
     return False
+
+
+def _compute_decay_weights(event_times: np.ndarray, half_life_days: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return age in days and exponential decay weights for ``event_times``."""
+    ref_time = event_times.max()
+    age_days = (
+        (ref_time - event_times).astype("timedelta64[s]").astype(float)
+        / (24 * 3600)
+    )
+    weights = 0.5 ** (age_days / half_life_days)
+    return age_days, weights
 
 
 if _HAS_TORCH:
@@ -2238,16 +2249,11 @@ def train(
             replay_weight,
         )
     if decay_half_life > 0 and event_times is not None and event_times.size:
-        ref_time = event_times.max()
-        age_days = (
-            (ref_time - times_train).astype("timedelta64[s]").astype(float)
-            / (24 * 3600)
-        )
-        decay = 0.5 ** (age_days / decay_half_life)
+        _, decay = _compute_decay_weights(times_train, decay_half_life)
         base_weight *= decay
         weight_decay_info = {
             "half_life_days": float(decay_half_life),
-            "ref_time": np.datetime_as_string(ref_time, unit="s"),
+            "ref_time": np.datetime_as_string(event_times.max(), unit="s"),
         }
     sample_weight = base_weight if not np.allclose(base_weight, 1.0) else None
 
@@ -2928,20 +2934,17 @@ def train(
                     seq = np.vstack([pad, seq])
                 sequences.append(seq)
             X_all_seq = np.array(sequences)
-            if len(labels) < 5 or len(np.unique(labels)) < 2:
+            if len(labels) < 6 or len(np.unique(labels)) < 2:
                 X_train_seq, y_train = X_all_seq, labels
                 X_val_seq, y_val = (
                     np.empty((0, seq_len, X_all.shape[1])),
                     np.array([]),
                 )
             else:
-                X_train_seq, X_val_seq, y_train, y_val = train_test_split(
-                    X_all_seq,
-                    labels,
-                    test_size=0.2,
-                    random_state=42,
-                    stratify=labels,
-                )
+                tscv = TimeSeriesSplit(n_splits=5)
+                train_idx, val_idx = list(tscv.split(X_all_seq))[-1]
+                X_train_seq, X_val_seq = X_all_seq[train_idx], X_all_seq[val_idx]
+                y_train, y_val = labels[train_idx], labels[val_idx]
             model_nn = keras.Sequential(
                 [
                     keras.layers.Input(shape=(seq_len, X_all.shape[1])),
@@ -2999,20 +3002,17 @@ def train(
                     seq = np.vstack([pad, seq])
                 sequences.append(seq)
             X_all_seq = np.array(sequences)
-            if len(labels) < 5 or len(np.unique(labels)) < 2:
+            if len(labels) < 6 or len(np.unique(labels)) < 2:
                 X_train_seq, y_train = X_all_seq, labels
                 X_val_seq, y_val = (
                     np.empty((0, seq_len, X_all.shape[1])),
                     np.array([]),
                 )
             else:
-                X_train_seq, X_val_seq, y_train, y_val = train_test_split(
-                    X_all_seq,
-                    labels,
-                    test_size=0.2,
-                    random_state=42,
-                    stratify=labels,
-                )
+                tscv = TimeSeriesSplit(n_splits=5)
+                train_idx, val_idx = list(tscv.split(X_all_seq))[-1]
+                X_train_seq, X_val_seq = X_all_seq[train_idx], X_all_seq[val_idx]
+                y_train, y_val = labels[train_idx], labels[val_idx]
             inp = keras.layers.Input(shape=(seq_len, X_all.shape[1]))
             att = keras.layers.MultiHeadAttention(num_heads=1, key_dim=X_all.shape[1])(inp, inp)
             pooled = keras.layers.GlobalAveragePooling1D()(att)
@@ -3171,14 +3171,18 @@ def train(
             threshold, _ = _best_threshold(y_val, val_proba)
         val_preds = (val_proba >= threshold).astype(int)
         val_acc = float(accuracy_score(y_val, val_preds))
+        val_f1 = float(f1_score(y_val, val_preds))
+        val_roc = float(roc_auc_score(y_val, val_proba))
     else:
         threshold = bayes_threshold if bayes_threshold is not None else 0.5
         val_acc = float("nan")
+        val_f1 = float("nan")
+        val_roc = float("nan")
     train_preds = (train_proba >= threshold).astype(int)
     train_acc = float(accuracy_score(y_train, train_preds))
     ctx_metrics = trace.get_current_span().get_span_context()
     logger.info(
-        {"train_acc": train_acc, "val_acc": val_acc},
+        {"train_acc": train_acc, "val_acc": val_acc, "val_f1": val_f1, "val_roc_auc": val_roc},
         extra={"trace_id": ctx_metrics.trace_id, "span_id": ctx_metrics.span_id},
     )
     for i in range(min(5, len(train_preds))):
@@ -3350,6 +3354,8 @@ def train(
         "weighted": sample_weight is not None,
         "train_accuracy": train_acc,
         "val_accuracy": val_acc,
+        "val_f1": val_f1,
+        "val_roc_auc": val_roc,
         "threshold": threshold,
         # main accuracy metric is validation performance when available
         "accuracy": val_acc,
