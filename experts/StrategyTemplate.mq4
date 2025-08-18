@@ -130,7 +130,6 @@ datetime LastModelLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
 int      UncertainLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
-int      BanditSocket = INVALID_HANDLE;
 int      NextDecisionId = 1;
 bool UseOnnxEncoder = false;
 bool UseOnnxModel = false;
@@ -410,18 +409,6 @@ int OnInit()
    }
    else
       Print("Uncertain decision log open failed: ", GetLastError());
-   BanditSocket = SocketCreate();
-   if(BanditSocket != INVALID_HANDLE)
-   {
-      if(!SocketConnect(BanditSocket, BanditRouterHost, BanditRouterPort, 1000))
-      {
-         Print("Bandit router connect failed: ", GetLastError());
-         SocketClose(BanditSocket);
-         BanditSocket = INVALID_HANDLE;
-      }
-   }
-   else
-      Print("Bandit router socket creation failed: ", GetLastError());
    if(StringLen(AdaptationLogFile) > 0)
    {
       AdaptLogHandle = FileOpen(AdaptationLogFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
@@ -1153,54 +1140,27 @@ int ExtractModelIndex(string comment)
 
 int QueryBanditModel()
 {
-   if(BanditSocket == INVALID_HANDLE)
-      return(0);
-   uchar bytes[];
-   StringToCharArray("CHOOSE\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
-   if(SocketSend(BanditSocket, bytes, ArraySize(bytes)-1) <= 0)
-   {
-      SocketClose(BanditSocket);
-      BanditSocket = SocketCreate();
-      if(BanditSocket == INVALID_HANDLE ||
-         !SocketConnect(BanditSocket, BanditRouterHost, BanditRouterPort, 1000))
-      {
-         if(BanditSocket != INVALID_HANDLE)
-            SocketClose(BanditSocket);
-         BanditSocket = INVALID_HANDLE;
-         return(0);
-      }
-      if(SocketSend(BanditSocket, bytes, ArraySize(bytes)-1) <= 0)
-         return(0);
-   }
-   uchar resp[16];
-   int got = SocketRead(BanditSocket, resp, 15, 1000);
-   if(got <= 0) return(0);
-   resp[got] = 0;
-   string s = CharArrayToString(resp);
+   string url = StringFormat("http://%s:%d/choose", BanditRouterHost, BanditRouterPort);
+   uchar post[];
+   uchar result[];
+   string headers;
+   int res = WebRequest("GET", url, "", 1000, post, result, headers);
+   if(res != 200)
+      return(-1);
+   string s = CharArrayToString(result);
    return(StrToInteger(s));
 }
 
 void SendBanditReward(int modelIdx, double reward)
 {
-   if(BanditSocket == INVALID_HANDLE)
-      return;
-   string msg = StringFormat("REWARD %d %.2f\n", modelIdx, reward);
-   uchar bytes[];
-   StringToCharArray(msg, bytes, 0, WHOLE_ARRAY, CP_UTF8);
-   if(SocketSend(BanditSocket, bytes, ArraySize(bytes)-1) <= 0)
-   {
-      SocketClose(BanditSocket);
-      BanditSocket = SocketCreate();
-      if(BanditSocket == INVALID_HANDLE ||
-         !SocketConnect(BanditSocket, BanditRouterHost, BanditRouterPort, 1000))
-      {
-         if(BanditSocket != INVALID_HANDLE)
-            SocketClose(BanditSocket);
-         BanditSocket = INVALID_HANDLE;
-         return;
-      }
-      SocketSend(BanditSocket, bytes, ArraySize(bytes)-1);
-   }
+   string url = StringFormat("http://%s:%d/reward", BanditRouterHost, BanditRouterPort);
+   string body = StringFormat("{\"model\":%d,\"reward\":%.2f}", modelIdx, reward);
+   uchar post[];
+   StringToCharArray(body, post, 0, WHOLE_ARRAY, CP_UTF8);
+   uchar result[];
+   string headers = "Content-Type: application/json\r\n";
+   string resp_hdr;
+   WebRequest("POST", url, headers, 1000, post, result, resp_hdr);
 }
 
 void LogAdaptationEvent(int regime, double &oldCoeffs[], double &newCoeffs[], double oldInt, double newInt)
@@ -1314,19 +1274,15 @@ void OnTick()
    }
 
    UpdateFeatureHistory();
-   int modelIdx = SelectExpert();
-   int reg = modelIdx;
-   CurrentRegime = reg;
+   int reg = QueryBanditModel();
+   if(reg < 0)
+      reg = SelectExpert();
+   int modelIdx = reg;
    if(reg >= 0 && reg < ArraySize(RegimeModelIdx))
       modelIdx = RegimeModelIdx[reg];
+   CurrentRegime = reg;
    if(EnableDebugLogging)
       Print("Regime=", reg, " Model=", modelIdx);
-   if(BanditSocket != INVALID_HANDLE)
-   {
-      int idx = QueryBanditModel();
-      if(idx >= 0)
-         modelIdx = idx;
-   }
    double prob;
    if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
       prob = ComputeDecisionTransformerScore();
@@ -1466,8 +1422,6 @@ void OnDeinit(const int reason)
       FileClose(UncertainLogHandle);
    if(DecisionSocket != INVALID_HANDLE)
       SocketClose(DecisionSocket);
-   if(BanditSocket != INVALID_HANDLE)
-      SocketClose(BanditSocket);
    if(AdaptLogHandle != INVALID_HANDLE)
       FileClose(AdaptLogHandle);
    MarketBookRelease(SymbolToTrade);
