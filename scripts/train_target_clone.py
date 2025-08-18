@@ -1312,6 +1312,7 @@ def _extract_features(
             "swap": swap,
             "trend_estimate": trend_est,
             "trend_variance": trend_var,
+            "event_id": int(float(r.get("event_id", 0) or 0)),
         }
 
         if use_orderbook:
@@ -1750,9 +1751,20 @@ def train(
     decay_half_life: float | None = None,
     news_sentiment_file: Path | None = None,
     rl_finetune: bool = False,
+    replay_file: Path | None = None,
+    replay_weight: float = 3.0,
 ):
     """Train a simple classifier model from the log directory."""
     news_data = _load_news_sentiment(news_sentiment_file) if news_sentiment_file else None
+    if replay_file:
+        try:
+            rep_df = pd.read_csv(replay_file)
+            replay_ids = set(int(x) for x in rep_df.get("event_id", []) if not pd.isna(x))
+        except Exception as exc:
+            logging.warning("failed to read replay file %s: %s", replay_file, exc)
+            replay_ids = set()
+    else:
+        replay_ids = set()
     # Automatically select features and model based on hardware capabilities
     resources = detect_resources()
     heavy_mode = resources["heavy_mode"]
@@ -2216,6 +2228,15 @@ def train(
             int(unc_train_mask.sum()),
             uncertain_weight,
         )
+    if replay_ids:
+        for i, feat in enumerate(feat_train):
+            if int(feat.get("event_id", -1)) in replay_ids:
+                base_weight[i] *= replay_weight
+        logger.info(
+            "emphasizing %d replay corrections with weight %.2f",
+            len(replay_ids),
+            replay_weight,
+        )
     if decay_half_life > 0 and event_times is not None and event_times.size:
         ref_time = event_times.max()
         age_days = (
@@ -2234,8 +2255,10 @@ def train(
     feat_val_clf = [dict(f) for f in feat_val]
     for f in feat_train_clf:
         f.pop("profit", None)
+        f.pop("event_id", None)
     for f in feat_val_clf:
         f.pop("profit", None)
+        f.pop("event_id", None)
 
     feat_train_reg = [dict(f) for f in feat_train_clf]
     feat_val_reg = [dict(f) for f in feat_val_clf]
@@ -3688,6 +3711,8 @@ def main():
         type=float,
         help='half-life in days for sample weight decay',
     )
+    p.add_argument('--replay-file', help='CSV of decision replay divergences')
+    p.add_argument('--replay-weight', type=float, default=3.0, help='sample weight multiplier for replay corrections')
     args = p.parse_args()
     with trace.use_span(span, end_on_exit=True):
         global START_EVENT_ID
@@ -3763,8 +3788,11 @@ def main():
             uncertain_file=Path(args.uncertain_file) if args.uncertain_file else None,
             uncertain_weight=args.uncertain_weight,
             decay_half_life=args.half_life_days,
+            news_sentiment_file=Path(args.news_sentiment_file) if args.news_sentiment_file else None,
             rl_finetune=resources["enable_rl"],
             symbol_graph=symbol_graph,
+            replay_file=Path(args.replay_file) if args.replay_file else None,
+            replay_weight=args.replay_weight,
         )
         if args.federated_server:
             model_path = Path(args.out_dir) / (

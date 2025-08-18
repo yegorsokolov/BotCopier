@@ -5,6 +5,11 @@ This utility now supports embedding weights for decision transformer models
 trained via :mod:`scripts.train_rl_agent` using the ``--algo decision_transformer``
 option. When such weights are present in the model JSON they are injected into
 the generated MQL4 source so that inference can be performed on-platform.
+
+The generated Expert Advisor also supports a ``ReplayDecisions`` flag which
+causes it to reprocess an existing decision log at start-up and print any
+divergences between past and current model outputs.  This mirrors the
+behaviour of :mod:`scripts.replay_decisions` directly inside MetaTrader.
 """
 import argparse
 import json

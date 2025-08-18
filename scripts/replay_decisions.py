@@ -136,12 +136,20 @@ def main() -> int:
     p.add_argument(
         "--max-divergences", type=int, default=20, help="Show at most this many divergences"
     )
+    p.add_argument(
+        "--output",
+        type=Path,
+        help="Optional CSV file to write divergent decisions for further training",
+    )
     args = p.parse_args()
 
     model = _load_model(args.model)
     threshold = args.threshold if args.threshold is not None else float(model.get("threshold", 0.5))
     df = _load_logs(args.log_file)
     stats = _recompute(df, model, threshold)
+
+    if args.output and stats["divergences"]:
+        pd.DataFrame(stats["divergences"]).to_csv(args.output, index=False)
 
     print(f"Old accuracy: {stats['accuracy_old']:.3f}")
     print(f"New accuracy: {stats['accuracy_new']:.3f}")
