@@ -519,8 +519,10 @@ def generate(
                     expr = f'iClose(SymbolToTrade, 0, 0) / iClose("{parts[0]}", 0, 0)'
             elif name.startswith('corr_'):
                 parts = name[5:].split('_')
-                if len(parts) == 2:
-                    expr = f'PairCorrelation("{parts[0]}", "{parts[1]}")'
+                if len(parts) >= 2:
+                    sym1 = parts[0]
+                    sym2 = '_'.join(parts[1:])
+                    expr = f'PairCorrelation("{sym1}", "{sym2}")'
                 elif len(parts) == 1:
                     expr = f'PairCorrelation("{parts[0]}")'
             elif name == 'graph_degree':
