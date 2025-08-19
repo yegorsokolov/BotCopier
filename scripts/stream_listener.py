@@ -619,11 +619,10 @@ def main() -> int:
 
         async def poll(path: str, handler) -> None:
             last = 0
+            ticket = flight.Ticket(path.encode())
             while True:
                 try:
-                    desc = flight.FlightDescriptor.for_path(path)
-                    info = client.get_flight_info(desc)
-                    reader = client.do_get(info.endpoints[0].ticket)
+                    reader = client.do_get(ticket)
                     table = reader.read_all()
                     rows = table.to_pylist()
                     for row in rows[last:]:

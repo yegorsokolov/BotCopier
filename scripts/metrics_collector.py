@@ -411,11 +411,10 @@ def serve(
 
         async def poll() -> None:
             last = 0
+            ticket = flight.Ticket(b"metrics")
             while True:
                 try:
-                    desc = flight.FlightDescriptor.for_path("metrics")
-                    info = client.get_flight_info(desc)
-                    reader = client.do_get(info.endpoints[0].ticket)
+                    reader = client.do_get(ticket)
                     table = reader.read_all()
                     rows = table.to_pylist()
                     for row in rows[last:]:

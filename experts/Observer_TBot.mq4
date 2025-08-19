@@ -10,10 +10,6 @@ int SerializeMetrics(int schema_version, string time, int magic, double win_rate
 bool FlightClientInit(string host, int port);
 bool FlightClientSend(string path, uchar &payload[], int len);
 #import
-#import "shm_ring.dll"
-bool ShmRingInit(string name, int size);
-bool ShmRingWrite(int msg_type, uchar &payload[], int len);
-#import
 
 #import "kernel32.dll"
 int GetEnvironmentVariableA(string name, uchar &buffer[], int size);
@@ -87,12 +83,10 @@ int      SocketErrors = 0;
 int      FallbackEvents = 0;
 int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
-int      WalSizeBytes = 0;
 string   log_dir = "";
 const int SCHEMA_VERSION = 2;
 const int MSG_TRADE = 0;
 const int MSG_METRIC = 1;
-const int MSG_HELLO = 2;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -327,8 +321,6 @@ void EnqueuePending(int msg_type, uchar &queue[][], string &lines[], uchar &msg[
    ArrayCopy(queue[idx], msg);
    ArrayResize(lines, idx+1);
    lines[idx] = line;
-   string wal = msg_type==MSG_TRADE ? log_dir + "/pending_trades.wal" : log_dir + "/pending_metrics.wal";
-   AppendWal(wal, msg);
 }
 
 bool LogToJournald(string tag, string line)
@@ -375,7 +367,6 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_trades);
          RemoveFirstStr(pending_trade_lines);
-         RewriteWal(log_dir + "/pending_trades.wal", pending_trades);
          TradeQueueDepth = ArraySize(pending_trades);
          trade_backoff = 1;
          next_trade_flush = now;
@@ -403,7 +394,6 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_metrics);
          RemoveFirstStr(pending_metric_lines);
-         RewriteWal(log_dir + "/pending_metrics.wal", pending_metrics);
          MetricQueueDepth = ArraySize(pending_metrics);
          metric_backoff = 1;
          next_metric_flush = now;
@@ -459,75 +449,6 @@ void LoadQueue(string fname, uchar &queue[][])
    FileDelete(fname);
 }
 
-void UpdateWalSizeMetric()
-{
-   int total = 0;
-   int h = FileOpen(log_dir + "/pending_trades.wal", FILE_BIN|FILE_READ|FILE_COMMON);
-   if(h!=INVALID_HANDLE)
-   {
-      total += FileSize(h);
-      FileClose(h);
-   }
-   h = FileOpen(log_dir + "/pending_metrics.wal", FILE_BIN|FILE_READ|FILE_COMMON);
-   if(h!=INVALID_HANDLE)
-   {
-      total += FileSize(h);
-      FileClose(h);
-   }
-   WalSizeBytes = total;
-}
-
-void AppendWal(string fname, uchar &payload[])
-{
-   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_WRITE|FILE_COMMON);
-   if(h==INVALID_HANDLE)
-      return;
-   FileSeek(h, 0, SEEK_END);
-   int len = ArraySize(payload);
-   FileWriteInteger(h, len);
-   FileWriteArray(h, payload, 0, len);
-   FileClose(h);
-   UpdateWalSizeMetric();
-}
-
-void LoadWal(string fname, uchar &queue[][])
-{
-   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
-   if(h==INVALID_HANDLE)
-      return;
-   while(!FileIsEnding(h))
-   {
-      int len = FileReadInteger(h);
-      if(len <= 0)
-         break;
-      int idx = ArraySize(queue);
-      ArrayResize(queue, idx+1);
-      ArrayResize(queue[idx], len);
-      FileReadArray(h, queue[idx], 0, len);
-   }
-   FileClose(h);
-}
-
-void RewriteWal(string fname, uchar &queue[][])
-{
-   if(ArraySize(queue)==0)
-   {
-      FileDelete(fname);
-      UpdateWalSizeMetric();
-      return;
-   }
-   int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
-   if(h==INVALID_HANDLE)
-      return;
-   for(int i=0;i<ArraySize(queue);i++)
-   {
-      int len = ArraySize(queue[i]);
-      FileWriteInteger(h, len);
-      FileWriteArray(h, queue[i], 0, len);
-   }
-   FileClose(h);
-   UpdateWalSizeMetric();
-}
 
 double ExtractJsonNumber(string json, string key)
 {
@@ -828,19 +749,10 @@ int OnInit()
    }
    else
       Print("Log directory exists: " + log_dir);
-   // initialise shared memory ring buffer (1MB by default)
-   ShmRingInit("tbot_events", 1<<20);
-   string hello = StringFormat("{\"type\":\"hello\",\"schema_version\":%d}", SCHEMA_VERSION);
-   uchar hello_payload[];
-   StringToCharArray(hello, hello_payload);
-   ShmRingWrite(MSG_HELLO, hello_payload, ArraySize(hello_payload) - 1);
    LoadQueue(log_dir + "/pending_trades.bin", pending_trades);
    LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics);
-   LoadWal(log_dir + "/pending_trades.wal", pending_trades);
-   LoadWal(log_dir + "/pending_metrics.wal", pending_metrics);
    TradeQueueDepth = ArraySize(pending_trades);
    MetricQueueDepth = ArraySize(pending_metrics);
-   UpdateWalSizeMetric();
    FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
@@ -1266,9 +1178,6 @@ bool SendTrade(uchar &payload[])
    if(FlightClientSend("trades", zipped, ArraySize(zipped)))
       return(true);
    SocketErrors++;
-   if(ShmRingWrite(MSG_TRADE, out, ArraySize(out)))
-      return(true);
-   SocketErrors++;
    EnqueuePending(MSG_TRADE, pending_trades, pending_trade_lines, zipped, line);
    TradeQueueDepth = ArraySize(pending_trades);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
@@ -1321,9 +1230,6 @@ bool SendMetrics(uchar &payload[], string line)
    if(!CryptEncode(CRYPT_ARCHIVE_GZIP, out, zipped))
       ArrayCopy(zipped, out, 0, 0, ArraySize(out));
    if(FlightClientSend("metrics", zipped, ArraySize(zipped)))
-      return(true);
-   SocketErrors++;
-   if(ShmRingWrite(MSG_METRIC, out, ArraySize(out)))
       return(true);
    SocketErrors++;
    EnqueuePending(MSG_METRIC, pending_metrics, pending_metric_lines, zipped, line);
@@ -1678,8 +1584,7 @@ void WriteMetrics(datetime ts)
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
    int trade_q_depth = TradeQueueDepth;
    int metric_q_depth = MetricQueueDepth;
-   UpdateWalSizeMetric();
-   int wal_size = WalSizeBytes;
+   int wal_size = 0;
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];

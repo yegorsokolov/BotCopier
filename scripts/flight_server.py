@@ -2,8 +2,9 @@
 """Arrow Flight server exposing trade and metric streams.
 
 Incoming record batches are retained in memory for clients and mirrored
-to both SQLite databases and Parquet datasets. Two logical paths are
-served:
+to both SQLite databases and Parquet datasets.  A short summary of each
+batch is emitted via the standard :mod:`logging` framework which routes
+to journald when available. Two logical paths are served:
 
 * ``trades``
 * ``metrics``
