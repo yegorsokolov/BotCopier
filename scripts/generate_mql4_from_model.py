@@ -255,6 +255,19 @@ def generate(
     output = output.replace('__TP_COEFFICIENTS__', tp_str)
     output = output.replace('__TP_INTERCEPT__', _fmt(base.get('tp_intercept', 0.0)))
 
+    # Entry and exit models
+    entry_coeff = base.get('entry_coefficients', [])
+    entry_str = ', '.join(_fmt(c) for c in entry_coeff)
+    output = output.replace('__ENTRY_COEFFICIENTS__', entry_str)
+    output = output.replace('__ENTRY_INTERCEPT__', _fmt(base.get('entry_intercept', 0.0)))
+    output = output.replace('__ENTRY_THRESHOLD__', _fmt(base.get('entry_threshold', 0.5)))
+
+    exit_coeff = base.get('exit_coefficients', [])
+    exit_str = ', '.join(_fmt(c) for c in exit_coeff)
+    output = output.replace('__EXIT_COEFFICIENTS__', exit_str)
+    output = output.replace('__EXIT_INTERCEPT__', _fmt(base.get('exit_intercept', 0.0)))
+    output = output.replace('__EXIT_THRESHOLD__', _fmt(base.get('exit_threshold', 0.5)))
+
     nn_weights = base.get('nn_weights', [])
     if nn_weights:
         l1_w = ', '.join(_fmt(v) for row in nn_weights[0] for v in row)

@@ -22,6 +22,12 @@
   "sl_intercept": 0.0,
   "tp_coefficients": [0.0],
   "tp_intercept": 0.0,
+  "entry_coefficients": [0.0, 0.0, 0.0, 0.0],
+  "entry_intercept": 0.0,
+  "entry_threshold": 0.5,
+  "exit_coefficients": [0.0, 0.0, 0.0],
+  "exit_intercept": 0.0,
+  "exit_threshold": 0.5,
   "hourly_thresholds": [
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
