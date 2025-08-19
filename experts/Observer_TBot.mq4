@@ -1270,6 +1270,8 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       sent = SendTrade(payload);
    if(!sent)
    {
+      SocketErrors++;
+      FallbackEvents++;
       if(CurrentBackend==LOG_BACKEND_CSV)
       {
          if(trade_log_handle==INVALID_HANDLE)
@@ -1382,7 +1384,42 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
   {
    PendingTrade t;
    t.id = event_id;
-   t.span_id = GenId(8);
+   string trace_id = "";
+   string span_id = "";
+   int pos = StringFind(comment, "trace_id=");
+   if(pos >= 0)
+   {
+      int start = pos + StringLen("trace_id=");
+      int end = start;
+      while(end < StringLen(comment))
+      {
+         string ch = StringMid(comment, end, 1);
+         if(ch==";" || ch=="|" )
+            break;
+         end++;
+      }
+      trace_id = StringSubstr(comment, start, end-start);
+   }
+   pos = StringFind(comment, "span_id=");
+   if(pos >= 0)
+   {
+      int start = pos + StringLen("span_id=");
+      int end = start;
+      while(end < StringLen(comment))
+      {
+         string ch = StringMid(comment, end, 1);
+         if(ch==";" || ch=="|" )
+            break;
+         end++;
+      }
+      span_id = StringSubstr(comment, start, end-start);
+   }
+   if(StringLen(trace_id)==0)
+      trace_id = GenId(16);
+   TraceId = trace_id;
+   if(StringLen(span_id)==0)
+      span_id = GenId(8);
+   t.span_id = span_id;
    t.action = action;
    t.ticket = ticket;
    t.magic = magic;
@@ -1418,10 +1455,15 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
    t.risk_weight = risk_weight;
    t.trend_estimate = trend_estimate;
     t.trend_variance = trend_variance;
-   string span_comment = "span=" + t.span_id;
-   if(StringLen(comment) > 0)
-      span_comment += ";" + comment;
-   t.comment_with_span = span_comment;
+   if(StringFind(comment, "span=") < 0 && StringFind(comment, "span_id=") < 0)
+   {
+      string span_comment = "span=" + t.span_id;
+      if(StringLen(comment) > 0)
+         span_comment += ";" + comment;
+      t.comment_with_span = span_comment;
+   }
+   else
+      t.comment_with_span = comment;
    int decision_id = 0;
    int pos = StringFind(comment, "decision_id=");
    if(pos >= 0)
@@ -1674,6 +1716,7 @@ void WriteMetrics(datetime ts)
          sent = SendMetrics(payload, line);
       if(!sent)
       {
+         FallbackEvents++;
          if(h==INVALID_HANDLE)
          {
             h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');

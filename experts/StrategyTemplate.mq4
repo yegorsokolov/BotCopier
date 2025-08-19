@@ -142,6 +142,19 @@ bool UseOnnxEncoder = false;
 bool UseOnnxModel = false;
 int      AdaptLogHandle = INVALID_HANDLE;
 datetime LastAdaptRequest = 0;
+string   LastTraceId = "";
+string   LastSpanId  = "";
+
+string GenId(int bytes)
+{
+   string s = "";
+   for(int i=0; i<bytes; i++)
+   {
+      int v = MathRand() & 0xFF;
+      s += StringFormat("%02x", v);
+   }
+   return(s);
+}
 
 #import "onnxruntime_wrapper.ex4"
    int OnnxEncode(string model, double &inp[], double &out[]);
@@ -400,7 +413,7 @@ int OnInit()
          if(DecisionLogHandle != INVALID_HANDLE)
          {
             if(FileSize(DecisionLogHandle) == 0)
-               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;features");
+               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;features;trace_id;span_id");
             FileSeek(DecisionLogHandle, 0, SEEK_END);
          }
          else
@@ -1138,9 +1151,13 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
       feat_vals += DoubleToString(feats[i], 5);
    }
    datetime now = TimeCurrent();
+   string trace_id = GenId(16);
+   string span_id  = GenId(8);
+   LastTraceId = trace_id;
+   LastSpanId  = span_id;
    if(DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals, trace_id, span_id);
       FileFlush(DecisionLogHandle);
    }
    double thr = GetTradeThreshold();
@@ -1154,8 +1171,8 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    }
    if(DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"features\":[%s]}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
@@ -1365,7 +1382,7 @@ void OnTick()
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
    LogDecision(feats, prob, action, modelIdx, reg);
-   string order_comment = StringFormat("model=%d|decision_id=%d", modelIdx, decision_id);
+   string order_comment = StringFormat("trace_id=%s;span_id=%s;model=%d|decision_id=%d", LastTraceId, LastSpanId, modelIdx, decision_id);
    if(prob > thr)
    {
       ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3,
