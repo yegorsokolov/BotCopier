@@ -1349,6 +1349,8 @@ def _extract_features(
         tp_dist = _safe_float(r.get("tp_dist", tp - price))
         sl_hit = _safe_float(r.get("sl_hit_dist", 0.0))
         tp_hit = _safe_float(r.get("tp_hit_dist", 0.0))
+        exit_reason = str(r.get("exit_reason", "") or "").upper()
+        duration_sec = int(float(r.get("duration_sec", 0) or 0))
 
         feat = {
             "symbol": symbol,
@@ -1370,6 +1372,8 @@ def _extract_features(
             "swap": swap,
             "trend_estimate": trend_est,
             "trend_variance": trend_var,
+            "exit_reason": exit_reason,
+            "duration_sec": duration_sec,
             "event_id": int(float(r.get("event_id", 0) or 0)),
         }
 

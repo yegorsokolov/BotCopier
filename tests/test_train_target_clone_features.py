@@ -41,6 +41,8 @@ def _write_sample_log(file: Path):
         "tp_hit_dist",
         "commission",
         "swap",
+        "exit_reason",
+        "duration_sec",
     ]
     rows = [
         [
@@ -72,6 +74,8 @@ def _write_sample_log(file: Path):
             "0",
             "0",
             "0",
+            "",
+            "0",
         ],
         [
             "2",
@@ -101,6 +105,8 @@ def _write_sample_log(file: Path):
             "0",
             "0",
             "0",
+            "0",
+            "",
             "0",
         ],
     ]
