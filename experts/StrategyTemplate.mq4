@@ -65,6 +65,7 @@ double EntryThreshold = __ENTRY_THRESHOLD__;
 double ExitCoefficients[] = {__EXIT_COEFFICIENTS__};
 double ExitIntercept = __EXIT_INTERCEPT__;
 double ExitThreshold = __EXIT_THRESHOLD__;
+string ExitReasonContext = "";
 int ModelHiddenSize = __NN_HIDDEN_SIZE__;
 double NNLayer1Weights[] = {__NN_L1_WEIGHTS__};
 double NNLayer1Bias[] = {__NN_L1_BIAS__};
@@ -498,6 +499,21 @@ double GetTPDistance()
             return(Ask - OrderTakeProfit());
       }
    return(0.0);
+}
+
+double TradeDuration()
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+      if(OrderSelect(i, SELECT_BY_POS) &&
+         OrderMagicNumber() == MagicNumber &&
+         OrderSymbol() == SymbolToTrade)
+         return(TimeCurrent() - OrderOpenTime());
+   return(0.0);
+}
+
+double ExitReasonFlag(string reason)
+{
+   return(StringCompare(ExitReasonContext, reason) == 0 ? 1.0 : 0.0);
 }
 
 double GetCalendarFlag()

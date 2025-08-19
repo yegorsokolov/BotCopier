@@ -480,6 +480,7 @@ def generate(
         'book_imbalance': 'BookImbalance()',
         'trend_estimate': 'TrendEstimate',
         'trend_variance': 'TrendVariance',
+        'duration_sec': 'TradeDuration()',
     }
 
     if lite_mode:
@@ -538,6 +539,9 @@ def generate(
                     expr = f'PairCorrelation("{sym1}", "{sym2}")'
                 elif len(parts) == 1:
                     expr = f'PairCorrelation("{parts[0]}")'
+            elif name.startswith('exit_reason='):
+                reason = name.split('=', 1)[1]
+                expr = f'ExitReasonFlag("{reason}")'
             elif name == 'graph_degree':
                 expr = 'GraphDegree()'
             elif name == 'graph_pagerank':

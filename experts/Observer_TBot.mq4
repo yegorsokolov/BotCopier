@@ -1506,7 +1506,7 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
       else if(sl!=0.0 && MathAbs(price - sl) <= pt*2)
          exit_reason = "SL";
       if(open_time>0)
-         duration_sec = (int)(TimeCurrent() - open_time);
+         duration_sec = (int)(time_event - open_time);
    }
    t.exit_reason = exit_reason;
    t.duration_sec = duration_sec;
