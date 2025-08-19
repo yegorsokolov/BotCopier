@@ -423,7 +423,7 @@ int OnInit()
       else
          Print("Adaptation log open failed: ", GetLastError());
    }
-   ReplayDecisionLog();
+   ReplayDecisionLog(); // reprocess archived decisions when ReplayDecisions=true
    return(INIT_SUCCEEDED);
 }
 
