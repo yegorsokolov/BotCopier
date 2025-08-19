@@ -1807,12 +1807,16 @@ def train(
     if replay_file:
         try:
             rep_df = pd.read_csv(replay_file)
-            replay_ids = set(int(x) for x in rep_df.get("event_id", []) if not pd.isna(x))
+            replay_weights = {
+                int(row["event_id"]): float(row.get("weight", 1.0))
+                for _, row in rep_df.iterrows()
+                if not pd.isna(row.get("event_id"))
+            }
         except Exception as exc:
             logging.warning("failed to read replay file %s: %s", replay_file, exc)
-            replay_ids = set()
+            replay_weights = {}
     else:
-        replay_ids = set()
+        replay_weights = {}
     # Automatically select features and model based on hardware capabilities
     resources = detect_resources()
     heavy_mode = resources["heavy_mode"]
@@ -2270,13 +2274,14 @@ def train(
             int(unc_train_mask.sum()),
             uncertain_weight,
         )
-    if replay_ids:
+    if replay_weights:
         for i, feat in enumerate(feat_train):
-            if int(feat.get("event_id", -1)) in replay_ids:
-                base_weight[i] *= replay_weight
+            eid = int(feat.get("event_id", -1))
+            if eid in replay_weights:
+                base_weight[i] *= replay_weight * replay_weights[eid]
         logger.info(
             "emphasizing %d replay corrections with weight %.2f",
-            len(replay_ids),
+            len(replay_weights),
             replay_weight,
         )
     if decay_half_life > 0 and event_times is not None and event_times.size:

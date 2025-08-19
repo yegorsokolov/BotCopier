@@ -5,7 +5,9 @@ The script loads a decision log produced by the trading bot along with a
 new ``model.json`` file. It re-computes probabilities for each decision
 using the new model and reports any divergences between the original and
 replayed outcomes. Summary statistics such as accuracy and the change in
-profit are printed at the end.
+profit are printed at the end. Any mismatched decisions are written to
+``divergences.csv`` and can optionally be tagged with a sample ``weight``
+for downstream training.
 
 When sufficient hardware resources are available, ``detect_resources`` is
 used to determine whether a more complex neural network representation
@@ -86,7 +88,9 @@ def _recompute(df: pd.DataFrame, model: Dict, threshold: float) -> Dict:
 
     divergences = []
     profits = df.get("profit")
-    old_probs = df.get("probability") or df.get("prob")
+    old_probs = df.get("probability")
+    if old_probs is None:
+        old_probs = df.get("prob")
 
     def features_from_row(row: pd.Series) -> Dict[str, float]:
         return {k: row.get(k, 0.0) for k in model.get("feature_names", [])}
@@ -130,8 +134,20 @@ def _recompute(df: pd.DataFrame, model: Dict, threshold: float) -> Dict:
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Replay decision logs with a new model")
-    p.add_argument("log_file", type=Path, help="CSV decision log")
-    p.add_argument("model", type=Path, help="Path to model.json or model.json.gz")
+    p.add_argument(
+        "log_file",
+        type=Path,
+        nargs="?",
+        default=Path("decisions.csv"),
+        help="CSV decision log (default decisions.csv)",
+    )
+    p.add_argument(
+        "model",
+        type=Path,
+        nargs="?",
+        default=Path("model.json"),
+        help="Path to model.json or model.json.gz (default model.json)",
+    )
     p.add_argument("--threshold", type=float, help="Override model threshold")
     p.add_argument(
         "--max-divergences", type=int, default=20, help="Show at most this many divergences"
@@ -139,17 +155,28 @@ def main() -> int:
     p.add_argument(
         "--output",
         type=Path,
-        help="Optional CSV file to write divergent decisions for further training",
+        default=Path("divergences.csv"),
+        help="CSV file to write divergent decisions (default divergences.csv)",
+    )
+    p.add_argument(
+        "--weight",
+        type=float,
+        default=1.0,
+        help="sample weight assigned to each divergent trade",
     )
     args = p.parse_args()
 
     model = _load_model(args.model)
-    threshold = args.threshold if args.threshold is not None else float(model.get("threshold", 0.5))
+    threshold = args.threshold if args.threshold is not None else float(
+        model.get("threshold", 0.5)
+    )
     df = _load_logs(args.log_file)
     stats = _recompute(df, model, threshold)
 
-    if args.output and stats["divergences"]:
-        pd.DataFrame(stats["divergences"]).to_csv(args.output, index=False)
+    if stats["divergences"]:
+        out_df = pd.DataFrame(stats["divergences"])
+        out_df["weight"] = args.weight
+        out_df.to_csv(args.output, index=False)
 
     print(f"Old accuracy: {stats['accuracy_old']:.3f}")
     print(f"New accuracy: {stats['accuracy_new']:.3f}")
