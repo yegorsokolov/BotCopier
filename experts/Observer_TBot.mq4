@@ -87,6 +87,7 @@ int      SocketErrors = 0;
 int      FallbackEvents = 0;
 int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
+int      WalSizeBytes = 0;
 string   log_dir = "";
 const int SCHEMA_VERSION = 1;
 const int MSG_TRADE = 0;
@@ -324,7 +325,8 @@ void EnqueuePending(int msg_type, uchar &queue[][], string &lines[], uchar &msg[
    ArrayCopy(queue[idx], msg);
    ArrayResize(lines, idx+1);
    lines[idx] = line;
-   AppendWal(log_dir + "/pending.wal", msg_type, msg);
+   string wal = msg_type==MSG_TRADE ? log_dir + "/pending_trades.wal" : log_dir + "/pending_metrics.wal";
+   AppendWal(wal, msg);
 }
 
 bool LogToJournald(string tag, string line)
@@ -371,7 +373,7 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_trades);
          RemoveFirstStr(pending_trade_lines);
-         RewriteWal(log_dir + "/pending.wal", pending_trades, pending_metrics);
+         RewriteWal(log_dir + "/pending_trades.wal", pending_trades);
          TradeQueueDepth = ArraySize(pending_trades);
          trade_backoff = 1;
          next_trade_flush = now;
@@ -399,7 +401,7 @@ void FlushPending(datetime now)
       {
          RemoveFirst(pending_metrics);
          RemoveFirstStr(pending_metric_lines);
-         RewriteWal(log_dir + "/pending.wal", pending_trades, pending_metrics);
+         RewriteWal(log_dir + "/pending_metrics.wal", pending_metrics);
          MetricQueueDepth = ArraySize(pending_metrics);
          metric_backoff = 1;
          next_metric_flush = now;
@@ -455,77 +457,74 @@ void LoadQueue(string fname, uchar &queue[][])
    FileDelete(fname);
 }
 
-void AppendWal(string fname, int msg_type, uchar &payload[])
+void UpdateWalSizeMetric()
+{
+   int total = 0;
+   int h = FileOpen(log_dir + "/pending_trades.wal", FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h!=INVALID_HANDLE)
+   {
+      total += FileSize(h);
+      FileClose(h);
+   }
+   h = FileOpen(log_dir + "/pending_metrics.wal", FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h!=INVALID_HANDLE)
+   {
+      total += FileSize(h);
+      FileClose(h);
+   }
+   WalSizeBytes = total;
+}
+
+void AppendWal(string fname, uchar &payload[])
 {
    int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_WRITE|FILE_COMMON);
    if(h==INVALID_HANDLE)
       return;
    FileSeek(h, 0, SEEK_END);
    int len = ArraySize(payload);
-   FileWriteInteger(h, msg_type);
    FileWriteInteger(h, len);
    FileWriteArray(h, payload, 0, len);
    FileClose(h);
+   UpdateWalSizeMetric();
 }
 
-void LoadWal(string fname, uchar &trade_queue[][], uchar &metric_queue[][])
+void LoadWal(string fname, uchar &queue[][])
 {
    int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
    if(h==INVALID_HANDLE)
       return;
    while(!FileIsEnding(h))
    {
-      int t = FileReadInteger(h);
       int len = FileReadInteger(h);
       if(len <= 0)
          break;
-      if(t==MSG_TRADE)
-      {
-         int idx = ArraySize(trade_queue);
-         ArrayResize(trade_queue, idx+1);
-         ArrayResize(trade_queue[idx], len);
-         FileReadArray(h, trade_queue[idx], 0, len);
-      }
-      else if(t==MSG_METRIC)
-      {
-         int midx = ArraySize(metric_queue);
-         ArrayResize(metric_queue, midx+1);
-         ArrayResize(metric_queue[midx], len);
-         FileReadArray(h, metric_queue[midx], 0, len);
-      }
-      else
-      {
-         FileSeek(h, len, SEEK_CUR);
-      }
+      int idx = ArraySize(queue);
+      ArrayResize(queue, idx+1);
+      ArrayResize(queue[idx], len);
+      FileReadArray(h, queue[idx], 0, len);
    }
    FileClose(h);
 }
 
-void RewriteWal(string fname, uchar &trade_queue[][], uchar &metric_queue[][])
+void RewriteWal(string fname, uchar &queue[][])
 {
-   if(ArraySize(trade_queue)==0 && ArraySize(metric_queue)==0)
+   if(ArraySize(queue)==0)
    {
       FileDelete(fname);
+      UpdateWalSizeMetric();
       return;
    }
    int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
    if(h==INVALID_HANDLE)
       return;
-   for(int i=0;i<ArraySize(trade_queue);i++)
+   for(int i=0;i<ArraySize(queue);i++)
    {
-      int len = ArraySize(trade_queue[i]);
-      FileWriteInteger(h, MSG_TRADE);
+      int len = ArraySize(queue[i]);
       FileWriteInteger(h, len);
-      FileWriteArray(h, trade_queue[i], 0, len);
-   }
-   for(int j=0;j<ArraySize(metric_queue);j++)
-   {
-      int mlen = ArraySize(metric_queue[j]);
-      FileWriteInteger(h, MSG_METRIC);
-      FileWriteInteger(h, mlen);
-      FileWriteArray(h, metric_queue[j], 0, mlen);
+      FileWriteArray(h, queue[i], 0, len);
    }
    FileClose(h);
+   UpdateWalSizeMetric();
 }
 
 double ExtractJsonNumber(string json, string key)
@@ -835,9 +834,11 @@ int OnInit()
    ShmRingWrite(MSG_HELLO, hello_payload, ArraySize(hello_payload) - 1);
    LoadQueue(log_dir + "/pending_trades.bin", pending_trades);
    LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics);
-   LoadWal(log_dir + "/pending.wal", pending_trades, pending_metrics);
+   LoadWal(log_dir + "/pending_trades.wal", pending_trades);
+   LoadWal(log_dir + "/pending_metrics.wal", pending_metrics);
    TradeQueueDepth = ArraySize(pending_trades);
    MetricQueueDepth = ArraySize(pending_metrics);
+   UpdateWalSizeMetric();
    FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
@@ -1660,13 +1661,8 @@ void WriteMetrics(datetime ts)
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
    int trade_q_depth = TradeQueueDepth;
    int metric_q_depth = MetricQueueDepth;
-   int wal_size = 0;
-   int wh = FileOpen(log_dir + "/pending.wal", FILE_BIN|FILE_READ|FILE_COMMON);
-   if(wh!=INVALID_HANDLE)
-   {
-      wal_size = FileSize(wh);
-      FileClose(wh);
-   }
+   UpdateWalSizeMetric();
+   int wal_size = WalSizeBytes;
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];
