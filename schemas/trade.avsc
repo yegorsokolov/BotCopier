@@ -32,6 +32,8 @@
     {"name": "book_imbalance", "type": "double"},
     {"name": "sl_hit_dist", "type": "double"},
     {"name": "tp_hit_dist", "type": "double"},
-    {"name": "decision_id", "type": ["int", "null"], "default": null}
+    {"name": "decision_id", "type": ["int", "null"], "default": null},
+    {"name": "exit_reason", "type": "string"},
+    {"name": "duration_sec", "type": "int"}
   ]
 }

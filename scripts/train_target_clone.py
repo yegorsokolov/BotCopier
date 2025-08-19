@@ -96,7 +96,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 START_EVENT_ID = 0
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_target_clone")})
@@ -603,6 +603,16 @@ def _load_logs_db(db_file: Path) -> pd.DataFrame:
         df_logs["trade_duration"] = (
             pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
         ).dt.total_seconds().fillna(0)
+    if "duration_sec" in df_logs.columns:
+        df_logs["duration_sec"] = (
+            pd.to_numeric(df_logs["duration_sec"], errors="coerce").fillna(0).astype(int)
+        )
+    else:
+        df_logs["duration_sec"] = df_logs.get("trade_duration", 0).astype(int)
+    if "exit_reason" in df_logs.columns:
+        df_logs["exit_reason"] = df_logs["exit_reason"].fillna("").astype(str).str.upper()
+    else:
+        df_logs["exit_reason"] = ""
     for col in [
         "book_bid_vol",
         "book_ask_vol",
@@ -751,6 +761,8 @@ def _load_logs(
         "is_anomaly",
         "trend_estimate",
         "trend_variance",
+        "exit_reason",
+        "duration_sec",
     ]
 
     data_commits: list[str] = []
@@ -843,6 +855,14 @@ def _load_logs(
                     ).dt.total_seconds().fillna(0)
                 else:
                     chunk["trade_duration"] = 0.0
+                if "duration_sec" in chunk.columns:
+                    chunk["duration_sec"] = (
+                        pd.to_numeric(chunk.get("duration_sec"), errors="coerce")
+                        .fillna(0)
+                        .astype(int)
+                    )
+                else:
+                    chunk["duration_sec"] = chunk["trade_duration"].astype(int)
                 for col in [
                     "book_bid_vol",
                     "book_ask_vol",
@@ -855,6 +875,7 @@ def _load_logs(
                     "trend_variance",
                 ]:
                     chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
+                chunk["exit_reason"] = chunk.get("exit_reason", "").fillna("").astype(str).str.upper()
                 chunk["is_anomaly"] = pd.to_numeric(chunk.get("is_anomaly", 0), errors="coerce").fillna(0)
                 for col in ["source", "comment"]:
                     if col in chunk.columns:
@@ -3683,7 +3704,12 @@ def train(
             # Exit model: classify positive profit on CLOSE actions
             df_close = df_logs[df_logs["action"] == "CLOSE"].dropna(subset=["sl_hit_dist", "tp_hit_dist", "profit"])
             if not df_close.empty:
-                exit_feats = df_close[["sl_hit_dist", "tp_hit_dist", "profit"]].fillna(0.0)
+                exit_feats = df_close[["sl_hit_dist", "tp_hit_dist", "profit", "duration_sec"]].fillna(0.0)
+                exit_reason_dummies = pd.get_dummies(
+                    df_close.get("exit_reason", "").fillna("").astype(str),
+                    prefix="exit_reason",
+                )
+                exit_feats = pd.concat([exit_feats, exit_reason_dummies], axis=1)
                 exit_target = (pd.to_numeric(df_close["profit"], errors="coerce") > 0).astype(int)
                 try:
                     exit_clf = LogisticRegression(max_iter=200)
