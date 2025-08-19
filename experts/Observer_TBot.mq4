@@ -3,7 +3,7 @@
 #include <Arrays/ArrayInt.mqh>
 
 #import "observer_capnp.dll"
-int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, uchar &out[]);
+int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, uchar &out[]);
 #import
 #import "flight_client.dll"
@@ -89,7 +89,7 @@ int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
 int      WalSizeBytes = 0;
 string   log_dir = "";
-const int SCHEMA_VERSION = 1;
+const int SCHEMA_VERSION = 2;
 const int MSG_TRADE = 0;
 const int MSG_METRIC = 1;
 const int MSG_HELLO = 2;
@@ -139,6 +139,8 @@ public:
    double   trend_estimate;
    double   trend_variance;
    int      decision_id;
+   string   exit_reason;
+   int      duration_sec;
    string   comment_with_span;
    string   open_time_str;
    datetime start_time;
@@ -875,7 +877,7 @@ int OnInit()
    log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
    if(log_db_handle!=INVALID_HANDLE)
    {
-      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL, commission REAL, swap REAL)";
+      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL, commission REAL, swap REAL, exit_reason TEXT, duration_sec INTEGER)";
       DatabaseExecute(log_db_handle, create_sql);
       // Resume event id from existing records
       int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
@@ -925,7 +927,7 @@ int OnInit()
             NextEventId = last_id + 1;
          if(need_header)
          {
-          string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance";
+          string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance;exit_reason;duration_sec";
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
@@ -1334,7 +1336,7 @@ bool SendMetrics(uchar &payload[], string line)
 void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 {
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f;%s;%d",
       t.id,
       TimeToString(t.time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
@@ -1345,7 +1347,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol,
       t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom,
       t.equity, t.margin_level, t.commission, t.swap, t.risk_weight,
-      t.trend_estimate, t.trend_variance);
+      t.trend_estimate, t.trend_variance, t.exit_reason, t.duration_sec);
 
    uchar payload[];
    int len = SerializeTradeEvent(
@@ -1355,7 +1357,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
       t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, t.comment_with_span, t.remaining,
-      t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.decision_id, payload);
+      t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.decision_id, t.exit_reason, t.duration_sec, payload);
 
    bool sent = false;
    if(len>0)
@@ -1386,14 +1388,14 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
          if(log_db_handle!=INVALID_HANDLE)
          {
             string sql = StringFormat(
-               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level,commission,swap) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f,%.2f,%.2f)",
+               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level,commission,swap,exit_reason,duration_sec) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f,%.2f,%.2f,'%s',%d)",
                t.id,
                SqlEscape(TimeToString(t.time_event, TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(t.action), t.ticket, t.magic, SqlEscape(t.source), SqlEscape(t.symbol), t.order_type,
                t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, SqlEscape(TraceId), SqlEscape(t.span_id), SqlEscape(t.comment), t.remaining,
-               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom, t.equity, t.margin_level, t.commission, t.swap);
+               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom, t.equity, t.margin_level, t.commission, t.swap, SqlEscape(t.exit_reason), t.duration_sec);
             DatabaseExecute(log_db_handle, sql);
          }
       }
@@ -1545,6 +1547,21 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
    }
    t.sl_hit_dist = sl_hit_dist;
    t.tp_hit_dist = tp_hit_dist;
+   string exit_reason = "";
+   int duration_sec = 0;
+   if(action=="CLOSE")
+   {
+      double pt = MarketInfo(symbol, MODE_POINT);
+      exit_reason = "MANUAL";
+      if(tp!=0.0 && MathAbs(price - tp) <= pt*2)
+         exit_reason = "TP";
+      else if(sl!=0.0 && MathAbs(price - sl) <= pt*2)
+         exit_reason = "SL";
+      if(open_time>0)
+         duration_sec = (int)(TimeCurrent() - open_time);
+   }
+   t.exit_reason = exit_reason;
+   t.duration_sec = duration_sec;
    t.start_time = UseBrokerTime ? TimeCurrent() : TimeLocal();
    EnqueueAnomaly(t);
 }

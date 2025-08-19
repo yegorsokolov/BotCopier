@@ -29,6 +29,8 @@ class TradeEvent(BaseModel):
     comment: str = ""
     remaining_lots: float
     decision_id: Optional[int] = None
+    exit_reason: str = ""
+    duration_sec: int = 0
 
     class Config:
         extra = "ignore"
@@ -65,4 +67,6 @@ TRADE_SCHEMA = pa.schema([
     ("sl_hit_dist", pa.float64()),
     ("tp_hit_dist", pa.float64()),
     ("decision_id", pa.int32()),
+    ("exit_reason", pa.string()),
+    ("duration_sec", pa.int32()),
 ])
