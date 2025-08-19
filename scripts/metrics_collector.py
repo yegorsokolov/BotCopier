@@ -214,7 +214,10 @@ async def _writer_task(
             if row is None:
                 break
             ctx_in = _context_from_ids(row.get("trace_id", ""), row.get("span_id", ""))
-            with tracer.start_as_current_span("metrics_store", context=ctx_in):
+            with tracer.start_as_current_span("metrics_store", context=ctx_in) as span:
+                span.set_attribute("file_write_errors", row.get("file_write_errors", 0))
+                span.set_attribute("socket_errors", row.get("socket_errors", 0))
+                span.set_attribute("fallback_events", row.get("fallback_events", 0))
                 try:
                     conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
                     conn.commit()
@@ -425,6 +428,9 @@ def serve(
                             ctx = span.get_span_context()
                             row.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
                             row.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+                            span.set_attribute("file_write_errors", row.get("file_write_errors", 0))
+                            span.set_attribute("socket_errors", row.get("socket_errors", 0))
+                            span.set_attribute("fallback_events", row.get("fallback_events", 0))
                             extra = {}
                             try:
                                 extra["trace_id"] = int(row["trace_id"], 16)
@@ -471,6 +477,9 @@ def serve(
                 ctx = span.get_span_context()
                 data.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
                 data.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+                span.set_attribute("file_write_errors", data.get("file_write_errors", 0))
+                span.set_attribute("socket_errors", data.get("socket_errors", 0))
+                span.set_attribute("fallback_events", data.get("fallback_events", 0))
                 extra = {}
                 try:
                     extra["trace_id"] = int(data["trace_id"], 16)
