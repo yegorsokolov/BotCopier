@@ -59,6 +59,12 @@ double TPModelCoefficients[] = {__TP_COEFFICIENTS__};
 double TPModelIntercept = __TP_INTERCEPT__;
 double LotModelCoefficients[] = {__LOT_COEFFICIENTS__};
 double LotModelIntercept = __LOT_INTERCEPT__;
+double EntryCoefficients[] = {__ENTRY_COEFFICIENTS__};
+double EntryIntercept = __ENTRY_INTERCEPT__;
+double EntryThreshold = __ENTRY_THRESHOLD__;
+double ExitCoefficients[] = {__EXIT_COEFFICIENTS__};
+double ExitIntercept = __EXIT_INTERCEPT__;
+double ExitThreshold = __EXIT_THRESHOLD__;
 int ModelHiddenSize = __NN_HIDDEN_SIZE__;
 double NNLayer1Weights[] = {__NN_L1_WEIGHTS__};
 double NNLayer1Bias[] = {__NN_L1_BIAS__};
@@ -786,6 +792,33 @@ double ComputePredictiveVariance(int m)
    return(var * deriv * deriv);
 }
 
+double ComputeEntryScore()
+{
+   double z = EntryIntercept;
+   double feats[4];
+   feats[0] = CachedBookImbalance;
+   feats[1] = MarketInfo(SymbolToTrade, MODE_SPREAD);
+   feats[2] = CachedBookBidVol;
+   feats[3] = CachedBookAskVol;
+   int n = MathMin(4, ArraySize(EntryCoefficients));
+   for(int i=0; i<n; i++)
+      z += EntryCoefficients[i] * feats[i];
+   return(1.0 / (1.0 + MathExp(-z)));
+}
+
+double ComputeExitScore(double sl_dist, double tp_dist, double profit)
+{
+   double z = ExitIntercept;
+   double feats[3];
+   feats[0] = sl_dist;
+   feats[1] = tp_dist;
+   feats[2] = profit;
+   int n = MathMin(3, ArraySize(ExitCoefficients));
+   for(int i=0; i<n; i++)
+      z += ExitCoefficients[i] * feats[i];
+   return(1.0 / (1.0 + MathExp(-z)));
+}
+
 double ComputeNNScore()
 {
    int hidden = ModelHiddenSize;
@@ -1285,15 +1318,7 @@ void OnTick()
    CurrentRegime = reg;
    if(EnableDebugLogging)
       Print("Regime=", reg, " Model=", modelIdx);
-   double prob;
-   if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)
-      prob = ComputeDecisionTransformerScore();
-   else if(LSTMSequenceLength > 0 && ArraySize(LSTMDenseWeights) > 0)
-      prob = ComputeLSTMScore();
-   else if(ArraySize(NNLayer1Weights) > 0)
-      prob = ComputeNNScore();
-   else
-      prob = ComputeLogisticScoreSession(modelIdx);
+   double prob = ComputeEntryScore();
 
    double feats[100];
    for(int i=0; i<FeatureCount && i<100; i++)
@@ -1336,7 +1361,7 @@ void OnTick()
    // Open buy if probability exceeds threshold else sell
    double tradeLots = CalcLots();
    int ticket;
-   double thr = GetTradeThreshold();
+   double thr = EntryThreshold;
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
    LogDecision(feats, prob, action, modelIdx, reg);
@@ -1369,8 +1394,22 @@ void ManageOpenOrders()
 
       bool isBuy = (OrderType() == OP_BUY);
       double price = isBuy ? Bid : Ask;
-      double profitPips = (isBuy ? (price - OrderOpenPrice()) : (OrderOpenPrice() - price)) / Point;
+      double sl_dist = 0.0;
+      double tp_dist = 0.0;
+      if(OrderStopLoss() > 0)
+         sl_dist = isBuy ? (price - OrderStopLoss())/Point : (OrderStopLoss() - price)/Point;
+      if(OrderTakeProfit() > 0)
+         tp_dist = isBuy ? (OrderTakeProfit() - price)/Point : (price - OrderTakeProfit())/Point;
+      double cur_profit = OrderProfit() + OrderSwap() + OrderCommission();
+      double exit_prob = ComputeExitScore(sl_dist, tp_dist, cur_profit);
+      if(exit_prob < ExitThreshold)
+      {
+         if(!OrderClose(OrderTicket(), OrderLots(), price, 3))
+            Print("OrderClose error: ", GetLastError());
+         continue;
+      }
 
+      double profitPips = (isBuy ? (price - OrderOpenPrice()) : (OrderOpenPrice() - price)) / Point;
       double newSL = OrderStopLoss();
       if(BreakEvenPips > 0 && profitPips >= BreakEvenPips)
       {

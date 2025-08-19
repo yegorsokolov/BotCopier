@@ -3657,6 +3657,45 @@ def train(
             except Exception:
                 pass
 
+    # Train simple entry and exit models from raw logs
+    try:
+        df_logs, _, _ = _load_logs(data_dir, flight_uri=flight_uri)
+        df_logs.columns = [c.lower() for c in df_logs.columns]
+        # Entry model: predict order_type on OPEN actions
+        if not df_logs.empty:
+            df_open = df_logs[df_logs["action"] == "OPEN"].dropna(subset=["order_type"])
+            if not df_open.empty:
+                entry_feats = df_open[[
+                    "book_imbalance",
+                    "spread",
+                    "book_bid_vol",
+                    "book_ask_vol",
+                ]].fillna(0.0)
+                entry_target = pd.to_numeric(df_open["order_type"], errors="coerce").fillna(0).astype(int)
+                try:
+                    entry_clf = LogisticRegression(max_iter=200)
+                    entry_clf.fit(entry_feats, entry_target)
+                    model["entry_coefficients"] = entry_clf.coef_[0].astype(np.float32).tolist()
+                    model["entry_intercept"] = float(entry_clf.intercept_[0])
+                    model["entry_threshold"] = 0.5
+                except Exception as exc:
+                    logging.warning("entry model training failed: %s", exc)
+            # Exit model: classify positive profit on CLOSE actions
+            df_close = df_logs[df_logs["action"] == "CLOSE"].dropna(subset=["sl_hit_dist", "tp_hit_dist", "profit"])
+            if not df_close.empty:
+                exit_feats = df_close[["sl_hit_dist", "tp_hit_dist", "profit"]].fillna(0.0)
+                exit_target = (pd.to_numeric(df_close["profit"], errors="coerce") > 0).astype(int)
+                try:
+                    exit_clf = LogisticRegression(max_iter=200)
+                    exit_clf.fit(exit_feats, exit_target)
+                    model["exit_coefficients"] = exit_clf.coef_[0].astype(np.float32).tolist()
+                    model["exit_intercept"] = float(exit_clf.intercept_[0])
+                    model["exit_threshold"] = 0.5
+                except Exception as exc:
+                    logging.warning("exit model training failed: %s", exc)
+    except Exception as exc:
+        logging.warning("failed to train entry/exit models: %s", exc)
+
     model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
     out_dir.mkdir(parents=True, exist_ok=True)
     open_func = gzip.open if compress_model else open
