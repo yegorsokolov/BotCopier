@@ -2,8 +2,7 @@
 """Incrementally update a model from streaming trade events.
 
 The trainer is designed to run continuously.  It tails
-``logs/trades_raw.csv``, consumes newline-delimited JSON records from a
-socket or subscribes to an Arrow Flight stream.  After each batch it updates
+``logs/trades_raw.csv`` or subscribes to an Arrow Flight stream.  After each batch it updates
 an :class:`~sklearn.linear_model.SGDClassifier` using :meth:`partial_fit` and
 persists the coefficients to ``model.json``.  Whenever the coefficients change
 the script invokes ``generate_mql4_from_model.py`` so the corresponding Expert
@@ -18,7 +17,6 @@ During processing the current load is checked with
 from __future__ import annotations
 
 import argparse
-import asyncio
 import csv
 import json
 import logging
@@ -305,26 +303,6 @@ class OnlineTrainer:
                 batch.clear()
             time.sleep(1.0)
 
-    async def consume_socket(self, host: str, port: int) -> None:
-        reader, _ = await asyncio.open_connection(host, port)
-        batch: List[Dict[str, Any]] = []
-        while True:
-            line = await reader.readline()
-            if not line:
-                await asyncio.sleep(0.5)
-                continue
-            try:
-                rec = json.loads(line.decode())
-            except Exception:
-                continue
-            batch.append(rec)
-            if len(batch) >= self.batch_size:
-                load = psutil.cpu_percent(interval=None)
-                if load > self.cpu_threshold:
-                    await asyncio.sleep(self.sleep_seconds)
-                self.update(batch)
-                batch.clear()
-
     def consume_flight(self, host: str, port: int, path: str = "trades") -> None:
         """Subscribe to an Arrow Flight stream of trade events."""
         try:  # pragma: no cover - optional dependency
@@ -333,7 +311,7 @@ class OnlineTrainer:
             raise RuntimeError("pyarrow is required for Flight consumption") from exc
 
         client = flight.FlightClient(f"grpc://{host}:{port}")
-        descriptor = flight.FlightDescriptor.for_path(path)
+        ticket = flight.Ticket(path.encode())
         offset = 0
         batch: List[Dict[str, Any]] = []
         while True:
@@ -342,8 +320,7 @@ class OnlineTrainer:
                 time.sleep(self.sleep_seconds)
                 continue
             try:
-                info = client.get_flight_info(descriptor)
-                reader = client.do_get(info.endpoints[0].ticket)
+                reader = client.do_get(ticket)
                 table = reader.read_all()
                 reader.close()
             except Exception:
@@ -373,10 +350,9 @@ class OnlineTrainer:
 
 def main(argv: List[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Online incremental trainer")
-    g = p.add_mutually_exclusive_group(required=True)
-    g.add_argument("--csv", type=Path, help="Path to trades_raw.csv to follow")
-    g.add_argument("--socket", help="host:port for JSON line stream")
-    g.add_argument("--flight", help="host:port for Arrow Flight stream")
+    p.add_argument("--csv", type=Path, help="Path to trades_raw.csv to follow")
+    p.add_argument("--flight-host", default="127.0.0.1", help="Arrow Flight host")
+    p.add_argument("--flight-port", type=int, default=8815, help="Arrow Flight port")
     p.add_argument("--model", type=Path, default=Path("model.json"))
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--flight-path", default="trades", help="Flight path name")
@@ -392,12 +368,8 @@ def main(argv: List[str] | None = None) -> None:
     _start_watchdog_thread()
     if args.csv:
         trainer.tail_csv(args.csv)
-    elif args.socket:
-        host, port = args.socket.split(":", 1)
-        asyncio.run(trainer.consume_socket(host, int(port)))
     else:
-        host, port = args.flight.split(":", 1)
-        trainer.consume_flight(host, int(port), args.flight_path)
+        trainer.consume_flight(args.flight_host, args.flight_port, args.flight_path)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
