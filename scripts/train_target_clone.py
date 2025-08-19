@@ -1171,6 +1171,7 @@ def _extract_features(
     *,
     corr_map=None,
     extra_price_series=None,
+    symbol_graph: dict | str | Path | None = None,
     corr_window: int = 5,
     encoder: dict | None = None,
     calendar_events: list[tuple[datetime, float]] | None = None,
@@ -1216,6 +1217,31 @@ def _extract_features(
             price_map.setdefault(base, [])
             for p in peers:
                 price_map.setdefault(p, [])
+
+    pair_weights: dict[tuple[str, str], float] = {}
+    sym_metrics: dict[str, dict[str, float]] = {}
+    if symbol_graph:
+        try:
+            if not isinstance(symbol_graph, dict):
+                with open(symbol_graph) as f_g:
+                    graph_params = json.load(f_g)
+            else:
+                graph_params = symbol_graph
+            symbols = graph_params.get("symbols", [])
+            edge_index = graph_params.get("edge_index", [])
+            weights = graph_params.get("edge_weight", [])
+            for (i, j), w in zip(edge_index, weights):
+                if i < len(symbols) and j < len(symbols):
+                    a = symbols[i]
+                    b = symbols[j]
+                    pair_weights[(a, b)] = float(w)
+            metrics = graph_params.get("metrics", {})
+            for m_name, vals in metrics.items():
+                for i, sym in enumerate(symbols):
+                    sym_metrics.setdefault(sym, {})[m_name] = float(vals[i])
+        except Exception:
+            pair_weights = {}
+            sym_metrics = {}
     enc_window = int(encoder.get("window")) if encoder else 0
     enc_weights = (
         np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
@@ -1405,6 +1431,16 @@ def _extract_features(
                     ratio = base_prices[-1] / peer_prices[-1]
                 feat[f"corr_{peer}"] = corr
                 feat[f"ratio_{peer}"] = ratio
+
+        if pair_weights:
+            for (a, b), w in pair_weights.items():
+                if a == symbol:
+                    feat[f"corr_{symbol}_{b}"] = w
+        if sym_metrics:
+            mvals = sym_metrics.get(symbol)
+            if mvals:
+                for m_name, m_val in mvals.items():
+                    feat[f"graph_{m_name}"] = m_val
 
         if enc_window > 0 and enc_weights.size > 0:
             seq = (prices + [price])[-(enc_window + 1) :]
@@ -1619,6 +1655,7 @@ def _train_lite_mode(
             calendar_events=calendar_events,
             event_window=event_window,
             news_sentiment=news_sentiment,
+            symbol_graph=graph_params,
         )
         if not f_chunk:
             continue
@@ -1901,6 +1938,13 @@ def train(
     loaded_from_cache = False
     data_commits: list[str] = []
     data_checksums: list[str] = []
+    graph_params = None
+    if symbol_graph:
+        try:
+            with open(symbol_graph) as f_g:
+                graph_params = json.load(f_g)
+        except Exception as exc:  # pragma: no cover - file errors
+            logging.warning("failed to load symbol graph: %s", exc)
 
     if cache_features:
         loaded = _load_feature_cache(out_dir, existing_model)
@@ -1971,6 +2015,7 @@ def train(
                 calendar_events=calendar_events,
                 event_window=event_window,
                 news_sentiment=news_data,
+                symbol_graph=graph_params,
             )
             for sym, prices in p_chunk.items():
                 price_map_total.setdefault(sym, []).extend(prices)
@@ -2110,13 +2155,6 @@ def train(
     # Graph-based symbol embeddings
     # ------------------------------------------------------------------
     symbol_embeddings: dict[str, list[float]] = {}
-    graph_params = None
-    if symbol_graph:
-        try:
-            with open(symbol_graph) as f_g:
-                graph_params = json.load(f_g)
-        except Exception as exc:  # pragma: no cover - file errors
-            logging.warning("failed to load symbol graph: %s", exc)
     if graph_params:
         for sym, vec in (graph_params.get("embeddings") or {}).items():
             symbol_embeddings[sym] = [float(v) for v in vec]
@@ -2157,19 +2195,6 @@ def train(
                     feat[f"sym_emb_{j}"] = float(v)
         if graph_params and not graph_params.get("embedding_dim"):
             graph_params["embedding_dim"] = len(next(iter(symbol_embeddings.values())))
-
-    if graph_params:
-        symbols = graph_params.get("symbols", [])
-        metrics = graph_params.get("metrics", {})
-        sym_metrics: dict[str, dict[str, float]] = {}
-        for m_name, vals in metrics.items():
-            for i, sym in enumerate(symbols):
-                sym_metrics.setdefault(sym, {})[m_name] = float(vals[i])
-        for feat in features:
-            mvals = sym_metrics.get(feat.get("symbol"))
-            if mvals:
-                for m_name, m_val in mvals.items():
-                    feat[f"graph_{m_name}"] = m_val
 
     if existing_model is not None:
         vec = DictVectorizer(sparse=False)

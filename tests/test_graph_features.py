@@ -140,6 +140,7 @@ def test_graph_features(tmp_path: Path) -> None:
     feats = model.get("feature_names", [])
     assert "graph_degree" in feats
     assert "graph_pagerank" in feats
+    assert "corr_EURUSD_USDCHF" in feats
 
     generate(out_dir / "model.json", out_dir)
     mq4_files = list(out_dir.glob("Generated_*.mq4"))
@@ -147,4 +148,5 @@ def test_graph_features(tmp_path: Path) -> None:
     text = mq4_files[0].read_text()
     assert "GraphDegree()" in text
     assert "GraphPagerank()" in text
+    assert 'PairCorrelation("EURUSD", "USDCHF")' in text
 

@@ -93,6 +93,7 @@ double RiskParityWeights[] = {__RISK_PARITY_WEIGHTS__};
 datetime CalendarTimes[] = {__CALENDAR_TIMES__};
 double CalendarImpacts[] = {__CALENDAR_IMPACTS__};
 int EventWindowMinutes = __EVENT_WINDOW__;
+// Pre-computed graph metrics injected at build time
 string GraphSymbols[] = {__GRAPH_SYMBOLS__};
 double GraphDegreeVals[] = {__GRAPH_DEGREE__};
 double GraphPagerankVals[] = {__GRAPH_PAGERANK__};
