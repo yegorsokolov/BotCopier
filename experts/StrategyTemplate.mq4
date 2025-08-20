@@ -1155,7 +1155,7 @@ void CalcStops(double &sl_dist, double &tp_dist)
    tp_dist = PredictTPDistance();
 }
 
-void LogDecision(double &feats[], double prob, string action, int modelIdx, int regime)
+void LogDecision(double &feats[], double prob, string action, int modelIdx, int regime, double riskWeight, double variance)
 {
    if(!EnableDecisionLogging)
       return;
@@ -1174,7 +1174,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    LastSpanId  = span_id;
    if(DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals, trace_id, span_id);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, feat_vals, trace_id, span_id);
       FileFlush(DecisionLogHandle);
    }
    double thr = GetTradeThreshold();
@@ -1183,13 +1183,13 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    {
       // capture feature snapshot for active learning
       FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS),
-                ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, feat_vals, "");
+                ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, feat_vals, "");
       FileFlush(UncertainLogHandle);
    }
    if(DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, feat_vals, trace_id, span_id);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
@@ -1370,11 +1370,14 @@ void OnTick()
    }
 
    double pv = ComputePredictiveVariance(modelIdx);
+   double risk_weight = AccountEquity() / AccountBalance();
+   if(pv > 0.0)
+      risk_weight /= pv;
    if(pv > MaxPredictiveVariance)
    {
       Print("Skipping trade due to high predictive variance: " + DoubleToString(pv, 6));
       int decision_id = NextDecisionId;
-      LogDecision(feats, prob, "skip", modelIdx, reg);
+      LogDecision(feats, prob, "skip", modelIdx, reg, risk_weight, pv);
       if(UncertainLogHandle != INVALID_HANDLE)
       {
          double sl_dist, tp_dist;
@@ -1386,7 +1389,7 @@ void OnTick()
             feat_vals += DoubleToString(feats[i], 5);
          }
          datetime now = TimeCurrent();
-         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, sl_dist, tp_dist, modelIdx, reg, feat_vals);
+         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, sl_dist, tp_dist, modelIdx, reg, risk_weight, pv, feat_vals);
          FileFlush(UncertainLogHandle);
       }
       return;
@@ -1394,11 +1397,12 @@ void OnTick()
 
    // Open buy if probability exceeds threshold else sell
    double tradeLots = CalcLots();
+   tradeLots *= risk_weight;
    int ticket;
    double thr = EntryThreshold;
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
-   LogDecision(feats, prob, action, modelIdx, reg);
+   LogDecision(feats, prob, action, modelIdx, reg, risk_weight, pv);
    string order_comment = StringFormat("trace_id=%s;span_id=%s;model=%d|decision_id=%d", LastTraceId, LastSpanId, modelIdx, decision_id);
    if(prob > thr)
    {
