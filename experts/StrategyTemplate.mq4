@@ -1409,7 +1409,7 @@ void OnTick()
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
    LogDecision(feats, prob, action, modelIdx, reg, risk_weight, pv);
-   string order_comment = StringFormat("trace_id=%s;span_id=%s;model=%d|decision_id=%d", LastTraceId, LastSpanId, modelIdx, decision_id);
+   string order_comment = StringFormat("decision_id=%d;trace_id=%s;span_id=%s;model=%d", decision_id, LastTraceId, LastSpanId, modelIdx);
    if(prob > thr)
    {
       ticket = OrderSend(SymbolToTrade, OP_BUY, tradeLots, Ask, 3,

@@ -5,9 +5,12 @@ The script loads a decision log produced by the trading bot along with a
 new ``model.json`` file. It re-computes probabilities for each decision
 using the new model and reports any divergences between the original and
 replayed outcomes. Summary statistics such as accuracy and the change in
-profit are printed at the end. Any mismatched decisions are written to
-``divergences.csv`` and can optionally be tagged with a sample ``weight``
-for downstream training.
+profit are printed at the end.
+
+Any mismatched decisions are written to ``divergences.csv`` and can
+optionally be tagged with a sample ``weight``. This file can then be fed
+back into :mod:`scripts.train_target_clone` via ``--replay-file`` to
+emphasise corrections during the next round of training.
 
 When sufficient hardware resources are available, ``detect_resources`` is
 used to determine whether a more complex neural network representation
