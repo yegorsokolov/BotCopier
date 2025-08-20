@@ -44,7 +44,7 @@ def _write_log(file: Path) -> None:
     ]
     rows = [
         [
-            "1",
+            "2",
             "1",
             "2024.01.01 00:00:00",
             "",
@@ -69,7 +69,7 @@ def _write_log(file: Path) -> None:
             "0",
         ],
         [
-            "1",
+            "2",
             "2",
             "2024.01.01 01:00:00",
             "",
@@ -141,12 +141,20 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "graph_degree" in feats
     assert "graph_pagerank" in feats
     assert "corr_EURUSD_USDCHF" in feats
+    graph = model.get("graph") or json.load(open(graph_file))
+    assert graph.get("symbols") == ["EURUSD", "USDCHF"]
+    metrics = graph.get("metrics", {})
+    assert metrics.get("degree") == [0.5, 0.5]
+    assert metrics.get("pagerank") == [0.5, 0.5]
 
-    generate(out_dir / "model.json", out_dir)
+    generate(out_dir / "model.json", out_dir, symbol_graph=graph_file)
     mq4_files = list(out_dir.glob("Generated_*.mq4"))
     assert mq4_files, "EA file not generated"
     text = mq4_files[0].read_text()
     assert "GraphDegree()" in text
     assert "GraphPagerank()" in text
     assert 'PairCorrelation("EURUSD", "USDCHF")' in text
+    assert 'GraphSymbols[] = {"EURUSD", "USDCHF"}' in text
+    assert 'GraphDegreeVals[] = {0.5, 0.5}' in text
+    assert 'GraphPagerankVals[] = {0.5, 0.5}' in text
 
