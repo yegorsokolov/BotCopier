@@ -1505,6 +1505,7 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
    }
    else
       t.comment_with_span = comment;
+   // Extract decision id if present in the order comment
    int decision_id = 0;
    int pos = StringFind(comment, "decision_id=");
    if(pos >= 0)
@@ -1514,7 +1515,7 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
       while(end < StringLen(comment))
       {
          string ch = StringMid(comment, end, 1);
-         if(ch < "0" || ch > "9")
+         if(ch==";" || ch=="|")
             break;
          end++;
       }

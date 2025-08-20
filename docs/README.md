@@ -99,10 +99,15 @@ previously hesitated.
 ## Decision Replay
 
 When migrating to a more capable VM or heavier model it can be helpful to
-re‑evaluate historical trades.  Use ``scripts/replay_decisions.py`` to recompute
-probabilities from an archived ``decisions.csv`` against a new ``model.json``.
-The script writes ``divergences.csv`` by default and can tag each mismatch with
-an explicit sample weight::
+re‑evaluate historical trades. Each order comment contains the original
+``decision_id`` so that :mod:`experts.Observer_TBot` can associate fills with
+their source decisions and record the identifier in ``trades_raw.csv`` and the
+Arrow/JSON export.
+
+Use ``scripts/replay_decisions.py`` to recompute probabilities from an archived
+``decisions.csv`` against a new ``model.json``. The script writes
+``divergences.csv`` by default and can tag each mismatch with an explicit sample
+weight::
 
     python scripts/replay_decisions.py decisions.csv model.json --weight 2
 
