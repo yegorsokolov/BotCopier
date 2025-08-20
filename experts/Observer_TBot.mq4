@@ -376,13 +376,13 @@ void FlushPending(datetime now)
       {
          SocketErrors++;
          trade_retry_count++;
+         FallbackEvents++;
          trade_backoff = MathMin(trade_backoff*2, 3600);
          next_trade_flush = now + trade_backoff;
          if(trade_retry_count >= FallbackRetryThreshold)
          {
             string line = ArraySize(pending_trade_lines) > 0 ? pending_trade_lines[0] : "";
             FallbackLog("trades", pending_trades[0], line);
-            FallbackEvents++;
             trade_retry_count = 0;
          }
       }
@@ -404,13 +404,13 @@ void FlushPending(datetime now)
       {
          SocketErrors++;
          metric_retry_count++;
+         FallbackEvents++;
          metric_backoff = MathMin(metric_backoff*2, 3600);
          next_metric_flush = now + metric_backoff;
          if(metric_retry_count >= FallbackRetryThreshold)
          {
             string line = ArraySize(pending_metric_lines) > 0 ? pending_metric_lines[0] : "";
             FallbackLog("metrics", pending_metrics[0], line);
-            FallbackEvents++;
             metric_retry_count = 0;
          }
       }
@@ -1215,7 +1215,8 @@ bool SendTrade(uchar &payload[])
    if(FlightClientSend("trades", zipped, ArraySize(zipped)))
       return(true);
    SocketErrors++;
-    FallbackEvents++;
+   FallbackEvents++;
+   trade_retry_count++;
    EnqueuePending(pending_trades, pending_trade_lines, zipped, line, log_dir + "/pending_trades.wal");
    TradeQueueDepth = ArraySize(pending_trades);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
@@ -1270,7 +1271,8 @@ bool SendMetrics(uchar &payload[], string line)
    if(FlightClientSend("metrics", zipped, ArraySize(zipped)))
       return(true);
    SocketErrors++;
-    FallbackEvents++;
+   FallbackEvents++;
+   metric_retry_count++;
    EnqueuePending(pending_metrics, pending_metric_lines, zipped, line, log_dir + "/pending_metrics.wal");
    MetricQueueDepth = ArraySize(pending_metrics);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
