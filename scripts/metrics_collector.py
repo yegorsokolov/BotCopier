@@ -318,6 +318,11 @@ def serve(
                 )
             )
 
+            TRADE_Q_ALERT = 100
+            METRIC_Q_ALERT = 100
+            RETRY_ALERT = 5
+            WAL_SIZE_ALERT = 1024 * 1024  # 1MB
+
             async def _sample_host_metrics() -> None:
                 while True:
                     try:
@@ -338,6 +343,8 @@ def serve(
                             if fp.exists():
                                 size += fp.stat().st_size
                         wal_size_g.set(size)
+                        if size > WAL_SIZE_ALERT:
+                            logger.warning({"alert": "wal backlog", "wal_bytes": size})
                     except Exception:
                         pass
                     await asyncio.sleep(5)
@@ -377,22 +384,34 @@ def serve(
                         pass
                 if (v := row.get("metric_queue_depth")) is not None:
                     try:
-                        metric_queue_g.set(float(v))
+                        val = float(v)
+                        metric_queue_g.set(val)
+                        if val > METRIC_Q_ALERT:
+                            logger.warning({"alert": "metric backlog", "metric_queue_depth": val})
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("trade_queue_depth")) is not None:
                     try:
-                        trade_queue_g.set(float(v))
+                        val = float(v)
+                        trade_queue_g.set(val)
+                        if val > TRADE_Q_ALERT:
+                            logger.warning({"alert": "trade backlog", "trade_queue_depth": val})
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("trade_retry_count")) is not None:
                     try:
-                        trade_retry_g.set(float(v))
+                        val = float(v)
+                        trade_retry_g.set(val)
+                        if val > RETRY_ALERT:
+                            logger.warning({"alert": "trade retries", "trade_retry_count": val})
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("metric_retry_count")) is not None:
                     try:
-                        metric_retry_g.set(float(v))
+                        val = float(v)
+                        metric_retry_g.set(val)
+                        if val > RETRY_ALERT:
+                            logger.warning({"alert": "metric retries", "metric_retry_count": val})
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("fallback_events")) is not None:

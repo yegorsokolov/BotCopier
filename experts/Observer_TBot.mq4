@@ -85,8 +85,6 @@ int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
 string   log_dir = "";
 const int SCHEMA_VERSION = 2;
-const int MSG_TRADE = 0;
-const int MSG_METRIC = 1;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -313,7 +311,7 @@ void RemoveFirstStr(string &queue[])
    ArrayResize(queue, n-1);
 }
 
-void EnqueuePending(int msg_type, uchar &queue[][], string &lines[], uchar &msg[], string line)
+void EnqueuePending(uchar &queue[][], string &lines[], uchar &msg[], string line, string wal_fname)
 {
    int idx = ArraySize(queue);
    ArrayResize(queue, idx+1);
@@ -321,6 +319,7 @@ void EnqueuePending(int msg_type, uchar &queue[][], string &lines[], uchar &msg[
    ArrayCopy(queue[idx], msg);
    ArrayResize(lines, idx+1);
    lines[idx] = line;
+   AppendWal(wal_fname, msg);
 }
 
 bool LogToJournald(string tag, string line)
@@ -371,6 +370,7 @@ void FlushPending(datetime now)
          trade_backoff = 1;
          next_trade_flush = now;
          trade_retry_count = 0;
+         SaveQueue(log_dir + "/pending_trades.wal", pending_trades);
       }
       else
       {
@@ -398,6 +398,7 @@ void FlushPending(datetime now)
          metric_backoff = 1;
          next_metric_flush = now;
          metric_retry_count = 0;
+         SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics);
       }
       else
       {
@@ -414,6 +415,20 @@ void FlushPending(datetime now)
          }
       }
    }
+}
+
+void AppendWal(string fname, uchar &msg[])
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   FileSeek(h, 0, SEEK_END);
+   int len = ArraySize(msg);
+   FileWriteInteger(h, len);
+   FileWriteArray(h, msg, 0, len);
+   FileClose(h);
 }
 
 void SaveQueue(string fname, uchar &queue[][])
@@ -447,6 +462,24 @@ void LoadQueue(string fname, uchar &queue[][])
    }
    FileClose(h);
    FileDelete(fname);
+}
+
+void ReplayWal(string fname, uchar &queue[][])
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   while(!FileIsEnding(h))
+   {
+      int len = FileReadInteger(h);
+      if(len <= 0)
+         break;
+      int idx = ArraySize(queue);
+      ArrayResize(queue, idx+1);
+      ArrayResize(queue[idx], len);
+      FileReadArray(h, queue[idx], 0, len);
+   }
+   FileClose(h);
 }
 
 
@@ -751,6 +784,8 @@ int OnInit()
       Print("Log directory exists: " + log_dir);
    LoadQueue(log_dir + "/pending_trades.bin", pending_trades);
    LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics);
+   ReplayWal(log_dir + "/pending_trades.wal", pending_trades);
+   ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics);
    TradeQueueDepth = ArraySize(pending_trades);
    MetricQueueDepth = ArraySize(pending_metrics);
    FlightClientInit(FlightServerHost, FlightServerPort);
@@ -860,6 +895,8 @@ void OnDeinit(const int reason)
    FlushMetricBuffer();
    SaveQueue(log_dir + "/pending_trades.bin", pending_trades);
    SaveQueue(log_dir + "/pending_metrics.bin", pending_metrics);
+   SaveQueue(log_dir + "/pending_trades.wal", pending_trades);
+   SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics);
    if(trade_log_handle!=INVALID_HANDLE)
    {
       FileClose(trade_log_handle);
@@ -1178,7 +1215,8 @@ bool SendTrade(uchar &payload[])
    if(FlightClientSend("trades", zipped, ArraySize(zipped)))
       return(true);
    SocketErrors++;
-   EnqueuePending(MSG_TRADE, pending_trades, pending_trade_lines, zipped, line);
+    FallbackEvents++;
+   EnqueuePending(pending_trades, pending_trade_lines, zipped, line, log_dir + "/pending_trades.wal");
    TradeQueueDepth = ArraySize(pending_trades);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_trade_flush = now + trade_backoff;
@@ -1232,7 +1270,8 @@ bool SendMetrics(uchar &payload[], string line)
    if(FlightClientSend("metrics", zipped, ArraySize(zipped)))
       return(true);
    SocketErrors++;
-   EnqueuePending(MSG_METRIC, pending_metrics, pending_metric_lines, zipped, line);
+    FallbackEvents++;
+   EnqueuePending(pending_metrics, pending_metric_lines, zipped, line, log_dir + "/pending_metrics.wal");
    MetricQueueDepth = ArraySize(pending_metrics);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_metric_flush = now + metric_backoff;
@@ -1627,6 +1666,12 @@ void WriteMetrics(datetime ts)
    int trade_q_depth = TradeQueueDepth;
    int metric_q_depth = MetricQueueDepth;
    int wal_size = 0;
+   string tw = log_dir + "/pending_trades.wal";
+   string mw = log_dir + "/pending_metrics.wal";
+   if(FileIsExist(tw))
+      wal_size += (int)FileSize(tw);
+   if(FileIsExist(mw))
+      wal_size += (int)FileSize(mw);
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];
