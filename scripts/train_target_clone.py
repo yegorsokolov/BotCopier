@@ -836,11 +836,11 @@ def _load_logs(
                 if ver_mask.any():
                     invalid = pd.concat([invalid, chunk[ver_mask]])
                     logging.warning(
-                        "Dropping %s rows with schema version != %s",
+                        "Found %s rows with schema version != %s; coercing",
                         ver_mask.sum(),
                         SCHEMA_VERSION,
                     )
-                chunk = chunk[~ver_mask]
+                    chunk.loc[ver_mask, "schema_version"] = SCHEMA_VERSION
                 chunk["event_time"] = pd.to_datetime(chunk.get("event_time"), errors="coerce")
                 if "broker_time" in chunk.columns:
                     chunk["broker_time"] = pd.to_datetime(chunk.get("broker_time"), errors="coerce")
@@ -2254,17 +2254,13 @@ def train(
         times_train = event_times
         times_val = np.array([], dtype="datetime64[s]")
         unc_train_mask = uncertainty_mask
+        split_sizes = {"train": int(len(labels)), "val": 0}
     else:
         tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
         # select the final chronological split for validation
         train_idx, val_idx = list(tscv.split(features))[-1]
-        logger.info(
-            {
-                "event": "split_sizes",
-                "train_size": int(len(train_idx)),
-                "val_size": int(len(val_idx)),
-            }
-        )
+        split_sizes = {"train": int(len(train_idx)), "val": int(len(val_idx))}
+        logger.info({"event": "split_sizes", **split_sizes})
         feat_train = [features[i] for i in train_idx]
         feat_val = [features[i] for i in val_idx]
         y_train = labels[train_idx]
@@ -2298,7 +2294,7 @@ def train(
     noise_variance = None
     weight_decay_info = None
     base_weight = np.ones(len(feat_train), dtype=float)
-    if model_type in ("logreg", "bayes_logreg") and not grid_search:
+    if model_type in ("logreg", "bayes_logreg"):
         base_weight *= np.array(
             [
                 abs(f.get("profit")) if f.get("profit") not in (None, 0)
@@ -2734,6 +2730,12 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
             "hourly_thresholds": hourly_thresholds,
+        }
+        model["split_sizes"] = split_sizes
+        model["validation_metrics"] = {
+            "accuracy": val_acc,
+            "f1": val_f1,
+            "roc_auc": val_roc,
         }
         model["regime_centers"] = regime_info.get("centers", [])
         model["regime_feature_names"] = regime_info.get("feature_names", [])
@@ -3451,6 +3453,12 @@ def train(
         "feature_importance": feature_importance,
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
+    }
+    model["split_sizes"] = split_sizes
+    model["validation_metrics"] = {
+        "accuracy": val_acc,
+        "f1": val_f1,
+        "roc_auc": val_roc,
     }
     model["feature_flags"] = feature_flags
     if risk_parity:
