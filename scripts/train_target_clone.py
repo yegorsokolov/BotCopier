@@ -3693,13 +3693,16 @@ def train(
             except Exception:
                 pass
 
-    # Train simple entry and exit models from raw logs
+    # Train entry direction, exit timing and lot size models from raw logs
     try:
         df_logs, _, _ = _load_logs(data_dir, flight_uri=flight_uri)
         df_logs.columns = [c.lower() for c in df_logs.columns]
-        # Entry model: predict order_type on OPEN actions
         if not df_logs.empty:
-            df_open = df_logs[df_logs["action"] == "OPEN"].dropna(subset=["order_type"])
+            df_entry = df_logs[df_logs["action"] == "OPEN"].copy()
+            df_exit = df_logs[df_logs["action"] == "CLOSE"].copy()
+
+            # Entry direction classifier
+            df_open = df_entry.dropna(subset=["order_type"])
             if not df_open.empty:
                 entry_feats = df_open[[
                     "book_imbalance",
@@ -3716,26 +3719,62 @@ def train(
                     model["entry_threshold"] = 0.5
                 except Exception as exc:
                     logging.warning("entry model training failed: %s", exc)
-            # Exit model: classify positive profit on CLOSE actions
-            df_close = df_logs[df_logs["action"] == "CLOSE"].dropna(subset=["sl_hit_dist", "tp_hit_dist", "profit"])
-            if not df_close.empty:
-                exit_feats = df_close[["sl_hit_dist", "tp_hit_dist", "profit", "duration_sec"]].fillna(0.0)
-                exit_reason_dummies = pd.get_dummies(
-                    df_close.get("exit_reason", "").fillna("").astype(str),
-                    prefix="exit_reason",
-                )
-                exit_feats = pd.concat([exit_feats, exit_reason_dummies], axis=1)
-                exit_target = (pd.to_numeric(df_close["profit"], errors="coerce") > 0).astype(int)
+
+            # Lot size regressor
+            df_lot = df_entry.dropna(subset=["lots"])
+            if not df_lot.empty:
+                lot_feats = df_lot[[
+                    "book_imbalance",
+                    "spread",
+                    "book_bid_vol",
+                    "book_ask_vol",
+                ]].fillna(0.0)
+                lot_target = pd.to_numeric(df_lot["lots"], errors="coerce").fillna(0.0)
                 try:
-                    exit_clf = LogisticRegression(max_iter=200)
-                    exit_clf.fit(exit_feats, exit_target)
-                    model["exit_coefficients"] = exit_clf.coef_[0].astype(np.float32).tolist()
-                    model["exit_intercept"] = float(exit_clf.intercept_[0])
-                    model["exit_threshold"] = 0.5
+                    lot_reg = BayesianRidge()
+                    lot_reg.fit(lot_feats, lot_target)
+                    model["lot_coefficients"] = lot_reg.coef_.astype(np.float32).tolist()
+                    model["lot_intercept"] = float(lot_reg.intercept_)
                 except Exception as exc:
-                    logging.warning("exit model training failed: %s", exc)
+                    logging.warning("lot size model training failed: %s", exc)
+
+            # Exit timing regressor
+            df_close = df_exit.dropna(subset=["duration_sec"])
+            if not df_close.empty:
+                exit_feats = df_close[["sl_hit_dist", "tp_hit_dist", "profit"]].fillna(0.0)
+                exit_target = pd.to_numeric(df_close["duration_sec"], errors="coerce").fillna(0.0)
+                try:
+                    exit_reg = BayesianRidge()
+                    exit_reg.fit(exit_feats, exit_target)
+                    model["exit_coefficients"] = exit_reg.coef_.astype(np.float32).tolist()
+                    model["exit_intercept"] = float(exit_reg.intercept_)
+                    model["exit_threshold"] = 0.0
+                except Exception as exc:
+                    logging.warning("exit timing model training failed: %s", exc)
+
+            # Risk parity weights based on profit covariance per symbol
+            try:
+                time_col = next((c for c in ["event_time", "time", "timestamp"] if c in df_logs.columns), None)
+                if time_col:
+                    pivot = df_logs.pivot_table(values="profit", index=time_col, columns="symbol")
+                    cov = pivot.cov().fillna(0.0)
+                    if not cov.empty:
+                        vol = np.sqrt(np.diag(cov))
+                        inv_vol = np.where(vol > 0, 1.0 / vol, 0.0)
+                        weight_sum = inv_vol.sum()
+                        weights = (
+                            inv_vol / weight_sum
+                            if weight_sum > 0
+                            else np.ones_like(inv_vol) / len(inv_vol)
+                        )
+                        model["risk_parity_symbols"] = cov.index.tolist()
+                        model["risk_parity_weights"] = weights.astype(float).tolist()
+                        model["risk_covariance_symbols"] = cov.index.tolist()
+                        model["risk_covariance_matrix"] = cov.values.tolist()
+            except Exception as exc:  # pragma: no cover - optional
+                logging.warning("risk parity computation failed: %s", exc)
     except Exception as exc:
-        logging.warning("failed to train entry/exit models: %s", exc)
+        logging.warning("failed to train simple models: %s", exc)
 
     model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
     out_dir.mkdir(parents=True, exist_ok=True)

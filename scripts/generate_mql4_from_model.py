@@ -269,6 +269,12 @@ def generate(
     output = output.replace('__EXIT_INTERCEPT__', _fmt(base.get('exit_intercept', 0.0)))
     output = output.replace('__EXIT_THRESHOLD__', _fmt(base.get('exit_threshold', 0.5)))
 
+    # Lot size model
+    lot_coeff = base.get('lot_coefficients', [])
+    lot_str = ', '.join(_fmt(c) for c in lot_coeff)
+    output = output.replace('__LOT_COEFFICIENTS__', lot_str)
+    output = output.replace('__LOT_INTERCEPT__', _fmt(base.get('lot_intercept', 0.0)))
+
     nn_weights = base.get('nn_weights', [])
     if nn_weights:
         l1_w = ', '.join(_fmt(v) for row in nn_weights[0] for v in row)
