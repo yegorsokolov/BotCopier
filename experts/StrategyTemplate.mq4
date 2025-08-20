@@ -835,7 +835,7 @@ double ComputeEntryScore()
    return(1.0 / (1.0 + MathExp(-z)));
 }
 
-double ComputeExitScore(double sl_dist, double tp_dist, double profit)
+double ComputeExitTime(double sl_dist, double tp_dist, double profit)
 {
    double z = ExitIntercept;
    double feats[3];
@@ -845,7 +845,8 @@ double ComputeExitScore(double sl_dist, double tp_dist, double profit)
    int n = MathMin(3, ArraySize(ExitCoefficients));
    for(int i=0; i<n; i++)
       z += ExitCoefficients[i] * feats[i];
-   return(1.0 / (1.0 + MathExp(-z)));
+   if(z < 0) z = 0;
+   return(z);
 }
 
 double ComputeNNScore()
@@ -1434,8 +1435,9 @@ void ManageOpenOrders()
       if(OrderTakeProfit() > 0)
          tp_dist = isBuy ? (OrderTakeProfit() - price)/Point : (price - OrderTakeProfit())/Point;
       double cur_profit = OrderProfit() + OrderSwap() + OrderCommission();
-      double exit_prob = ComputeExitScore(sl_dist, tp_dist, cur_profit);
-      if(exit_prob < ExitThreshold)
+      double exit_time = ComputeExitTime(sl_dist, tp_dist, cur_profit);
+      double age = TimeCurrent() - OrderOpenTime();
+      if(exit_time <= 0 || age >= exit_time)
       {
          if(!OrderClose(OrderTicket(), OrderLots(), price, 3))
             Print("OrderClose error: ", GetLastError());

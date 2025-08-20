@@ -27,7 +27,7 @@
   "entry_threshold": 0.5,
   "exit_coefficients": [0.0, 0.0, 0.0],
   "exit_intercept": 0.0,
-  "exit_threshold": 0.5,
+  "exit_threshold": 0.0,
   "hourly_thresholds": [
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
@@ -41,8 +41,8 @@
     "embedding_dim": 0
   },
   "symbol_embeddings": {},
-  "risk_parity_symbols": [],
-  "risk_parity_weights": [],
-  "risk_covariance_symbols": [],
-  "risk_covariance_matrix": []
+  "risk_parity_symbols": ["EURUSD", "USDJPY"],
+  "risk_parity_weights": [0.6, 0.4],
+  "risk_covariance_symbols": ["EURUSD", "USDJPY"],
+  "risk_covariance_matrix": [[1.0, 0.2], [0.2, 1.0]]
 }
