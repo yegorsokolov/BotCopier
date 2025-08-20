@@ -1448,12 +1448,17 @@ def _extract_features(
 
         if corr_map:
             base_prices = price_map.get(symbol, [])
+            base_seq = base_prices + [price]
             for peer in corr_map.get(symbol, []):
                 peer_prices = price_map.get(peer, [])
-                corr = _rolling_corr(base_prices, peer_prices, corr_window)
+                peer_seq = list(peer_prices)
+                series = extra_series.get(peer)
+                if series is not None and row_idx < len(series):
+                    peer_seq.append(float(series[row_idx]))
+                corr = _rolling_corr(base_seq, peer_seq, corr_window)
                 ratio = 0.0
-                if base_prices and peer_prices and peer_prices[-1] != 0:
-                    ratio = base_prices[-1] / peer_prices[-1]
+                if peer_seq and peer_seq[-1] != 0:
+                    ratio = base_seq[-1] / peer_seq[-1]
                 feat[f"corr_{peer}"] = corr
                 feat[f"ratio_{peer}"] = ratio
 
@@ -3475,6 +3480,12 @@ def train(
         ]
     if symbol_embeddings:
         model["symbol_embeddings"] = symbol_embeddings
+    if graph_params is None and symbol_graph:
+        try:
+            with open(symbol_graph) as f_g:
+                graph_params = json.load(f_g)
+        except Exception:
+            graph_params = None
     if graph_params:
         model["graph"] = {
             "symbols": graph_params.get("symbols", []),

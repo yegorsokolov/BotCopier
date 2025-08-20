@@ -33,6 +33,7 @@ def generate(
     out_dir: Path,
     lite_mode: bool | None = None,
     gating_json: Optional[Path] = None,
+    symbol_graph: Optional[Path] = None,
 ):
     """Render an MQL4 strategy using one or more base models.
 
@@ -409,6 +410,12 @@ def generate(
         output = output.replace('__SYM_EMB_VALUES__', '')
 
     graph_data = base.get('graph', {})
+    if (not graph_data or not graph_data.get('symbols')) and symbol_graph:
+        try:
+            with open(symbol_graph) as f:
+                graph_data = json.load(f)
+        except Exception:
+            graph_data = {}
     metrics = graph_data.get('metrics') or {}
     if metrics:
         g_symbols = graph_data.get('symbols', [])

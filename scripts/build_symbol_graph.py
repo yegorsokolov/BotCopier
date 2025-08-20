@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Build a weighted symbol graph from precomputed correlation features.
+"""Build a weighted symbol graph from rolling correlations of trading symbols.
 
-This utility aggregates ``corr_*`` features exported by
-``train_target_clone.py`` into an undirected weighted graph.  It derives
-simple node metrics (currently degree and PageRank centrality) and, when
-``torch_geometric`` is available, Node2Vec embeddings.  The resulting graph can
-be written to JSON or Parquet and consumed by the training pipeline as
-additional features.
+The script ingests a CSV or Parquet table containing either pre-computed
+``corr_*`` feature columns or raw ``symbol``/``price`` data.  When only price
+data is supplied rolling correlations are computed on the fly.  These
+correlations are aggregated into an undirected weighted graph from which simple
+node metrics (currently degree and PageRank centrality) are derived.  When
+``torch_geometric`` is available, optional Node2Vec embeddings are also
+estimated.  The resulting graph can be written to JSON or Parquet and consumed
+by the training pipeline as additional features.
 
-The input file is expected to be a CSV or Parquet table containing at least the
-columns ``symbol`` and one or more ``corr_<PEER>`` columns.  Each row
-represents a trade for ``symbol`` with an observed correlation value to ``PEER``.
+If pre-computed ``corr_*`` columns are present the script simply aggregates
+them.  Otherwise it expects ``symbol`` and ``price`` columns and will compute
+rolling correlations across all observed symbols.
 
 Example
 -------
@@ -35,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -65,33 +68,70 @@ def _compute_pagerank(adj: np.ndarray, alpha: float = 0.85, tol: float = 1e-6) -
     return pr
 
 
-def build_graph(feat_path: Path, out_path: Path) -> dict:
-    """Aggregate correlation features into a weighted graph and compute metrics."""
+def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
+    """Aggregate correlation features into a weighted graph and compute metrics.
+
+    Parameters
+    ----------
+    feat_path : Path
+        Input CSV/Parquet file.  When ``corr_*`` columns are present their
+        values are aggregated directly.  Otherwise the file is expected to
+        contain at least ``symbol`` and ``price`` columns from which rolling
+        correlations are computed.
+    out_path : Path
+        Destination for the generated graph (JSON or Parquet).
+    corr_window : int, optional
+        Rolling window size used when computing correlations from price data.
+    """
 
     if feat_path.suffix == ".parquet":
         df = pd.read_parquet(feat_path)
     else:
         df = pd.read_csv(feat_path)
 
-    symbols = list(df["symbol"].dropna().unique())
-    index = {s: i for i, s in enumerate(symbols)}
     weights: dict[tuple[str, str], list[float]] = {}
 
-    for _, row in df.iterrows():
-        base = row.get("symbol")
-        if not isinstance(base, str):
-            continue
-        for col, val in row.items():
-            if not col.startswith("corr_"):
+    corr_cols = [c for c in df.columns if c.startswith("corr_")]
+    if corr_cols:
+        symbols = list(df["symbol"].dropna().unique())
+        index = {s: i for i, s in enumerate(symbols)}
+
+        for _, row in df.iterrows():
+            base = row.get("symbol")
+            if not isinstance(base, str):
                 continue
-            if pd.isna(val):
+            for col, val in row.items():
+                if not col.startswith("corr_"):
+                    continue
+                if pd.isna(val):
+                    continue
+                peer = col[5:]
+                if peer not in index:
+                    index[peer] = len(symbols)
+                    symbols.append(peer)
+                pair = tuple(sorted((base, peer)))
+                weights.setdefault(pair, []).append(float(val))
+    else:
+        if "symbol" not in df.columns or "price" not in df.columns:
+            raise ValueError(
+                "input must contain corr_* columns or symbol/price columns"
+            )
+        idx_col = "event_time" if "event_time" in df.columns else None
+        if idx_col is None:
+            df = df.copy()
+            df["_idx"] = np.arange(len(df))
+            idx_col = "_idx"
+        pivot = df.pivot_table(index=idx_col, columns="symbol", values="price")
+        pivot.sort_index(inplace=True)
+        symbols = [s for s in pivot.columns if str(s) != "nan"]
+        index = {s: i for i, s in enumerate(symbols)}
+        for a, b in combinations(symbols, 2):
+            series = pivot[a].rolling(corr_window).corr(pivot[b]).dropna()
+            vals = np.abs(series.values)
+            if len(vals) == 0:
                 continue
-            peer = col[5:]
-            if peer not in index:
-                index[peer] = len(symbols)
-                symbols.append(peer)
-            pair = tuple(sorted((base, peer)))
-            weights.setdefault(pair, []).append(float(val))
+            pair = tuple(sorted((a, b)))
+            weights[pair] = vals.tolist()
 
     n = len(symbols)
     adj = np.zeros((n, n), dtype=float)
@@ -165,10 +205,22 @@ def build_graph(feat_path: Path, out_path: Path) -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--features", required=True, help="CSV/Parquet file with corr_* features")
-    p.add_argument("--out", required=True, help="Output JSON or Parquet file for graph")
+    p.add_argument(
+        "--features",
+        required=True,
+        help="CSV/Parquet file with corr_* features or symbol/price columns",
+    )
+    p.add_argument(
+        "--out", required=True, help="Output JSON or Parquet file for graph"
+    )
+    p.add_argument(
+        "--window",
+        type=int,
+        default=20,
+        help="Rolling window for correlation when corr_* columns are absent",
+    )
     args = p.parse_args()
-    build_graph(Path(args.features), Path(args.out))
+    build_graph(Path(args.features), Path(args.out), corr_window=args.window)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
