@@ -468,6 +468,7 @@ def generate(
         'dow_sin': 'DowSin()',
         'dow_cos': 'DowCos()',
         'spread': 'MarketInfo(SymbolToTrade, MODE_SPREAD)',
+        'slippage': 'GetSlippage()',
         'lots': 'Lots',
         'sl_dist': 'GetSLDistance()',
         'tp_dist': 'GetTPDistance()',
@@ -566,7 +567,9 @@ def generate(
                 expr = 'GetNewsSentiment()'
         if expr is None:
             expr = '0.0'
-        cases.append(f"      case {idx}:\n         val = ({expr});\n         break;")
+        cases.append(
+            f"      case {idx}: // {name}\n         raw = ({expr});\n         break;"
+        )
     case_block = "\n".join(cases)
     if case_block:
         case_block += "\n"

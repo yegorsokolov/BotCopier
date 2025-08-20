@@ -121,6 +121,7 @@ double CachedNewsSentiment = 0.0;
 datetime CachedNewsTime = 0;
 double TrendEstimate = 0.0;
 double TrendVariance = 1.0;
+double LastSlippage = 0.0;
 int EncoderWindow = __ENCODER_WINDOW__;
 int EncoderDim = __ENCODER_DIM__;
 double EncoderWeights[] = {__ENCODER_WEIGHTS__};
@@ -499,6 +500,11 @@ double GetTPDistance()
             return(Ask - OrderTakeProfit());
       }
    return(0.0);
+}
+
+double GetSlippage()
+{
+   return(LastSlippage);
 }
 
 double TradeDuration()
@@ -1484,6 +1490,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       return;
    if(!HistoryDealSelect(trans.deal))
       return;
+   LastSlippage = trans.price - req.price;
    string comment = HistoryDealGetString(trans.deal, DEAL_COMMENT);
    int idx = ExtractModelIndex(comment);
    if(idx < 0) return;

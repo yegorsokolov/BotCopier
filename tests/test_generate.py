@@ -483,6 +483,32 @@ def test_generate_account_features(tmp_path: Path):
     assert "AccountMarginLevel()" in content
 
 
+def test_slippage_equity_features(tmp_path: Path):
+    model = {
+        "model_id": "se",
+        "magic": 303,
+        "coefficients": [0.1, -0.2, 0.3],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["spread", "slippage", "equity"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_se_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    for i, name in enumerate(model["feature_names"]):
+        assert f"case {i}:" in content
+    assert "MarketInfo(SymbolToTrade, MODE_SPREAD)" in content
+    assert "GetSlippage()" in content
+    assert "AccountEquity()" in content
+
+
 def test_generate_lite_mode(tmp_path: Path):
     model = {
         "model_id": "lite",
