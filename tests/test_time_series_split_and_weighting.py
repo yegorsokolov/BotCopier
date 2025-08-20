@@ -11,18 +11,19 @@ def _compute_decay_weights(event_times: np.ndarray, half_life_days: float) -> np
     return 0.5 ** (age_days / half_life_days)
 
 
-def test_time_series_split_sizes():
+def test_time_series_split_is_chronological():
     n = 12
     tscv = TimeSeriesSplit(n_splits=5)
     train_idx, val_idx = list(tscv.split(np.arange(n)))[-1]
     assert len(train_idx) == 10
     assert len(val_idx) == 2
+    # ensure validation follows training chronologically
     assert train_idx[-1] < val_idx[0]
 
 
-def test_decay_weighting_changes_coefficients():
+def test_shorter_half_life_emphasizes_recent_trades():
     X = np.array([[0], [1], [2], [3]], dtype=float)
-    y = np.array([0, 0, 1, 1])
+    y = np.array([0, 0, 0, 1])
     times = np.array(
         [
             "2024-01-01",
@@ -32,7 +33,10 @@ def test_decay_weighting_changes_coefficients():
         ],
         dtype="datetime64[s]",
     )
-    weights = _compute_decay_weights(times, half_life_days=1.0)
-    clf_plain = LogisticRegression().fit(X, y)
-    clf_weighted = LogisticRegression().fit(X, y, sample_weight=weights)
-    assert not np.allclose(clf_plain.coef_, clf_weighted.coef_)
+    weights_long = _compute_decay_weights(times, half_life_days=10.0)
+    weights_short = _compute_decay_weights(times, half_life_days=0.5)
+    clf_long = LogisticRegression().fit(X, y, sample_weight=weights_long)
+    clf_short = LogisticRegression().fit(X, y, sample_weight=weights_short)
+    proba_long = clf_long.predict_proba([[3]])[0, 1]
+    proba_short = clf_short.predict_proba([[3]])[0, 1]
+    assert proba_short > proba_long

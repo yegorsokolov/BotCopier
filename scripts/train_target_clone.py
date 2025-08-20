@@ -1725,6 +1725,8 @@ def _train_lite_mode(
         "mode": mode,
         "train_accuracy": float("nan"),
         "val_accuracy": float("nan"),
+        "val_f1": float("nan"),
+        "val_roc_auc": float("nan"),
         "threshold": 0.5,
         "accuracy": float("nan"),
         "num_samples": int(sample_count),
@@ -1736,6 +1738,7 @@ def _train_lite_mode(
         "classes": [int(c) for c in clf.classes_],
         "last_event_id": int(last_event_id),
         "mode": mode,
+        "half_life_days": 0.0,
     }
     model["feature_flags"] = {
         "sma": use_sma,
@@ -2255,6 +2258,13 @@ def train(
         tscv = TimeSeriesSplit(n_splits=min(5, len(labels) - 1))
         # select the final chronological split for validation
         train_idx, val_idx = list(tscv.split(features))[-1]
+        logger.info(
+            {
+                "event": "split_sizes",
+                "train_size": int(len(train_idx)),
+                "val_size": int(len(val_idx)),
+            }
+        )
         feat_train = [features[i] for i in train_idx]
         feat_val = [features[i] for i in val_idx]
         y_train = labels[train_idx]
@@ -2575,6 +2585,11 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
             "mode": mode,
+            "train_accuracy": float("nan"),
+            "val_accuracy": float("nan"),
+            "val_f1": float("nan"),
+            "val_roc_auc": float("nan"),
+            "accuracy": float("nan"),
         }
         model["feature_flags"] = feature_flags
         model["half_life_days"] = float(decay_half_life or 0.0)
@@ -2673,9 +2688,13 @@ def train(
             threshold, _ = _best_threshold(y_val, proba_val)
             val_preds = (proba_val >= threshold).astype(int)
             val_acc = float(accuracy_score(y_val, val_preds))
+            val_f1 = float(f1_score(y_val, val_preds))
+            val_roc = float(roc_auc_score(y_val, proba_val))
         else:
             threshold = 0.5
             val_acc = float("nan")
+            val_f1 = float("nan")
+            val_roc = float("nan")
         train_preds = (proba_train >= threshold).astype(int)
         train_acc = float(accuracy_score(y_train, train_preds))
         hours_val_arr = np.array(hours_val, dtype=int) if len(hours_val) else np.array([], dtype=int)
@@ -2703,6 +2722,8 @@ def train(
             "intercept": float(gating_clf.intercept_[0]),
             "train_accuracy": train_acc,
             "val_accuracy": val_acc,
+            "val_f1": val_f1,
+            "val_roc_auc": val_roc,
             "threshold": threshold,
             "accuracy": val_acc,
             "num_samples": int(labels.shape[0])
@@ -3878,6 +3899,7 @@ def main():
     p.add_argument(
         '--half-life-days',
         type=float,
+        default=30.0,
         help='half-life in days for sample weight decay',
     )
     p.add_argument('--replay-file', help='CSV of decision replay divergences')
