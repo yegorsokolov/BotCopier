@@ -48,6 +48,8 @@ def test_evaluate(tmp_path: Path):
     assert stats["recall"] == 1.0
     assert stats["profit_factor"] == float("inf")
     assert stats["sharpe_ratio"] == 0.0
+    assert stats["sortino_ratio"] == 0.0
+    assert stats["expectancy"] == 10
     assert stats["expected_return"] == 10
     assert stats["downside_risk"] == 0
 
