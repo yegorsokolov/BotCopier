@@ -451,15 +451,18 @@ def generate(
     if cal_events:
         time_vals = ', '.join(
             datetime.fromisoformat(t).strftime("D'%Y.%m.%d %H:%M'")
-            for t, _ in cal_events
+            for t, _, _ in cal_events
         )
-        impact_vals = ', '.join(_fmt(float(imp)) for _, imp in cal_events)
+        impact_vals = ', '.join(_fmt(float(imp)) for _, imp, _ in cal_events)
+        id_vals = ', '.join(str(int(eid)) for _, _, eid in cal_events)
     else:
         time_vals = ''
         impact_vals = ''
+        id_vals = ''
     event_window = _fmt(base.get('event_window', 60.0))
     output = output.replace('__CALENDAR_TIMES__', time_vals)
     output = output.replace('__CALENDAR_IMPACTS__', impact_vals)
+    output = output.replace('__CALENDAR_IDS__', id_vals)
     output = output.replace('__EVENT_WINDOW__', event_window)
 
     feature_map = {
@@ -487,8 +490,9 @@ def generate(
         'stochastic_d': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 0)',
         'adx': 'iADX(SymbolToTrade, 0, 14, PRICE_CLOSE, MODE_MAIN, 0)',
         'volume': 'iVolume(SymbolToTrade, 0, 0)',
-        'event_flag': 'GetCalendarFlag()',
-        'event_impact': 'GetCalendarImpact()',
+        'event_flag': 'CalendarFlag()',
+        'event_impact': 'CalendarImpact()',
+        'calendar_event_id': 'CalendarEventId()',
         'book_bid_vol': 'BookBidVol()',
         'book_ask_vol': 'BookAskVol()',
         'book_imbalance': 'BookImbalance()',

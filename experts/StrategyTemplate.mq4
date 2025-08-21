@@ -99,7 +99,9 @@ string RiskParitySymbols[] = {__RISK_PARITY_SYMBOLS__};
 double RiskParityWeights[] = {__RISK_PARITY_WEIGHTS__};
 datetime CalendarTimes[] = {__CALENDAR_TIMES__};
 double CalendarImpacts[] = {__CALENDAR_IMPACTS__};
+int    CalendarIds[] = {__CALENDAR_IDS__};
 int EventWindowMinutes = __EVENT_WINDOW__;
+int LastCalendarEventId = -1;
 // Pre-computed graph metrics injected at build time
 string GraphSymbols[] = {__GRAPH_SYMBOLS__};
 double GraphDegreeVals[] = {__GRAPH_DEGREE__};
@@ -522,24 +524,34 @@ double ExitReasonFlag(string reason)
    return(StringCompare(ExitReasonContext, reason) == 0 ? 1.0 : 0.0);
 }
 
-double GetCalendarFlag()
+double CalendarImpactAt(datetime ts)
 {
-   datetime now = TimeCurrent();
+   double maxImp = 0.0;
+   LastCalendarEventId = -1;
    for(int i=0; i<ArraySize(CalendarTimes); i++)
-      if(MathAbs(now - CalendarTimes[i]) <= EventWindowMinutes * 60)
-         return(1.0);
-   return(0.0);
+      if(MathAbs(ts - CalendarTimes[i]) <= EventWindowMinutes * 60)
+         if(CalendarImpacts[i] > maxImp)
+         {
+            maxImp = CalendarImpacts[i];
+            if(i < ArraySize(CalendarIds))
+               LastCalendarEventId = CalendarIds[i];
+         }
+   return(maxImp);
 }
 
-double GetCalendarImpact()
+double CalendarImpact()
 {
-   datetime now = TimeCurrent();
-   double maxImp = 0.0;
-   for(int i=0; i<ArraySize(CalendarTimes); i++)
-      if(MathAbs(now - CalendarTimes[i]) <= EventWindowMinutes * 60)
-         if(CalendarImpacts[i] > maxImp)
-            maxImp = CalendarImpacts[i];
-   return(maxImp);
+   return(CalendarImpactAt(TimeCurrent()));
+}
+
+double CalendarFlag()
+{
+   return(CalendarImpact() > 0 ? 1.0 : 0.0);
+}
+
+int CalendarEventId()
+{
+   return(LastCalendarEventId);
 }
 
 double GetEncodedFeature(int idx)

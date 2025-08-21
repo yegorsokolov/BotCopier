@@ -65,6 +65,8 @@ extern string ModelStateFile              = "model_online.json";
 extern string FlightServerHost            = "127.0.0.1";
 extern int    FlightServerPort            = 8815;
 extern int    FallbackRetryThreshold      = 5;
+extern string CalendarFileName           = "calendar.csv";
+extern int    CalendarEventWindowMinutes = 60;
 
 int timer_handle;
 
@@ -92,6 +94,64 @@ string   RiskParitySymbols[];
 double   RiskParityWeights[];
 double   trend_estimate = 0.0;
 double   trend_variance = 1.0;
+
+datetime CalendarTimes[];
+double   CalendarImpacts[];
+int      CalendarIds[];
+
+void LoadCalendar()
+{
+   ArrayResize(CalendarTimes, 0);
+   ArrayResize(CalendarImpacts, 0);
+   ArrayResize(CalendarIds, 0);
+   int h = FileOpen(CalendarFileName, FILE_READ|FILE_CSV|FILE_ANSI);
+   if(h==INVALID_HANDLE)
+      return;
+   // skip header if present
+   // skip header row if present
+   if(!FileIsEnding(h))
+   {
+      string hdr = FileReadString(h);
+      if(StringCompare(hdr, "time")!=0)
+         FileSeek(h, 0, SEEK_SET);
+      else
+      {
+         FileReadString(h); // impact header
+         FileReadString(h); // id header
+      }
+   }
+   while(!FileIsEnding(h))
+   {
+      string ts = FileReadString(h);
+      if(StringLen(ts)==0)
+         break;
+      double imp = FileReadNumber(h);
+      int eid = (int)FileReadNumber(h);
+      datetime t = StrToTime(ts);
+      int idx = ArraySize(CalendarTimes);
+      ArrayResize(CalendarTimes, idx+1);
+      ArrayResize(CalendarImpacts, idx+1);
+      ArrayResize(CalendarIds, idx+1);
+      CalendarTimes[idx] = t;
+      CalendarImpacts[idx] = imp;
+      CalendarIds[idx] = eid;
+   }
+   FileClose(h);
+}
+
+int CalendarEventIdAt(datetime ts)
+{
+   double maxImp = 0.0;
+   int best = -1;
+   for(int i=0; i<ArraySize(CalendarTimes); i++)
+      if(MathAbs(ts - CalendarTimes[i]) <= CalendarEventWindowMinutes * 60)
+         if(CalendarImpacts[i] > maxImp)
+         {
+            maxImp = CalendarImpacts[i];
+            best = CalendarIds[i];
+         }
+   return(best);
+}
 
 class PendingTrade
 {
@@ -761,6 +821,7 @@ int OnInit()
 {
    EventSetTimer(1);
    MathSrand(GetTickCount());
+   LoadCalendar();
    if(StringLen(TraceId)==0)
       TraceId = GenId(16);
    ArrayResize(tracked_tickets, 0);
@@ -831,7 +892,7 @@ int OnInit()
    log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
    if(log_db_handle!=INVALID_HANDLE)
    {
-      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL, commission REAL, swap REAL, exit_reason TEXT, duration_sec INTEGER)";
+      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL, commission REAL, swap REAL, exit_reason TEXT, duration_sec INTEGER, calendar_event_id INTEGER)";
       DatabaseExecute(log_db_handle, create_sql);
       // Resume event id from existing records
       int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
@@ -881,7 +942,7 @@ int OnInit()
             NextEventId = last_id + 1;
          if(need_header)
          {
-          string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance;exit_reason;duration_sec";
+         string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance;exit_reason;duration_sec;calendar_event_id";
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
@@ -1289,8 +1350,9 @@ bool SendMetrics(uchar &payload[], string line)
 
 void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 {
+   int cal_id = CalendarEventIdAt(t.time_event);
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f;%s;%d",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f;%s;%d;%d",
       t.id,
       TimeToString(t.time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
@@ -1301,7 +1363,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol,
       t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom,
       t.equity, t.margin_level, t.commission, t.swap, t.risk_weight,
-      t.trend_estimate, t.trend_variance, t.exit_reason, t.duration_sec);
+      t.trend_estimate, t.trend_variance, t.exit_reason, t.duration_sec, cal_id);
 
    uchar payload[];
    int len = SerializeTradeEvent(
@@ -1344,14 +1406,14 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
          if(log_db_handle!=INVALID_HANDLE)
          {
             string sql = StringFormat(
-               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level,commission,swap,exit_reason,duration_sec) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f,%.2f,%.2f,'%s',%d)",
+               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level,commission,swap,exit_reason,duration_sec,calendar_event_id) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f,%.2f,%.2f,'%s',%d,%d)",
                t.id,
                SqlEscape(TimeToString(t.time_event, TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(t.action), t.ticket, t.magic, SqlEscape(t.source), SqlEscape(t.symbol), t.order_type,
                t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, SqlEscape(TraceId), SqlEscape(t.span_id), SqlEscape(t.comment), t.remaining,
-               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom, t.equity, t.margin_level, t.commission, t.swap, SqlEscape(t.exit_reason), t.duration_sec);
+               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom, t.equity, t.margin_level, t.commission, t.swap, SqlEscape(t.exit_reason), t.duration_sec, cal_id);
             DatabaseExecute(log_db_handle, sql);
          }
       }
