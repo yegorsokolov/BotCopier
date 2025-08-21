@@ -417,7 +417,7 @@ int OnInit()
          if(DecisionLogHandle != INVALID_HANDLE)
          {
             if(FileSize(DecisionLogHandle) == 0)
-               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;features;trace_id;span_id");
+               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;risk_weight;variance;lots_predicted;features;trace_id;span_id");
             FileSeek(DecisionLogHandle, 0, SEEK_END);
          }
          else
@@ -429,7 +429,7 @@ int OnInit()
    {
       if(FileSize(UncertainLogHandle) == 0)
          FileWrite(UncertainLogHandle,
-                   "event_id;timestamp;model_version;action;probability;threshold;sl_dist;tp_dist;model_idx;regime;features;label");
+                   "event_id;timestamp;model_version;action;probability;threshold;sl_dist;tp_dist;model_idx;regime;risk_weight;variance;lots_predicted;features;label");
       FileSeek(UncertainLogHandle, 0, SEEK_END);
    }
    else
@@ -1179,6 +1179,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
       return;
    double sl_dist, tp_dist;
    CalcStops(sl_dist, tp_dist);
+   double lots = CalcLots();
    string feat_vals = "";
    for(int i=0; i<FeatureCount; i++)
    {
@@ -1192,7 +1193,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    LastSpanId  = span_id;
    if(DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, feat_vals, trace_id, span_id);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, feat_vals, trace_id, span_id);
       FileFlush(DecisionLogHandle);
    }
    double thr = GetTradeThreshold();
@@ -1201,13 +1202,13 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    {
       // capture feature snapshot for active learning
       FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS),
-                ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, feat_vals, "");
+                ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, feat_vals, "");
       FileFlush(UncertainLogHandle);
    }
    if(DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, feat_vals, trace_id, span_id);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);

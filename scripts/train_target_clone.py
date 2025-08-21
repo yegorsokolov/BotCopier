@@ -2094,6 +2094,7 @@ def train(
         df_u = pd.read_csv(ufile, sep=";")
         extra_feats: list[dict[str, float]] = []
         extra_labels: list[float] = []
+        extra_lots: list[float] = []
         now_ts = np.datetime64(datetime.utcnow(), "s")
         for _, row in df_u.iterrows():
             feat_str = str(row.get("features", ""))
@@ -2101,6 +2102,7 @@ def train(
             feat = {f"f{i}": float(v) for i, v in enumerate(vals)}
             extra_feats.append(feat)
             extra_labels.append(float(row.get("label", 0)))
+            extra_lots.append(float(row.get("lots_predicted", 0)))
         if extra_feats:
             features.extend(extra_feats)
             labels = np.concatenate([labels, np.array(extra_labels)])
@@ -2108,7 +2110,7 @@ def train(
             sl_targets = np.concatenate([sl_targets, zeros])
             tp_targets = np.concatenate([tp_targets, zeros])
             hours = np.concatenate([hours, zeros.astype(int)])
-            lot_targets = np.concatenate([lot_targets, zeros])
+            lot_targets = np.concatenate([lot_targets, np.array(extra_lots)])
             event_times = np.concatenate([event_times, np.full(len(extra_feats), now_ts)])
             added = len(extra_feats)
     if added:
