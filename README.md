@@ -23,8 +23,10 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
     SMA, RSI, MACD and ATR and may select deeper transformer models.  The chosen
     mode and feature flags are written to `model.json` for reproducibility.
   - `generate_mql4_from_model.py` – renders a new EA from a trained model description.
-  - `evaluate_predictions.py` – basic log evaluation utility.
-  - `promote_best_models.py` – selects top models by metric and copies them to a best directory.
+  - `evaluate_predictions.py` – evaluate predictions producing accuracy,
+    Sharpe/Sortino ratios and expectancy.
+  - `promote_best_models.py` – selects top models by metric (e.g. Sharpe or
+    Sortino) and copies them to a best directory.
   - `plot_metrics.py` – plot metric history using Matplotlib.
   - `plot_feature_importance.py` – display SHAP feature importances saved in `model.json`.
   - `nats_stream.py` – proxy that publishes trade and metric events to NATS JetStream.
@@ -69,6 +71,8 @@ The EA records trade openings and closings using the `OnTradeTransaction` callba
    ```bash
    python scripts/evaluate_predictions.py predictions.csv logs/trades.csv
    ```
+   The JSON summary now includes Sharpe and Sortino ratios along with
+   expectancy to aid model comparison.
 5. Promote the top performing models:
    ```bash
    python scripts/promote_best_models.py models --dest models/best

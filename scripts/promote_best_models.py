@@ -4,7 +4,7 @@ import argparse
 import json
 import shutil
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 # Support both package and script execution
 try:  # pragma: no cover - fallback for script usage
@@ -25,6 +25,22 @@ def _load_metrics(model_json: Path) -> Dict[str, float]:
         except Exception:
             return {}
     return {}
+
+
+def _normalise_metric(metric: str) -> List[str]:
+    """Return canonical keys for ``metric``.
+
+    ``evaluate_predictions.py`` writes ``sharpe_ratio`` and ``sortino_ratio``
+    while the backtest helper may output ``sharpe``.  Accept a few common
+    aliases so users can simply request ``sharpe`` or ``sortino``.
+    """
+
+    metric = metric.lower()
+    if metric in {"sharpe", "sharpe_ratio"}:
+        return ["sharpe_ratio", "sharpe"]
+    if metric in {"sortino", "sortino_ratio"}:
+        return ["sortino_ratio", "sortino"]
+    return [metric]
 
 
 def _score_for_model(model_json: Path, metric: str) -> float:
@@ -49,11 +65,12 @@ def _score_for_model(model_json: Path, metric: str) -> float:
             return 0.0
 
     metrics = _load_metrics(model_json)
-    if metric in metrics:
-        try:
-            return float(metrics[metric])
-        except Exception:
-            return 0.0
+    for key in _normalise_metric(metric):
+        if key in metrics:
+            try:
+                return float(metrics[key])
+            except Exception:
+                return 0.0
 
     try:
         with open(model_json) as f:
@@ -105,7 +122,7 @@ def main():
     p.add_argument("--max-models", type=int, default=3)
     p.add_argument(
         "--metric",
-        default="sharpe",
+        default="sharpe_ratio",
         help="backtest metric key to sort by",
     )
     p.add_argument("--files-dir", help="MT4 Files directory to publish model")

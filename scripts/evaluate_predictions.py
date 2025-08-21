@@ -142,17 +142,38 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
 
     profit_factor = (gross_profit / gross_loss) if gross_loss else float("inf")
 
+    # Basic profit statistics
     expected_return = sum(profits) / len(profits) if profits else 0.0
     downside = [p for p in profits if p < 0]
     downside_risk = -sum(downside) / len(downside) if downside else 0.0
 
+    # Sharpe ratio uses overall standard deviation while Sortino only
+    # considers downside volatility.  Both expect non-zero deviation.
     sharpe = 0.0
+    sortino = 0.0
     if len(profits) > 1:
-        mean = sum(profits) / len(profits)
+        mean = expected_return
         variance = sum((p - mean) ** 2 for p in profits) / (len(profits) - 1)
         std = math.sqrt(variance)
         if std > 0:
             sharpe = mean / std
+
+        downside_dev = 0.0
+        if downside:
+            downside_dev = math.sqrt(
+                sum((p) ** 2 for p in downside) / len(downside)
+            )
+        if downside_dev > 0:
+            sortino = mean / downside_dev
+
+    # Expectancy expresses the average profit per trade taking win/loss
+    # probabilities into account.
+    win_profits = [p for p in profits if p > 0]
+    loss_profits = [p for p in profits if p < 0]
+    win_rate = len(win_profits) / len(profits) if profits else 0.0
+    avg_win = (sum(win_profits) / len(win_profits)) if win_profits else 0.0
+    avg_loss = (-sum(loss_profits) / len(loss_profits)) if loss_profits else 0.0
+    expectancy = win_rate * avg_win - (1 - win_rate) * avg_loss
 
     return {
         "predicted_events": len(predictions),
@@ -167,6 +188,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
         "gross_loss": gross_loss,
         "profit_factor": profit_factor,
         "sharpe_ratio": sharpe,
+        "sortino_ratio": sortino,
+        "expectancy": expectancy,
         "expected_return": expected_return,
         "downside_risk": downside_risk,
     }
@@ -213,6 +236,8 @@ def main() -> None:
         f" (gross P/L: {stats['gross_profit']-stats['gross_loss']:.2f})"
     )
     print(f"Sharpe Ratio     : {stats['sharpe_ratio']:.2f}")
+    print(f"Sortino Ratio    : {stats['sortino_ratio']:.2f}")
+    print(f"Expectancy       : {stats['expectancy']:.2f}")
 
 
 if __name__ == '__main__':
