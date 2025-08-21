@@ -965,11 +965,12 @@ def _load_logs(
     return df_logs, data_commits, data_checksums
 
 
-def _load_calendar(file: Path) -> list[tuple[datetime, float]]:
+def _load_calendar(file: Path) -> list[tuple[datetime, float, int]]:
     """Load calendar events from a CSV file.
 
     The file is expected to have at least two columns: ``time`` and
-    ``impact``. ``time`` should be parseable by ``pandas.to_datetime``.
+    ``impact`` with an optional ``id`` column identifying the specific
+    news release. ``time`` should be parseable by ``pandas.to_datetime``.
 
     Parameters
     ----------
@@ -978,20 +979,21 @@ def _load_calendar(file: Path) -> list[tuple[datetime, float]]:
 
     Returns
     -------
-    list[tuple[datetime, float]]
-        Sorted list of ``(event_time, impact)`` tuples.
+    list[tuple[datetime, float, int]]
+        Sorted list of ``(event_time, impact, event_id)`` tuples.
     """
 
     if not file.exists():
         return []
     df = pd.read_csv(file)
-    events: list[tuple[datetime, float]] = []
+    events: list[tuple[datetime, float, int]] = []
     for _, row in df.iterrows():
         t = pd.to_datetime(row.get("time"), utc=False, errors="coerce")
         if pd.isna(t):
             continue
         impact = float(row.get("impact", 0.0) or 0.0)
-        events.append((t.to_pydatetime(), impact))
+        eid = int(float(row.get("id", 0) or 0))
+        events.append((t.to_pydatetime(), impact, eid))
     events.sort(key=lambda x: x[0])
     return events
 
@@ -1195,7 +1197,7 @@ def _extract_features(
     symbol_graph: dict | str | Path | None = None,
     corr_window: int = 5,
     encoder: dict | None = None,
-    calendar_events: list[tuple[datetime, float]] | None = None,
+    calendar_events: list[tuple[datetime, float, int]] | None = None,
     event_window: float = 60.0,
     perf_budget: float | None = None,
     news_sentiment: dict[str, list[tuple[datetime, float]]] | None = None,
@@ -1389,13 +1391,16 @@ def _extract_features(
         if calendar_events is not None:
             flag = 0.0
             impact_val = 0.0
-            for ev_time, ev_imp in calendar_events:
+            event_id_val = 0
+            for ev_time, ev_imp, ev_id in calendar_events:
                 if abs((t - ev_time).total_seconds()) <= event_window * 60.0:
                     flag = 1.0
                     if ev_imp > impact_val:
                         impact_val = ev_imp
+                        event_id_val = int(ev_id)
             feat["event_flag"] = flag
             feat["event_impact"] = impact_val
+            feat["calendar_event_id"] = event_id_val
 
         if use_volume:
             feat["volume"] = float(r.get("volume", 0) or 0)
@@ -1609,7 +1614,7 @@ def _train_lite_mode(
     corr_window: int = 5,
     extra_price_series=None,
     news_sentiment=None,
-    calendar_events: list[tuple[datetime, float]] | None = None,
+    calendar_events: list[tuple[datetime, float, int]] | None = None,
     event_window: float = 60.0,
     encoder_file: Path | None = None,
     chunk_size: int = 50000,
@@ -1763,7 +1768,7 @@ def _train_lite_mode(
         model["data_checksum"] = ",".join(sorted(set(data_checksums)))
     if calendar_events:
         model["calendar_events"] = [
-            [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+            [dt.isoformat(), float(imp), int(eid)] for dt, imp, eid in calendar_events
         ]
         model["event_window"] = float(event_window)
 
@@ -1814,7 +1819,7 @@ def train(
     early_stop: bool = False,
     encoder_file: Path | None = None,
     cache_features: bool = True,
-    calendar_events: list[tuple[datetime, float]] | None = None,
+    calendar_events: list[tuple[datetime, float, int]] | None = None,
     event_window: float = 60.0,
     calibration: str | None = None,
     stack_models: list[str] | None = None,
@@ -2334,9 +2339,11 @@ def train(
     for f in feat_train_clf:
         f.pop("profit", None)
         f.pop("event_id", None)
+        f.pop("calendar_event_id", None)
     for f in feat_val_clf:
         f.pop("profit", None)
         f.pop("event_id", None)
+        f.pop("calendar_event_id", None)
 
     feat_train_reg = [dict(f) for f in feat_train_clf]
     feat_val_reg = [dict(f) for f in feat_val_clf]
@@ -2599,7 +2606,7 @@ def train(
             model["data_checksum"] = ",".join(sorted(set(data_checksums)))
         if calendar_events:
             model["calendar_events"] = [
-                [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+                [dt.isoformat(), float(imp), int(eid)] for dt, imp, eid in calendar_events
             ]
             model["event_window"] = float(event_window)
         return
@@ -2753,7 +2760,7 @@ def train(
             model["data_checksum"] = ",".join(sorted(set(data_checksums)))
         if calendar_events:
             model["calendar_events"] = [
-                [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+                [dt.isoformat(), float(imp), int(eid)] for dt, imp, eid in calendar_events
             ]
             model["event_window"] = float(event_window)
         model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
@@ -3486,7 +3493,7 @@ def train(
         model["data_checksum"] = ",".join(sorted(set(data_checksums)))
     if calendar_events:
         model["calendar_events"] = [
-            [dt.isoformat(), float(imp)] for dt, imp in calendar_events
+            [dt.isoformat(), float(imp), int(eid)] for dt, imp, eid in calendar_events
         ]
         model["event_window"] = float(event_window)
     if encoder is not None:
@@ -3858,7 +3865,7 @@ def main():
         '--higher-timeframes',
         help='comma separated higher timeframes e.g. H1,H4',
     )
-    p.add_argument('--calendar-file', help='CSV file with columns time,impact for events')
+    p.add_argument('--calendar-file', help='CSV file with columns time,impact[,id] for events')
     p.add_argument('--event-window', type=float, default=60.0, help='minutes around events to flag')
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')

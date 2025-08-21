@@ -613,7 +613,7 @@ def test_calendar_features(tmp_path: Path):
         "intercept": 0.0,
         "threshold": 0.5,
         "feature_names": ["event_flag", "event_impact"],
-        "calendar_events": [["2024-01-01T00:30:00", 1.0]],
+        "calendar_events": [["2024-01-01T00:30:00", 1.0, 1]],
         "event_window": 60.0,
     }
     model_file = tmp_path / "model.json"
@@ -627,8 +627,8 @@ def test_calendar_features(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert "GetCalendarFlag()" in content
-    assert "GetCalendarImpact()" in content
+    assert "CalendarFlag()" in content
+    assert "CalendarImpact()" in content
 
 
 def test_on_tick_logistic_inference(tmp_path: Path):
