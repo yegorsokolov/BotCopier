@@ -4,7 +4,7 @@
 
 #import "observer_capnp.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
 #import
 #import "flight_client.dll"
 bool FlightClientInit(string host, int port);
@@ -87,6 +87,7 @@ int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
 string   log_dir = "";
 const int SCHEMA_VERSION = 2;
+int      AnomalyLateResponses = 0;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -198,6 +199,8 @@ public:
    datetime start_time;
    bool     anomaly_sent;
    string   anomaly_status;
+   string   anomaly_id;
+   datetime anomaly_sent_time;
 };
 
 PendingTrade AnomalyQueue[];
@@ -222,6 +225,8 @@ void EnqueueAnomaly(PendingTrade &t)
 {
    t.anomaly_sent = false;
    t.anomaly_status = "";
+   t.anomaly_id = "";
+   t.anomaly_sent_time = 0;
    int n = ArraySize(AnomalyQueue);
    ArrayResize(AnomalyQueue, n+1);
    AnomalyQueue[n] = t;
@@ -723,27 +728,33 @@ double GetRiskWeight(string sym)
    return(1.0);
 }
 
-int CheckAnomaly(double price, double sl, double tp, double lots, double spread, double slippage)
+bool CheckAnomaly(string job_id, double price, double sl, double tp, double lots, double spread, double slippage)
 {
-   string payload = StringFormat("[%.5f,%.5f,%.5f,%.2f,%.5f,%.5f]", price, sl, tp, lots, spread, slippage);
+   string payload = StringFormat("{\"id\":\"%s\",\"payload\":[%.5f,%.5f,%.5f,%.2f,%.5f,%.5f]}", job_id, price, sl, tp, lots, spread, slippage);
    uchar data[];
    StringToCharArray(payload, data);
    uchar result[];
    string headers = "Content-Type: application/json";
    string rheaders = "";
-   int res = WebRequest("POST", AnomalyServiceUrl, headers, AnomalyTimeoutSeconds*1000, data, ArraySize(data)-1, result, rheaders);
+   int res = WebRequest("POST", AnomalyServiceUrl, headers, 1000, data, ArraySize(data)-1, result, rheaders);
+   return(res>=200 && res<300);
+}
+
+int PollAnomaly(string job_id, double &err)
+{
+   string url = AnomalyServiceUrl + "?id=" + job_id;
+   uchar data[];
+   uchar result[];
+   string rheaders = "";
+   int res = WebRequest("GET", url, "", 1000, data, 0, result, rheaders);
    if(res==200)
    {
       string txt = CharArrayToString(result);
-      double err = StrToDouble(txt);
-      if(err > AnomalyThreshold)
-      {
-         string span_id = GenId(8);
-         SendOtelSpan(TraceId, span_id, "anomaly_detected");
-         return(1);
-      }
-      return(0);
+      err = StrToDouble(txt);
+      return(1);
    }
+   if(res==404)
+      return(0);
    return(-1);
 }
 
@@ -1426,24 +1437,45 @@ void ProcessAnomalyQueue()
    if(ArraySize(AnomalyQueue)==0)
       return;
    PendingTrade t = AnomalyQueue[0];
+   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    if(!t.anomaly_sent)
    {
-      int res = CheckAnomaly(t.price, t.sl, t.tp, t.lots, t.spread, t.slippage);
-      t.anomaly_sent = true;
-      if(res >= 0)
+      t.anomaly_id = GenId(8);
+      if(CheckAnomaly(t.anomaly_id, t.price, t.sl, t.tp, t.lots, t.spread, t.slippage))
       {
-         bool is_anom = (res == 1);
-         FinalizeTradeEntry(t, is_anom);
-         RemoveAnomaly(0);
-         return;
+         t.anomaly_sent = true;
+         t.anomaly_sent_time = now;
+         AnomalyQueue[0] = t;
       }
-      t.anomaly_status = "timeout";
-      AnomalyQueue[0] = t;
+      else
+      {
+         t.anomaly_status = "enqueue_fail";
+         t.comment_with_span = t.comment_with_span + ";anom_enqueue_fail";
+         FinalizeTradeEntry(t, false);
+         RemoveAnomaly(0);
+      }
       return;
    }
-   t.comment_with_span = t.comment_with_span + ";anom_" + t.anomaly_status;
-   FinalizeTradeEntry(t, false);
-   RemoveAnomaly(0);
+   double err = 0.0;
+   int res = PollAnomaly(t.anomaly_id, err);
+   if(res==1)
+   {
+      bool is_anom = (err > AnomalyThreshold);
+      if(now - t.anomaly_sent_time > AnomalyTimeoutSeconds)
+         AnomalyLateResponses++;
+      FinalizeTradeEntry(t, is_anom);
+      RemoveAnomaly(0);
+      return;
+   }
+   if(now - t.anomaly_sent_time > AnomalyTimeoutSeconds)
+   {
+      t.anomaly_status = "timeout";
+      t.comment_with_span = t.comment_with_span + ";anom_timeout";
+      FinalizeTradeEntry(t, false);
+      RemoveAnomaly(0);
+      return;
+   }
+   AnomalyQueue[0] = t;
 }
 
 string FileNameFromPath(string path)
@@ -1821,14 +1853,15 @@ void WriteMetrics(datetime ts)
       string span_id = GenId(8);
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
       int anomaly_pending = AnomalyQueueDepth;
+      int anomaly_late = AnomalyLateResponses;
       // emit file/socket errors and retry counts for monitoring
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size, trade_retry_count, metric_retry_count, anomaly_pending, TraceId, span_id);
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size, trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late, TraceId, span_id);
 
       uchar payload[];
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size, trade_retry_count, metric_retry_count, anomaly_pending, payload);
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size, trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late, payload);
       bool sent = false;
       if(len>0)
          sent = SendMetrics(payload, line);
@@ -1843,7 +1876,7 @@ void WriteMetrics(datetime ts)
                h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
                if(h!=INVALID_HANDLE)
                {
-                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;fallback_events;fallback_logging;wal_size;trade_retry_count;metric_retry_count;anomaly_pending;trace_id;span_id");
+                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;fallback_events;fallback_logging;wal_size;trade_retry_count;metric_retry_count;anomaly_pending;anomaly_late;trace_id;span_id");
                   if(_wr <= 0)
                      FileWriteErrors++;
                }
