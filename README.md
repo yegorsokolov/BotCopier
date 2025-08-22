@@ -579,6 +579,9 @@ repository and the original files are removed locally. The script uses the
   During initialisation the observer EA writes a small JSON ``hello`` packet
   containing this version to the shared memory ring. ``stream_listener.py``
   verifies the packet before processing events and exits on mismatch.
+  Third-party producers should perform the same handshake and include their
+  ``schema_version`` before streaming events; messages with mismatched versions
+  are logged and ignored.
 * ``GITHUB_TOKEN`` – personal access token with ``repo`` scope used by
   ``upload_logs.py`` to push commits.
 * ``OTEL_EXPORTER_OTLP_ENDPOINT`` – URL of the OTLP collector (Jaeger or Zipkin).
