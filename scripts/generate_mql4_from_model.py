@@ -14,6 +14,7 @@ behaviour of :mod:`scripts.replay_decisions` directly inside MetaTrader.
 import argparse
 import json
 import gzip
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import Iterable, List, Union, Optional
@@ -466,6 +467,7 @@ def generate(
     output = output.replace('__EVENT_WINDOW__', event_window)
 
     feature_map = {
+        'hour': 'TimeHour(TimeCurrent())',
         'hour_sin': 'HourSin()',
         'hour_cos': 'HourCos()',
         'dow_sin': 'DowSin()',
@@ -570,7 +572,13 @@ def generate(
             elif name == 'news_sentiment':
                 expr = 'GetNewsSentiment()'
         if expr is None:
-            expr = '0.0'
+            logging.error(
+                "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
+                name,
+            )
+            raise ValueError(
+                f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
+            )
         cases.append(
             f"      case {idx}: // {name}\n         raw = ({expr});\n         break;"
         )

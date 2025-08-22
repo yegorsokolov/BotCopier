@@ -22,15 +22,15 @@ def _select(gating, x):
 def test_regime_gating_selects_models(tmp_path: Path):
     model = {
         "model_id": "regime",
-        "feature_names": ["x"],
+        "feature_names": ["hour"],
         "meta_model": {
-            "feature_names": ["x"],
+            "feature_names": ["hour"],
             "coefficients": [[1.0], [-1.0]],
             "intercepts": [0.0, 0.0],
         },
         "regime_models": [
-            {"regime": 0, "coefficients": [1.0], "intercept": 0.0, "feature_names": ["x"]},
-            {"regime": 1, "coefficients": [-1.0], "intercept": 0.0, "feature_names": ["x"]},
+            {"regime": 0, "coefficients": [1.0], "intercept": 0.0, "feature_names": ["hour"]},
+            {"regime": 1, "coefficients": [-1.0], "intercept": 0.0, "feature_names": ["hour"]},
         ],
         "threshold": 0.5,
     }

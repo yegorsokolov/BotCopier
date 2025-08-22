@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import sys
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.generate_mql4_from_model import generate
@@ -197,6 +198,24 @@ def test_atr_bollinger_features(tmp_path: Path):
         content = f.read()
     assert "iATR(SymbolToTrade" in content
     assert "iBands(SymbolToTrade" in content
+
+
+def test_unknown_feature_raises(tmp_path: Path):
+    model = {
+        "model_id": "unknown",
+        "magic": 111,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["mystery_feature"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    with pytest.raises(ValueError, match="mystery_feature"):
+        generate(model_file, out_dir)
 
 
 def test_news_sentiment_feature(tmp_path: Path):
