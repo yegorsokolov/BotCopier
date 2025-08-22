@@ -472,6 +472,19 @@ def process_trade(msg) -> None:
     global current_trace_id, current_span_id
     trace_id = _get(msg, "traceId", "trace_id") or ""
     span_id = ""
+    version = _get(msg, "schemaVersion", "schema_version")
+    if version is not None:
+        try:
+            ver_int = int(version)
+        except (TypeError, ValueError):
+            ver_int = version
+        if ver_int != SCHEMA_VERSION:
+            logger.warning({
+                "error": "schema version mismatch",
+                "expected": SCHEMA_VERSION,
+                "got": version,
+            })
+            return
     try:
         comment = _get(msg, "comment") or ""
         if isinstance(comment, str) and comment.startswith("span="):
@@ -529,6 +542,19 @@ def process_metric(msg) -> None:
     global current_trace_id, current_span_id
     trace_id = _get(msg, "traceId", "trace_id") or ""
     span_id = _get(msg, "spanId", "span_id") or ""
+    version = _get(msg, "schemaVersion", "schema_version")
+    if version is not None:
+        try:
+            ver_int = int(version)
+        except (TypeError, ValueError):
+            ver_int = version
+        if ver_int != SCHEMA_VERSION:
+            logger.warning({
+                "error": "schema version mismatch",
+                "expected": SCHEMA_VERSION,
+                "got": version,
+            })
+            return
     try:
         record = {
             "schema_version": SCHEMA_VERSION,
