@@ -79,8 +79,8 @@ def _write_log(file: Path) -> None:
         writer.writerow(fields)
         writer.writerows(rows)
 
-
-def test_train_rl_agent_sb3(tmp_path: Path) -> None:
+@pytest.mark.parametrize("algo", ["dqn", "a2c"])
+def test_train_rl_agent_sb3(tmp_path: Path, algo: str) -> None:
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     data_dir.mkdir()
@@ -97,7 +97,15 @@ def test_train_rl_agent_sb3(tmp_path: Path) -> None:
     with open(start_model, "w") as f:
         json.dump(start, f)
 
-    train(data_dir, out_dir, start_model=start_model, algo="dqn", training_steps=10)
+    train(
+        data_dir,
+        out_dir,
+        start_model=start_model,
+        algo=algo,
+        training_steps=10,
+        learning_rate=0.2,
+        gamma=0.95,
+    )
 
     model_file = out_dir / "model.json"
     weights_file = out_dir / "model_weights.zip"
@@ -105,7 +113,10 @@ def test_train_rl_agent_sb3(tmp_path: Path) -> None:
     assert weights_file.exists()
     with open(model_file) as f:
         data = json.load(f)
-    assert data.get("algo") == "dqn"
+    assert data.get("algo") == algo
     assert data.get("training_steps") == 10
+    assert data.get("learning_rate") == pytest.approx(0.2)
+    assert data.get("gamma") == pytest.approx(0.95)
     assert "avg_reward" in data
-    assert data.get("init_model_id") == "sup_model"
+    if algo == "dqn":
+        assert data.get("init_model_id") == "sup_model"

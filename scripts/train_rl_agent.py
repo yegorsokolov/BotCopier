@@ -386,6 +386,7 @@ def train(
     batch_size: int = 4,
     buffer_size: int = 100,
     update_freq: int = 1,
+    gamma: float = 0.9,
     algo: str = "dqn",
     start_model: Path | None = None,
     compress_model: bool = False,
@@ -409,8 +410,8 @@ def train(
 
     algo_key = algo.lower()
 
-    if self_play and algo_key not in {"ppo", "dqn", "c51", "qr_dqn"}:
-        raise ValueError("--self-play requires ppo, dqn, c51, or qr_dqn algorithm")
+    if self_play and algo_key not in {"ppo", "dqn", "c51", "qr_dqn", "a2c", "ddpg"}:
+        raise ValueError("--self-play requires ppo, dqn, c51, qr_dqn, a2c, or ddpg algorithm")
 
     # precompute experience tuples for offline algorithms
     experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = [
@@ -519,7 +520,7 @@ def train(
         print(f"Model written to {model_path}")
         return
 
-    if algo_key in {"ppo", "dqn", "c51", "qr_dqn"}:
+    if algo_key in {"ppo", "dqn", "c51", "qr_dqn", "a2c", "ddpg"}:
         if not HAS_SB3:
             raise ImportError("stable_baselines3 is not installed")
         if algo_key in {"c51", "qr_dqn"} and not HAS_SB3_CONTRIB:
@@ -558,10 +559,12 @@ def train(
 
         env = TradeEnv(states, rewards)
         algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
+        if HAS_SB3:
+            algo_map.update({"a2c": sb3.A2C, "ddpg": sb3.DDPG})
         if HAS_SB3_CONTRIB:
             algo_map.update({"c51": sb3c.C51, "qr_dqn": sb3c.QRDQN})
         model_cls = algo_map[algo_key]
-        model = model_cls("MlpPolicy", env, verbose=0)
+        model = model_cls("MlpPolicy", env, learning_rate=learning_rate, gamma=gamma, verbose=0)
         if self_play:
             sim_env = SelfPlayEnv()
             half = max(1, training_steps // 2)
@@ -649,6 +652,7 @@ def train(
             "training_steps": training_steps,
             "learning_rate": learning_rate,
             "epsilon": epsilon,
+            "gamma": gamma,
             "val_accuracy": float("nan"),
             "accuracy": float("nan"),
             "num_samples": len(actions),
@@ -704,8 +708,6 @@ def train(
                 bias = float(init_model_data["intercept"])
                 weights = np.vstack([coefs / 2.0, -coefs / 2.0])
                 intercepts = np.array([bias / 2.0, -bias / 2.0], dtype=float)
-    gamma = 0.9
-
     if algo_key == "cql":
         alpha = 0.01  # conservative penalty strength
         for i in range(training_steps):
@@ -787,6 +789,7 @@ def train(
         "episode_rewards": [float(r) for r in episode_rewards],
         "training_steps": training_steps * len(experiences),
         "learning_rate": learning_rate,
+        "gamma": gamma,
         "epsilon": epsilon,
         "val_accuracy": float("nan"),
         "accuracy": float("nan"),
@@ -816,6 +819,7 @@ def main() -> None:
         p.add_argument("--kafka-brokers", help="Kafka bootstrap servers for log replay")
         p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
         p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
+        p.add_argument("--gamma", type=float, default=0.9, help="discount factor")
         p.add_argument("--training-steps", type=int, default=100, help="total training steps")
         p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
         p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
@@ -824,7 +828,7 @@ def main() -> None:
             "--algo",
             default="dqn",
             help=(
-                "RL algorithm: dqn (default), ppo, c51, qr_dqn, qlearn, cql, or "
+                "RL algorithm: dqn (default), ppo, a2c, ddpg, c51, qr_dqn, qlearn, cql, or "
                 "decision_transformer (requires transformers)."
             ),
         )
@@ -848,6 +852,7 @@ def main() -> None:
             Path(args.out_dir),
             learning_rate=args.learning_rate,
             epsilon=args.epsilon,
+            gamma=args.gamma,
             training_steps=args.training_steps,
             batch_size=args.batch_size,
             buffer_size=args.buffer_size,
