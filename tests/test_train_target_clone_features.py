@@ -60,7 +60,7 @@ def _write_sample_log(file: Path):
             "1.1000",
             "1.0950",
             "1.1100",
-            "0",
+            "1",
             "2",
             "",
             "0.1",
@@ -92,7 +92,7 @@ def _write_sample_log(file: Path):
             "1.2000",
             "1.1950",
             "1.2100",
-            "0",
+            "2",
             "3",
             "",
             "0.1",
@@ -127,7 +127,9 @@ def test_feature_extraction_basic():
             "price": 1.1000,
             "sl": 1.0950,
             "tp": 1.1100,
-            "profit": 0,
+            "profit": 2.0,
+            "commission": 0.5,
+            "swap": 0.2,
             "spread": 2,
             "slippage": 0.0001,
             "equity": 1000,
@@ -142,6 +144,7 @@ def test_feature_extraction_basic():
     assert "equity" in feats[0] and "margin_level" in feats[0]
     assert "sl_dist" in feats[0] and "tp_dist" in feats[0]
     assert "sl_hit_dist" in feats[0] and "tp_hit_dist" in feats[0]
+    assert feats[0]["net_profit"] == pytest.approx(2.0 - 0.5 - 0.2)
 
 
 def test_model_serialization(tmp_path: Path):
@@ -163,6 +166,7 @@ def test_model_serialization(tmp_path: Path):
     assert "val_accuracy" in data
     assert "spread" in data.get("feature_names", [])
     assert "slippage" in data.get("feature_names", [])
+    assert data.get("weighted_by_net_profit") is True
 
 
 def test_perf_budget_disables_heavy_features(caplog):

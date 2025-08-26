@@ -62,7 +62,7 @@ def _write_log(file: Path):
             "1.1000",
             "1.0950",
             "1.1100",
-            "0",
+            "1",
             "2",
             "",
             "0.1",
@@ -87,7 +87,7 @@ def _write_log(file: Path):
             "1.2000",
             "1.1950",
             "1.2100",
-            "0",
+            "2",
             "3",
             "",
             "0.1",
@@ -149,7 +149,7 @@ def _write_log_many(file: Path, count: int = 10):
             "1.1000",
             "1.0950",
             "1.1100",
-            "0",
+            str(i + 1),
             "2",
             "",
             "0.1",
@@ -207,7 +207,7 @@ def _write_decay_log(file: Path) -> None:
             "1.0000",
             "0.9000",
             "1.1000",
-            "0",
+            "1",
             "2",
             "",
             "0.1",
@@ -232,7 +232,7 @@ def _write_decay_log(file: Path) -> None:
             "2.0000",
             "1.9000",
             "2.1000",
-            "0",
+            "2",
             "2",
             "",
             "0.1",
@@ -291,6 +291,7 @@ def test_train(tmp_path: Path):
     assert "equity" in data.get("feature_names", [])
     assert "margin_level" in data.get("feature_names", [])
     assert data.get("weighted") is True
+    assert data.get("weighted_by_net_profit") is True
     assert "mean" in data
     assert "std" in data
     assert data.get("data_commit") == "abc123"
@@ -526,7 +527,8 @@ def test_train_xgboost(tmp_path: Path):
     assert data.get("model_type") == "xgboost"
     assert "coefficients" in data
     assert len(data.get("probability_table", [])) == 24
-    assert data.get("weighted") is False
+    assert data.get("weighted") is True
+    assert data.get("weighted_by_net_profit") is True
 
 
 def test_train_lightgbm(tmp_path: Path):
@@ -546,7 +548,8 @@ def test_train_lightgbm(tmp_path: Path):
     assert data.get("model_type") == "lgbm"
     assert "coefficients" in data
     assert len(data.get("probability_table", [])) == 24
-    assert data.get("weighted") is False
+    assert data.get("weighted") is True
+    assert data.get("weighted_by_net_profit") is True
 
 
 def test_train_catboost(tmp_path: Path):
@@ -566,7 +569,8 @@ def test_train_catboost(tmp_path: Path):
     assert data.get("model_type") == "catboost"
     assert "coefficients" in data
     assert len(data.get("probability_table", [])) == 24
-    assert data.get("weighted") is False
+    assert data.get("weighted") is True
+    assert data.get("weighted_by_net_profit") is True
 
 
 def test_train_nn(tmp_path: Path):
@@ -585,7 +589,8 @@ def test_train_nn(tmp_path: Path):
     assert data.get("model_type") == "nn"
     assert "nn_weights" in data
     assert data.get("hidden_size", 0) > 0
-    assert data.get("weighted") is False
+    assert data.get("weighted") is True
+    assert data.get("weighted_by_net_profit") is True
 
 
 def test_train_lite_mode(tmp_path: Path):
@@ -618,7 +623,8 @@ def test_train_lstm(tmp_path: Path):
     assert data.get("model_type") == "lstm"
     assert "lstm_weights" in data
     assert data.get("sequence_length") == 3
-    assert data.get("weighted") is False
+    assert data.get("weighted") is True
+    assert data.get("weighted_by_net_profit") is True
 
 
 @pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
@@ -638,7 +644,8 @@ def test_train_transformer(tmp_path: Path):
     assert data.get("model_type") == "transformer"
     assert "transformer_weights" in data
     assert data.get("sequence_length") == 3
-    assert data.get("weighted") is False
+    assert data.get("weighted") is True
+    assert data.get("weighted_by_net_profit") is True
 
 
 def test_incremental_train(tmp_path: Path):
@@ -881,7 +888,7 @@ def test_resume_training(tmp_path: Path):
             "price": "1.1000",
             "sl": "1.0950",
             "tp": "1.1100",
-            "profit": "0",
+            "profit": "1",
             "spread": "2",
             "comment": "",
             "remaining_lots": "0.1",
@@ -903,7 +910,7 @@ def test_resume_training(tmp_path: Path):
             "price": "1.2000",
             "sl": "1.1950",
             "tp": "1.2100",
-            "profit": "0",
+            "profit": "2",
             "spread": "3",
             "comment": "",
             "remaining_lots": "0.1",
@@ -939,7 +946,7 @@ def test_resume_training(tmp_path: Path):
             "price": "1.1300",
             "sl": "1.1250",
             "tp": "1.1400",
-            "profit": "0",
+            "profit": "3",
             "spread": "2",
             "comment": "",
             "remaining_lots": "0.1",
@@ -961,7 +968,7 @@ def test_resume_training(tmp_path: Path):
             "price": "1.1400",
             "sl": "1.1350",
             "tp": "1.1500",
-            "profit": "0",
+            "profit": "4",
             "spread": "3",
             "comment": "",
             "remaining_lots": "0.1",
