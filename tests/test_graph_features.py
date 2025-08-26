@@ -59,7 +59,7 @@ def _write_log(file: Path) -> None:
             "1.1000",
             "1.0950",
             "1.1100",
-            "0",
+            "1",
             "2",
             "",
             "0.1",
@@ -84,7 +84,7 @@ def _write_log(file: Path) -> None:
             "1.2000",
             "1.1950",
             "1.2100",
-            "0",
+            "2",
             "3",
             "",
             "0.1",
@@ -141,6 +141,7 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "graph_degree" in feats
     assert "graph_pagerank" in feats
     assert "corr_EURUSD_USDCHF" in feats
+    assert model.get("weighted_by_net_profit") is True
     graph = model.get("graph") or json.load(open(graph_file))
     assert graph.get("symbols") == ["EURUSD", "USDCHF"]
     metrics = graph.get("metrics", {})

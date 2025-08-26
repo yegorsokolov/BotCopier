@@ -44,5 +44,6 @@
   "risk_parity_symbols": ["EURUSD", "USDJPY"],
   "risk_parity_weights": [0.6, 0.4],
   "risk_covariance_symbols": ["EURUSD", "USDJPY"],
-  "risk_covariance_matrix": [[1.0, 0.2], [0.2, 1.0]]
+  "risk_covariance_matrix": [[1.0, 0.2], [0.2, 1.0]],
+  "weighted_by_net_profit": false
 }

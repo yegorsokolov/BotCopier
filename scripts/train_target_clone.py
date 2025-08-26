@@ -1339,6 +1339,7 @@ def _extract_features(
         margin_level = _safe_float(r.get("margin_level", 0))
         commission = _safe_float(r.get("commission", 0))
         swap = _safe_float(r.get("swap", 0))
+        net_profit = profit - commission - swap
         trend_est = _safe_float(r.get("trend_estimate", 0))
         trend_var = _safe_float(r.get("trend_variance", 0))
 
@@ -1362,6 +1363,7 @@ def _extract_features(
             "dow_cos": dow_cos,
             "lots": lots,
             "profit": profit,
+            "net_profit": net_profit,
             "sl_dist": sl_dist,
             "tp_dist": tp_dist,
             "sl_hit_dist": sl_hit,
@@ -1726,6 +1728,7 @@ def _train_lite_mode(
         "feature_names": feature_names,
         "model_type": "logreg",
         "weighted": False,
+        "weighted_by_net_profit": True,
         "training_mode": "lite",
         "mode": mode,
         "train_accuracy": float("nan"),
@@ -2127,6 +2130,12 @@ def train(
         feat_reg = [dict(f) for f in features]
         for f in feat_reg:
             f.pop("profit", None)
+            f.pop("net_profit", None)
+            f.pop("commission", None)
+            f.pop("swap", None)
+            f.pop("sl_hit_dist", None)
+            f.pop("tp_hit_dist", None)
+            f.pop("symbol", None)
             for k in list(f.keys()):
                 if k.startswith("regime"):
                     f.pop(k, None)
@@ -2310,6 +2319,10 @@ def train(
             ],
             dtype=float,
         )
+    base_weight *= np.array(
+        [abs(f.get("net_profit", 0.0)) for f in feat_train],
+        dtype=float,
+    )
     if unc_train_mask.size:
         base_weight *= np.where(unc_train_mask > 0, uncertain_weight, 1.0)
         logger.info(
@@ -2340,10 +2353,22 @@ def train(
     feat_val_clf = [dict(f) for f in feat_val]
     for f in feat_train_clf:
         f.pop("profit", None)
+        f.pop("net_profit", None)
+        f.pop("commission", None)
+        f.pop("swap", None)
+        f.pop("sl_hit_dist", None)
+        f.pop("tp_hit_dist", None)
+        f.pop("symbol", None)
         f.pop("event_id", None)
         f.pop("calendar_event_id", None)
     for f in feat_val_clf:
         f.pop("profit", None)
+        f.pop("net_profit", None)
+        f.pop("commission", None)
+        f.pop("swap", None)
+        f.pop("sl_hit_dist", None)
+        f.pop("tp_hit_dist", None)
+        f.pop("symbol", None)
         f.pop("event_id", None)
         f.pop("calendar_event_id", None)
 
@@ -2545,6 +2570,12 @@ def train(
         all_feat_clf = [dict(f) for f in features]
         for f in all_feat_clf:
             f.pop("profit", None)
+            f.pop("net_profit", None)
+            f.pop("commission", None)
+            f.pop("swap", None)
+            f.pop("sl_hit_dist", None)
+            f.pop("tp_hit_dist", None)
+            f.pop("symbol", None)
         X_all = vec.transform(all_feat_clf)
         X_all = _encode_features(enc_model, X_all)
         symbols_all = np.array([f.get("symbol", "") for f in features])
@@ -2618,6 +2649,12 @@ def train(
         all_feat = [dict(f) for f in features]
         for f in all_feat:
             f.pop("profit", None)
+            f.pop("net_profit", None)
+            f.pop("commission", None)
+            f.pop("swap", None)
+            f.pop("sl_hit_dist", None)
+            f.pop("tp_hit_dist", None)
+            f.pop("symbol", None)
             f.pop("regime", None)
             for k in list(f.keys()):
                 if k.startswith("regime_"):
@@ -2668,6 +2705,12 @@ def train(
         train_feat = [dict(f) for f in feat_train]
         for f in train_feat:
             f.pop("profit", None)
+            f.pop("net_profit", None)
+            f.pop("commission", None)
+            f.pop("swap", None)
+            f.pop("sl_hit_dist", None)
+            f.pop("tp_hit_dist", None)
+            f.pop("symbol", None)
             f.pop("regime", None)
             for k in list(f.keys()):
                 if k.startswith("regime_"):
@@ -2679,6 +2722,12 @@ def train(
         val_feat = [dict(f) for f in feat_val]
         for f in val_feat:
             f.pop("profit", None)
+            f.pop("net_profit", None)
+            f.pop("commission", None)
+            f.pop("swap", None)
+            f.pop("sl_hit_dist", None)
+            f.pop("tp_hit_dist", None)
+            f.pop("symbol", None)
             f.pop("regime", None)
             for k in list(f.keys()):
                 if k.startswith("regime_"):
@@ -2735,6 +2784,7 @@ def train(
             + (int(existing_model.get("num_samples", 0)) if existing_model else 0),
             "feature_importance": {},
             "weighted": sample_weight is not None,
+            "weighted_by_net_profit": True,
             "last_event_id": int(last_event_id),
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
@@ -3450,6 +3500,7 @@ def train(
         "training_mode": "lite" if lite_mode else "heavy",
         "mode": mode,
         "weighted": sample_weight is not None,
+        "weighted_by_net_profit": True,
         "train_accuracy": train_acc,
         "val_accuracy": val_acc,
         "val_f1": val_f1,
