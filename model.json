@@ -6,31 +6,76 @@
       "parameters": {}
     },
     "sub_policies": {
-      "0": {"algorithm": "PPO", "parameters": {}},
-      "1": {"algorithm": "PPO", "parameters": {}}
+      "0": {
+        "algorithm": "PPO",
+        "parameters": {}
+      },
+      "1": {
+        "algorithm": "PPO",
+        "parameters": {}
+      }
     }
   },
   "training_mode": "lite",
   "mode": "lite",
   "drift_metric": 0.0,
   "teacher_accuracy": 0.0,
-  "student_coefficients": [0.0],
+  "student_coefficients": [
+    0.0
+  ],
   "student_intercept": 0.0,
-  "lot_coefficients": [0.0],
+  "lot_coefficients": [
+    0.0
+  ],
   "lot_intercept": 0.0,
-  "sl_coefficients": [0.0],
+  "sl_coefficients": [
+    0.0
+  ],
   "sl_intercept": 0.0,
-  "tp_coefficients": [0.0],
+  "tp_coefficients": [
+    0.0
+  ],
   "tp_intercept": 0.0,
-  "entry_coefficients": [0.0, 0.0, 0.0, 0.0],
+  "entry_coefficients": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
   "entry_intercept": 0.0,
   "entry_threshold": 0.5,
-  "exit_coefficients": [0.0, 0.0, 0.0],
+  "exit_coefficients": [
+    0.0,
+    0.0,
+    0.0
+  ],
   "exit_intercept": 0.0,
   "exit_threshold": 0.0,
   "hourly_thresholds": [
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
   ],
   "threshold_symbols": [],
   "threshold_table": [],
@@ -41,9 +86,61 @@
     "embedding_dim": 0
   },
   "symbol_embeddings": {},
-  "risk_parity_symbols": ["EURUSD", "USDJPY"],
-  "risk_parity_weights": [0.6, 0.4],
-  "risk_covariance_symbols": ["EURUSD", "USDJPY"],
-  "risk_covariance_matrix": [[1.0, 0.2], [0.2, 1.0]],
-  "weighted_by_net_profit": false
+  "risk_parity_symbols": [
+    "EURUSD",
+    "USDJPY"
+  ],
+  "risk_parity_weights": [
+    0.6,
+    0.4
+  ],
+  "risk_covariance_symbols": [
+    "EURUSD",
+    "USDJPY"
+  ],
+  "risk_covariance_matrix": [
+    [
+      1.0,
+      0.2
+    ],
+    [
+      0.2,
+      1.0
+    ]
+  ],
+  "weighted_by_net_profit": false,
+  "ae_weights": [
+    -0.5015436410903931,
+    0.28598496317863464,
+    -0.5015436410903931,
+    0.28598418831825256,
+    -0.5015436410903931,
+    0.2859852612018585,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.4953402280807495,
+    -0.8686990737915039
+  ],
+  "ae_mean": [
+    1.25,
+    1.2000000476837158,
+    1.2999999523162842,
+    1.0,
+    0.10000000149011612,
+    0.01425000000745058
+  ],
+  "ae_std": [
+    0.18027757108211517,
+    0.18027760088443756,
+    0.18027757108211517,
+    9.99999993922529e-09,
+    9.99999993922529e-09,
+    0.0037666396237909794
+  ],
+  "ae_shape": [
+    6,
+    2
+  ]
 }
