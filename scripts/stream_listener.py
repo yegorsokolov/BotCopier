@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Listen for observer events from Arrow Flight and append them to CSV logs."""
+"""Consume observer events from a shared memory ring with Arrow Flight fallback."""
 from __future__ import annotations
 
 try:
@@ -28,7 +28,6 @@ import asyncio
 import time
 import pickle
 import subprocess
-import gzip
 import threading
 from datetime import datetime
 import psutil
@@ -69,6 +68,11 @@ try:  # optional websocket client
 except Exception:  # pragma: no cover - optional dependency
     create_connection = None
     WebSocket = None
+
+try:  # shared memory ring buffer
+    from .shm_ring import ShmRing, TRADE_MSG, METRIC_MSG
+except Exception:  # pragma: no cover - fallback for direct execution
+    from shm_ring import ShmRing, TRADE_MSG, METRIC_MSG  # type: ignore
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -201,13 +205,6 @@ except Exception:  # pragma: no cover - optional dependency
     trade_capnp = metrics_capnp = None  # type: ignore
 
 SCHEMA_VERSION = 1
-TRADE_MSG = 0
-METRIC_MSG = 1
-
-LOG_FILES = {
-    TRADE_MSG: Path("logs/trades_raw.csv"),
-    METRIC_MSG: Path("logs/metrics.csv"),
-}
 
 # system telemetry log
 TELEMETRY_LOG = Path("logs/system_telemetry.csv")
@@ -218,8 +215,6 @@ current_span_id = ""
 RUN_INFO_PATH = Path("logs/run_info.json")
 run_info_written = False
 
-trade_prev = bytearray()
-metric_prev = bytearray()
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "stream_listener")})
 provider = TracerProvider(resource=resource)
@@ -407,41 +402,6 @@ def start_system_monitor(interval: float = 5.0) -> None:
     t.start()
 
 
-def _maybe_decompress(data: bytes) -> bytes:
-    if len(data) > 2 and data[0] == 0x1F and data[1] == 0x8B:
-        try:
-            return gzip.decompress(data)
-        except Exception:
-            return data
-    return data
-
-
-def _decode_event(data: bytes, prev: bytearray):
-    buf = _maybe_decompress(data)
-    if len(buf) < 2:
-        return None
-    version = buf[0]
-    tag = buf[1]
-    if tag == 0:
-        prev[:] = buf[2:]
-        return version, bytes(prev)
-    if tag == 1:
-        if not prev:
-            return None
-        cnt = buf[2]
-        pos = 3
-        for _ in range(cnt):
-            if pos + 2 >= len(buf):
-                break
-            idx = (buf[pos] << 8) | buf[pos + 1]
-            val = buf[pos + 2]
-            pos += 3
-            if idx < len(prev):
-                prev[idx] = val
-        return version, bytes(prev)
-    return None
-
-
 def _get(msg, camel: str, snake: str | None = None):
     """Retrieve attribute ``camel``/``snake`` from ``msg`` supporting dicts."""
     if snake is None:
@@ -528,7 +488,6 @@ def process_trade(msg) -> None:
         except (KeyError, ValueError):
             pass
         logger.info(record, extra=extra)
-        append_csv(LOG_FILES[TRADE_MSG], record)
         current_trace_id = record.get("trace_id", "")
         current_span_id = record.get("span_id", "")
         if ws_trades:
@@ -585,7 +544,6 @@ def process_metric(msg) -> None:
         except (KeyError, ValueError):
             pass
         logger.info(record, extra=extra)
-        append_csv(LOG_FILES[METRIC_MSG], record)
         current_trace_id = record.get("trace_id", "")
         current_span_id = record.get("span_id", "")
         if ws_metrics:
@@ -619,6 +577,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Listen for observer events")
     p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
     p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
+    p.add_argument("--ring-path", default="/tmp/observer_ring", help="path to shared memory ring")
     p.add_argument("--flight-host", default="127.0.0.1", help="Arrow Flight server host")
     p.add_argument("--flight-port", type=int, default=8815)
     args = p.parse_args()
@@ -637,8 +596,40 @@ def main() -> int:
             ws_metrics = None
 
     write_run_info()
-    for pth in LOG_FILES.values():
-        pth.parent.mkdir(parents=True, exist_ok=True)
+    ring = None
+    try:
+        ring = ShmRing.open(args.ring_path)
+    except Exception as e:
+        logger.warning({"error": "ring open failed", "details": str(e)})
+
+    if ring is not None:
+        _sd_notify_ready()
+        try:
+            while True:
+                msg = ring.pop()
+                if msg is None:
+                    time.sleep(0.01)
+                    continue
+                msg_type, payload = msg
+                try:
+                    if msg_type == TRADE_MSG and trade_capnp is not None:
+                        process_trade(trade_capnp.TradeEvent.from_bytes(bytes(payload)))
+                    elif msg_type == METRIC_MSG and metrics_capnp is not None:
+                        process_metric(metrics_capnp.Metrics.from_bytes(bytes(payload)))
+                except Exception as e:
+                    logger.warning({"error": "decode failure", "details": str(e)})
+        finally:
+            if ws_trades:
+                try:
+                    ws_trades.close()
+                except Exception:
+                    pass
+            if ws_metrics:
+                try:
+                    ws_metrics.close()
+                except Exception:
+                    pass
+        return 0
 
     async def _flight_run() -> None:
         client = flight.FlightClient(f"grpc://{args.flight_host}:{args.flight_port}")
