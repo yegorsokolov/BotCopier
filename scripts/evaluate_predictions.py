@@ -146,6 +146,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
     expected_return = sum(profits) / len(profits) if profits else 0.0
     downside = [p for p in profits if p < 0]
     downside_risk = -sum(downside) / len(downside) if downside else 0.0
+    risk_reward = expected_return - downside_risk
 
     # Sharpe ratio uses overall standard deviation while Sortino only
     # considers downside volatility.  Both expect non-zero deviation.
@@ -192,6 +193,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
         "expectancy": expectancy,
         "expected_return": expected_return,
         "downside_risk": downside_risk,
+        "risk_reward": risk_reward,
     }
 
 
