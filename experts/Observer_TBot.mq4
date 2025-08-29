@@ -6,6 +6,10 @@
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
 #import
+#import "shm_ring.dll"
+bool ShmRingInit(string name, int size);
+bool ShmRingWrite(int msg_type, uchar &payload[], int len);
+#import
 #import "flight_client.dll"
 bool FlightClientInit(string host, int port);
 bool FlightClientSend(string path, uchar &payload[], int len);
@@ -87,6 +91,8 @@ int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
 string   log_dir = "";
 const int SCHEMA_VERSION = 2;
+const int MSG_TRADE  = 0;
+const int MSG_METRIC = 1;
 int      AnomalyLateResponses = 0;
 
 double   CpuLoad = 0.0;
@@ -943,6 +949,7 @@ int OnInit()
    ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics);
    TradeQueueDepth = ArraySize(pending_trades);
    MetricQueueDepth = ArraySize(pending_metrics);
+   ShmRingInit("observer_ring", 1<<20);
    FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
@@ -1327,6 +1334,8 @@ string EscapeJson(string s)
 bool SendTrade(uchar &payload[])
 {
    int len = ArraySize(payload);
+   if(ShmRingWrite(MSG_TRADE, payload, len))
+      return(true);
    uchar out[];
    bool send_full = true;
    if(have_last_trade && ArraySize(last_trade_payload)==len)
@@ -1383,6 +1392,8 @@ bool SendTrade(uchar &payload[])
 bool SendMetrics(uchar &payload[], string line)
 {
    int len = ArraySize(payload);
+   if(ShmRingWrite(MSG_METRIC, payload, len))
+      return(true);
    uchar out[];
    bool send_full = true;
    if(have_last_metric && ArraySize(last_metric_payload)==len)
