@@ -52,6 +52,7 @@ def test_evaluate(tmp_path: Path):
     assert stats["expectancy"] == 10
     assert stats["expected_return"] == 10
     assert stats["downside_risk"] == 0
+    assert stats["risk_reward"] == 10
 
 
 def test_direction_mapping(tmp_path: Path):

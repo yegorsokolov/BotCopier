@@ -34,6 +34,12 @@ from opentelemetry.trace import format_span_id, format_trace_id
 try:
     import stable_baselines3 as sb3  # type: ignore
     try:
+        from stable_baselines3.common.buffers import PrioritizedReplayBuffer  # type: ignore
+        HAS_PRB = True
+    except Exception:  # pragma: no cover - optional dependency
+        PrioritizedReplayBuffer = None  # type: ignore
+        HAS_PRB = False
+    try:
         from gym import Env, spaces  # type: ignore
     except Exception:  # pragma: no cover - gymnasium fallback
         from gymnasium import Env, spaces  # type: ignore
@@ -564,7 +570,19 @@ def train(
         if HAS_SB3_CONTRIB:
             algo_map.update({"c51": sb3c.C51, "qr_dqn": sb3c.QRDQN})
         model_cls = algo_map[algo_key]
-        model = model_cls("MlpPolicy", env, learning_rate=learning_rate, gamma=gamma, verbose=0)
+        replay_args: Dict = {}
+        if HAS_PRB and algo_key in {"dqn", "c51", "qr_dqn"}:
+            replay_args["replay_buffer_class"] = PrioritizedReplayBuffer
+            replay_args["replay_buffer_kwargs"] = {"alpha": 0.6, "beta": 0.4}
+            replay_args["learning_starts"] = 0
+        model = model_cls(
+            "MlpPolicy",
+            env,
+            learning_rate=learning_rate,
+            gamma=gamma,
+            verbose=0,
+            **replay_args,
+        )
         if self_play:
             sim_env = SelfPlayEnv()
             half = max(1, training_steps // 2)
@@ -596,6 +614,9 @@ def train(
 
         expected_return = float("nan")
         downside_risk = float("nan")
+        value_atoms: List[float] | None = None
+        value_dist: List[float] | None = None
+        value_quantiles: List[float] | None = None
         if HAS_SB3_CONTRIB and algo_key in {"c51", "qr_dqn"} and torch is not None:
             with torch.no_grad():
                 obs_tensor = torch.tensor(states, dtype=torch.float32)
@@ -607,6 +628,8 @@ def train(
                     best = q_vals.argmax(-1)
                     exp_returns = q_vals[np.arange(len(q_vals)), best]
                     downside = [probs[i, a][atoms < 0].sum() for i, a in enumerate(best)]
+                    value_atoms = atoms.tolist()
+                    value_dist = probs[np.arange(len(q_vals)), best].mean(axis=0).tolist()
                 else:
                     quantiles = dist.cpu().numpy()
                     q_vals = quantiles.mean(-1)
@@ -615,6 +638,9 @@ def train(
                     downside = [
                         (quantiles[i, a] < 0).mean() for i, a in enumerate(best)
                     ]
+                    value_quantiles = (
+                        quantiles[np.arange(len(q_vals)), best].mean(axis=0).tolist()
+                    )
                 expected_return = float(np.mean(exp_returns))
                 downside_risk = float(np.mean(downside))
                 ctx_log = trace.get_current_span().get_span_context()
@@ -662,6 +688,11 @@ def train(
             model_info["expected_return"] = expected_return
         if not np.isnan(downside_risk):
             model_info["downside_risk"] = downside_risk
+        if value_atoms and value_dist:
+            model_info["value_atoms"] = value_atoms
+            model_info["value_distribution"] = value_dist
+        if value_quantiles:
+            model_info["value_quantiles"] = value_quantiles
         if self_play:
             model_info["training_type"] = "self_play"
         elif init_model_data is not None:
