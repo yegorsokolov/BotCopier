@@ -2,17 +2,12 @@
 #include "model_interface.mqh"
 #include <Arrays/ArrayInt.mqh>
 
-#import "observer_capnp.dll"
+#import "observer_grpc.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
-#import
-#import "shm_ring.dll"
-bool ShmRingInit(string name, int size);
-bool ShmRingWrite(int msg_type, uchar &payload[], int len);
-#import
-#import "flight_client.dll"
-bool FlightClientInit(string host, int port);
-bool FlightClientSend(string path, uchar &payload[], int len);
+bool GrpcClientInit(string host, int port);
+bool GrpcSendTrade(uchar &payload[], int len);
+bool GrpcSendMetrics(uchar &payload[], int len);
 #import
 
 #import "kernel32.dll"
@@ -66,8 +61,8 @@ extern double AnomalyThreshold             = 0.1;
 extern int    AnomalyTimeoutSeconds       = 5;
 extern string OtelEndpoint                = "";
 extern string ModelStateFile              = "model_online.json";
-extern string FlightServerHost            = "127.0.0.1";
-extern int    FlightServerPort            = 8815;
+extern string GrpcServerHost             = "127.0.0.1";
+extern int    GrpcServerPort             = 50051;
 extern int    FallbackRetryThreshold      = 5;
 extern string CalendarFileName           = "calendar.csv";
 extern int    CalendarEventWindowMinutes = 60;
@@ -92,8 +87,6 @@ int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
 string   log_dir = "";
 const int SCHEMA_VERSION = 2;
-const int MSG_TRADE  = 0;
-const int MSG_METRIC = 1;
 int      AnomalyLateResponses = 0;
 
 double   CpuLoad = 0.0;
@@ -271,10 +264,6 @@ uchar   pending_trades[][1];
 string  pending_trade_lines[];
 uchar   pending_metrics[][1];
 string  pending_metric_lines[];
-uchar   last_trade_payload[];
-bool    have_last_trade = false;
-uchar   last_metric_payload[];
-bool    have_last_metric = false;
 int     trade_backoff = 1;
 int     metric_backoff = 1;
 datetime next_trade_flush = 0;
@@ -497,7 +486,7 @@ void FlushPending(datetime now)
 {
    if(ArraySize(pending_trades) > 0 && now >= next_trade_flush)
    {
-      if(FlightClientSend("trades", pending_trades[0], ArraySize(pending_trades[0])))
+      if(GrpcSendTrade(pending_trades[0], ArraySize(pending_trades[0])))
       {
          RemoveFirst(pending_trades);
          RemoveFirstStr(pending_trade_lines);
@@ -525,7 +514,7 @@ void FlushPending(datetime now)
 
    if(ArraySize(pending_metrics) > 0 && now >= next_metric_flush)
    {
-      if(FlightClientSend("metrics", pending_metrics[0], ArraySize(pending_metrics[0])))
+      if(GrpcSendMetrics(pending_metrics[0], ArraySize(pending_metrics[0])))
       {
          RemoveFirst(pending_metrics);
          RemoveFirstStr(pending_metric_lines);
@@ -1030,8 +1019,7 @@ int OnInit()
    ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics);
    TradeQueueDepth = ArraySize(pending_trades);
    MetricQueueDepth = ArraySize(pending_metrics);
-   ShmRingInit("observer_ring", 1<<20);
-   FlightClientInit(FlightServerHost, FlightServerPort);
+   GrpcClientInit(GrpcServerHost, GrpcServerPort);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
    if(max_id >= NextEventId)
@@ -1416,55 +1404,12 @@ string EscapeJson(string s)
 bool SendTrade(uchar &payload[], string line)
 {
    int len = ArraySize(payload);
-   if(ShmRingWrite(MSG_TRADE, payload, len))
-      return(true);
-   uchar out[];
-   bool send_full = true;
-   if(have_last_trade && ArraySize(last_trade_payload)==len)
-   {
-      int changes = 0;
-      for(int i=0; i<len; i++)
-         if(payload[i] != last_trade_payload[i])
-            changes++;
-      if(changes>0 && changes<256)
-      {
-         send_full = false;
-         ArrayResize(out, 3 + changes*3);
-         out[0] = (uchar)SCHEMA_VERSION;
-         out[1] = 1; // delta tag
-         out[2] = (uchar)changes;
-         int pos = 3;
-         for(int i=0; i<len; i++)
-         {
-            if(payload[i] != last_trade_payload[i])
-            {
-               out[pos]   = (uchar)(i>>8);
-               out[pos+1] = (uchar)(i & 0xFF);
-               out[pos+2] = payload[i];
-               pos += 3;
-            }
-         }
-      }
-   }
-   if(send_full)
-   {
-      ArrayResize(out, len + 2);
-      out[0] = (uchar)SCHEMA_VERSION;
-      out[1] = 0; // full tag
-      ArrayCopy(out, payload, 2, 0, len);
-   }
-   ArrayResize(last_trade_payload, len);
-   ArrayCopy(last_trade_payload, payload, 0, 0, len);
-   have_last_trade = true;
-   uchar zipped[];
-   if(!CryptEncode(CRYPT_ARCHIVE_GZIP, out, zipped))
-      ArrayCopy(zipped, out, 0, 0, ArraySize(out));
-   if(FlightClientSend("trades", zipped, ArraySize(zipped)))
+   if(GrpcSendTrade(payload, len))
       return(true);
    SocketErrors++;
    FallbackEvents++;
    trade_retry_count++;
-   EnqueuePending(pending_trades, pending_trade_lines, zipped, line, log_dir + "/pending_trades.wal");
+   EnqueuePending(pending_trades, pending_trade_lines, payload, line, log_dir + "/pending_trades.wal");
    TradeQueueDepth = ArraySize(pending_trades);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    if(TradeQueueDepth >= MAX_TRADE_BUFFER)
@@ -1482,55 +1427,12 @@ bool SendTrade(uchar &payload[], string line)
 bool SendMetrics(uchar &payload[], string line)
 {
    int len = ArraySize(payload);
-   if(ShmRingWrite(MSG_METRIC, payload, len))
-      return(true);
-   uchar out[];
-   bool send_full = true;
-   if(have_last_metric && ArraySize(last_metric_payload)==len)
-   {
-      int changes = 0;
-      for(int i=0; i<len; i++)
-         if(payload[i] != last_metric_payload[i])
-            changes++;
-      if(changes>0 && changes<256)
-      {
-         send_full = false;
-         ArrayResize(out, 3 + changes*3);
-         out[0] = (uchar)SCHEMA_VERSION;
-         out[1] = 1;
-         out[2] = (uchar)changes;
-         int pos = 3;
-         for(int i=0; i<len; i++)
-         {
-            if(payload[i] != last_metric_payload[i])
-            {
-               out[pos]   = (uchar)(i>>8);
-               out[pos+1] = (uchar)(i & 0xFF);
-               out[pos+2] = payload[i];
-               pos += 3;
-            }
-         }
-      }
-   }
-   if(send_full)
-   {
-      ArrayResize(out, len + 2);
-      out[0] = (uchar)SCHEMA_VERSION;
-      out[1] = 0;
-      ArrayCopy(out, payload, 2, 0, len);
-   }
-   ArrayResize(last_metric_payload, len);
-   ArrayCopy(last_metric_payload, payload, 0, 0, len);
-   have_last_metric = true;
-   uchar zipped[];
-   if(!CryptEncode(CRYPT_ARCHIVE_GZIP, out, zipped))
-      ArrayCopy(zipped, out, 0, 0, ArraySize(out));
-   if(FlightClientSend("metrics", zipped, ArraySize(zipped)))
+   if(GrpcSendMetrics(payload, len))
       return(true);
    SocketErrors++;
    FallbackEvents++;
    metric_retry_count++;
-   EnqueuePending(pending_metrics, pending_metric_lines, zipped, line, log_dir + "/pending_metrics.wal");
+   EnqueuePending(pending_metrics, pending_metric_lines, payload, line, log_dir + "/pending_metrics.wal");
    MetricQueueDepth = ArraySize(pending_metrics);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    next_metric_flush = now + metric_backoff;

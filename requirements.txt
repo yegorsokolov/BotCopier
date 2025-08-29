@@ -11,6 +11,7 @@ opentelemetry-exporter-otlp
 opentelemetry-exporter-jaeger
 protobuf
 grpcio
+grpcio-tools
 pyzmq
 pyarrow
 pycapnp
