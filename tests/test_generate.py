@@ -61,6 +61,26 @@ def test_sl_tp_features(tmp_path: Path):
     assert "GetTPDistance()" in content
 
 
+def test_polynomial_features(tmp_path: Path):
+    model = {
+        "model_id": "poly",
+        "magic": 42,
+        "coefficients": [0.1, 0.2, 0.3],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["spread", "lots", "spread*lots"],
+    }
+    mf = tmp_path / "model.json"
+    with open(mf, "w") as f:
+        json.dump(model, f)
+    out_dir = tmp_path / "out"
+    generate(mf, out_dir)
+    generated = list(out_dir.glob("Generated_poly_*.mq4"))
+    assert generated
+    content = generated[0].read_text()
+    assert "MarketInfo(SymbolToTrade, MODE_SPREAD) * Lots" in content
+
+
 def test_generate_ensemble(tmp_path: Path):
     m1 = {
         "model_id": "m1",

@@ -530,47 +530,75 @@ def generate(
         'macd': 'CachedMACD',
         'macd_signal': 'CachedMACDSignal',
     }
+    def resolve_expr(fname: str) -> str | None:
+        expr = feature_map.get(fname)
+        if expr is not None:
+            return expr
+        m = tf_pattern.match(fname)
+        if m:
+            ind, tf = m.groups()
+            tf = tf.upper()
+            tf_val = tf_const.get(tf, '0')
+            used_tfs.add(tf_val)
+            return f"{indicator_expr[ind]}[TFIdx({tf_val})]"
+        if '*' in fname or '^' in fname:
+            parts = fname.split('*')
+            sub = []
+            for p in parts:
+                if '^' in p:
+                    base, pow_str = p.split('^', 1)
+                    base_expr = resolve_expr(base)
+                    if base_expr is None:
+                        return None
+                    try:
+                        pw = int(pow_str)
+                    except ValueError:
+                        return None
+                    if pw == 2:
+                        sub.append(f"({base_expr} * {base_expr})")
+                    else:
+                        sub.append(f"MathPow({base_expr}, {pw})")
+                else:
+                    base_expr = resolve_expr(p)
+                    if base_expr is None:
+                        return None
+                    sub.append(base_expr)
+            return '(' + ' * '.join(sub) + ')'
+        if fname.startswith('regime_') and fname[7:].isdigit():
+            rid = int(fname.split('_')[1])
+            return f'(GetRegime() == {rid} ? 1.0 : 0.0)'
+        if fname == 'regime':
+            return 'GetRegime()'
+        if fname.startswith('ratio_'):
+            parts = fname[6:].split('_')
+            if len(parts) == 2:
+                return f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
+            if len(parts) == 1:
+                return f'iClose(SymbolToTrade, 0, 0) / iClose("{parts[0]}", 0, 0)'
+        if fname.startswith('corr_'):
+            parts = fname[5:].split('_')
+            if len(parts) >= 2:
+                sym1 = parts[0]
+                sym2 = '_'.join(parts[1:])
+                return f'PairCorrelation("{sym1}", "{sym2}")'
+            if len(parts) == 1:
+                return f'PairCorrelation("{parts[0]}")'
+        if fname.startswith('exit_reason='):
+            reason = fname.split('=', 1)[1]
+            return f'ExitReasonFlag("{reason}")'
+        if fname == 'graph_degree':
+            return 'GraphDegree()'
+        if fname == 'graph_pagerank':
+            return 'GraphPagerank()'
+        if fname.startswith('ae') and fname[2:].isdigit():
+            idx_ae = int(fname[2:])
+            return f'GetEncodedFeature({idx_ae})'
+        if fname == 'news_sentiment':
+            return 'GetNewsSentiment()'
+        return None
+
     for idx, name in enumerate(feature_names):
-        expr = feature_map.get(name)
-        if expr is None:
-            m = tf_pattern.match(name)
-            if m:
-                ind, tf = m.groups()
-                tf = tf.upper()
-                tf_val = tf_const.get(tf, '0')
-                used_tfs.add(tf_val)
-                expr = f"{indicator_expr[ind]}[TFIdx({tf_val})]"
-            elif name.startswith('regime_') and name[7:].isdigit():
-                rid = int(name.split('_')[1])
-                expr = f'(GetRegime() == {rid} ? 1.0 : 0.0)'
-            elif name == 'regime':
-                expr = 'GetRegime()'
-            elif name.startswith('ratio_'):
-                parts = name[6:].split('_')
-                if len(parts) == 2:
-                    expr = f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
-                elif len(parts) == 1:
-                    expr = f'iClose(SymbolToTrade, 0, 0) / iClose("{parts[0]}", 0, 0)'
-            elif name.startswith('corr_'):
-                parts = name[5:].split('_')
-                if len(parts) >= 2:
-                    sym1 = parts[0]
-                    sym2 = '_'.join(parts[1:])
-                    expr = f'PairCorrelation("{sym1}", "{sym2}")'
-                elif len(parts) == 1:
-                    expr = f'PairCorrelation("{parts[0]}")'
-            elif name.startswith('exit_reason='):
-                reason = name.split('=', 1)[1]
-                expr = f'ExitReasonFlag("{reason}")'
-            elif name == 'graph_degree':
-                expr = 'GraphDegree()'
-            elif name == 'graph_pagerank':
-                expr = 'GraphPagerank()'
-            elif name.startswith('ae') and name[2:].isdigit():
-                idx_ae = int(name[2:])
-                expr = f'GetEncodedFeature({idx_ae})'
-            elif name == 'news_sentiment':
-                expr = 'GetNewsSentiment()'
+        expr = resolve_expr(name)
         if expr is None:
             logging.error(
                 "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
@@ -580,7 +608,7 @@ def generate(
                 f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
             )
         cases.append(
-            f"      case {idx}: // {name}\n         raw = ({expr});\n         break;"
+            f"      case {idx}: // {name}\\n         raw = ({expr});\\n         break;",
         )
     case_block = "\n".join(cases)
     if case_block:
