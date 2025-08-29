@@ -338,7 +338,7 @@ def serve(
                 while True:
                     try:
                         size = 0
-                        for fn in ("pending_trades.wal", "pending_metrics.wal"):
+                        for fn in ("pending_trades.wal", "pending_metrics.wal", "trades_raw.wal"):
                             fp = wal_dir / fn
                             if fp.exists():
                                 size += fp.stat().st_size

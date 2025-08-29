@@ -71,6 +71,7 @@ extern int    FlightServerPort            = 8815;
 extern int    FallbackRetryThreshold      = 5;
 extern string CalendarFileName           = "calendar.csv";
 extern int    CalendarEventWindowMinutes = 60;
+extern int    MAX_TRADE_BUFFER           = 50;
 
 int timer_handle;
 
@@ -616,6 +617,41 @@ void ReplayWal(string fname, uchar &queue[][])
    FileClose(h);
 }
 
+void AppendWalLine(string fname, string line)
+{
+   int h = FileOpen(fname, FILE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_WRITE|FILE_SHARE_READ);
+   if(h==INVALID_HANDLE)
+      h = FileOpen(fname, FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE)
+      return;
+   FileSeek(h, 0, SEEK_END);
+   FileWrite(h, line);
+   FileClose(h);
+}
+
+void ReplayWalLines(string fname, int handle)
+{
+   int h = FileOpen(fname, FILE_READ|FILE_TXT|FILE_COMMON);
+   if(h==INVALID_HANDLE || handle==INVALID_HANDLE)
+      return;
+   FileSeek(handle, 0, SEEK_END);
+   while(!FileIsEnding(h))
+   {
+      string line = FileReadString(h);
+      if(StringLen(line)==0 && FileIsEnding(h))
+         break;
+      int _wr = FileWrite(handle, line);
+      if(_wr <= 0)
+      {
+         FileWriteErrors++;
+         AppendWalLine(fname, line);
+         break;
+      }
+   }
+   FileClose(h);
+   FileDelete(fname);
+}
+
 
 double ExtractJsonNumber(string json, string key)
 {
@@ -1087,6 +1123,7 @@ int OnInit()
             if(_wr <= 0)
                FileWriteErrors++;
          }
+         ReplayWalLines(log_dir + "/trades_raw.wal", trade_log_handle);
       }
       CurrentBackend = LOG_BACKEND_CSV;
       Print("Using CSV log backend");
@@ -1376,7 +1413,7 @@ string EscapeJson(string s)
    return(s);
 }
 
-bool SendTrade(uchar &payload[])
+bool SendTrade(uchar &payload[], string line)
 {
    int len = ArraySize(payload);
    if(ShmRingWrite(MSG_TRADE, payload, len))
@@ -1430,7 +1467,15 @@ bool SendTrade(uchar &payload[])
    EnqueuePending(pending_trades, pending_trade_lines, zipped, line, log_dir + "/pending_trades.wal");
    TradeQueueDepth = ArraySize(pending_trades);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-   next_trade_flush = now + trade_backoff;
+   if(TradeQueueDepth >= MAX_TRADE_BUFFER)
+   {
+      next_trade_flush = now;
+      FlushPending(now);
+   }
+   else
+   {
+      next_trade_flush = now + trade_backoff;
+   }
    return(false);
 }
 
@@ -1522,7 +1567,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 
    bool sent = false;
    if(len>0)
-      sent = SendTrade(payload);
+      sent = SendTrade(payload, line);
    if(!sent)
    {
       SocketErrors++;
@@ -1536,7 +1581,10 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
             FileSeek(trade_log_handle, 0, SEEK_END);
             int _wr = FileWrite(trade_log_handle, line);
             if(_wr <= 0)
+            {
                FileWriteErrors++;
+               AppendWalLine(log_dir + "/trades_raw.wal", line);
+            }
             FileFlush(trade_log_handle);
          }
          else
@@ -1544,6 +1592,8 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
             int n = ArraySize(trade_log_buffer);
             ArrayResize(trade_log_buffer, n+1);
             trade_log_buffer[n] = line;
+            if(ArraySize(trade_log_buffer) >= MAX_TRADE_BUFFER)
+               FlushTradeBuffer();
          }
       }
       else if(CurrentBackend==LOG_BACKEND_SQLITE)
@@ -1912,10 +1962,13 @@ void WriteMetrics(datetime ts)
    int wal_size = 0;
    string tw = log_dir + "/pending_trades.wal";
    string mw = log_dir + "/pending_metrics.wal";
+   string fw = log_dir + "/trades_raw.wal";
    if(FileIsExist(tw))
       wal_size += (int)FileSize(tw);
    if(FileIsExist(mw))
       wal_size += (int)FileSize(mw);
+   if(FileIsExist(fw))
+      wal_size += (int)FileSize(fw);
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];
@@ -2161,7 +2214,10 @@ void FlushTradeBuffer()
    {
       int _wr = FileWrite(trade_log_handle, trade_log_buffer[i]);
       if(_wr <= 0)
+      {
          FileWriteErrors++;
+         AppendWalLine(log_dir + "/trades_raw.wal", trade_log_buffer[i]);
+      }
    }
    FileFlush(trade_log_handle);
    ArrayResize(trade_log_buffer, 0);
