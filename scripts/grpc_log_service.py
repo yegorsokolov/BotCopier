@@ -7,11 +7,15 @@ import argparse
 import csv
 from concurrent import futures
 from pathlib import Path
+import sys
 
 import grpc
 from google.protobuf import empty_pb2
 
-from proto import trade_event_pb2, metric_event_pb2
+sys.path.append(str(Path(__file__).resolve().parent.parent / "proto"))
+import log_service_pb2_grpc  # type: ignore
+import metric_event_pb2  # type: ignore
+import trade_event_pb2  # type: ignore
 
 TRADE_FIELDS = [
     "event_id",
@@ -58,7 +62,7 @@ METRIC_FIELDS = [
 ]
 
 
-class _LogService:
+class _LogService(log_service_pb2_grpc.LogServiceServicer):
     def __init__(self, trade_out: Path, metrics_out: Path) -> None:
         self.trade_out = Path(trade_out)
         self.metrics_out = Path(metrics_out)
@@ -83,23 +87,11 @@ class _LogService:
 
 
 def create_server(host: str, port: int, trade_out: Path, metrics_out: Path) -> grpc.Server:
-    service = _LogService(trade_out, metrics_out)
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    trade_handler = grpc.unary_unary_rpc_method_handler(
-        service.LogTrade,
-        request_deserializer=trade_event_pb2.TradeEvent.FromString,
-        response_serializer=empty_pb2.Empty.SerializeToString,
+    log_service_pb2_grpc.add_LogServiceServicer_to_server(
+        _LogService(trade_out, metrics_out),
+        server,
     )
-    metrics_handler = grpc.unary_unary_rpc_method_handler(
-        service.LogMetrics,
-        request_deserializer=metric_event_pb2.MetricEvent.FromString,
-        response_serializer=empty_pb2.Empty.SerializeToString,
-    )
-    handler = grpc.method_handlers_generic_handler(
-        "tbot.LogService",
-        {"LogTrade": trade_handler, "LogMetrics": metrics_handler},
-    )
-    server.add_generic_rpc_handlers((handler,))
     server.add_insecure_port(f"{host}:{port}")
     return server
 

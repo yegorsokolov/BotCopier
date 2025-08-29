@@ -2,8 +2,13 @@ import socket
 from pathlib import Path
 
 import grpc
+import sys
+from pathlib import Path
 
-from proto import trade_event_pb2, metric_event_pb2
+sys.path.append(str(Path(__file__).resolve().parents[1] / "proto"))
+import log_service_pb2_grpc  # type: ignore
+import metric_event_pb2  # type: ignore
+import trade_event_pb2  # type: ignore
 from scripts import grpc_log_service
 
 
@@ -20,14 +25,7 @@ def test_grpc_log_service(tmp_path: Path):
     server.start()
     try:
         channel = grpc.insecure_channel(f"{host}:{port}")
-        log_trade = channel.unary_unary(
-            "/tbot.LogService/LogTrade",
-            request_serializer=lambda x: x.SerializeToString(),
-        )
-        log_metrics = channel.unary_unary(
-            "/tbot.LogService/LogMetrics",
-            request_serializer=lambda x: x.SerializeToString(),
-        )
+        stub = log_service_pb2_grpc.LogServiceStub(channel)
 
         trade = trade_event_pb2.TradeEvent(
             event_id=1,
@@ -43,7 +41,7 @@ def test_grpc_log_service(tmp_path: Path):
             lots=0.1,
             price=1.2345,
         )
-        log_trade(trade)
+        stub.LogTrade(trade)
 
         metrics = metric_event_pb2.MetricEvent(
             time="t",
@@ -58,7 +56,7 @@ def test_grpc_log_service(tmp_path: Path):
             book_refresh_seconds=5,
             var_breach_count=0,
         )
-        log_metrics(metrics)
+        stub.LogMetrics(metrics)
     finally:
         server.stop(0)
 

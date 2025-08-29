@@ -74,6 +74,11 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
 Traces will then appear in the Jaeger UI at ``http://localhost:16686``.
 
+## gRPC Telemetry
+
+`docs/grpc_pipeline.md` describes how trade and metric events are streamed to a
+Python service over gRPC using Protocol Buffers.
+
 ## Active Learning
 
 Strategies exported from this project can highlight trades where the model is

@@ -1,0 +1,11 @@
+syntax = "proto3";
+package tbot;
+
+import "trade_event.proto";
+import "metric_event.proto";
+import "google/protobuf/empty.proto";
+
+service LogService {
+  rpc LogTrade (TradeEvent) returns (google.protobuf.Empty);
+  rpc LogMetrics (MetricEvent) returns (google.protobuf.Empty);
+}
