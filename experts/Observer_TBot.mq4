@@ -151,19 +151,64 @@ void LoadCalendar()
       CalendarIds[idx] = eid;
    }
    FileClose(h);
+   // sort events by time while keeping impacts and ids paired
+   int n = ArraySize(CalendarTimes);
+   for(int i=1; i<n; i++)
+   {
+      datetime t = CalendarTimes[i];
+      double imp = CalendarImpacts[i];
+      int eid = CalendarIds[i];
+      int j = i - 1;
+      while(j >= 0 && CalendarTimes[j] > t)
+      {
+         CalendarTimes[j+1] = CalendarTimes[j];
+         CalendarImpacts[j+1] = CalendarImpacts[j];
+         CalendarIds[j+1] = CalendarIds[j];
+         j--;
+      }
+      CalendarTimes[j+1] = t;
+      CalendarImpacts[j+1] = imp;
+      CalendarIds[j+1] = eid;
+   }
 }
 
 int CalendarEventIdAt(datetime ts)
 {
+   int n = ArraySize(CalendarTimes);
+   if(n == 0)
+      return(-1);
+   int left = 0;
+   int right = n - 1;
+   while(left <= right)
+   {
+      int mid = (left + right) / 2;
+      if(CalendarTimes[mid] < ts)
+         left = mid + 1;
+      else
+         right = mid - 1;
+   }
    double maxImp = 0.0;
    int best = -1;
-   for(int i=0; i<ArraySize(CalendarTimes); i++)
-      if(MathAbs(ts - CalendarTimes[i]) <= CalendarEventWindowMinutes * 60)
-         if(CalendarImpacts[i] > maxImp)
-         {
-            maxImp = CalendarImpacts[i];
-            best = CalendarIds[i];
-         }
+   int i = left - 1;
+   while(i >= 0 && MathAbs(ts - CalendarTimes[i]) <= CalendarEventWindowMinutes * 60)
+   {
+      if(CalendarImpacts[i] > maxImp)
+      {
+         maxImp = CalendarImpacts[i];
+         best = CalendarIds[i];
+      }
+      i--;
+   }
+   i = left;
+   while(i < n && MathAbs(ts - CalendarTimes[i]) <= CalendarEventWindowMinutes * 60)
+   {
+      if(CalendarImpacts[i] > maxImp)
+      {
+         maxImp = CalendarImpacts[i];
+         best = CalendarIds[i];
+      }
+      i++;
+   }
    return(best);
 }
 
