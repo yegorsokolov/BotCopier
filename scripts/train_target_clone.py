@@ -15,6 +15,8 @@ import math
 import time
 from pathlib import Path
 from typing import Iterable, List, Optional
+import numbers
+from itertools import combinations_with_replacement
 import sqlite3
 import logging
 import subprocess
@@ -1191,6 +1193,7 @@ def _extract_features(
     use_orderbook=False,
     volatility=None,
     higher_timeframes=None,
+    poly_degree: int = 2,
     *,
     corr_map=None,
     extra_price_series=None,
@@ -1499,9 +1502,44 @@ def _extract_features(
                 while idx + 1 < len(sent_list) and sent_list[idx + 1][0] <= t:
                     idx += 1
                 news_indices[symbol] = idx
-                if sent_list[idx][0] <= t:
-                    score = float(sent_list[idx][1])
+            if sent_list[idx][0] <= t:
+                score = float(sent_list[idx][1])
             feat["news_sentiment"] = score
+
+        if poly_degree and poly_degree > 1:
+            poly_exclude = {
+                "profit",
+                "net_profit",
+                "commission",
+                "swap",
+                "sl_hit_dist",
+                "tp_hit_dist",
+                "symbol",
+                "event_id",
+                "calendar_event_id",
+            }
+            numeric_keys = [
+                k
+                for k, v in feat.items()
+                if isinstance(v, numbers.Real) and k not in poly_exclude
+            ]
+            for deg in range(2, poly_degree + 1):
+                for combo in combinations_with_replacement(sorted(numeric_keys), deg):
+                    val = 1.0
+                    for k in combo:
+                        val *= feat[k]
+                    counts = {}
+                    for k in combo:
+                        counts[k] = counts.get(k, 0) + 1
+                    name_parts = []
+                    for k in sorted(counts.keys()):
+                        c = counts[k]
+                        if c == 1:
+                            name_parts.append(k)
+                        else:
+                            name_parts.append(f"{k}^{c}")
+                    name = "*".join(name_parts)
+                    feat[name] = val
 
         prices.append(price)
         sym_prices.append(price)
@@ -1615,6 +1653,7 @@ def _train_lite_mode(
     corr_map=None,
     corr_window: int = 5,
     extra_price_series=None,
+    poly_degree: int = 2,
     news_sentiment=None,
     calendar_events: list[tuple[datetime, float, int]] | None = None,
     event_window: float = 60.0,
@@ -1685,6 +1724,7 @@ def _train_lite_mode(
             use_orderbook=use_orderbook,
             volatility=volatility_series,
             higher_timeframes=None,
+            poly_degree=poly_degree,
             corr_map=corr_map,
             corr_window=corr_window,
             extra_price_series=extra_price_series,
@@ -1815,6 +1855,7 @@ def train(
     corr_map=None,
     corr_window: int = 5,
     extra_price_series=None,
+    poly_degree: int = 2,
     symbol_graph: Path | None = None,
     bayes_steps: int | None = None,
     regress_sl_tp: bool = False,
@@ -1915,6 +1956,7 @@ def train(
             corr_map=corr_map,
             corr_window=corr_window,
             extra_price_series=extra_price_series,
+            poly_degree=poly_degree,
             news_sentiment=news_data,
             calendar_events=calendar_events,
             event_window=event_window,
@@ -2061,6 +2103,7 @@ def train(
                 event_window=event_window,
                 news_sentiment=news_data,
                 symbol_graph=graph_params,
+                poly_degree=poly_degree,
             )
             for sym, prices in p_chunk.items():
                 price_map_total.setdefault(sym, []).extend(prices)
@@ -3934,6 +3977,7 @@ def main():
     p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--symbol-graph', help='JSON file describing symbol correlation graph')
+    p.add_argument('--poly-degree', type=int, default=2, help='max polynomial feature degree (1 disables)')
     p.add_argument(
         '--bayes-steps',
         type=int,
@@ -4052,6 +4096,7 @@ def main():
             symbol_graph=symbol_graph,
             replay_file=Path(args.replay_file) if args.replay_file else None,
             replay_weight=args.replay_weight,
+            poly_degree=args.poly_degree,
         )
         if args.federated_server:
             model_path = Path(args.out_dir) / (
