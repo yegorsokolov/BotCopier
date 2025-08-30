@@ -259,6 +259,34 @@ def update_metrics_csv(metrics: Dict[str, float], metrics_file: Path, magic: int
         )
 
 
+def analyze_shadow_trades(csv_file: Path) -> Dict[int, Dict[str, float]]:
+    """Compute accuracy and profit per model from ``shadow_trades.csv``."""
+
+    stats: Dict[int, Dict[str, float]] = {}
+    with open(csv_file, newline="") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        for row in reader:
+            try:
+                model = int(row.get("model_idx") or row.get("model") or 0)
+            except ValueError:
+                continue
+            try:
+                profit = float(row.get("profit", 0) or 0)
+            except ValueError:
+                profit = 0.0
+            info = stats.setdefault(model, {"trades": 0, "wins": 0, "profit": 0.0})
+            info["trades"] += 1
+            if profit > 0:
+                info["wins"] += 1
+            info["profit"] += profit
+
+    result: Dict[int, Dict[str, float]] = {}
+    for model, info in stats.items():
+        accuracy = info["wins"] / info["trades"] if info["trades"] else 0.0
+        result[model] = {"accuracy": accuracy, "profit": info["profit"]}
+    return result
+
+
 def run_backtest(
     params_file: Path, tick_file: Path, evaluation_out: Optional[Path] = None
 ) -> Dict[str, float]:

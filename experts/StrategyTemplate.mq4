@@ -34,6 +34,8 @@ extern string MetaAdaptHost = "127.0.0.1";
 extern int    MetaAdaptPort = 9200;
 extern int    AdaptationInterval = 0; // seconds, 0=disabled
 extern string AdaptationLogFile = "adaptations.csv";
+extern bool   EnableShadowTrading = false;
+extern string ShadowTradesFile = "shadow_trades.csv";
 
 string HierarchyJson = "__HIERARCHY_JSON__";
 
@@ -149,6 +151,14 @@ int      AdaptLogHandle = INVALID_HANDLE;
 datetime LastAdaptRequest = 0;
 string   LastTraceId = "";
 string   LastSpanId  = "";
+int      ShadowTradeHandle = INVALID_HANDLE;
+bool     ShadowActive[];
+bool     ShadowIsBuy[];
+double   ShadowOpenPrice[];
+double   ShadowSL[];
+double   ShadowTP[];
+double   ShadowLots[];
+datetime ShadowOpenTime[];
 
 string GenId(int bytes)
 {
@@ -446,6 +456,27 @@ int OnInit()
       }
       else
          Print("Adaptation log open failed: ", GetLastError());
+   }
+   if(EnableShadowTrading)
+   {
+      ShadowTradeHandle = FileOpen(ShadowTradesFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+      if(ShadowTradeHandle != INVALID_HANDLE)
+      {
+         if(FileSize(ShadowTradeHandle) == 0)
+            FileWrite(ShadowTradeHandle, "timestamp;model_idx;result;profit");
+         FileSeek(ShadowTradeHandle, 0, SEEK_END);
+      }
+      else
+         Print("Shadow trade log open failed: ", GetLastError());
+      ArrayResize(ShadowActive, ModelCount);
+      ArrayResize(ShadowIsBuy, ModelCount);
+      ArrayResize(ShadowOpenPrice, ModelCount);
+      ArrayResize(ShadowSL, ModelCount);
+      ArrayResize(ShadowTP, ModelCount);
+      ArrayResize(ShadowLots, ModelCount);
+      ArrayResize(ShadowOpenTime, ModelCount);
+      for(int i=0;i<ModelCount;i++)
+         ShadowActive[i] = false;
    }
    ReplayDecisionLog(); // reprocess archived decisions when ReplayDecisions=true
    return(INIT_SUCCEEDED);
@@ -1356,7 +1387,9 @@ void OnTick()
          Print("Adapted weights received");
       LastAdaptRequest = TimeCurrent();
    }
-   if(HasOpenOrders())
+   if(EnableShadowTrading)
+      ManageShadowTrades();
+   else if(HasOpenOrders())
    {
       ManageOpenOrders();
       return;
@@ -1383,6 +1416,8 @@ void OnTick()
    ArrayResize(probs, ModelCount);
    double pvs[];
    ArrayResize(pvs, ModelCount);
+   double risk_weights[];
+   ArrayResize(risk_weights, ModelCount);
    for(int idx=0; idx<ModelCount; idx++)
    {
       pvs[idx] = ComputePredictiveVariance(idx);
@@ -1392,13 +1427,12 @@ void OnTick()
       double pr = ReplayProbability(feats, idx);
       LogDecision(feats, pr, "shadow", idx, reg, rw, pvs[idx]);
       probs[idx] = pr;
+      risk_weights[idx] = rw;
    }
 
    double prob = probs[modelIdx];
    double pv = pvs[modelIdx];
-   double risk_weight = base_risk;
-   if(pv > 0.0)
-      risk_weight /= pv;
+   double risk_weight = risk_weights[modelIdx];
 
    if(EnableDebugLogging)
    {
@@ -1410,7 +1444,7 @@ void OnTick()
       }
       Print("Features: [" + feat_vals + "] prob=" + DoubleToString(prob, 4));
    }
-   if(pv > MaxPredictiveVariance)
+   if(!EnableShadowTrading && pv > MaxPredictiveVariance)
    {
       Print("Skipping trade due to high predictive variance: " + DoubleToString(pv, 6));
       int decision_id = NextDecisionId;
@@ -1428,6 +1462,28 @@ void OnTick()
          datetime now = TimeCurrent();
          FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, sl_dist, tp_dist, modelIdx, reg, risk_weight, pv, feat_vals);
          FileFlush(UncertainLogHandle);
+      }
+      return;
+   }
+
+   if(EnableShadowTrading)
+   {
+      for(int idx=0; idx<ModelCount; idx++)
+      {
+         if(ShadowActive[idx])
+            continue;
+         if(pvs[idx] > MaxPredictiveVariance)
+            continue;
+         double tradeLots = CalcLots();
+         tradeLots *= risk_weights[idx];
+         bool buy = (probs[idx] > EntryThreshold);
+         ShadowActive[idx] = true;
+         ShadowIsBuy[idx] = buy;
+         ShadowOpenPrice[idx] = buy ? Ask : Bid;
+         ShadowSL[idx] = buy ? GetNewSL(true) : GetNewSL(false);
+         ShadowTP[idx] = buy ? GetNewTP(true) : GetNewTP(false);
+         ShadowLots[idx] = tradeLots;
+         ShadowOpenTime[idx] = TimeCurrent();
       }
       return;
    }
@@ -1513,6 +1569,57 @@ void ManageOpenOrders()
    }
 }
 
+void ManageShadowTrades()
+{
+   for(int idx=0; idx<ArraySize(ShadowActive); idx++)
+   {
+      if(!ShadowActive[idx])
+         continue;
+      bool isBuy = ShadowIsBuy[idx];
+      double price = isBuy ? Bid : Ask;
+      bool closed = false;
+      string result = "";
+      if(isBuy)
+      {
+         if(ShadowSL[idx] > 0 && price <= ShadowSL[idx])
+         {
+            closed = true;
+            result = "sl";
+         }
+         else if(ShadowTP[idx] > 0 && price >= ShadowTP[idx])
+         {
+            closed = true;
+            result = "tp";
+         }
+      }
+      else
+      {
+         if(ShadowSL[idx] > 0 && price >= ShadowSL[idx])
+         {
+            closed = true;
+            result = "sl";
+         }
+         else if(ShadowTP[idx] > 0 && price <= ShadowTP[idx])
+         {
+            closed = true;
+            result = "tp";
+         }
+      }
+
+      if(closed)
+      {
+         double profit = (isBuy ? (price - ShadowOpenPrice[idx]) : (ShadowOpenPrice[idx] - price)) * ShadowLots[idx];
+         if(ShadowTradeHandle != INVALID_HANDLE)
+         {
+            datetime now = TimeCurrent();
+            FileWrite(ShadowTradeHandle, TimeToString(now, TIME_DATE|TIME_SECONDS), idx, result, profit);
+            FileFlush(ShadowTradeHandle);
+         }
+         ShadowActive[idx] = false;
+      }
+   }
+}
+
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &req,
                         const MqlTradeResult  &res)
@@ -1542,5 +1649,7 @@ void OnDeinit(const int reason)
       SocketClose(DecisionSocket);
    if(AdaptLogHandle != INVALID_HANDLE)
       FileClose(AdaptLogHandle);
+   if(ShadowTradeHandle != INVALID_HANDLE)
+      FileClose(ShadowTradeHandle);
    MarketBookRelease(SymbolToTrade);
 }
