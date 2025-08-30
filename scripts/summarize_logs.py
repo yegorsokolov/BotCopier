@@ -17,7 +17,9 @@ from pathlib import Path
 import pandas as pd
 
 
-def _compute_summary(trades: pd.DataFrame, metrics: pd.DataFrame) -> dict:
+def _compute_summary(
+    trades: pd.DataFrame, metrics: pd.DataFrame, decisions: pd.DataFrame
+) -> dict:
     summary: dict[str, float] = {}
 
     if not trades.empty and "profit" in trades.columns:
@@ -69,6 +71,57 @@ def _compute_summary(trades: pd.DataFrame, metrics: pd.DataFrame) -> dict:
     else:
         summary["prediction_accuracy"] = 0.0
 
+    if not trades.empty and not decisions.empty and {
+        "event_id",
+        "action",
+        "model_idx",
+        "executed_model_idx",
+        "probability",
+    }.issubset(decisions.columns):
+        dec = decisions.rename(columns={"event_id": "decision_id"})
+        exec_dec = dec[dec["action"].isin(["buy", "sell"])]
+        merged = exec_dec.merge(
+            trades[["decision_id", "profit"]], on="decision_id", how="left"
+        )
+        if not merged.empty:
+            merged["actual"] = (merged["profit"].astype(float) > 0).astype(int)
+            merged["pred"] = (
+                (merged["probability"].astype(float) > 0.5).astype(int)
+            )
+            summary["live_prediction_accuracy"] = float(
+                (merged["actual"] == merged["pred"]).mean()
+            )
+            dec_sorted = dec.sort_values("decision_id")
+            shadow_acc: list[int] = []
+            for _, row in exec_dec.iterrows():
+                exec_id = row["event_id"]
+                exec_model = row["model_idx"]
+                profit_row = trades.loc[trades["decision_id"] == exec_id, "profit"]
+                if profit_row.empty:
+                    continue
+                actual = 1 if float(profit_row.iloc[0]) > 0 else 0
+                idx = dec_sorted.index.get_loc(row.name)
+                j = idx - 1
+                while j >= 0:
+                    sh = dec_sorted.iloc[j]
+                    if (
+                        sh["action"] != "shadow"
+                        or sh["executed_model_idx"] != exec_model
+                    ):
+                        break
+                    pred = 1 if float(sh["probability"]) > 0.5 else 0
+                    shadow_acc.append(1 if pred == actual else 0)
+                    j -= 1
+            summary["shadow_prediction_accuracy"] = float(
+                sum(shadow_acc) / len(shadow_acc)
+            ) if shadow_acc else 0.0
+        else:
+            summary["live_prediction_accuracy"] = 0.0
+            summary["shadow_prediction_accuracy"] = 0.0
+    else:
+        summary["live_prediction_accuracy"] = 0.0
+        summary["shadow_prediction_accuracy"] = 0.0
+
     return summary
 
 
@@ -93,11 +146,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--metrics-file", default="logs/metrics.csv")
     p.add_argument("--summary-file", default="session_summary.json")
     p.add_argument("--summaries-file", default="logs/summaries.csv")
+    p.add_argument("--decisions-file", default="logs/decisions.csv")
     args = p.parse_args(argv)
 
     trades = pd.read_csv(Path(args.trades_file))
     metrics = pd.read_csv(Path(args.metrics_file))
-    summary = _compute_summary(trades, metrics)
+    decisions_path = Path(args.decisions_file)
+    decisions = (
+        pd.read_csv(decisions_path) if decisions_path.exists() else pd.DataFrame()
+    )
+    summary = _compute_summary(trades, metrics, decisions)
     _write_outputs(summary, Path(args.summary_file), Path(args.summaries_file))
     return 0
 
