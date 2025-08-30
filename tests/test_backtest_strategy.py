@@ -16,6 +16,7 @@ from scripts.backtest_strategy import (
     update_metrics_csv,
     run_backtest,
     check_performance,
+    analyze_shadow_trades,
 )
 
 
@@ -76,3 +77,20 @@ def test_backtest_engine(tmp_path: Path):
     # and fails for demanding ones
     with pytest.raises(ValueError):
         check_performance(result, min_win_rate=0.9, min_profit_factor=10)
+
+
+def test_analyze_shadow_trades(tmp_path: Path):
+    path = tmp_path / "shadow_trades.csv"
+    path.write_text(
+        "timestamp;model_idx;result;profit\n"
+        "2024.01.01 00:00;0;tp;10\n"
+        "2024.01.01 00:01;0;sl;-5\n"
+        "2024.01.01 00:02;1;tp;8\n"
+        "2024.01.01 00:03;1;sl;-4\n"
+        "2024.01.01 00:04;1;tp;6\n"
+    )
+    stats = analyze_shadow_trades(path)
+    assert stats[0]["accuracy"] == 0.5
+    assert stats[0]["profit"] == 5
+    assert stats[1]["accuracy"] == pytest.approx(2 / 3)
+    assert stats[1]["profit"] == pytest.approx(10)
