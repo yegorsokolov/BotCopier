@@ -428,7 +428,7 @@ int OnInit()
          if(DecisionLogHandle != INVALID_HANDLE)
          {
             if(FileSize(DecisionLogHandle) == 0)
-               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;risk_weight;variance;lots_predicted;executed_model_idx;features;trace_id;span_id");
+               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;chosen;risk_weight;variance;lots_predicted;executed_model_idx;features;trace_id;span_id");
             FileSeek(DecisionLogHandle, 0, SEEK_END);
          }
          else
@@ -440,7 +440,7 @@ int OnInit()
    {
       if(FileSize(UncertainLogHandle) == 0)
          FileWrite(UncertainLogHandle,
-                   "event_id;timestamp;model_version;action;probability;threshold;sl_dist;tp_dist;model_idx;regime;risk_weight;variance;lots_predicted;features;label");
+                   "event_id;timestamp;model_version;action;probability;threshold;sl_dist;tp_dist;model_idx;regime;chosen;risk_weight;variance;lots_predicted;features;label");
       FileSeek(UncertainLogHandle, 0, SEEK_END);
    }
    else
@@ -1205,7 +1205,7 @@ void CalcStops(double &sl_dist, double &tp_dist)
    tp_dist = PredictTPDistance();
 }
 
-void LogDecision(double &feats[], double prob, string action, int modelIdx, int regime, double riskWeight, double variance)
+void LogDecision(double &feats[], double prob, string action, int modelIdx, int regime, double riskWeight, double variance, int chosen)
 {
    if(!EnableDecisionLogging)
       return;
@@ -1225,7 +1225,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    LastSpanId  = span_id;
    if(DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       FileFlush(DecisionLogHandle);
    }
    double thr = GetTradeThreshold();
@@ -1234,13 +1234,13 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    {
       // capture feature snapshot for active learning
       FileWrite(UncertainLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS),
-                ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, feat_vals, "");
+                ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, feat_vals, "");
       FileFlush(UncertainLogHandle);
    }
    if(DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"executed_model_idx\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"chosen\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"executed_model_idx\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
@@ -1425,7 +1425,7 @@ void OnTick()
       if(pvs[idx] > 0.0)
          rw /= pvs[idx];
       double pr = ReplayProbability(feats, idx);
-      LogDecision(feats, pr, "shadow", idx, reg, rw, pvs[idx]);
+      LogDecision(feats, pr, "shadow", idx, reg, rw, pvs[idx], 0);
       probs[idx] = pr;
       risk_weights[idx] = rw;
    }
@@ -1448,7 +1448,7 @@ void OnTick()
    {
       Print("Skipping trade due to high predictive variance: " + DoubleToString(pv, 6));
       int decision_id = NextDecisionId;
-      LogDecision(feats, prob, "skip", modelIdx, reg, risk_weight, pv);
+      LogDecision(feats, prob, "skip", modelIdx, reg, risk_weight, pv, 1);
       if(UncertainLogHandle != INVALID_HANDLE)
       {
          double sl_dist, tp_dist;
@@ -1460,7 +1460,9 @@ void OnTick()
             feat_vals += DoubleToString(feats[i], 5);
          }
          datetime now = TimeCurrent();
-         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, sl_dist, tp_dist, modelIdx, reg, risk_weight, pv, feat_vals);
+         double thr = GetTradeThreshold();
+         double lots = CalcLots();
+         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, thr, sl_dist, tp_dist, modelIdx, reg, 1, risk_weight, pv, lots, feat_vals, "");
          FileFlush(UncertainLogHandle);
       }
       return;
@@ -1495,7 +1497,7 @@ void OnTick()
    double thr = EntryThreshold;
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
-   LogDecision(feats, prob, action, modelIdx, reg, risk_weight, pv);
+   LogDecision(feats, prob, action, modelIdx, reg, risk_weight, pv, 1);
    string order_comment = StringFormat("decision_id=%d;trace_id=%s;span_id=%s;model=%d", decision_id, LastTraceId, LastSpanId, modelIdx);
    if(prob > thr)
    {
