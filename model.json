@@ -109,6 +109,7 @@
     ]
   ],
   "weighted_by_net_profit": false,
+  "class_weight": "none",
   "ae_weights": [
     -0.5015436410903931,
     0.28598496317863464,
