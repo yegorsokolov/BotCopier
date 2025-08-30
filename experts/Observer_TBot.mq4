@@ -147,23 +147,20 @@ void LoadCalendar()
    FileClose(h);
    // sort events by time while keeping impacts and ids paired
    int n = ArraySize(CalendarTimes);
-   for(int i=1; i<n; i++)
+   int order[];
+   ArrayResize(order, n);
+   ArraySort(CalendarTimes, WHOLE_ARRAY, 0, MODE_ASCEND, order);
+   double impTmp[];
+   int idTmp[];
+   ArrayResize(impTmp, n);
+   ArrayResize(idTmp, n);
+   for(int i=0; i<n; i++)
    {
-      datetime t = CalendarTimes[i];
-      double imp = CalendarImpacts[i];
-      int eid = CalendarIds[i];
-      int j = i - 1;
-      while(j >= 0 && CalendarTimes[j] > t)
-      {
-         CalendarTimes[j+1] = CalendarTimes[j];
-         CalendarImpacts[j+1] = CalendarImpacts[j];
-         CalendarIds[j+1] = CalendarIds[j];
-         j--;
-      }
-      CalendarTimes[j+1] = t;
-      CalendarImpacts[j+1] = imp;
-      CalendarIds[j+1] = eid;
+      impTmp[i] = CalendarImpacts[order[i]];
+      idTmp[i] = CalendarIds[order[i]];
    }
+   ArrayCopy(CalendarImpacts, impTmp);
+   ArrayCopy(CalendarIds, idTmp);
 }
 
 int CalendarEventIdAt(datetime ts)
