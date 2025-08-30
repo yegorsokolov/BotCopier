@@ -142,6 +142,7 @@ int      DecisionLogHandle = INVALID_HANDLE;
 int      UncertainLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
 int      NextDecisionId = 1;
+int      ExecutedModelIdx = -1;
 bool UseOnnxEncoder = false;
 bool UseOnnxModel = false;
 int      AdaptLogHandle = INVALID_HANDLE;
@@ -417,7 +418,7 @@ int OnInit()
          if(DecisionLogHandle != INVALID_HANDLE)
          {
             if(FileSize(DecisionLogHandle) == 0)
-               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;risk_weight;variance;lots_predicted;features;trace_id;span_id");
+               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;risk_weight;variance;lots_predicted;executed_model_idx;features;trace_id;span_id");
             FileSeek(DecisionLogHandle, 0, SEEK_END);
          }
          else
@@ -1193,7 +1194,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    LastSpanId  = span_id;
    if(DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, feat_vals, trace_id, span_id);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       FileFlush(DecisionLogHandle);
    }
    double thr = GetTradeThreshold();
@@ -1207,8 +1208,8 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    }
    if(DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, feat_vals, trace_id, span_id);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"executed_model_idx\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
+                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
@@ -1369,13 +1370,35 @@ void OnTick()
    if(reg >= 0 && reg < ArraySize(RegimeModelIdx))
       modelIdx = RegimeModelIdx[reg];
    CurrentRegime = reg;
+   ExecutedModelIdx = modelIdx;
    if(EnableDebugLogging)
       Print("Regime=", reg, " Model=", modelIdx);
-   double prob = ComputeEntryScore();
 
    double feats[100];
    for(int i=0; i<FeatureCount && i<100; i++)
       feats[i] = GetFeature(i);
+
+   double base_risk = AccountEquity() / AccountBalance();
+   double probs[];
+   ArrayResize(probs, ModelCount);
+   double pvs[];
+   ArrayResize(pvs, ModelCount);
+   for(int idx=0; idx<ModelCount; idx++)
+   {
+      pvs[idx] = ComputePredictiveVariance(idx);
+      double rw = base_risk;
+      if(pvs[idx] > 0.0)
+         rw /= pvs[idx];
+      double pr = ReplayProbability(feats, idx);
+      LogDecision(feats, pr, "shadow", idx, reg, rw, pvs[idx]);
+      probs[idx] = pr;
+   }
+
+   double prob = probs[modelIdx];
+   double pv = pvs[modelIdx];
+   double risk_weight = base_risk;
+   if(pv > 0.0)
+      risk_weight /= pv;
 
    if(EnableDebugLogging)
    {
@@ -1387,11 +1410,6 @@ void OnTick()
       }
       Print("Features: [" + feat_vals + "] prob=" + DoubleToString(prob, 4));
    }
-
-   double pv = ComputePredictiveVariance(modelIdx);
-   double risk_weight = AccountEquity() / AccountBalance();
-   if(pv > 0.0)
-      risk_weight /= pv;
    if(pv > MaxPredictiveVariance)
    {
       Print("Skipping trade due to high predictive variance: " + DoubleToString(pv, 6));
