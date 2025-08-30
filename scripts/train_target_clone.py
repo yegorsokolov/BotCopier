@@ -98,7 +98,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 START_EVENT_ID = 0
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_target_clone")})
@@ -746,6 +746,8 @@ def _load_logs(
         "tp_dist",
         "sl_hit_dist",
         "tp_hit_dist",
+        "executed_model_idx",
+        "decision_id",
         "profit",
         "spread",
         "comment",
@@ -928,6 +930,18 @@ def _load_logs(
                 if "magic" in chunk.columns:
                     chunk["magic"] = (
                         pd.to_numeric(chunk["magic"], errors="coerce").fillna(0).astype(int)
+                    )
+                if "executed_model_idx" in chunk.columns:
+                    chunk["executed_model_idx"] = (
+                        pd.to_numeric(chunk["executed_model_idx"], errors="coerce")
+                        .fillna(-1)
+                        .astype(int)
+                    )
+                if "decision_id" in chunk.columns:
+                    chunk["decision_id"] = (
+                        pd.to_numeric(chunk["decision_id"], errors="coerce")
+                        .fillna(0)
+                        .astype(int)
                     )
                 if df_metrics is not None and key_col is not None and "magic" in chunk.columns:
                     if key_col == "magic":

@@ -55,6 +55,14 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
                     "symbol": r.get("symbol", ""),
                     "direction": direction,
                     "lots": float(r.get("lots", 0) or 0),
+                    "executed_model_idx": (
+                        int(float(r.get("executed_model_idx") or r.get("model_idx") or r.get("model") or -1))
+                        if (r.get("executed_model_idx") or r.get("model_idx") or r.get("model"))
+                        else None
+                    ),
+                    "decision_id": (
+                        int(float(r.get("decision_id"))) if r.get("decision_id") else None
+                    ),
                 }
             )
     return preds
@@ -83,6 +91,12 @@ def _load_actual_trades(log_file: Path) -> List[Dict]:
                     if int(float(r.get("order_type", 0))) == 0
                     else -1,
                     "lots": float(r.get("lots", 0) or 0),
+                    "executed_model_idx": (
+                        int(float(r.get("executed_model_idx", -1) or -1))
+                    ),
+                    "decision_id": (
+                        int(float(r.get("decision_id", 0) or 0))
+                    ),
                 }
             elif action == "CLOSE" and ticket in open_map:
                 o = open_map.pop(ticket)
@@ -107,29 +121,47 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
     gross_loss = 0.0
     profits: List[float] = []
     used = set()
-    for pred in predictions:
-        best = None
-        for idx, trade in enumerate(actual_trades):
-            if idx in used:
-                continue
-            if trade["symbol"] != pred["symbol"]:
-                continue
-            if trade["direction"] != pred["direction"]:
-                continue
-            delta = (trade["open_time"] - pred["timestamp"]).total_seconds()
-            if 0 <= delta <= window:
-                best = idx
-                break
+    predictions_per_model: Dict[int, int] = {}
+    matches_per_model: Dict[int, int] = {}
 
-        if best is not None:
-            used.add(best)
+    trade_by_decision: Dict[int, Dict] = {}
+    for idx, trade in enumerate(actual_trades):
+        did = trade.get("decision_id")
+        if did is not None and did not in trade_by_decision:
+            trade_by_decision[did] = {"index": idx, "trade": trade}
+    for pred in predictions:
+        model_idx = pred.get("executed_model_idx")
+        if model_idx is not None:
+            predictions_per_model[model_idx] = predictions_per_model.get(model_idx, 0) + 1
+        match_idx = None
+        if pred.get("decision_id") is not None:
+            entry = trade_by_decision.get(pred["decision_id"])
+            if entry and entry["index"] not in used:
+                match_idx = entry["index"]
+        if match_idx is None:
+            for idx, trade in enumerate(actual_trades):
+                if idx in used:
+                    continue
+                if trade["symbol"] != pred["symbol"]:
+                    continue
+                if trade["direction"] != pred["direction"]:
+                    continue
+                delta = (trade["open_time"] - pred["timestamp"]).total_seconds()
+                if 0 <= delta <= window:
+                    match_idx = idx
+                    break
+        if match_idx is not None:
+            used.add(match_idx)
             matches += 1
-            p = actual_trades[best]["profit"]
+            trade = actual_trades[match_idx]
+            p = trade["profit"]
             profits.append(p)
             if p >= 0:
                 gross_profit += p
             else:
                 gross_loss += -p
+            if model_idx is not None:
+                matches_per_model[model_idx] = matches_per_model.get(model_idx, 0) + 1
 
     tp = matches
     fp = len(predictions) - matches
@@ -176,6 +208,11 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
     avg_loss = (-sum(loss_profits) / len(loss_profits)) if loss_profits else 0.0
     expectancy = win_rate * avg_win - (1 - win_rate) * avg_loss
 
+    per_model_accuracy = {
+        m: matches_per_model.get(m, 0) / c if c else 0.0
+        for m, c in predictions_per_model.items()
+    }
+
     return {
         "predicted_events": len(predictions),
         "actual_events": len(actual_trades),
@@ -194,6 +231,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
         "expected_return": expected_return,
         "downside_risk": downside_risk,
         "risk_reward": risk_reward,
+        "per_model_accuracy": per_model_accuracy,
     }
 
 
