@@ -215,12 +215,17 @@ def test_feature_extraction_basic():
     feats, *_ = _extract_features(rows)
     assert "hour_sin" in feats[0] and "hour_cos" in feats[0]
     assert "dow_sin" in feats[0] and "dow_cos" in feats[0]
+    assert "month_sin" in feats[0] and "month_cos" in feats[0]
+    assert "dom_sin" not in feats[0] and "dom_cos" not in feats[0]
     assert "spread" in feats[0]
     assert "slippage" in feats[0]
     assert "equity" in feats[0] and "margin_level" in feats[0]
     assert "sl_dist" in feats[0] and "tp_dist" in feats[0]
     assert "sl_hit_dist" in feats[0] and "tp_hit_dist" in feats[0]
     assert feats[0]["net_profit"] == pytest.approx(2.0 - 0.5 - 0.2)
+
+    feats_dom, *_ = _extract_features(rows, use_dom=True)
+    assert "dom_sin" in feats_dom[0] and "dom_cos" in feats_dom[0]
 
 
 def test_model_serialization(tmp_path: Path):

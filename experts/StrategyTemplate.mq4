@@ -506,6 +506,26 @@ double DowCos()
    return(MathCos(2.0 * 3.141592653589793 * TimeDayOfWeek(TimeCurrent()) / 7.0));
 }
 
+double MonthSin()
+{
+   return(MathSin(2.0 * 3.141592653589793 * (TimeMonth(TimeCurrent()) - 1) / 12.0));
+}
+
+double MonthCos()
+{
+   return(MathCos(2.0 * 3.141592653589793 * (TimeMonth(TimeCurrent()) - 1) / 12.0));
+}
+
+double DomSin()
+{
+   return(MathSin(2.0 * 3.141592653589793 * (TimeDay(TimeCurrent()) - 1) / 31.0));
+}
+
+double DomCos()
+{
+   return(MathCos(2.0 * 3.141592653589793 * (TimeDay(TimeCurrent()) - 1) / 31.0));
+}
+
 double GetSLDistance()
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
