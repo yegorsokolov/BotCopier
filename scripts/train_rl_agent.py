@@ -43,11 +43,15 @@ try:
         from gym import Env, spaces  # type: ignore
     except Exception:  # pragma: no cover - gymnasium fallback
         from gymnasium import Env, spaces  # type: ignore
+    from stable_baselines3.common.env_util import make_vec_env  # type: ignore
+    from stable_baselines3.common.vec_env import SubprocVecEnv  # type: ignore
     HAS_SB3 = True
 except Exception:  # pragma: no cover - optional dependency
     sb3 = None  # type: ignore
     spaces = None  # type: ignore
     Env = object  # type: ignore
+    make_vec_env = None  # type: ignore
+    SubprocVecEnv = None  # type: ignore
     HAS_SB3 = False
 
 try:  # pragma: no cover - optional dependency
@@ -394,6 +398,7 @@ def train(
     update_freq: int = 1,
     gamma: float = 0.9,
     algo: str = "dqn",
+    num_envs: int = 1,
     start_model: Path | None = None,
     compress_model: bool = False,
     self_play: bool = False,
@@ -563,7 +568,12 @@ def train(
                 )
                 return obs, reward, done, False, {}
 
-        env = TradeEnv(states, rewards)
+        def make_trade_env() -> Env:
+            return TradeEnv(states, rewards)
+
+        vec_cls = SubprocVecEnv if num_envs > 1 else None
+        env = make_vec_env(make_trade_env, n_envs=num_envs, vec_env_cls=vec_cls)
+        eval_env = TradeEnv(states, rewards)
         algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
         if HAS_SB3:
             algo_map.update({"a2c": sb3.A2C, "ddpg": sb3.DDPG})
@@ -596,16 +606,19 @@ def train(
             model.set_env(env)
         preds: List[int] = []
         total_r = 0.0
-        obs, _ = env.reset()
+        obs, _ = eval_env.reset()
+        obs = obs.reshape(1, -1)
         for i in range(len(actions)):
             with tracer.start_as_current_span("decision") as dspan:
                 act, _ = model.predict(obs, deterministic=True)
-                preds.append(int(act))
-                obs, reward, done, _, _ = env.step(int(act))
+                act_i = int(act[0]) if np.ndim(act) > 0 else int(act)
+                preds.append(act_i)
+                obs, reward, done, _, _ = eval_env.step(act_i)
+                obs = obs.reshape(1, -1)
                 total_r += float(reward)
                 dctx = dspan.get_span_context()
                 logger.info(
-                    {"decision_id": i, "action": int(act), "reward": float(reward)},
+                    {"decision_id": i, "action": act_i, "reward": float(reward)},
                     extra={"trace_id": dctx.trace_id, "span_id": dctx.span_id},
                 )
                 if done:
@@ -855,6 +868,7 @@ def main() -> None:
         p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
         p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
         p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
+        p.add_argument("--num-envs", type=int, default=1, help="number of parallel environments")
         p.add_argument(
             "--algo",
             default="dqn",
@@ -889,6 +903,7 @@ def main() -> None:
             buffer_size=args.buffer_size,
             update_freq=args.update_freq,
             algo=args.algo,
+            num_envs=args.num_envs,
             start_model=Path(args.start_model) if args.start_model else None,
             compress_model=args.compress_model,
             self_play=args.self_play,

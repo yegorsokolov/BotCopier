@@ -105,6 +105,7 @@ def test_train_rl_agent_sb3(tmp_path: Path, algo: str) -> None:
         training_steps=10,
         learning_rate=0.2,
         gamma=0.95,
+        num_envs=2,
     )
 
     model_file = out_dir / "model.json"
