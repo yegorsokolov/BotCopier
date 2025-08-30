@@ -3,7 +3,7 @@
 #include <Arrays/ArrayInt.mqh>
 
 #import "observer_grpc.dll"
-int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
+int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
 bool GrpcClientInit(string host, int port);
 bool GrpcSendTrade(uchar &payload[], int len);
@@ -86,7 +86,7 @@ int      FallbackEvents = 0;
 int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
 string   log_dir = "";
-const int SCHEMA_VERSION = 2;
+const int SCHEMA_VERSION = 3;
 int      AnomalyLateResponses = 0;
 
 double   CpuLoad = 0.0;
@@ -240,6 +240,7 @@ public:
    double   risk_weight;
    double   trend_estimate;
    double   trend_variance;
+   int      executed_model_idx;
    int      decision_id;
    string   exit_reason;
    int      duration_sec;
@@ -1053,7 +1054,7 @@ int OnInit()
    log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
    if(log_db_handle!=INVALID_HANDLE)
    {
-      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL, commission REAL, swap REAL, exit_reason TEXT, duration_sec INTEGER, calendar_event_id INTEGER, local_anomaly REAL, remote_anomaly REAL)";
+      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, executed_model_idx INTEGER, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL, commission REAL, swap REAL, exit_reason TEXT, duration_sec INTEGER, calendar_event_id INTEGER, local_anomaly REAL, remote_anomaly REAL)";
       DatabaseExecute(log_db_handle, create_sql);
       // Resume event id from existing records
       int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
@@ -1103,7 +1104,7 @@ int OnInit()
             NextEventId = last_id + 1;
          if(need_header)
          {
-         string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance;exit_reason;duration_sec;calendar_event_id;local_anomaly;remote_anomaly";
+        string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;executed_model_idx;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance;exit_reason;duration_sec;calendar_event_id;local_anomaly;remote_anomaly";
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
@@ -1440,7 +1441,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 {
    int cal_id = CalendarEventIdAt(t.time_event);
    string line = StringFormat(
-      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f;%s;%d;%d;%.5f;%.5f",
+      "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f;%s;%d;%d;%.5f;%.5f",
       t.id,
       TimeToString(t.time_event, TIME_DATE|TIME_SECONDS),
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
@@ -1449,7 +1450,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread,
       TraceId, t.span_id, t.comment_with_span, t.remaining, t.slippage,
       (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol,
-      t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom,
+      t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.executed_model_idx, t.decision_id, is_anom,
       t.equity, t.margin_level, t.commission, t.swap, t.risk_weight,
       t.trend_estimate, t.trend_variance, t.exit_reason, t.duration_sec, cal_id,
       t.anomaly_local, t.anomaly_remote);
@@ -1462,7 +1463,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
       t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, t.comment_with_span, t.remaining,
-      t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.decision_id, t.exit_reason, t.duration_sec, payload);
+      t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.executed_model_idx, t.decision_id, t.exit_reason, t.duration_sec, payload);
 
    bool sent = false;
    if(len>0)
@@ -1500,14 +1501,14 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
          if(log_db_handle!=INVALID_HANDLE)
          {
             string sql = StringFormat(
-               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,decision_id,is_anomaly,equity,margin_level,commission,swap,exit_reason,duration_sec,calendar_event_id,local_anomaly,remote_anomaly) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%.2f,%.2f,%.2f,%.2f,'%s',%d,%d,%.5f,%.5f)",
+               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,executed_model_idx,decision_id,is_anomaly,equity,margin_level,commission,swap,exit_reason,duration_sec,calendar_event_id,local_anomaly,remote_anomaly) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,'%s',%d,%d,%.5f,%.5f)",
                t.id,
                SqlEscape(TimeToString(t.time_event, TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
                SqlEscape(t.action), t.ticket, t.magic, SqlEscape(t.source), SqlEscape(t.symbol), t.order_type,
                t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, SqlEscape(TraceId), SqlEscape(t.span_id), SqlEscape(t.comment), t.remaining,
-               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.decision_id, is_anom, t.equity, t.margin_level, t.commission, t.swap, SqlEscape(t.exit_reason), t.duration_sec, cal_id, t.anomaly_local, t.anomaly_remote);
+               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.executed_model_idx, t.decision_id, is_anom, t.equity, t.margin_level, t.commission, t.swap, SqlEscape(t.exit_reason), t.duration_sec, cal_id, t.anomaly_local, t.anomaly_remote);
             DatabaseExecute(log_db_handle, sql);
          }
       }
@@ -1695,9 +1696,24 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
    }
    else
       t.comment_with_span = comment;
-   // Extract decision id if present in the order comment
+   // Extract model index and decision id if present in the order comment
+   int executed_model_idx = -1;
    int decision_id = 0;
-   int pos = StringFind(comment, "decision_id=");
+   int pos = StringFind(comment, "model=");
+   if(pos >= 0)
+   {
+      int start = pos + StringLen("model=");
+      int end = start;
+      while(end < StringLen(comment))
+      {
+         string ch = StringMid(comment, end, 1);
+         if(ch==";" || ch=="|")
+            break;
+         end++;
+      }
+      executed_model_idx = (int)StringToInteger(StringSubstr(comment, start, end-start));
+   }
+   pos = StringFind(comment, "decision_id=");
    if(pos >= 0)
    {
       int start = pos + StringLen("decision_id=");
@@ -1711,6 +1727,7 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
       }
       decision_id = (int)StringToInteger(StringSubstr(comment, start, end-start));
    }
+   t.executed_model_idx = executed_model_idx;
    t.decision_id = decision_id;
    string open_time_str = "";
    if(action=="CLOSE" && open_time>0)
