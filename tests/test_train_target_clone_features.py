@@ -116,6 +116,82 @@ def _write_sample_log(file: Path):
         writer.writerows(rows)
 
 
+def _write_imbalanced_log(file: Path):
+    fields = [
+        "event_id",
+        "event_time",
+        "broker_time",
+        "local_time",
+        "action",
+        "ticket",
+        "magic",
+        "source",
+        "symbol",
+        "order_type",
+        "lots",
+        "price",
+        "sl",
+        "tp",
+        "profit",
+        "spread",
+        "comment",
+        "remaining_lots",
+        "slippage",
+        "volume",
+        "open_time",
+        "book_bid_vol",
+        "book_ask_vol",
+        "book_imbalance",
+        "sl_hit_dist",
+        "tp_hit_dist",
+        "commission",
+        "swap",
+        "exit_reason",
+        "duration_sec",
+    ]
+    rows = []
+    for i in range(10):
+        order_type = "0" if i < 8 else "1"
+        rows.append(
+            [
+                str(i + 1),
+                f"2024.01.01 {i:02d}:00:00",
+                "",
+                "",
+                "OPEN",
+                str(i + 1),
+                "",
+                "",
+                "EURUSD",
+                order_type,
+                "0.1",
+                f"1.1{i:03d}",
+                "1.0950",
+                "1.1100",
+                "1",
+                "2",
+                "",
+                "0.1",
+                "0.0001",
+                "100",
+                "",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "",
+                "0",
+            ]
+        )
+    with open(file, "w", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(fields)
+        writer.writerows(rows)
+
+
 def test_feature_extraction_basic():
     rows = [
         {
@@ -167,6 +243,20 @@ def test_model_serialization(tmp_path: Path):
     assert "spread" in data.get("feature_names", [])
     assert "slippage" in data.get("feature_names", [])
     assert data.get("weighted_by_net_profit") is True
+
+
+def test_class_weight_flag(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    _write_imbalanced_log(data_dir / "trades_sample.csv")
+
+    train(data_dir, out_dir)
+
+    model_file = out_dir / "model.json"
+    with open(model_file) as f:
+        data = json.load(f)
+    assert data.get("class_weight") == "balanced"
 
 
 def test_perf_budget_disables_heavy_features(caplog):

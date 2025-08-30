@@ -2392,6 +2392,12 @@ def train(
         }
     sample_weight = base_weight if not np.allclose(base_weight, 1.0) else None
 
+    unique, counts = np.unique(y_train, return_counts=True)
+    class_weight = None
+    if len(counts) > 1:
+        if counts.max() / counts.min() > 1.5:
+            class_weight = "balanced"
+
     feat_train_clf = [dict(f) for f in feat_train]
     feat_val_clf = [dict(f) for f in feat_val]
     for f in feat_train_clf:
@@ -2664,6 +2670,7 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
             "mode": mode,
+            "class_weight": class_weight or "none",
             "train_accuracy": float("nan"),
             "val_accuracy": float("nan"),
             "val_f1": float("nan"),
@@ -2809,6 +2816,7 @@ def train(
             "trained_at": datetime.utcnow().isoformat(),
             "feature_names": feature_names,
             "model_type": "regime_logreg",
+            "class_weight": class_weight or "none",
             "meta_model": {
                 "feature_names": feature_names,
                 "coefficients": gating_clf.coef_.astype(np.float32).tolist(),
@@ -3287,12 +3295,16 @@ def train(
             if c_values is None:
                 c_values = [0.01, 0.1, 1.0, 10.0]
             param_grid = {"C": c_values}
-            gs = GridSearchCV(LogisticRegression(max_iter=200), param_grid, cv=3)
+            gs = GridSearchCV(
+                LogisticRegression(max_iter=200, class_weight=class_weight),
+                param_grid,
+                cv=3,
+            )
             gs.fit(X_train, y_train)
             clf = gs.best_estimator_
         else:
             if incremental:
-                clf = SGDClassifier(loss="log_loss", alpha=1.0 / logreg_C)
+                clf = SGDClassifier(loss="log_loss", alpha=1.0 / logreg_C, class_weight=class_weight)
                 if existing_model is not None:
                     clf.classes_ = np.array(existing_model.get("classes", [0, 1]))
                     clf.coef_ = np.array([existing_model.get("coefficients", [])])
@@ -3310,7 +3322,12 @@ def train(
                     clf.predict_proba(X_val)[:, 1] if len(y_val) > 0 else np.empty(0)
                 )
             else:
-                clf = LogisticRegression(max_iter=200, C=logreg_C, warm_start=existing_model is not None)
+                clf = LogisticRegression(
+                    max_iter=200,
+                    C=logreg_C,
+                    warm_start=existing_model is not None,
+                    class_weight=class_weight,
+                )
                 if existing_model is not None:
                     clf.classes_ = np.array(existing_model.get("classes", [0, 1]))
                     clf.coef_ = np.array([existing_model.get("coefficients", [])])
@@ -3544,6 +3561,7 @@ def train(
         "mode": mode,
         "weighted": sample_weight is not None,
         "weighted_by_net_profit": True,
+        "class_weight": class_weight or "none",
         "train_accuracy": train_acc,
         "val_accuracy": val_acc,
         "val_f1": val_f1,
