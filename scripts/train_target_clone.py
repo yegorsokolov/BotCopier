@@ -1205,6 +1205,7 @@ def _extract_features(
     use_adx=False,
     use_volume=False,
     use_orderbook=False,
+    use_dom=False,
     volatility=None,
     higher_timeframes=None,
     poly_degree: int = 2,
@@ -1364,6 +1365,11 @@ def _extract_features(
         hour_cos = math.cos(2 * math.pi * t.hour / 24)
         dow_sin = math.sin(2 * math.pi * t.weekday() / 7)
         dow_cos = math.cos(2 * math.pi * t.weekday() / 7)
+        month_sin = math.sin(2 * math.pi * (t.month - 1) / 12)
+        month_cos = math.cos(2 * math.pi * (t.month - 1) / 12)
+        if use_dom:
+            dom_sin = math.sin(2 * math.pi * (t.day - 1) / 31)
+            dom_cos = math.cos(2 * math.pi * (t.day - 1) / 31)
 
         sl_dist = _safe_float(r.get("sl_dist", sl - price))
         tp_dist = _safe_float(r.get("tp_dist", tp - price))
@@ -1378,6 +1384,8 @@ def _extract_features(
             "hour_cos": hour_cos,
             "dow_sin": dow_sin,
             "dow_cos": dow_cos,
+            "month_sin": month_sin,
+            "month_cos": month_cos,
             "lots": lots,
             "profit": profit,
             "net_profit": net_profit,
@@ -1397,6 +1405,10 @@ def _extract_features(
             "duration_sec": duration_sec,
             "event_id": int(float(r.get("event_id", 0) or 0)),
         }
+
+        if use_dom:
+            feat["dom_sin"] = dom_sin
+            feat["dom_cos"] = dom_cos
 
         if use_orderbook:
             feat.update(
@@ -1615,6 +1627,8 @@ def _extract_features(
         enabled_feats.append("stochastic")
     if use_adx:
         enabled_feats.append("adx")
+    if use_dom:
+        enabled_feats.append("dom")
     if higher_timeframes:
         enabled_feats.extend(f"tf_{tf}" for tf in higher_timeframes)
     if news_sentiment is not None:
@@ -1663,6 +1677,7 @@ def _train_lite_mode(
     use_adx: bool = False,
     use_volume: bool = False,
     use_orderbook: bool = False,
+    use_dom: bool = False,
     volatility_series=None,
     corr_map=None,
     corr_window: int = 5,
@@ -1736,6 +1751,7 @@ def _train_lite_mode(
             use_adx=use_adx,
             use_volume=use_volume,
             use_orderbook=use_orderbook,
+            use_dom=use_dom,
             volatility=volatility_series,
             higher_timeframes=None,
             poly_degree=poly_degree,
@@ -1812,6 +1828,7 @@ def _train_lite_mode(
         "adx": use_adx,
         "volume": use_volume,
         "order_book": use_orderbook,
+        "dom": use_dom,
         "higher_timeframes": [],
     }
     if ae_info:
@@ -1856,6 +1873,7 @@ def train(
     use_adx: bool | None = None,
     use_volume: bool | None = None,
     use_orderbook: bool | None = None,
+    use_dom: bool | None = None,
     volatility_series=None,
     higher_timeframes: list[str] | None = None,
     grid_search: bool | None = None,
@@ -1944,6 +1962,8 @@ def train(
         use_volume = heavy_mode
     if use_orderbook is None:
         use_orderbook = heavy_mode
+    if use_dom is None:
+        use_dom = False
     if lite_mode:
         regime_model = None
         if regime_model_file and regime_model_file.exists():
@@ -1966,6 +1986,7 @@ def train(
             use_adx=use_adx,
             use_volume=use_volume,
             use_orderbook=use_orderbook,
+            use_dom=use_dom,
             volatility_series=volatility_series,
             corr_map=corr_map,
             corr_window=corr_window,
@@ -1991,6 +2012,7 @@ def train(
         "adx": use_adx,
         "volume": use_volume,
         "order_book": use_orderbook,
+        "dom": use_dom,
         "higher_timeframes": higher_timeframes or [],
     }
     if bayes_steps > 0:
@@ -2107,6 +2129,7 @@ def train(
                 use_adx=use_adx,
                 use_volume=use_volume,
                 use_orderbook=use_orderbook,
+                use_dom=use_dom,
                 volatility=volatility_series,
                 higher_timeframes=higher_timeframes,
                 corr_map=corr_map,

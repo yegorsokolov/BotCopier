@@ -286,6 +286,10 @@ def test_train(tmp_path: Path):
     assert "hour_cos" in data.get("feature_names", [])
     assert "dow_sin" in data.get("feature_names", [])
     assert "dow_cos" in data.get("feature_names", [])
+    assert "month_sin" in data.get("feature_names", [])
+    assert "month_cos" in data.get("feature_names", [])
+    assert "dom_sin" not in data.get("feature_names", [])
+    assert "dom_cos" not in data.get("feature_names", [])
     assert "spread" in data.get("feature_names", [])
     assert "slippage" in data.get("feature_names", [])
     assert "equity" in data.get("feature_names", [])
@@ -321,6 +325,23 @@ def test_train_with_indicators(tmp_path: Path):
     with open(model_file) as f:
         data = json.load(f)
     assert any(name in data.get("feature_names", []) for name in ["sma", "rsi", "macd"])
+
+
+def test_train_with_dom(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, use_dom=True)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "dom_sin" in feats and "dom_cos" in feats
 
 
 def test_train_with_atr_bollinger(tmp_path: Path):

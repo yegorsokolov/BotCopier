@@ -148,10 +148,19 @@ def test_sin_cos_features(tmp_path: Path):
     model = {
         "model_id": "sc",
         "magic": 777,
-        "coefficients": [0.1] * 4,
+        "coefficients": [0.1] * 8,
         "intercept": 0.0,
         "threshold": 0.5,
-        "feature_names": ["hour_sin", "hour_cos", "dow_sin", "dow_cos"],
+        "feature_names": [
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "dom_sin",
+            "dom_cos",
+        ],
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
@@ -166,6 +175,8 @@ def test_sin_cos_features(tmp_path: Path):
         content = f.read()
     assert "HourSin()" in content
     assert "DowCos()" in content
+    assert "MonthSin()" in content
+    assert "DomCos()" in content
 
 
 def test_volatility_feature(tmp_path: Path):
