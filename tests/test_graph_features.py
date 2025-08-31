@@ -12,6 +12,7 @@ from scripts.build_symbol_graph import build_graph
 from scripts.generate_mql4_from_model import generate
 from scripts.train_target_clone import train, _load_logs, _extract_features
 from tests import HAS_NUMPY
+import numpy as np
 
 pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for training tests")
 
@@ -112,20 +113,41 @@ def test_graph_features(tmp_path: Path) -> None:
     extra = {"USDCHF": [0.9, 0.8]}
 
     df, _, _ = _load_logs(data_dir)
-    feat_dicts, *_ = _extract_features(
+    feat_dicts_tmp, *_ = _extract_features(
         df.to_dict("records"),
         corr_map=corr_map,
         extra_price_series=extra,
     )
-    feat_df = pd.DataFrame(feat_dicts)
+    feat_df_tmp = pd.DataFrame(feat_dicts_tmp)
+    feat_df_tmp["symbol"] = df["symbol"].values
+    feat_df_tmp["price"] = df["price"].astype(float).values
+    extra_df = pd.DataFrame(
+        {
+            "symbol": ["USDCHF"] * len(extra["USDCHF"]),
+            "price": extra["USDCHF"],
+            "corr_USDCHF": [np.nan] * len(extra["USDCHF"]),
+        }
+    )
+    graph_df = pd.concat(
+        [feat_df_tmp[["symbol", "price", "corr_USDCHF"]], extra_df], ignore_index=True
+    )
     feat_csv = tmp_path / "features.csv"
-    feat_df.to_csv(feat_csv, index=False)
+    graph_df.to_csv(feat_csv, index=False)
 
     graph_file = tmp_path / "graph.json"
     build_graph(feat_csv, graph_file)
     graph_parquet = tmp_path / "graph.parquet"
     build_graph(feat_csv, graph_parquet)
     assert graph_parquet.exists()
+
+    feat_dicts, *_ = _extract_features(
+        df.to_dict("records"),
+        corr_map=corr_map,
+        extra_price_series=extra,
+        symbol_graph=graph_file,
+    )
+    feat_df = pd.DataFrame(feat_dicts)
+    assert "coint_residual_USDCHF" in feat_df.columns
 
     train(
         data_dir,
@@ -141,12 +163,15 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "graph_degree" in feats
     assert "graph_pagerank" in feats
     assert "corr_EURUSD_USDCHF" in feats
+    assert "coint_residual_USDCHF" in feats
     assert model.get("weighted_by_net_profit") is True
     graph = model.get("graph") or json.load(open(graph_file))
     assert graph.get("symbols") == ["EURUSD", "USDCHF"]
     metrics = graph.get("metrics", {})
     assert metrics.get("degree") == [0.5, 0.5]
     assert metrics.get("pagerank") == [0.5, 0.5]
+    coint = graph.get("cointegration", {})
+    assert coint.get("EURUSD", {}).get("USDCHF") is not None
 
     generate(out_dir / "model.json", out_dir, symbol_graph=graph_file)
     mq4_files = list(out_dir.glob("Generated_*.mq4"))
@@ -155,6 +180,7 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "GraphDegree()" in text
     assert "GraphPagerank()" in text
     assert 'PairCorrelation("EURUSD", "USDCHF")' in text
+    assert 'CointegrationResidual("USDCHF")' in text
     assert 'GraphSymbols[] = {"EURUSD", "USDCHF"}' in text
     assert 'GraphDegreeVals[] = {0.5, 0.5}' in text
     assert 'GraphPagerankVals[] = {0.5, 0.5}' in text

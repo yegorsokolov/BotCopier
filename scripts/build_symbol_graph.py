@@ -90,8 +90,21 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
         df = pd.read_csv(feat_path)
 
     weights: dict[tuple[str, str], list[float]] = {}
+    coint_beta: dict[tuple[str, str], float] = {}
 
     corr_cols = [c for c in df.columns if c.startswith("corr_")]
+    has_price_cols = "symbol" in df.columns and "price" in df.columns
+
+    pivot = None
+    if has_price_cols:
+        idx_col = "event_time" if "event_time" in df.columns else None
+        if idx_col is None:
+            df = df.copy()
+            df["_idx"] = np.arange(len(df))
+            idx_col = "_idx"
+        pivot = df.pivot_table(index=idx_col, columns="symbol", values="price")
+        pivot.sort_index(inplace=True)
+
     if corr_cols:
         symbols = list(df["symbol"].dropna().unique())
         index = {s: i for i, s in enumerate(symbols)}
@@ -111,18 +124,7 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
                     symbols.append(peer)
                 pair = tuple(sorted((base, peer)))
                 weights.setdefault(pair, []).append(float(val))
-    else:
-        if "symbol" not in df.columns or "price" not in df.columns:
-            raise ValueError(
-                "input must contain corr_* columns or symbol/price columns"
-            )
-        idx_col = "event_time" if "event_time" in df.columns else None
-        if idx_col is None:
-            df = df.copy()
-            df["_idx"] = np.arange(len(df))
-            idx_col = "_idx"
-        pivot = df.pivot_table(index=idx_col, columns="symbol", values="price")
-        pivot.sort_index(inplace=True)
+    elif pivot is not None:
         symbols = [s for s in pivot.columns if str(s) != "nan"]
         index = {s: i for i, s in enumerate(symbols)}
         for a, b in combinations(symbols, 2):
@@ -132,6 +134,26 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
                 continue
             pair = tuple(sorted((a, b)))
             weights[pair] = vals.tolist()
+    else:
+        raise ValueError(
+            "input must contain corr_* columns or symbol/price columns"
+        )
+
+    # Estimate cointegration betas when price data available
+    if pivot is not None:
+        symbols = [s for s in pivot.columns if str(s) != "nan"]
+        for a, b in combinations(symbols, 2):
+            series = pivot[[a, b]].dropna()
+            if len(series) < 2:
+                continue
+            x = series[b].values
+            y = series[a].values
+            X = np.vstack([x, np.ones(len(x))]).T
+            beta, _ = np.linalg.lstsq(X, y, rcond=None)[0]
+            coint_beta[(a, b)] = float(beta)
+            Xr = np.vstack([y, np.ones(len(y))]).T
+            beta_rev, _ = np.linalg.lstsq(Xr, x, rcond=None)[0]
+            coint_beta[(b, a)] = float(beta_rev)
 
     n = len(symbols)
     adj = np.zeros((n, n), dtype=float)
@@ -158,6 +180,11 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
             "pagerank": pagerank.tolist(),
         },
     }
+    if coint_beta:
+        coint_map: dict[str, dict[str, float]] = {}
+        for (a, b), beta in coint_beta.items():
+            coint_map.setdefault(a, {})[b] = beta
+        graph["cointegration"] = coint_map
 
     # Optional Node2Vec embeddings
     if _HAS_PYG and edge_index:

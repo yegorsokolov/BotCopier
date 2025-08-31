@@ -1261,6 +1261,7 @@ def _extract_features(
 
     pair_weights: dict[tuple[str, str], float] = {}
     sym_metrics: dict[str, dict[str, float]] = {}
+    coint_betas: dict[tuple[str, str], float] = {}
     if symbol_graph:
         try:
             if not isinstance(symbol_graph, dict):
@@ -1280,9 +1281,14 @@ def _extract_features(
             for m_name, vals in metrics.items():
                 for i, sym in enumerate(symbols):
                     sym_metrics.setdefault(sym, {})[m_name] = float(vals[i])
+            coint = graph_params.get("cointegration", {})
+            for base, peers in coint.items():
+                for peer, beta in peers.items():
+                    coint_betas[(base, peer)] = float(beta)
         except Exception:
             pair_weights = {}
             sym_metrics = {}
+            coint_betas = {}
     enc_window = int(encoder.get("window")) if encoder else 0
     enc_weights = (
         np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
@@ -1497,6 +1503,10 @@ def _extract_features(
                     ratio = base_seq[-1] / peer_seq[-1]
                 feat[f"corr_{peer}"] = corr
                 feat[f"ratio_{peer}"] = ratio
+                beta = coint_betas.get((symbol, peer))
+                if beta is not None and peer_seq:
+                    resid = base_seq[-1] - beta * peer_seq[-1]
+                    feat[f"coint_residual_{peer}"] = resid
 
         if pair_weights:
             for (a, b), w in pair_weights.items():
@@ -3680,6 +3690,7 @@ def train(
             "edge_weight": graph_params.get("edge_weight", []),
             "embedding_dim": graph_params.get("embedding_dim", 0),
             "metrics": graph_params.get("metrics", {}),
+            "cointegration": graph_params.get("cointegration", {}),
         }
     model["hourly_thresholds"] = hourly_thresholds
     if threshold_map:

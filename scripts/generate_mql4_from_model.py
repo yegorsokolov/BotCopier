@@ -437,6 +437,24 @@ def generate(
         output = output.replace('__GRAPH_DEGREE__', '')
         output = output.replace('__GRAPH_PAGERANK__', '')
 
+    coint = graph_data.get('cointegration') or {}
+    if coint:
+        bases: List[str] = []
+        peers: List[str] = []
+        betas: List[str] = []
+        for a, pmap in coint.items():
+            for b, beta in pmap.items():
+                bases.append(f'"{a}"')
+                peers.append(f'"{b}"')
+                betas.append(_fmt(float(beta)))
+        output = output.replace('__COINT_BASE__', ', '.join(bases))
+        output = output.replace('__COINT_PEER__', ', '.join(peers))
+        output = output.replace('__COINT_BETA__', ', '.join(betas))
+    else:
+        output = output.replace('__COINT_BASE__', '')
+        output = output.replace('__COINT_PEER__', '')
+        output = output.replace('__COINT_BETA__', '')
+
     rps = base.get('risk_parity_symbols', [])
     rpw = base.get('risk_parity_weights', [])
     if rps and rpw:
@@ -587,6 +605,14 @@ def generate(
                 return f'PairCorrelation("{sym1}", "{sym2}")'
             if len(parts) == 1:
                 return f'PairCorrelation("{parts[0]}")'
+        if fname.startswith('coint_residual_'):
+            parts = fname[16:].split('_')
+            if len(parts) >= 2:
+                sym1 = parts[0]
+                sym2 = '_'.join(parts[1:])
+                return f'CointegrationResidual("{sym1}", "{sym2}")'
+            if len(parts) == 1:
+                return f'CointegrationResidual("{parts[0]}")'
         if fname.startswith('exit_reason='):
             reason = fname.split('=', 1)[1]
             return f'ExitReasonFlag("{reason}")'
