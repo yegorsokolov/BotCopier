@@ -81,8 +81,8 @@ FIELDS = [
     "var_breach_count",
     "trade_queue_depth",
     "metric_queue_depth",
-    "trade_retry_count",
-    "metric_retry_count",
+    "trade_retry_count",  # backpressure on trade sends
+    "metric_retry_count",  # backpressure on metric sends
     "fallback_events",
     "trace_id",
     "span_id",
@@ -320,7 +320,7 @@ def serve(
 
             TRADE_Q_ALERT = 100
             METRIC_Q_ALERT = 100
-            RETRY_ALERT = 5
+            RETRY_ALERT = 5  # warn if retries exceed this threshold
             WAL_SIZE_ALERT = 1024 * 1024  # 1MB
 
             async def _sample_host_metrics() -> None:
