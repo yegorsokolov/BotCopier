@@ -108,6 +108,8 @@ int LastCalendarEventId = -1;
 string GraphSymbols[] = {__GRAPH_SYMBOLS__};
 double GraphDegreeVals[] = {__GRAPH_DEGREE__};
 double GraphPagerankVals[] = {__GRAPH_PAGERANK__};
+int GraphEmbDim = __GRAPH_EMB_DIM__;
+double GraphEmbeddings[__GRAPH_EMB_COUNT__][__GRAPH_EMB_DIM__] = {__GRAPH_EMB__};
 string CointBaseSymbols[] = {__COINT_BASE__};
 string CointPeerSymbols[] = {__COINT_PEER__};
 double CointBetas[] = {__COINT_BETA__};
@@ -823,6 +825,15 @@ double GraphPagerank()
    for(int i=0; i<ArraySize(GraphSymbols); i++)
       if(GraphSymbols[i] == SymbolToTrade)
          return(GraphPagerankVals[i]);
+   return(0.0);
+}
+
+double GraphEmbedding(int idx)
+{
+   for(int i=0; i<ArraySize(GraphSymbols); i++)
+      if(GraphSymbols[i] == SymbolToTrade)
+         if(idx >= 0 && idx < GraphEmbDim)
+            return(GraphEmbeddings[i][idx]);
    return(0.0);
 }
 

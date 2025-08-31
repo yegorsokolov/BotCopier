@@ -1261,6 +1261,7 @@ def _extract_features(
 
     pair_weights: dict[tuple[str, str], float] = {}
     sym_metrics: dict[str, dict[str, float]] = {}
+    sym_embeddings: dict[str, list[float]] = {}
     coint_betas: dict[tuple[str, str], float] = {}
     if symbol_graph:
         try:
@@ -1281,6 +1282,12 @@ def _extract_features(
             for m_name, vals in metrics.items():
                 for i, sym in enumerate(symbols):
                     sym_metrics.setdefault(sym, {})[m_name] = float(vals[i])
+            emb_map = graph_params.get("embeddings", {})
+            for sym, emb in emb_map.items():
+                try:
+                    sym_embeddings[sym] = [float(v) for v in emb]
+                except Exception:
+                    continue
             coint = graph_params.get("cointegration", {})
             for base, peers in coint.items():
                 for peer, beta in peers.items():
@@ -1288,6 +1295,7 @@ def _extract_features(
         except Exception:
             pair_weights = {}
             sym_metrics = {}
+            sym_embeddings = {}
             coint_betas = {}
     enc_window = int(encoder.get("window")) if encoder else 0
     enc_weights = (
@@ -1521,6 +1529,11 @@ def _extract_features(
             if mvals:
                 for m_name, m_val in mvals.items():
                     feat[f"graph_{m_name}"] = m_val
+        if sym_embeddings:
+            emb = sym_embeddings.get(symbol)
+            if emb:
+                for i, v in enumerate(emb):
+                    feat[f"graph_emb{i}"] = v
 
         if enc_window > 0 and enc_weights.size > 0:
             seq = (prices + [price])[-(enc_window + 1) :]
@@ -3724,6 +3737,7 @@ def train(
             "edge_index": graph_params.get("edge_index", []),
             "edge_weight": graph_params.get("edge_weight", []),
             "embedding_dim": graph_params.get("embedding_dim", 0),
+            "embeddings": graph_params.get("embeddings", {}),
             "metrics": graph_params.get("metrics", {}),
             "cointegration": graph_params.get("cointegration", {}),
         }
