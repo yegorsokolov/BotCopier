@@ -519,10 +519,14 @@ def generate(
         peers: List[str] = []
         betas: List[str] = []
         for a, pmap in coint.items():
-            for b, beta in pmap.items():
+            for b, stats in pmap.items():
+                if isinstance(stats, dict):
+                    beta_val = stats.get('beta', 0.0)
+                else:
+                    beta_val = stats
                 bases.append(f'"{a}"')
                 peers.append(f'"{b}"')
-                betas.append(_fmt(float(beta)))
+                betas.append(_fmt(float(beta_val)))
         output = output.replace('__COINT_BASE__', ', '.join(bases))
         output = output.replace('__COINT_PEER__', ', '.join(peers))
         output = output.replace('__COINT_BETA__', ', '.join(betas))

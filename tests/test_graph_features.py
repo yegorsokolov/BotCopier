@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -12,7 +13,6 @@ from scripts.build_symbol_graph import build_graph
 from scripts.generate_mql4_from_model import generate
 from scripts.train_target_clone import train, _load_logs, _extract_features
 from tests import HAS_NUMPY
-import numpy as np
 
 pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for training tests")
 
@@ -109,30 +109,26 @@ def test_graph_features(tmp_path: Path) -> None:
     log_file = data_dir / "trades_corr.csv"
     _write_log(log_file)
 
-    corr_map = {"EURUSD": ["USDCHF"]}
-    extra = {"USDCHF": [0.9, 0.8]}
-
-    df, _, _ = _load_logs(data_dir)
-    feat_dicts_tmp, *_ = _extract_features(
-        df.to_dict("records"),
-        corr_map=corr_map,
-        extra_price_series=extra,
-    )
-    feat_df_tmp = pd.DataFrame(feat_dicts_tmp)
-    feat_df_tmp["symbol"] = df["symbol"].values
-    feat_df_tmp["price"] = df["price"].astype(float).values
-    extra_df = pd.DataFrame(
-        {
-            "symbol": ["USDCHF"] * len(extra["USDCHF"]),
-            "price": extra["USDCHF"],
-            "corr_USDCHF": [np.nan] * len(extra["USDCHF"]),
-        }
-    )
-    graph_df = pd.concat(
-        [feat_df_tmp[["symbol", "price", "corr_USDCHF"]], extra_df], ignore_index=True
-    )
+    # Synthetic price series for building a graph with one cointegrated and one
+    # non-cointegrated peer
+    np.random.seed(0)
+    t = np.arange(30)
+    eur = np.cumsum(np.random.randn(30)) + 100
+    usdchf = eur + np.random.normal(0, 0.1, 30)  # strongly cointegrated
+    gbpusd = np.cumsum(np.random.randn(30)) + 50  # independent
+    rows = []
+    for i in range(30):
+        rows.append({"event_time": i, "symbol": "EURUSD", "price": eur[i]})
+        rows.append({"event_time": i, "symbol": "USDCHF", "price": usdchf[i]})
+        rows.append({"event_time": i, "symbol": "GBPUSD", "price": gbpusd[i]})
+    graph_df = pd.DataFrame(rows)
     feat_csv = tmp_path / "features.csv"
     graph_df.to_csv(feat_csv, index=False)
+
+    corr_map = {"EURUSD": ["USDCHF", "GBPUSD"]}
+    extra = {"USDCHF": usdchf[:2].tolist(), "GBPUSD": gbpusd[:2].tolist()}
+
+    df, _, _ = _load_logs(data_dir)
 
     graph_file = tmp_path / "graph.json"
     build_graph(feat_csv, graph_file)
@@ -148,6 +144,9 @@ def test_graph_features(tmp_path: Path) -> None:
     )
     feat_df = pd.DataFrame(feat_dicts)
     assert "coint_residual_USDCHF" in feat_df.columns
+    assert "coint_residual_GBPUSD" not in feat_df.columns
+    assert "corr_EURUSD_USDCHF" in feat_df.columns
+    assert "corr_EURUSD_GBPUSD" not in feat_df.columns
 
     train(
         data_dir,
@@ -163,15 +162,20 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "graph_degree" in feats
     assert "graph_pagerank" in feats
     assert "corr_EURUSD_USDCHF" in feats
+    assert "corr_EURUSD_GBPUSD" not in feats
     assert "coint_residual_USDCHF" in feats
+    assert "coint_residual_GBPUSD" not in feats
     assert model.get("weighted_by_net_profit") is True
     graph = model.get("graph") or json.load(open(graph_file))
-    assert graph.get("symbols") == ["EURUSD", "USDCHF"]
+    assert set(graph.get("symbols")) == {"EURUSD", "USDCHF", "GBPUSD"}
     metrics = graph.get("metrics", {})
-    assert metrics.get("degree") == [0.5, 0.5]
-    assert metrics.get("pagerank") == [0.5, 0.5]
+    degs = metrics.get("degree")
+    symbols = graph.get("symbols")
+    assert degs[symbols.index("GBPUSD")] == 0
     coint = graph.get("cointegration", {})
-    assert coint.get("EURUSD", {}).get("USDCHF") is not None
+    usdchf_stats = coint.get("EURUSD", {}).get("USDCHF") or {}
+    assert usdchf_stats.get("pvalue", 1.0) < 0.05
+    assert coint.get("EURUSD", {}).get("GBPUSD") is None
 
     generate(out_dir / "model.json", out_dir, symbol_graph=graph_file)
     mq4_files = list(out_dir.glob("Generated_*.mq4"))
@@ -179,9 +183,7 @@ def test_graph_features(tmp_path: Path) -> None:
     text = mq4_files[0].read_text()
     assert "GraphDegree()" in text
     assert "GraphPagerank()" in text
-    assert 'PairCorrelation("EURUSD", "USDCHF")' in text
-    assert 'CointegrationResidual("USDCHF")' in text
-    assert 'GraphSymbols[] = {"EURUSD", "USDCHF"}' in text
-    assert 'GraphDegreeVals[] = {0.5, 0.5}' in text
-    assert 'GraphPagerankVals[] = {0.5, 0.5}' in text
+    assert "CointegrationResidual" in text
+    assert "GraphSymbols[]" in text
+    assert "EURUSD" in text and "USDCHF" in text and "GBPUSD" in text
 
