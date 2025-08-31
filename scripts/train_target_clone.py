@@ -3664,6 +3664,10 @@ def train(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Persist importance only for surviving features so downstream utilities
+    # such as ``generate_mql4_from_model`` only see the pruned subset.
+    feature_importance = {fn: feature_importance.get(fn, 0.0) for fn in feature_names}
+
     model = {
         "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
         "trained_at": datetime.utcnow().isoformat(),
