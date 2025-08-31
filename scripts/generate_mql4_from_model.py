@@ -758,8 +758,18 @@ def generate(
 
     threshold = base.get('threshold', 0.5)
     output = output.replace('__THRESHOLD__', _fmt(threshold))
-    if base.get('teacher_accuracy') is not None:
-        output += f"\n// Teacher accuracy: {_fmt(base['teacher_accuracy'])}\n"
+    metrics = base.get('teacher_metrics') or (
+        {"accuracy": base.get('teacher_accuracy')} if base.get('teacher_accuracy') is not None else {}
+    )
+    if metrics:
+        for key, val in metrics.items():
+            if val is not None:
+                output += f"\n// Teacher {key}: {_fmt(val)}"
+        output += "\n"
+    if base.get('student_coefficients'):
+        coeffs_comment = ', '.join(_fmt(c) for c in base['student_coefficients'])
+        output += f"// Student coefficients: {coeffs_comment}\n"
+        output += f"// Student intercept: {_fmt(base.get('student_intercept', 0.0))}\n"
     ts = base.get('trained_at')
     if ts:
         try:
