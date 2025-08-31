@@ -30,7 +30,6 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_trace_id, format_span_id
 
-from scripts.train_target_clone import train as train_model
 from scripts.backtest_strategy import run_backtest
 from scripts.publish_model import publish
 
@@ -77,6 +76,12 @@ logger = logging.getLogger(__name__)
 handler.setFormatter(JsonFormatter())
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
+
+
+def _load_train_module():
+    import importlib
+
+    return importlib.import_module("scripts.train_target_clone")
 
 
 def _read_last_event_id(out_dir: Path) -> int:
@@ -141,6 +146,19 @@ def _ks(expected: pd.Series, actual: pd.Series) -> float:
         return float(ks_2samp(expected, actual).statistic)
 
 
+def _resolve_csv(path: Optional[Path]) -> Optional[Path]:
+    """Return ``path`` if it is a file or the newest ``*.csv`` within a directory."""
+    if path is None:
+        return None
+    if path.is_file():
+        return path
+    if path.is_dir():
+        files = sorted(path.glob("*.csv"))
+        if files:
+            return files[-1]
+    return None
+
+
 def _compute_drift(
     baseline_file: Path, recent_file: Path, method: str = "psi", bins: int = 10
 ) -> float:
@@ -181,16 +199,24 @@ def retrain_if_needed(
     drift_threshold: float = 0.2,
     drift_method: str = "psi",
 ) -> bool:
-    """Retrain and publish a model when metrics degrade or drift is detected."""
+    """Retrain and publish a model when metrics degrade or drift is detected.
+
+    ``baseline_file`` and ``recent_file`` may point to CSV files or directories
+    containing CSV logs. When directories are supplied the most recent file is
+    used each time the function runs, enabling periodic drift checks.
+    """
     with tracer.start_as_current_span("retrain_if_needed"):
         metrics_path = metrics_file or (log_dir / "metrics.csv")
         metrics = _load_latest_metrics(metrics_path)
         drift_metric: Optional[float] = None
-        if baseline_file and recent_file:
+        base = _resolve_csv(baseline_file)
+        recent = _resolve_csv(recent_file)
+        if base and recent:
             try:
-                drift_metric = _compute_drift(baseline_file, recent_file, method=drift_method)
+                drift_metric = _compute_drift(base, recent, method=drift_method)
+                logger.info({"drift_metric": drift_metric})
             except Exception:
-                logger.info("failed to compute drift")
+                logger.info("failed to compute drift", exc_info=True)
 
         needs_retrain = False
         if metrics:
@@ -207,11 +233,10 @@ def retrain_if_needed(
 
         logger.info("retraining model")
         # Load last processed event id for incremental training
-        import scripts.train_target_clone as tc
-
+        tc = _load_train_module()
         last_id = _read_last_event_id(out_dir)
         tc.START_EVENT_ID = last_id
-        train_model(log_dir, out_dir, incremental=True)
+        tc.train(log_dir, out_dir, incremental=True)
 
         model_json = out_dir / "model.json"
         model_onnx = out_dir / "model.onnx"
