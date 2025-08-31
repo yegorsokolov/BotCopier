@@ -108,6 +108,9 @@ int LastCalendarEventId = -1;
 string GraphSymbols[] = {__GRAPH_SYMBOLS__};
 double GraphDegreeVals[] = {__GRAPH_DEGREE__};
 double GraphPagerankVals[] = {__GRAPH_PAGERANK__};
+string CointBaseSymbols[] = {__COINT_BASE__};
+string CointPeerSymbols[] = {__COINT_PEER__};
+double CointBetas[] = {__COINT_BETA__};
 double FeatureHistory[__LSTM_SEQ_LEN__][__FEATURE_COUNT__];
 int FeatureHistorySize = 0;
 int CachedTimeframes[] = {__CACHE_TIMEFRAMES__};
@@ -776,6 +779,27 @@ double PairCorrelation(string sym1, string sym2="", int window=5)
    if(den1 <= 0 || den2 <= 0)
       return(0.0);
    return(num / MathSqrt(den1 * den2));
+}
+
+double CointegrationResidual(string sym1, string sym2="")
+{
+   if(sym2 == "")
+   {
+      sym2 = sym1;
+      sym1 = SymbolToTrade;
+   }
+   double beta = 0.0;
+   for(int i=0; i<ArraySize(CointBaseSymbols); i++)
+   {
+      if(CointBaseSymbols[i] == sym1 && CointPeerSymbols[i] == sym2)
+      {
+         beta = CointBetas[i];
+         break;
+      }
+   }
+   double p1 = iClose(sym1, 0, 0);
+   double p2 = iClose(sym2, 0, 0);
+   return(p1 - beta * p2);
 }
 
 double GraphDegree()
