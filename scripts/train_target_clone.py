@@ -2911,6 +2911,16 @@ def train(
                 t = threshold
             hourly_thresholds.append(float(t))
 
+        if len(y_val) > 0:
+            scores = np.abs(y_val - proba_val)
+            lower_bounds = np.clip(proba_val - scores, 0.0, 1.0)
+            upper_bounds = np.clip(proba_val + scores, 0.0, 1.0)
+            conformal_lower = float(np.quantile(lower_bounds, 0.05))
+            conformal_upper = float(np.quantile(upper_bounds, 0.95))
+        else:
+            conformal_lower = 0.0
+            conformal_upper = 1.0
+
         model = {
             "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
             "trained_at": datetime.utcnow().isoformat(),
@@ -2940,6 +2950,8 @@ def train(
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
             "hourly_thresholds": hourly_thresholds,
+            "conformal_lower": conformal_lower,
+            "conformal_upper": conformal_upper,
         }
         model["split_sizes"] = split_sizes
         model["validation_metrics"] = {

@@ -11,7 +11,7 @@ import csv
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import math
 
@@ -55,6 +55,15 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
                     "symbol": r.get("symbol", ""),
                     "direction": direction,
                     "lots": float(r.get("lots", 0) or 0),
+                    "probability": (
+                        float(r.get("probability") or r.get("prob") or r.get("proba"))
+                        if (
+                            r.get("probability")
+                            or r.get("prob")
+                            or r.get("proba")
+                        )
+                        else None
+                    ),
                     "executed_model_idx": (
                         int(float(r.get("executed_model_idx") or r.get("model_idx") or r.get("model") or -1))
                         if (r.get("executed_model_idx") or r.get("model_idx") or r.get("model"))
@@ -110,11 +119,21 @@ def _load_actual_trades(log_file: Path) -> List[Dict]:
     return trades
 
 
-def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
+def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optional[Path] = None) -> Dict:
     """Compare predictions to actual trades and compute summary statistics."""
 
     predictions = _load_predictions(pred_file)
     actual_trades = _load_actual_trades(actual_log)
+    conformal_lower = None
+    conformal_upper = None
+    if model_json is not None:
+        try:
+            with open(model_json) as f:
+                m = json.load(f)
+            conformal_lower = m.get("conformal_lower")
+            conformal_upper = m.get("conformal_upper")
+        except Exception:
+            pass
 
     matches = 0
     gross_profit = 0.0
@@ -125,6 +144,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
     matches_per_model: Dict[int, int] = {}
 
     trade_by_decision: Dict[int, Dict] = {}
+    bound_in = 0
+    bound_total = 0
     for idx, trade in enumerate(actual_trades):
         did = trade.get("decision_id")
         if did is not None and did not in trade_by_decision:
@@ -162,6 +183,12 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
                 gross_loss += -p
             if model_idx is not None:
                 matches_per_model[model_idx] = matches_per_model.get(model_idx, 0) + 1
+            if conformal_lower is not None and conformal_upper is not None:
+                prob = pred.get("probability")
+                if prob is not None:
+                    bound_total += 1
+                    if conformal_lower <= prob <= conformal_upper:
+                        bound_in += 1
 
     tp = matches
     fp = len(predictions) - matches
@@ -213,6 +240,9 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
         for m, c in predictions_per_model.items()
     }
 
+    prob_coverage = bound_in / bound_total if bound_total else 0.0
+    prob_miscoverage = 1 - prob_coverage if bound_total else 0.0
+
     return {
         "predicted_events": len(predictions),
         "actual_events": len(actual_trades),
@@ -222,6 +252,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int) -> Dict:
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
+        "probability_coverage": prob_coverage,
+        "probability_miscoverage": prob_miscoverage,
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
         "profit_factor": profit_factor,
@@ -250,12 +282,18 @@ def main() -> None:
         type=Path,
         help="optional path for JSON summary",
     )
+    p.add_argument(
+        "--model-json",
+        type=Path,
+        help="optional model.json file with conformal bounds",
+    )
     args = p.parse_args()
 
     stats = evaluate(
         Path(args.predicted_log),
         Path(args.actual_log),
         args.window,
+        args.model_json,
     )
 
     out_path = args.json_out or Path(args.predicted_log).parent / "evaluation.json"
@@ -278,6 +316,13 @@ def main() -> None:
     print(f"Sharpe Ratio     : {stats['sharpe_ratio']:.2f}")
     print(f"Sortino Ratio    : {stats['sortino_ratio']:.2f}")
     print(f"Expectancy       : {stats['expectancy']:.2f}")
+    if args.model_json:
+        print(
+            f"Probability coverage : {stats['probability_coverage']*100:.1f}%"
+        )
+        print(
+            f"Miscoverage          : {stats['probability_miscoverage']*100:.1f}%"
+        )
 
 
 if __name__ == '__main__':

@@ -53,6 +53,8 @@ double CalibrationIntercept = __CAL_INTERCEPT__;
 double ModelThreshold[] = {__HOURLY_THRESHOLDS__};
 double DefaultThreshold = __THRESHOLD__;
 double ProbabilityLookup[__MODEL_COUNT__][24] = {__PROBABILITY_TABLE__};
+double ConformalLower = __CONFORMAL_LOWER__;
+double ConformalUpper = __CONFORMAL_UPPER__;
 string ThresholdSymbols[];
 double ThresholdTable[][24];
 double SLModelCoefficients[] = {__SL_COEFFICIENTS__};
@@ -339,6 +341,8 @@ bool ParseModelJson(string json)
    TPModelIntercept = ExtractJsonNumber(json, "\"tp_intercept\"");
    LotModelIntercept = ExtractJsonNumber(json, "\"lot_intercept\"");
    DefaultThreshold = ExtractJsonNumber(json, "\"threshold\"");
+   ConformalLower = ExtractJsonNumber(json, "\"conformal_lower\"");
+   ConformalUpper = ExtractJsonNumber(json, "\"conformal_upper\"");
    ModelCount = 1;
    return(true);
 }
@@ -1500,6 +1504,12 @@ void OnTick()
    double prob = probs[modelIdx];
    double pv = pvs[modelIdx];
    double risk_weight = risk_weights[modelIdx];
+
+   if(prob < ConformalLower || prob > ConformalUpper)
+      Print("Probability outside conformal bounds: " +
+            DoubleToString(prob,4) + " not in [" +
+            DoubleToString(ConformalLower,4) + "," +
+            DoubleToString(ConformalUpper,4) + "]");
 
    if(EnableDebugLogging)
    {
