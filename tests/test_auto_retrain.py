@@ -37,11 +37,16 @@ def test_retrain_trigger(monkeypatch, tmp_path: Path):
     last_id_file.write_text("5")
 
     called = {}
-    import scripts.train_target_clone as tc
 
-    def fake_train(ld, od, incremental=True):
-        called["train"] = (ld, od, incremental, tc.START_EVENT_ID)
-        (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
+    class FakeTC:
+        START_EVENT_ID = 0
+
+        def train(self, ld, od, incremental=True):
+            called["train"] = (ld, od, incremental, self.START_EVENT_ID)
+            (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
+
+    fake_tc = FakeTC()
+    monkeypatch.setattr("scripts.auto_retrain._load_train_module", lambda: fake_tc)
 
     def fake_publish(mf, fd):
         called["publish"] = (mf, fd)
@@ -49,8 +54,6 @@ def test_retrain_trigger(monkeypatch, tmp_path: Path):
     def fake_backtest(params_file, tick_file):
         called["backtest"] = (params_file, tick_file)
         return {"win_rate": 0.8, "drawdown": 0.05}
-
-    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
     monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
     monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
 
@@ -74,8 +77,13 @@ def test_retrain_not_triggered(monkeypatch, tmp_path: Path):
 
     called = {}
 
-    def fake_train(*args, **kwargs):
-        called["train"] = True
+    class FakeTC:
+        START_EVENT_ID = 0
+
+        def train(self, *args, **kwargs):
+            called["train"] = True
+
+    monkeypatch.setattr("scripts.auto_retrain._load_train_module", lambda: FakeTC())
 
     def fake_publish(*args, **kwargs):
         called["publish"] = True
@@ -83,8 +91,6 @@ def test_retrain_not_triggered(monkeypatch, tmp_path: Path):
     def fake_backtest(*args, **kwargs):
         called["backtest"] = True
         return {"win_rate": 0.7, "drawdown": 0.1}
-
-    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
     monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
     monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
 
@@ -105,9 +111,14 @@ def test_retrain_no_improvement(monkeypatch, tmp_path: Path):
 
     called = {}
 
-    def fake_train(ld, od, incremental=True):
-        called["train"] = True
-        (od / "model.json").write_text(json.dumps({"last_event_id": 1}))
+    class FakeTC:
+        START_EVENT_ID = 0
+
+        def train(self, ld, od, incremental=True):
+            called["train"] = True
+            (od / "model.json").write_text(json.dumps({"last_event_id": 1}))
+
+    monkeypatch.setattr("scripts.auto_retrain._load_train_module", lambda: FakeTC())
 
     def fake_publish(*args, **kwargs):
         called["publish"] = True
@@ -115,8 +126,6 @@ def test_retrain_no_improvement(monkeypatch, tmp_path: Path):
     def fake_backtest(params_file, tick_file):
         called["backtest"] = True
         return {"win_rate": 0.2, "drawdown": 0.2}
-
-    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
     monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
     monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
 
@@ -141,17 +150,20 @@ def test_retrain_prefers_onnx(monkeypatch, tmp_path: Path):
 
     called = {}
 
-    def fake_train(ld, od, incremental=True):
-        (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
-        (od / "model.onnx").write_bytes(b"x")
+    class FakeTC:
+        START_EVENT_ID = 0
+
+        def train(self, ld, od, incremental=True):
+            (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
+            (od / "model.onnx").write_bytes(b"x")
+
+    monkeypatch.setattr("scripts.auto_retrain._load_train_module", lambda: FakeTC())
 
     def fake_publish(mf, fd):
         called["publish"] = mf
 
     def fake_backtest(params_file, tick_file):
         return {"win_rate": 0.8, "drawdown": 0.05}
-
-    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
     monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
     monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
 
@@ -177,9 +189,14 @@ def test_drift_triggers_retrain(monkeypatch, tmp_path: Path):
 
     called = {}
 
-    def fake_train(ld, od, incremental=True):
-        called["train"] = True
-        (od / "model.json").write_text(json.dumps({}))
+    class FakeTC:
+        START_EVENT_ID = 0
+
+        def train(self, ld, od, incremental=True):
+            called["train"] = True
+            (od / "model.json").write_text(json.dumps({}))
+
+    monkeypatch.setattr("scripts.auto_retrain._load_train_module", lambda: FakeTC())
 
     def fake_publish(mf, fd):
         called["publish"] = True
@@ -187,8 +204,6 @@ def test_drift_triggers_retrain(monkeypatch, tmp_path: Path):
     def fake_backtest(params_file, tick_file):
         called["backtest"] = True
         return {"win_rate": 0.8, "drawdown": 0.05}
-
-    monkeypatch.setattr("scripts.auto_retrain.train_model", fake_train)
     monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
     monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
 
@@ -205,3 +220,49 @@ def test_drift_triggers_retrain(monkeypatch, tmp_path: Path):
     assert called.get("train") is True
     data = json.loads((out_dir / "model.json").read_text())
     assert "drift_metric" in data
+
+
+def test_drift_directory(monkeypatch, tmp_path: Path):
+    log_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    files_dir = tmp_path / "files"
+    baseline_dir = log_dir / "baseline"
+    recent_dir = log_dir / "recent"
+    for d in [log_dir, out_dir, files_dir, baseline_dir, recent_dir]:
+        d.mkdir()
+    metrics_file = log_dir / "metrics.csv"
+    _write_metrics(metrics_file, 0.7, 0.1)
+    _write_features(baseline_dir / "b.csv", [0, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+    _write_features(recent_dir / "r.csv", [10] * 10)
+
+    called = {}
+
+    class FakeTC:
+        START_EVENT_ID = 0
+
+        def train(self, ld, od, incremental=True):
+            called["train"] = True
+            (od / "model.json").write_text(json.dumps({}))
+
+    monkeypatch.setattr("scripts.auto_retrain._load_train_module", lambda: FakeTC())
+
+    def fake_publish(mf, fd):
+        called["publish"] = True
+
+    def fake_backtest(params_file, tick_file):
+        called["backtest"] = True
+        return {"win_rate": 0.8, "drawdown": 0.05}
+    monkeypatch.setattr("scripts.auto_retrain.publish", fake_publish)
+    monkeypatch.setattr("scripts.auto_retrain.run_backtest", fake_backtest)
+
+    result = retrain_if_needed(
+        log_dir,
+        out_dir,
+        files_dir,
+        baseline_file=baseline_dir,
+        recent_file=recent_dir,
+        drift_threshold=0.1,
+    )
+
+    assert result is True
+    assert called.get("train") is True
