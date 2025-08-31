@@ -117,6 +117,8 @@ def generate(
         for k, v in (m.get('feature_flags') or {}).items():
             if v and k not in enabled_feats:
                 enabled_feats.append(k)
+    if 'month' not in enabled_feats:
+        enabled_feats.append('month')
     feats_comment = (
         "// features: " + ", ".join(sorted(enabled_feats)) + "\n" if enabled_feats else ""
     )
