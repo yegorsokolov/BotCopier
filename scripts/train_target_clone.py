@@ -3681,6 +3681,11 @@ def train(
         "f1": val_f1,
         "roc_auc": val_roc,
     }
+    model["teacher_metrics"] = {
+        "accuracy": val_acc,
+        "f1": val_f1,
+        "roc_auc": val_roc,
+    }
     model["feature_flags"] = feature_flags
     if risk_parity:
         model["risk_parity_symbols"] = list(risk_parity.keys())
