@@ -491,42 +491,50 @@ int OnInit()
 
 double HourSin()
 {
-   return(MathSin(2.0 * 3.141592653589793 * TimeHour(TimeCurrent()) / 24.0));
+   double angle = 2.0 * M_PI * TimeHour(TimeCurrent()) / 24.0;
+   return(MathSin(angle));
 }
 
 double HourCos()
 {
-   return(MathCos(2.0 * 3.141592653589793 * TimeHour(TimeCurrent()) / 24.0));
+   double angle = 2.0 * M_PI * TimeHour(TimeCurrent()) / 24.0;
+   return(MathCos(angle));
 }
 
 double DowSin()
 {
-   return(MathSin(2.0 * 3.141592653589793 * TimeDayOfWeek(TimeCurrent()) / 7.0));
+   double angle = 2.0 * M_PI * TimeDayOfWeek(TimeCurrent()) / 7.0;
+   return(MathSin(angle));
 }
 
 double DowCos()
 {
-   return(MathCos(2.0 * 3.141592653589793 * TimeDayOfWeek(TimeCurrent()) / 7.0));
+   double angle = 2.0 * M_PI * TimeDayOfWeek(TimeCurrent()) / 7.0;
+   return(MathCos(angle));
 }
 
 double MonthSin()
 {
-   return(MathSin(2.0 * 3.141592653589793 * (TimeMonth(TimeCurrent()) - 1) / 12.0));
+   double angle = 2.0 * M_PI * (TimeMonth(TimeCurrent()) - 1) / 12.0;
+   return(MathSin(angle));
 }
 
 double MonthCos()
 {
-   return(MathCos(2.0 * 3.141592653589793 * (TimeMonth(TimeCurrent()) - 1) / 12.0));
+   double angle = 2.0 * M_PI * (TimeMonth(TimeCurrent()) - 1) / 12.0;
+   return(MathCos(angle));
 }
 
 double DomSin()
 {
-   return(MathSin(2.0 * 3.141592653589793 * (TimeDay(TimeCurrent()) - 1) / 31.0));
+   double angle = 2.0 * M_PI * (TimeDay(TimeCurrent()) - 1) / 31.0;
+   return(MathSin(angle));
 }
 
 double DomCos()
 {
-   return(MathCos(2.0 * 3.141592653589793 * (TimeDay(TimeCurrent()) - 1) / 31.0));
+   double angle = 2.0 * M_PI * (TimeDay(TimeCurrent()) - 1) / 31.0;
+   return(MathCos(angle));
 }
 
 double GetSLDistance()

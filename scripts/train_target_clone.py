@@ -1367,15 +1367,19 @@ def _extract_features(
         trend_est = _safe_float(r.get("trend_estimate", 0))
         trend_var = _safe_float(r.get("trend_variance", 0))
 
-        hour_sin = math.sin(2 * math.pi * t.hour / 24)
-        hour_cos = math.cos(2 * math.pi * t.hour / 24)
-        dow_sin = math.sin(2 * math.pi * t.weekday() / 7)
-        dow_cos = math.cos(2 * math.pi * t.weekday() / 7)
-        month_sin = math.sin(2 * math.pi * (t.month - 1) / 12)
-        month_cos = math.cos(2 * math.pi * (t.month - 1) / 12)
+        hour_angle = 2 * math.pi * t.hour / 24
+        hour_sin = math.sin(hour_angle)
+        hour_cos = math.cos(hour_angle)
+        dow_angle = 2 * math.pi * t.weekday() / 7
+        dow_sin = math.sin(dow_angle)
+        dow_cos = math.cos(dow_angle)
+        month_angle = 2 * math.pi * (t.month - 1) / 12
+        month_sin = math.sin(month_angle)
+        month_cos = math.cos(month_angle)
         if use_dom:
-            dom_sin = math.sin(2 * math.pi * (t.day - 1) / 31)
-            dom_cos = math.cos(2 * math.pi * (t.day - 1) / 31)
+            dom_angle = 2 * math.pi * (t.day - 1) / 31
+            dom_sin = math.sin(dom_angle)
+            dom_cos = math.cos(dom_angle)
 
         sl_dist = _safe_float(r.get("sl_dist", sl - price))
         tp_dist = _safe_float(r.get("tp_dist", tp - price))

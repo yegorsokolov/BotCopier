@@ -484,6 +484,7 @@ def generate(
     output = output.replace('__CALENDAR_IDS__', id_vals)
     output = output.replace('__EVENT_WINDOW__', event_window)
 
+    # time-derived features
     feature_map = {
         'hour': 'TimeHour(TimeCurrent())',
         'hour_sin': 'HourSin()',
