@@ -1403,44 +1403,6 @@ string EscapeJson(string s)
    return(s);
 }
 
-bool SendTrade(uchar &payload[], string line)
-{
-   int len = ArraySize(payload);
-   if(GrpcSendTrade(payload, len))
-      return(true);
-   SocketErrors++;
-   FallbackEvents++;
-   trade_retry_count++;
-   EnqueuePending(pending_trades, pending_trade_lines, pending_trade_head, pending_trade_tail, pending_trade_count, payload, line, log_dir + "/pending_trades.wal");
-   TradeQueueDepth = pending_trade_count;
-   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-   if(TradeQueueDepth >= MAX_TRADE_BUFFER)
-   {
-      next_trade_flush = now;
-      FlushPending(now);
-   }
-   else
-   {
-      next_trade_flush = now + trade_backoff;
-   }
-   return(false);
-}
-
-bool SendMetrics(uchar &payload[], string line)
-{
-   int len = ArraySize(payload);
-   if(GrpcSendMetrics(payload, len))
-      return(true);
-   SocketErrors++;
-   FallbackEvents++;
-   metric_retry_count++;
-   EnqueuePending(pending_metrics, pending_metric_lines, pending_metric_head, pending_metric_tail, pending_metric_count, payload, line, log_dir + "/pending_metrics.wal");
-   MetricQueueDepth = pending_metric_count;
-   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
-   next_metric_flush = now + metric_backoff;
-   return(false);
-}
-
 void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 {
    int cal_id = CalendarEventIdAt(t.time_event);
@@ -1468,54 +1430,14 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
       t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, t.comment_with_span, t.remaining,
       t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.executed_model_idx, t.decision_id, t.exit_reason, t.duration_sec, payload);
-
-   bool sent = false;
    if(len>0)
-      sent = SendTrade(payload, line);
-   if(!sent)
    {
-      SocketErrors++;
-      FallbackEvents++;
-      if(CurrentBackend==LOG_BACKEND_CSV)
-      {
-         if(trade_log_handle==INVALID_HANDLE)
-            return;
-         if(EnableDebugLogging)
-         {
-            FileSeek(trade_log_handle, 0, SEEK_END);
-            int _wr = FileWrite(trade_log_handle, line);
-            if(_wr <= 0)
-            {
-               FileWriteErrors++;
-               AppendWalLine(log_dir + "/trades_raw.wal", line);
-            }
-            FileFlush(trade_log_handle);
-         }
-         else
-         {
-            int n = ArraySize(trade_log_buffer);
-            ArrayResize(trade_log_buffer, n+1);
-            trade_log_buffer[n] = line;
-            if(ArraySize(trade_log_buffer) >= MAX_TRADE_BUFFER)
-               FlushTradeBuffer();
-         }
-      }
-      else if(CurrentBackend==LOG_BACKEND_SQLITE)
-      {
-         if(log_db_handle!=INVALID_HANDLE)
-         {
-            string sql = StringFormat(
-               "INSERT INTO logs (event_id,event_time,broker_time,local_time,action,ticket,magic,source,symbol,order_type,lots,price,sl,tp,profit,profit_after_trade,spread,trace_id,span_id,comment,remaining_lots,slippage,volume,open_time,book_bid_vol,book_ask_vol,book_imbalance,sl_hit_dist,tp_hit_dist,executed_model_idx,decision_id,is_anomaly,equity,margin_level,commission,swap,exit_reason,duration_sec,calendar_event_id,local_anomaly,remote_anomaly) VALUES (%d,'%s','%s','%s','%s',%d,%d,'%s','%s',%d,%.2f,%.5f,%.5f,%.5f,%.2f,%.2f,%d,'%s','%s','%s',%.2f,%.5f,%d,'%s',%.2f,%.2f,%.5f,%.5f,%.5f,%d,%d,%d,%.2f,%.2f,%.2f,%.2f,'%s',%d,%d,%.5f,%.5f)",
-               t.id,
-               SqlEscape(TimeToString(t.time_event, TIME_DATE|TIME_SECONDS)),
-               SqlEscape(TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS)),
-               SqlEscape(TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS)),
-               SqlEscape(t.action), t.ticket, t.magic, SqlEscape(t.source), SqlEscape(t.symbol), t.order_type,
-               t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, SqlEscape(TraceId), SqlEscape(t.span_id), SqlEscape(t.comment), t.remaining,
-               t.slippage, (int)t.volume, SqlEscape(t.open_time_str), t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.executed_model_idx, t.decision_id, is_anom, t.equity, t.margin_level, t.commission, t.swap, SqlEscape(t.exit_reason), t.duration_sec, cal_id, t.anomaly_local, t.anomaly_remote);
-            DatabaseExecute(log_db_handle, sql);
-         }
-      }
+      EnqueuePending(pending_trades, pending_trade_lines, pending_trade_head,
+                     pending_trade_tail, pending_trade_count, payload, line,
+                     log_dir + "/pending_trades.wal");
+      TradeQueueDepth = pending_trade_count;
+      datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
+      next_trade_flush = now;
    }
    SendOtelSpan(TraceId, t.span_id, t.action);
 }
@@ -1873,9 +1795,6 @@ void ExportLogs(datetime ts)
 
 void WriteMetrics(datetime ts)
 {
-   int h = INVALID_HANDLE;
-   string fname = log_dir + "/metrics.csv";
-
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
    int trade_q_depth = TradeQueueDepth;
    int metric_q_depth = MetricQueueDepth;
@@ -1967,52 +1886,35 @@ void WriteMetrics(datetime ts)
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
       int anomaly_pending = AnomalyQueueDepth;
       int anomaly_late = AnomalyLateResponses;
-      // emit file/socket errors and retry counts for monitoring
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s", TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit, trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size, trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late, TraceId, span_id);
+      // emit file/socket errors, queue depth and retry counts for monitoring
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
+                                 TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
+                                 trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
+                                 SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count,
+                                 trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
+                                 wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
+                                 anomaly_late, TraceId, span_id);
 
       uchar payload[];
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count, trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size, trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late, payload);
-      bool sent = false;
+         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad,
+         CachedBookRefreshSeconds, var_breach_count, trade_q_depth,
+         metric_q_depth, FallbackEvents, fallback_flag, wal_size,
+         trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,
+         payload);
       if(len>0)
-         sent = SendMetrics(payload, line);
-      if(!sent)
       {
-         FallbackEvents++;
-         if(h==INVALID_HANDLE)
-         {
-            h = FileOpen(fname, FILE_CSV|FILE_READ|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-            if(h==INVALID_HANDLE)
-            {
-               h = FileOpen(fname, FILE_CSV|FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE, ';');
-               if(h!=INVALID_HANDLE)
-               {
-                  int _wr = FileWrite(h, "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;fallback_events;fallback_logging;wal_size;trade_retry_count;metric_retry_count;anomaly_pending;anomaly_late;trace_id;span_id");
-                  if(_wr <= 0)
-                     FileWriteErrors++;
-               }
-               else
-               {
-                  FileWriteErrors++;
-               }
-            }
-            else
-               FileSeek(h, 0, SEEK_END);
-         }
-         if(h!=INVALID_HANDLE)
-         {
-            int _wr_line = FileWrite(h, line);
-            if(_wr_line <= 0)
-               FileWriteErrors++;
-         }
+         EnqueuePending(pending_metrics, pending_metric_lines, pending_metric_head,
+                        pending_metric_tail, pending_metric_count, payload, line,
+                        log_dir + "/pending_metrics.wal");
+         MetricQueueDepth = pending_metric_count;
+         datetime now2 = UseBrokerTime ? TimeCurrent() : TimeLocal();
+         next_metric_flush = now2;
       }
       SendOtelSpan(TraceId, span_id, "metrics");
    }
-
-   if(h!=INVALID_HANDLE)
-      FileClose(h);
 }
 
 void UpdateModelMetrics(datetime ts)
