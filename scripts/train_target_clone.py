@@ -49,7 +49,7 @@ except Exception:  # pragma: no cover - optional dependency
     pa = None
     flight = None
     pq = None
-from sklearn.feature_extraction import DictVectorizer
+from sklearn.feature_extraction import DictVectorizer, FeatureHasher
 from sklearn.linear_model import BayesianRidge, LogisticRegression, SGDClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.neural_network import MLPClassifier, MLPRegressor
@@ -1706,6 +1706,7 @@ def _train_lite_mode(
     regime_model: dict | None = None,
     flight_uri: str | None = None,
     mode: str = "lite",
+    hash_size: int = 0,
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
@@ -1720,7 +1721,11 @@ def _train_lite_mode(
         with open(encoder_file) as f:
             encoder = json.load(f)
 
-    vec = DictVectorizer(sparse=False)
+    feature_names_set: set[str] = set()
+    if hash_size > 0:
+        vec = FeatureHasher(n_features=hash_size, input_type="dict")
+    else:
+        vec = DictVectorizer(sparse=False)
     scaler = StandardScaler()
     clf = SGDClassifier(loss="log_loss")
     if regime_model is not None:
@@ -1780,6 +1785,8 @@ def _train_lite_mode(
         )
         if not f_chunk:
             continue
+        for f in f_chunk:
+            feature_names_set.update(f.keys())
         if vec_reg is not None and f_chunk:
             Xr = vec_reg.transform(f_chunk)
             Xr = (Xr - reg_mean) / reg_std
@@ -1789,7 +1796,10 @@ def _train_lite_mode(
                 f_chunk[i][f"regime_{int(r)}"] = 1.0
         sample_count += len(l_chunk)
         if first:
-            X = vec.fit_transform(f_chunk)
+            if hash_size > 0:
+                X = vec.transform(f_chunk)
+            else:
+                X = vec.fit_transform(f_chunk)
             scaler.partial_fit(X)
             X = scaler.transform(X)
             X = _encode_features(enc_model, X)
@@ -1805,7 +1815,10 @@ def _train_lite_mode(
     if first:
         raise ValueError(f"No training data found in {data_dir}")
 
-    feature_names = vec.get_feature_names_out().tolist()
+    if hash_size > 0:
+        feature_names = sorted(feature_names_set)
+    else:
+        feature_names = vec.get_feature_names_out().tolist()
     model = {
         "model_id": "target_clone",
         "trained_at": datetime.utcnow().isoformat(),
@@ -1828,6 +1841,7 @@ def _train_lite_mode(
         "coefficients": clf.coef_[0].astype(np.float32).tolist(),
         "intercept": float(clf.intercept_[0]),
         "classes": [int(c) for c in clf.classes_],
+        "hash_size": int(hash_size) if hash_size > 0 else len(feature_names),
         "last_event_id": int(last_event_id),
         "mode": mode,
         "half_life_days": 0.0,
@@ -1929,6 +1943,7 @@ def train(
     rl_finetune: bool = False,
     replay_file: Path | None = None,
     replay_weight: float = 3.0,
+    hash_size: int = 0,
 ):
     """Train a simple classifier model from the log directory."""
     news_data = _load_news_sentiment(news_sentiment_file) if news_sentiment_file else None
@@ -2014,6 +2029,7 @@ def train(
             regime_model=regime_model,
             flight_uri=flight_uri,
             mode=mode,
+            hash_size=hash_size,
         )
         return
     feature_flags = {
@@ -2343,11 +2359,15 @@ def train(
         if graph_params and not graph_params.get("embedding_dim"):
             graph_params["embedding_dim"] = len(next(iter(symbol_embeddings.values())))
 
-    if existing_model is not None:
-        vec = DictVectorizer(sparse=False)
-        vec.fit([{name: 0.0} for name in existing_model.get("feature_names", [])])
+    feature_names_set2: set[str] = set()
+    if hash_size > 0:
+        vec = FeatureHasher(n_features=hash_size, input_type="dict")
+        if existing_model is not None:
+            feature_names_set2.update(existing_model.get("feature_names", []))
     else:
         vec = DictVectorizer(sparse=False)
+        if existing_model is not None:
+            vec.fit([{name: 0.0} for name in existing_model.get("feature_names", [])])
 
     if len(labels) < 5 or len(np.unique(labels)) < 2:
         # Not enough data to create a meaningful split
@@ -2452,6 +2472,7 @@ def train(
     feat_train_clf = [dict(f) for f in feat_train]
     feat_val_clf = [dict(f) for f in feat_val]
     for f in feat_train_clf:
+        feature_names_set2.update(f.keys())
         f.pop("profit", None)
         f.pop("net_profit", None)
         f.pop("commission", None)
@@ -2462,6 +2483,7 @@ def train(
         f.pop("event_id", None)
         f.pop("calendar_event_id", None)
     for f in feat_val_clf:
+        feature_names_set2.update(f.keys())
         f.pop("profit", None)
         f.pop("net_profit", None)
         f.pop("commission", None)
@@ -2487,6 +2509,10 @@ def train(
         f["lots"] = 0.0
     for f in feat_val_lot:
         f["lots"] = 0.0
+    for f in (
+        feat_train_reg + feat_val_reg + feat_train_lot + feat_val_lot
+    ):
+        feature_names_set2.update(f.keys())
 
     symbols_val_arr = (
         np.array([f.get("symbol", "") for f in feat_val]) if feat_val else np.array([])
@@ -2495,7 +2521,9 @@ def train(
         np.array([f.get("profit", 0.0) for f in feat_val]) if feat_val else np.array([])
     )
 
-    if existing_model is not None:
+    if hash_size > 0:
+        X_train = vec.transform(feat_train_clf)
+    elif existing_model is not None:
         X_train = vec.transform(feat_train_clf)
     else:
         X_train = vec.fit_transform(feat_train_clf)
@@ -2506,7 +2534,10 @@ def train(
     X_train = _encode_features(enc_model, X_train)
     X_val = _encode_features(enc_model, X_val)
 
-    feature_names = vec.get_feature_names_out().tolist()
+    if hash_size > 0:
+        feature_names = sorted(feature_names_set2)
+    else:
+        feature_names = vec.get_feature_names_out().tolist()
     X_train_reg = vec.transform(feat_train_reg)
     X_val_reg = (
         vec.transform(feat_val_reg) if feat_val_reg else np.empty((0, X_train_reg.shape[1]))
@@ -4048,6 +4079,7 @@ def main():
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--symbol-graph', help='JSON file describing symbol correlation graph')
     p.add_argument('--poly-degree', type=int, default=2, help='max polynomial feature degree (1 disables)')
+    p.add_argument('--hash-size', type=int, default=0, help='number of hashed features (0 disables)')
     p.add_argument(
         '--bayes-steps',
         type=int,
@@ -4167,6 +4199,7 @@ def main():
             replay_file=Path(args.replay_file) if args.replay_file else None,
             replay_weight=args.replay_weight,
             poly_degree=args.poly_degree,
+            hash_size=args.hash_size,
         )
         if args.federated_server:
             model_path = Path(args.out_dir) / (
