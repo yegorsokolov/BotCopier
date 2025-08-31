@@ -26,6 +26,40 @@ def _fmt(value: float) -> str:
     """Format floats for insertion into MQL4 code."""
     return f"{value:.6g}"
 
+
+def _prune_model_features(model: dict) -> dict:
+    """Remove features with zero importance from ``model``.
+
+    Training scripts persist SHAP importance scores under
+    ``feature_importance``.  When present, we drop any feature whose
+    importance is zero so the generated MQL4 code only contains cases for
+    the active subset.
+    """
+
+    fi = model.get("feature_importance")
+    names = model.get("feature_names")
+    if isinstance(fi, dict) and isinstance(names, list):
+        keep = [i for i, n in enumerate(names) if fi.get(n, 0.0) > 0.0]
+        if len(keep) != len(names):
+            model["feature_names"] = [names[i] for i in keep]
+            # Keep related arrays in sync when their lengths match the feature list
+            for key in (
+                "coefficients",
+                "student_coefficients",
+                "coef_variances",
+                "mean",
+                "feature_mean",
+                "std",
+                "feature_std",
+                "sl_coefficients",
+                "tp_coefficients",
+                "lot_coefficients",
+            ):
+                if key in model and isinstance(model[key], list):
+                    arr = model[key]
+                    model[key] = [arr[i] for i in keep if i < len(arr)]
+    return model
+
 template_path = (
     Path(__file__).resolve().parent.parent / 'experts' / 'StrategyTemplate.mq4'
 )
@@ -63,13 +97,14 @@ def generate(
         open_func = gzip.open if str(mj).endswith('.gz') else open
         with open_func(mj, 'rt') as f:
             data = json.load(f)
+        data = _prune_model_features(data)
         if data.get('regime_models') and data.get('meta_model'):
-            gating_data = data.get('meta_model')
+            gating_data = _prune_model_features(data.get('meta_model'))
             base_info = {k: v for k, v in data.items() if k not in ('regime_models', 'meta_model')}
             for sm in data.get('regime_models', []):
                 m = base_info.copy()
                 m.update(sm)
-                models.append(m)
+                models.append(_prune_model_features(m))
         else:
             sessions = data.get('session_models')
             if sessions:
@@ -77,7 +112,7 @@ def generate(
                 for sm in sessions:
                     m = base_info.copy()
                     m.update(sm)
-                    models.append(m)
+                    models.append(_prune_model_features(m))
             else:
                 models.append(data)
     base = models[0]
@@ -89,7 +124,7 @@ def generate(
             lite_mode = not ff.get('order_book', False)
     if gating_json:
         with open(gating_json, 'rt') as f:
-            gating_data = json.load(f)
+            gating_data = _prune_model_features(json.load(f))
     if gating_data and 'feature_names' not in gating_data:
         gating_data['feature_names'] = base.get('feature_names', [])
     hash_size = base.get('hash_size')

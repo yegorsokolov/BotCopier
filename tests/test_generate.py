@@ -743,6 +743,28 @@ def test_symbol_embeddings(tmp_path: Path):
     assert "SymbolEmbeddings" in content
 
 
+def test_pruned_features_omitted(tmp_path: Path):
+    model = {
+        "model_id": "pruned",
+        "magic": 321,
+        "coefficients": [0.1, -0.2],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["hour", "spread"],
+        "feature_importance": {"hour": 0.3, "spread": 0.0},
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+    generated = list(out_dir.glob("Generated_pruned_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert "TimeHour(TimeCurrent())" in content
+    assert "// spread" not in content
+
+
 def test_hashed_feature_alignment(tmp_path: Path):
     model = {
         "model_id": "hash",
