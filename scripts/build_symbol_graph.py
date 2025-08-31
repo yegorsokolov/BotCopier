@@ -51,6 +51,13 @@ except Exception:  # pragma: no cover - optional dependency
     Node2Vec = None  # type: ignore
     _HAS_PYG = False
 
+try:  # pragma: no cover - optional dependency
+    from statsmodels.tsa.stattools import coint
+    _HAS_SM = True
+except Exception:  # pragma: no cover - optional dependency
+    coint = None  # type: ignore
+    _HAS_SM = False
+
 def _compute_pagerank(adj: np.ndarray, alpha: float = 0.85, tol: float = 1e-6) -> np.ndarray:
     """Compute PageRank scores for a weighted adjacency matrix."""
 
@@ -90,7 +97,7 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
         df = pd.read_csv(feat_path)
 
     weights: dict[tuple[str, str], list[float]] = {}
-    coint_beta: dict[tuple[str, str], float] = {}
+    coint_beta: dict[tuple[str, str], dict[str, float]] = {}
     vol_map: dict[str, float] = {}
 
     corr_cols = [c for c in df.columns if c.startswith("corr_")]
@@ -145,21 +152,33 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
             "input must contain corr_* columns or symbol/price columns"
         )
 
-    # Estimate cointegration betas when price data available
+    # Estimate cointegration statistics when price data available.  When
+    # ``statsmodels`` is installed an Engle–Granger test is applied and pairs
+    # failing the test are removed from the graph.
     if pivot is not None:
         symbols = [s for s in pivot.columns if str(s) != "nan"]
         for a, b in combinations(symbols, 2):
             series = pivot[[a, b]].dropna()
-            if len(series) < 2:
+            if len(series) < 3:
                 continue
             x = series[b].values
             y = series[a].values
+            pval = 1.0
+            if _HAS_SM:
+                try:  # pragma: no cover - statsmodels may not be installed
+                    _t, pval, _crit = coint(y, x)  # type: ignore[arg-type]
+                except Exception:
+                    pval = 1.0
+            if pval >= 0.05 and _HAS_SM:
+                pair = tuple(sorted((a, b)))
+                weights.pop(pair, None)
+                continue
             X = np.vstack([x, np.ones(len(x))]).T
             beta, _ = np.linalg.lstsq(X, y, rcond=None)[0]
-            coint_beta[(a, b)] = float(beta)
             Xr = np.vstack([y, np.ones(len(y))]).T
             beta_rev, _ = np.linalg.lstsq(Xr, x, rcond=None)[0]
-            coint_beta[(b, a)] = float(beta_rev)
+            coint_beta[(a, b)] = {"beta": float(beta), "pvalue": float(pval)}
+            coint_beta[(b, a)] = {"beta": float(beta_rev), "pvalue": float(pval)}
 
     n = len(symbols)
     adj = np.zeros((n, n), dtype=float)
@@ -191,9 +210,9 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
         "metrics": metrics,
     }
     if coint_beta:
-        coint_map: dict[str, dict[str, float]] = {}
-        for (a, b), beta in coint_beta.items():
-            coint_map.setdefault(a, {})[b] = beta
+        coint_map: dict[str, dict[str, dict[str, float]]] = {}
+        for (a, b), stats in coint_beta.items():
+            coint_map.setdefault(a, {})[b] = stats
         graph["cointegration"] = coint_map
 
     # Optional Node2Vec embeddings

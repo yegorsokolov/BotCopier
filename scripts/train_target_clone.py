@@ -1262,7 +1262,7 @@ def _extract_features(
     pair_weights: dict[tuple[str, str], float] = {}
     sym_metrics: dict[str, dict[str, float]] = {}
     sym_embeddings: dict[str, list[float]] = {}
-    coint_betas: dict[tuple[str, str], float] = {}
+    coint_stats: dict[tuple[str, str], dict[str, float]] = {}
     if symbol_graph:
         try:
             if not isinstance(symbol_graph, dict):
@@ -1290,13 +1290,26 @@ def _extract_features(
                     continue
             coint = graph_params.get("cointegration", {})
             for base, peers in coint.items():
-                for peer, beta in peers.items():
-                    coint_betas[(base, peer)] = float(beta)
+                for peer, stats in peers.items():
+                    if isinstance(stats, dict):
+                        beta = float(stats.get("beta", 0.0))
+                        pval = float(stats.get("pvalue", 1.0))
+                    else:
+                        beta = float(stats)
+                        pval = float("nan")
+                    if not np.isnan(pval) and pval > 0.05:
+                        continue
+                    coint_stats[(base, peer)] = {"beta": beta, "pvalue": pval}
+            if coint_stats:
+                valid_pairs = set(coint_stats.keys())
+                pair_weights = {
+                    (a, b): w for (a, b), w in pair_weights.items() if (a, b) in valid_pairs
+                }
         except Exception:
             pair_weights = {}
             sym_metrics = {}
             sym_embeddings = {}
-            coint_betas = {}
+            coint_stats = {}
     enc_window = int(encoder.get("window")) if encoder else 0
     enc_weights = (
         np.array(encoder.get("weights", []), dtype=float) if encoder else np.empty((0, 0))
@@ -1519,8 +1532,9 @@ def _extract_features(
                     ratio = base_seq[-1] / peer_seq[-1]
                 feat[f"corr_{peer}"] = corr
                 feat[f"ratio_{peer}"] = ratio
-                beta = coint_betas.get((symbol, peer))
-                if beta is not None and peer_seq:
+                stats = coint_stats.get((symbol, peer))
+                if stats is not None and peer_seq:
+                    beta = stats.get("beta", 0.0)
                     resid = base_seq[-1] - beta * peer_seq[-1]
                     feat[f"coint_residual_{peer}"] = resid
 
