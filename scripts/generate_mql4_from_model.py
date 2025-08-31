@@ -448,19 +448,35 @@ def generate(
                 graph_data = json.load(f)
         except Exception:
             graph_data = {}
-    metrics = graph_data.get('metrics') or {}
-    if metrics:
-        g_symbols = graph_data.get('symbols', [])
+    g_symbols = graph_data.get('symbols', [])
+    if g_symbols:
         sym_list = ', '.join(f'"{s}"' for s in g_symbols)
+        output = output.replace('__GRAPH_SYMBOLS__', sym_list)
+    else:
+        output = output.replace('__GRAPH_SYMBOLS__', '')
+    metrics = graph_data.get('metrics') or {}
+    if metrics and g_symbols:
         deg_vals = metrics.get('degree', [0.0] * len(g_symbols))
         pr_vals = metrics.get('pagerank', [0.0] * len(g_symbols))
-        output = output.replace('__GRAPH_SYMBOLS__', sym_list)
         output = output.replace('__GRAPH_DEGREE__', ', '.join(_fmt(v) for v in deg_vals))
         output = output.replace('__GRAPH_PAGERANK__', ', '.join(_fmt(v) for v in pr_vals))
     else:
-        output = output.replace('__GRAPH_SYMBOLS__', '')
         output = output.replace('__GRAPH_DEGREE__', '')
         output = output.replace('__GRAPH_PAGERANK__', '')
+    emb_map = graph_data.get('embeddings') or {}
+    emb_dim = int(graph_data.get('embedding_dim') or 0)
+    if emb_map and emb_dim > 0 and g_symbols:
+        emb_rows = []
+        for s in g_symbols:
+            vec = emb_map.get(s, [0.0] * emb_dim)
+            emb_rows.append('{' + ', '.join(_fmt(float(v)) for v in vec) + '}')
+        output = output.replace('__GRAPH_EMB_DIM__', str(emb_dim))
+        output = output.replace('__GRAPH_EMB_COUNT__', str(len(g_symbols)))
+        output = output.replace('__GRAPH_EMB__', ', '.join(emb_rows))
+    else:
+        output = output.replace('__GRAPH_EMB_DIM__', '0')
+        output = output.replace('__GRAPH_EMB_COUNT__', '0')
+        output = output.replace('__GRAPH_EMB__', '')
 
     coint = graph_data.get('cointegration') or {}
     if coint:

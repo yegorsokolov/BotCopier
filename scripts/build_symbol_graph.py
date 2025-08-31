@@ -91,9 +91,15 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
 
     weights: dict[tuple[str, str], list[float]] = {}
     coint_beta: dict[tuple[str, str], float] = {}
+    vol_map: dict[str, float] = {}
 
     corr_cols = [c for c in df.columns if c.startswith("corr_")]
     has_price_cols = "symbol" in df.columns and "price" in df.columns
+    if "symbol" in df.columns and "volume" in df.columns:
+        try:
+            vol_map = df.groupby("symbol")["volume"].mean().astype(float).to_dict()
+        except Exception:
+            vol_map = {}
 
     pivot = None
     if has_price_cols:
@@ -171,14 +177,18 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
     degree = adj.sum(axis=1)
     pagerank = _compute_pagerank(adj)
 
+    metrics: dict[str, list[float]] = {
+        "degree": degree.tolist(),
+        "pagerank": pagerank.tolist(),
+    }
+    if vol_map:
+        metrics["avg_volume"] = [float(vol_map.get(s, 0.0)) for s in symbols]
+
     graph: dict = {
         "symbols": symbols,
         "edge_index": edge_index,
         "edge_weight": edge_weight,
-        "metrics": {
-            "degree": degree.tolist(),
-            "pagerank": pagerank.tolist(),
-        },
+        "metrics": metrics,
     }
     if coint_beta:
         coint_map: dict[str, dict[str, float]] = {}
@@ -216,6 +226,8 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
             "degree": degree,
             "pagerank": pagerank,
         })
+        if "avg_volume" in metrics:
+            df_out["avg_volume"] = metrics["avg_volume"]
         if graph.get("embeddings"):
             emb = np.array([graph["embeddings"][s] for s in symbols], dtype=float)
             for j in range(emb.shape[1]):
