@@ -6,6 +6,8 @@ The bot first tries to forward the original CSV/JSON entry to `systemd` via `sys
 
 Metrics include a `fallback_logging` flag so downstream monitoring can detect when the exporter is writing to the fallback log instead of Flight.
 
+During startup, any pending messages are recovered from write-ahead logs (WAL). Each WAL record carries a checksum; corrupt entries are skipped and a warning is printed. After a message is successfully sent to the Flight server, a checkpoint marker is written so that if the process stops mid-replay, restart will resume from the last confirmed record.
+
 ## Viewing logs on Ubuntu
 
 On an Ubuntu VPS, fallback entries written to journald can be retrieved with:

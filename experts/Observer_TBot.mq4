@@ -463,12 +463,17 @@ void FallbackLog(string tag, uchar &payload[], string line)
    }
 }
 
+uint WalChecksum(uchar &msg[]);
+int ReadCheckpoint(string fname);
+void WriteCheckpoint(string fname, int count);
+
 void FlushPending(datetime now)
 {
    if(pending_trade_count > 0 && now >= next_trade_flush)
    {
       if(GrpcSendTrade(pending_trades[pending_trade_head], ArraySize(pending_trades[pending_trade_head])))
       {
+         WriteCheckpoint(log_dir + "/pending_trades.chk", 1);
          ArrayResize(pending_trades[pending_trade_head], 0);
          pending_trade_lines[pending_trade_head] = "";
          pending_trade_head = (pending_trade_head + 1) % ArraySize(pending_trades);
@@ -478,6 +483,7 @@ void FlushPending(datetime now)
          next_trade_flush = now;
          trade_retry_count = 0;
          SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_count);
+         WriteCheckpoint(log_dir + "/pending_trades.chk", 0);
       }
       else
       {
@@ -499,6 +505,7 @@ void FlushPending(datetime now)
    {
       if(GrpcSendMetrics(pending_metrics[pending_metric_head], ArraySize(pending_metrics[pending_metric_head])))
       {
+         WriteCheckpoint(log_dir + "/pending_metrics.chk", 1);
          ArrayResize(pending_metrics[pending_metric_head], 0);
          pending_metric_lines[pending_metric_head] = "";
          pending_metric_head = (pending_metric_head + 1) % ArraySize(pending_metrics);
@@ -508,6 +515,7 @@ void FlushPending(datetime now)
          next_metric_flush = now;
          metric_retry_count = 0;
          SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_count);
+         WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
       }
       else
       {
@@ -526,6 +534,34 @@ void FlushPending(datetime now)
    }
 }
 
+uint WalChecksum(uchar &msg[])
+{
+   uint sum = 0;
+   int len = ArraySize(msg);
+   for(int i=0; i<len; i++)
+      sum += msg[i];
+   return(sum);
+}
+
+int ReadCheckpoint(string fname)
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return(0);
+   int val = FileReadInteger(h);
+   FileClose(h);
+   return(val);
+}
+
+void WriteCheckpoint(string fname, int count)
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   FileWriteInteger(h, count);
+   FileClose(h);
+}
+
 void AppendWal(string fname, uchar &msg[])
 {
    int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_READ|FILE_COMMON);
@@ -537,6 +573,7 @@ void AppendWal(string fname, uchar &msg[])
    int len = ArraySize(msg);
    FileWriteInteger(h, len);
    FileWriteArray(h, msg, 0, len);
+    FileWriteInteger(h, WalChecksum(msg));
    FileClose(h);
 }
 
@@ -552,6 +589,7 @@ void SaveQueue(string fname, uchar &queue[][], int head, int count)
       int len = ArraySize(queue[idx]);
       FileWriteInteger(h, len);
       FileWriteArray(h, queue[idx], 0, len);
+      FileWriteInteger(h, WalChecksum(queue[idx]));
    }
    FileClose(h);
 }
@@ -568,8 +606,19 @@ void LoadQueue(string fname, uchar &queue[][], int &head, int &tail, int &count)
       int len = FileReadInteger(h);
       if(len <= 0)
          break;
+      uchar tmp[];
+      ArrayResize(tmp, len);
+      int rd = FileReadArray(h, tmp, 0, len);
+      if(rd!=len)
+         break;
+      uint expected = FileReadInteger(h);
+      if(WalChecksum(tmp)!=expected)
+      {
+         Print("Corrupt WAL entry in " + fname + ", skipping");
+         continue;
+      }
       ArrayResize(queue[tail], len);
-      FileReadArray(h, queue[tail], 0, len);
+      ArrayCopy(queue[tail], tmp);
       tail = (tail + 1) % cap;
       if(count < cap)
          count++;
@@ -580,19 +629,36 @@ void LoadQueue(string fname, uchar &queue[][], int &head, int &tail, int &count)
    FileDelete(fname);
 }
 
-void ReplayWal(string fname, uchar &queue[][], int &head, int &tail, int &count)
+void ReplayWal(string fname, uchar &queue[][], int &head, int &tail, int &count, int skip=0)
 {
    int cap = ArraySize(queue);
    int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
    if(h==INVALID_HANDLE)
       return;
+   int processed = 0;
    while(!FileIsEnding(h))
    {
       int len = FileReadInteger(h);
       if(len <= 0)
          break;
+      uchar tmp[];
+      ArrayResize(tmp, len);
+      int rd = FileReadArray(h, tmp, 0, len);
+      if(rd!=len)
+         break;
+      uint expected = FileReadInteger(h);
+      if(WalChecksum(tmp)!=expected)
+      {
+         Print("Corrupt WAL entry in " + fname + ", skipping");
+         continue;
+      }
+      if(processed < skip)
+      {
+         processed++;
+         continue;
+      }
       ArrayResize(queue[tail], len);
-      FileReadArray(h, queue[tail], 0, len);
+      ArrayCopy(queue[tail], tmp);
       tail = (tail + 1) % cap;
       if(count < cap)
          count++;
@@ -1017,8 +1083,10 @@ int OnInit()
    pending_metric_head = pending_metric_tail = pending_metric_count = 0;
    LoadQueue(log_dir + "/pending_trades.bin", pending_trades, pending_trade_head, pending_trade_tail, pending_trade_count);
    LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics, pending_metric_head, pending_metric_tail, pending_metric_count);
-   ReplayWal(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_tail, pending_trade_count);
-   ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_tail, pending_metric_count);
+   int trade_skip = ReadCheckpoint(log_dir + "/pending_trades.chk");
+   int metric_skip = ReadCheckpoint(log_dir + "/pending_metrics.chk");
+   ReplayWal(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_tail, pending_trade_count, trade_skip);
+   ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_tail, pending_metric_count, metric_skip);
    TradeQueueDepth = pending_trade_count;
    MetricQueueDepth = pending_metric_count;
    GrpcClientInit(GrpcServerHost, GrpcServerPort);
