@@ -15,6 +15,8 @@ import argparse
 import json
 import gzip
 import logging
+import numpy as np
+from sklearn.feature_extraction import FeatureHasher
 from pathlib import Path
 from datetime import datetime
 from typing import Iterable, List, Union, Optional
@@ -90,6 +92,9 @@ def generate(
             gating_data = json.load(f)
     if gating_data and 'feature_names' not in gating_data:
         gating_data['feature_names'] = base.get('feature_names', [])
+    hash_size = base.get('hash_size')
+    if hash_size and gating_data:
+        gating_data = None
 
     has_gpu_weights = any(
         m.get('transformer_weights')
@@ -131,17 +136,26 @@ def generate(
     hier_json = json.dumps(base.get('hierarchy', {})).replace('"', '\\"')
     output = output.replace('__HIERARCHY_JSON__', hier_json)
 
-    # merge feature names preserving order
+    # merge feature names preserving order or gather for hashing
     feature_names: List[str] = []
-    for m in models:
-        for name in m.get('feature_names', []):
-            if name not in feature_names:
-                feature_names.append(name)
-    if gating_data:
-        for name in gating_data.get('feature_names', []):
-            if name not in feature_names:
-                feature_names.append(name)
-    feature_count = len(feature_names)
+    if hash_size:
+        seen = set()
+        for m in models:
+            for name in m.get('feature_names', []):
+                if name not in seen:
+                    seen.add(name)
+                    feature_names.append(name)
+        feature_count = int(hash_size)
+    else:
+        for m in models:
+            for name in m.get('feature_names', []):
+                if name not in feature_names:
+                    feature_names.append(name)
+        if gating_data:
+            for name in gating_data.get('feature_names', []):
+                if name not in feature_names:
+                    feature_names.append(name)
+        feature_count = len(feature_names)
 
     coeff_rows = []
     intercepts = []
@@ -157,12 +171,14 @@ def generate(
             q_w = m.get('q_weights')
             if isinstance(q_w, list) and len(q_w) >= 2:
                 try:
-                    import numpy as np
                     coeffs = (np.array(q_w[0]) - np.array(q_w[1])).tolist()
                 except Exception:
                     coeffs = []
-        fmap = {f: c for f, c in zip(m.get('feature_names', []), coeffs)}
-        vec = [_fmt(fmap.get(f, 0.0)) for f in feature_names]
+        if hash_size:
+            vec = [_fmt(c) for c in coeffs]
+        else:
+            fmap = {f: c for f, c in zip(m.get('feature_names', []), coeffs)}
+            vec = [_fmt(fmap.get(f, 0.0)) for f in feature_names]
         coeff_rows.append('{' + ', '.join(vec) + '}')
         intercept = m.get('student_intercept')
         if intercept is None:
@@ -175,8 +191,11 @@ def generate(
                 intercept = 0.0
         intercepts.append(_fmt(intercept))
         coef_var = m.get('coef_variances', [])
-        fmap_v = {f: v for f, v in zip(m.get('feature_names', []), coef_var)}
-        vec_v = [_fmt(fmap_v.get(f, 0.0)) for f in feature_names]
+        if hash_size:
+            vec_v = [_fmt(v) for v in coef_var]
+        else:
+            fmap_v = {f: v for f, v in zip(m.get('feature_names', []), coef_var)}
+            vec_v = [_fmt(fmap_v.get(f, 0.0)) for f in feature_names]
         var_rows.append('{' + ', '.join(vec_v) + '}')
         noise_vars.append(_fmt(m.get('noise_variance', 0.0)))
 
@@ -391,11 +410,15 @@ def generate(
     mean_vals = base.get('mean', base.get('feature_mean', []))
     std_vals = base.get('std', base.get('feature_std', []))
 
-    mean_map = {f: m for f, m in zip(base.get('feature_names', []), mean_vals)}
-    mean_vec = [_fmt(mean_map.get(f, 0.0)) for f in feature_names]
+    if hash_size:
+        mean_vec = [_fmt(m) for m in mean_vals]
+        std_vec = [_fmt(s) for s in std_vals]
+    else:
+        mean_map = {f: m for f, m in zip(base.get('feature_names', []), mean_vals)}
+        mean_vec = [_fmt(mean_map.get(f, 0.0)) for f in feature_names]
+        std_map = {f: s for f, s in zip(base.get('feature_names', []), std_vals)}
+        std_vec = [_fmt(std_map.get(f, 1.0)) for f in feature_names]
     output = output.replace('__FEATURE_MEAN__', ', '.join(mean_vec))
-    std_map = {f: s for f, s in zip(base.get('feature_names', []), std_vals)}
-    std_vec = [_fmt(std_map.get(f, 1.0)) for f in feature_names]
     output = output.replace('__FEATURE_STD__', ', '.join(std_vec))
 
     emb_data = base.get('symbol_embeddings', {})
@@ -628,19 +651,50 @@ def generate(
             return 'GetNewsSentiment()'
         return None
 
-    for idx, name in enumerate(feature_names):
-        expr = resolve_expr(name)
-        if expr is None:
-            logging.error(
-                "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
-                name,
+    if hash_size:
+        hasher = FeatureHasher(n_features=hash_size, input_type="dict")
+        idx_map: dict[int, list[tuple[str, float]]] = {}
+        for name in feature_names:
+            vec = hasher.transform([{name: 1.0}]).toarray()[0]
+            hidx = int(np.flatnonzero(vec)[0])
+            sign = 1.0 if vec[hidx] >= 0 else -1.0
+            idx_map.setdefault(hidx, []).append((name, sign))
+        for idx, items in sorted(idx_map.items()):
+            expr_parts = []
+            names = []
+            for name, sign in items:
+                expr = resolve_expr(name)
+                if expr is None:
+                    logging.error(
+                        "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
+                        name,
+                    )
+                    raise ValueError(
+                        f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
+                    )
+                names.append(name)
+                part = f"({expr})"
+                if sign < 0:
+                    part = f"-({expr})"
+                expr_parts.append(part)
+            expr_sum = ' + '.join(expr_parts)
+            cases.append(
+                f"      case {idx}: // {', '.join(names)}\\n         raw = {expr_sum};\\n         break;",
             )
-            raise ValueError(
-                f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
+    else:
+        for idx, name in enumerate(feature_names):
+            expr = resolve_expr(name)
+            if expr is None:
+                logging.error(
+                    "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
+                    name,
+                )
+                raise ValueError(
+                    f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
+                )
+            cases.append(
+                f"      case {idx}: // {name}\\n         raw = ({expr});\\n         break;",
             )
-        cases.append(
-            f"      case {idx}: // {name}\\n         raw = ({expr});\\n         break;",
-        )
     case_block = "\n".join(cases)
     if case_block:
         case_block += "\n"

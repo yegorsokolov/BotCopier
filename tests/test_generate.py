@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import sys
 import pytest
+import numpy as np
+from sklearn.feature_extraction import FeatureHasher
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.generate_mql4_from_model import generate
@@ -739,3 +741,30 @@ def test_symbol_embeddings(tmp_path: Path):
     content = generated[0].read_text()
     assert "EURUSD" in content
     assert "SymbolEmbeddings" in content
+
+
+def test_hashed_feature_alignment(tmp_path: Path):
+    model = {
+        "model_id": "hash",
+        "magic": 111,
+        "coefficients": [0.1] * 8,
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["hour", "spread"],
+        "hash_size": 8,
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+    generated = list(out_dir.glob("Generated_hash_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    hasher = FeatureHasher(n_features=8, input_type="dict")
+    vec_hour = hasher.transform([{"hour": 1.0}]).toarray()[0]
+    idx_hour = int(np.flatnonzero(vec_hour)[0])
+    vec_spread = hasher.transform([{"spread": 1.0}]).toarray()[0]
+    idx_spread = int(np.flatnonzero(vec_spread)[0])
+    assert f"case {idx_hour}:" in content
+    assert f"case {idx_spread}:" in content
