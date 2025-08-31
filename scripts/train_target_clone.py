@@ -1373,11 +1373,15 @@ def _extract_features(
         dow_angle = 2 * math.pi * t.weekday() / 7
         dow_sin = math.sin(dow_angle)
         dow_cos = math.cos(dow_angle)
-        month_angle = 2 * math.pi * (t.month - 1) / 12
+
+        month = t.month
+        month_angle = 2 * math.pi * (month - 1) / 12
         month_sin = math.sin(month_angle)
         month_cos = math.cos(month_angle)
+
+        dom = t.day
         if use_dom:
-            dom_angle = 2 * math.pi * (t.day - 1) / 31
+            dom_angle = 2 * math.pi * (dom - 1) / 31
             dom_sin = math.sin(dom_angle)
             dom_cos = math.cos(dom_angle)
 
@@ -1627,6 +1631,7 @@ def _extract_features(
                 load = psutil.cpu_percent(interval=None)
 
     enabled_feats = []
+    enabled_feats.append("month")
     if use_sma:
         enabled_feats.append("sma")
     if use_rsi:

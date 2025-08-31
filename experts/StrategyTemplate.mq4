@@ -515,25 +515,29 @@ double DowCos()
 
 double MonthSin()
 {
-   double angle = 2.0 * M_PI * (TimeMonth(TimeCurrent()) - 1) / 12.0;
+   int month = TimeMonth(TimeCurrent());
+   double angle = 2.0 * M_PI * (month - 1) / 12.0;
    return(MathSin(angle));
 }
 
 double MonthCos()
 {
-   double angle = 2.0 * M_PI * (TimeMonth(TimeCurrent()) - 1) / 12.0;
+   int month = TimeMonth(TimeCurrent());
+   double angle = 2.0 * M_PI * (month - 1) / 12.0;
    return(MathCos(angle));
 }
 
 double DomSin()
 {
-   double angle = 2.0 * M_PI * (TimeDay(TimeCurrent()) - 1) / 31.0;
+   int dom = TimeDay(TimeCurrent());
+   double angle = 2.0 * M_PI * (dom - 1) / 31.0;
    return(MathSin(angle));
 }
 
 double DomCos()
 {
-   double angle = 2.0 * M_PI * (TimeDay(TimeCurrent()) - 1) / 31.0;
+   int dom = TimeDay(TimeCurrent());
+   double angle = 2.0 * M_PI * (dom - 1) / 31.0;
    return(MathCos(angle));
 }
 
