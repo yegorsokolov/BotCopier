@@ -1229,7 +1229,14 @@ def _extract_features(
     hours = []
     times = []
     imbalance_history: list[float] = []
-    price_map = {sym: [] for sym in (extra_price_series or {}).keys()}
+    corr_map = corr_map or {}
+    extra_series = extra_price_series or {}
+    calendar_events = calendar_events or []
+    price_map = {sym: [] for sym in extra_series.keys()}
+    for base, peers in corr_map.items():
+        price_map.setdefault(base, [])
+        for p in peers:
+            price_map.setdefault(p, [])
     macd_state = {}
     higher_timeframes = [str(tf).upper() for tf in (higher_timeframes or [])]
     tf_map = {
@@ -1252,13 +1259,6 @@ def _extract_features(
     tf_prev_price = {tf: None for tf in higher_timeframes}
     stoch_state = {}
     adx_state = {}
-    extra_series = extra_price_series or {}
-    price_map.update({sym: [] for sym in extra_series.keys()})
-    if corr_map:
-        for base, peers in corr_map.items():
-            price_map.setdefault(base, [])
-            for p in peers:
-                price_map.setdefault(p, [])
 
     pair_weights: dict[tuple[str, str], float] = {}
     sym_metrics: dict[str, dict[str, float]] = {}
@@ -1332,7 +1332,6 @@ def _extract_features(
     enc_centers = (
         np.array(encoder.get("centers", []), dtype=float) if encoder else np.empty((0, 0))
     )
-    calendar_events = calendar_events or []
     news_indices = {sym: 0 for sym in (news_sentiment or {}).keys()}
     row_idx = 0
 
@@ -1480,19 +1479,18 @@ def _extract_features(
                 }
             )
 
-        if calendar_events is not None:
-            flag = 0.0
-            impact_val = 0.0
-            event_id_val = 0
-            for ev_time, ev_imp, ev_id in calendar_events:
-                if abs((t - ev_time).total_seconds()) <= event_window * 60.0:
-                    flag = 1.0
-                    if ev_imp > impact_val:
-                        impact_val = ev_imp
-                        event_id_val = int(ev_id)
-            feat["event_flag"] = flag
-            feat["event_impact"] = impact_val
-            feat["calendar_event_id"] = event_id_val
+        flag = 0.0
+        impact_val = 0.0
+        event_id_val = 0
+        for ev_time, ev_imp, ev_id in calendar_events:
+            if abs((t - ev_time).total_seconds()) <= event_window * 60.0:
+                flag = 1.0
+                if ev_imp > impact_val:
+                    impact_val = ev_imp
+                    event_id_val = int(ev_id)
+        feat["event_flag"] = flag
+        feat["event_impact"] = impact_val
+        feat["calendar_event_id"] = event_id_val
 
         if use_volume:
             feat["volume"] = float(r.get("volume", 0) or 0)
@@ -1543,26 +1541,25 @@ def _extract_features(
                 feat[f"macd_{tf}"] = tf_macd.get(tf, 0.0)
                 feat[f"macd_signal_{tf}"] = tf_macd_sig.get(tf, 0.0)
 
-        if corr_map:
-            base_prices = price_map.get(symbol, [])
-            base_seq = base_prices + [price]
-            for peer in corr_map.get(symbol, []):
-                peer_prices = price_map.get(peer, [])
-                peer_seq = list(peer_prices)
-                series = extra_series.get(peer)
-                if series is not None and row_idx < len(series):
-                    peer_seq.append(float(series[row_idx]))
-                corr = _rolling_corr(base_seq, peer_seq, corr_window)
-                ratio = 0.0
-                if peer_seq and peer_seq[-1] != 0:
-                    ratio = base_seq[-1] / peer_seq[-1]
-                feat[f"corr_{peer}"] = corr
-                feat[f"ratio_{peer}"] = ratio
-                stats = coint_stats.get((symbol, peer))
-                if stats is not None and peer_seq:
-                    beta = stats.get("beta", 0.0)
-                    resid = base_seq[-1] - beta * peer_seq[-1]
-                    feat[f"coint_residual_{peer}"] = resid
+        base_prices = price_map.get(symbol, [])
+        base_seq = base_prices + [price]
+        for peer in corr_map.get(symbol, []):
+            peer_prices = price_map.get(peer, [])
+            peer_seq = list(peer_prices)
+            series = extra_series.get(peer)
+            if series is not None and row_idx < len(series):
+                peer_seq.append(float(series[row_idx]))
+            corr = _rolling_corr(base_seq, peer_seq, corr_window)
+            ratio = 0.0
+            if peer_seq and peer_seq[-1] != 0:
+                ratio = base_seq[-1] / peer_seq[-1]
+            feat[f"corr_{peer}"] = corr
+            feat[f"ratio_{peer}"] = ratio
+            stats = coint_stats.get((symbol, peer))
+            if stats is not None and peer_seq:
+                beta = stats.get("beta", 0.0)
+                resid = base_seq[-1] - beta * peer_seq[-1]
+                feat[f"coint_residual_{peer}"] = resid
 
         if pair_weights:
             for (a, b), w in pair_weights.items():

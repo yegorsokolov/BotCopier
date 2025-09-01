@@ -439,6 +439,29 @@ def test_generate_ratio_feature(tmp_path: Path):
     assert 'iClose("EURUSD", 0, 0) / iClose("USDCHF", 0, 0)' in content
 
 
+def test_generate_corr_feature(tmp_path: Path):
+    model = {
+        "model_id": "corr",
+        "magic": 999,
+        "coefficients": [0.1],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["corr_USDCHF"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_corr_*.mq4"))
+    assert len(generated) == 1
+    with open(generated[0]) as f:
+        content = f.read()
+    assert 'PairCorrelation(SymbolToTrade, "USDCHF")' in content
+
+
 def test_generate_rl_fused(tmp_path: Path):
     model = {
         "model_id": "rl_fused",
@@ -690,10 +713,10 @@ def test_calendar_features(tmp_path: Path):
     model = {
         "model_id": "cal",
         "magic": 111,
-        "coefficients": [0.1, 0.2],
+        "coefficients": [0.1, 0.2, 0.3],
         "intercept": 0.0,
         "threshold": 0.5,
-        "feature_names": ["event_flag", "event_impact"],
+        "feature_names": ["event_flag", "event_impact", "calendar_event_id"],
         "calendar_events": [["2024-01-01T00:30:00", 1.0, 1]],
         "event_window": 60.0,
     }
@@ -710,6 +733,7 @@ def test_calendar_features(tmp_path: Path):
         content = f.read()
     assert "CalendarFlag()" in content
     assert "CalendarImpact()" in content
+    assert "CalendarEventId()" in content
 
 
 def test_on_tick_logistic_inference(tmp_path: Path):

@@ -22,15 +22,26 @@ except Exception:  # pragma: no cover - optional
     hdbscan = None
 
 # Reuse data loading and feature extraction from training script
-from train_target_clone import _load_logs, _extract_features  # type: ignore
+from train_target_clone import _load_logs, _extract_features, _load_calendar  # type: ignore
 
 
 def cluster_features(
-    data_dir: Path, out_file: Path, clusters: int = 3, algorithm: str = "kmeans"
+    data_dir: Path,
+    out_file: Path,
+    clusters: int = 3,
+    algorithm: str = "kmeans",
+    corr_map: dict[str, list[str]] | None = None,
+    calendar_events: list[tuple] | None = None,
+    event_window: float = 60.0,
 ) -> None:
     """Cluster feature vectors and write model to ``out_file``."""
     rows_df, _, _ = _load_logs(data_dir)
-    feats, *_ = _extract_features(rows_df.to_dict("records"))
+    feats, *_ = _extract_features(
+        rows_df.to_dict("records"),
+        corr_map=corr_map,
+        calendar_events=calendar_events,
+        event_window=event_window,
+    )
     if not feats:
         raise ValueError("No features found for clustering")
 
@@ -78,8 +89,31 @@ def main() -> None:
         default="kmeans",
         help="clustering algorithm",
     )
+    p.add_argument("--corr-symbols", help="comma separated correlated symbol pairs e.g. EURUSD:USDCHF")
+    p.add_argument("--calendar-file", help="CSV file with columns time,impact[,id] for events")
+    p.add_argument("--event-window", type=float, default=60.0, help="minutes around events to flag")
     args = p.parse_args()
-    cluster_features(args.data_dir, args.out_file, args.clusters, args.algorithm)
+    if args.corr_symbols:
+        corr_map = {}
+        for p_sym in args.corr_symbols.split(','):
+            if ':' in p_sym:
+                base, peer = p_sym.split(':', 1)
+                corr_map.setdefault(base, []).append(peer)
+    else:
+        corr_map = None
+    if args.calendar_file:
+        events = _load_calendar(Path(args.calendar_file))
+    else:
+        events = None
+    cluster_features(
+        args.data_dir,
+        args.out_file,
+        args.clusters,
+        args.algorithm,
+        corr_map=corr_map,
+        calendar_events=events,
+        event_window=args.event_window,
+    )
 
 
 if __name__ == "__main__":
