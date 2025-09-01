@@ -480,20 +480,11 @@ int OnInit()
       if(ShadowTradeHandle != INVALID_HANDLE)
       {
          if(FileSize(ShadowTradeHandle) == 0)
-            FileWrite(ShadowTradeHandle, "timestamp;model_idx;result;profit");
+            FileWrite(ShadowTradeHandle, "timestamp;model_idx;probability");
          FileSeek(ShadowTradeHandle, 0, SEEK_END);
       }
       else
          Print("Shadow trade log open failed: ", GetLastError());
-      ArrayResize(ShadowActive, ModelCount);
-      ArrayResize(ShadowIsBuy, ModelCount);
-      ArrayResize(ShadowOpenPrice, ModelCount);
-      ArrayResize(ShadowSL, ModelCount);
-      ArrayResize(ShadowTP, ModelCount);
-      ArrayResize(ShadowLots, ModelCount);
-      ArrayResize(ShadowOpenTime, ModelCount);
-      for(int i=0;i<ModelCount;i++)
-         ShadowActive[i] = false;
    }
    ReplayDecisionLog(); // reprocess archived decisions when ReplayDecisions=true
    return(INIT_SUCCEEDED);
@@ -1487,9 +1478,7 @@ void OnTick()
          Print("Adapted weights received");
       LastAdaptRequest = TimeCurrent();
    }
-   if(EnableShadowTrading)
-      ManageShadowTrades();
-   else if(HasOpenOrders())
+   if(!EnableShadowTrading && HasOpenOrders())
    {
       ManageOpenOrders();
       return;
@@ -1576,22 +1565,14 @@ void OnTick()
 
    if(EnableShadowTrading)
    {
-      for(int idx=0; idx<ModelCount; idx++)
+      if(ShadowTradeHandle != INVALID_HANDLE)
       {
-         if(ShadowActive[idx])
-            continue;
-         if(pvs[idx] > MaxPredictiveVariance)
-            continue;
-         double tradeLots = CalcLots();
-         tradeLots *= risk_weights[idx];
-         bool buy = (probs[idx] > EntryThreshold);
-         ShadowActive[idx] = true;
-         ShadowIsBuy[idx] = buy;
-         ShadowOpenPrice[idx] = buy ? Ask : Bid;
-         ShadowSL[idx] = buy ? GetNewSL(true) : GetNewSL(false);
-         ShadowTP[idx] = buy ? GetNewTP(true) : GetNewTP(false);
-         ShadowLots[idx] = tradeLots;
-         ShadowOpenTime[idx] = TimeCurrent();
+         datetime now = TimeCurrent();
+         for(int idx=0; idx<ModelCount; idx++)
+            FileWrite(ShadowTradeHandle,
+                      TimeToString(now, TIME_DATE|TIME_SECONDS),
+                      idx, probs[idx]);
+         FileFlush(ShadowTradeHandle);
       }
       return;
    }
