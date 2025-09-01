@@ -9,10 +9,10 @@ def _write_logs(tmpdir: Path) -> tuple[Path, Path]:
     trades = tmpdir / "trades_raw.csv"
     decisions.write_text(
         """event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;chosen;risk_weight;variance;lots_predicted;executed_model_idx;features;trace_id;span_id
-1;2024-01-01T00:00:00;v1;buy;0.8;0;0;0;0;1;1;0.1;0;0;;t;s
-1;2024-01-01T00:00:00;v1;shadow;0.3;0;0;1;0;0;1;0.1;0;0;;t;s
-2;2024-01-01T00:01:00;v1;sell;0.2;0;0;0;0;1;1;0.1;0;0;;t;s
-2;2024-01-01T00:01:00;v1;shadow;0.7;0;0;1;0;0;1;0.1;0;0;;t;s
+1;2024-01-01T00:00:00;v1;buy;0.8;5;10;0;0;1;1;0.1;0;0;;t;s
+1;2024-01-01T00:00:00;v1;shadow;0.3;5;10;1;0;0;1;0.1;0;0;;t;s
+2;2024-01-01T00:01:00;v1;sell;0.2;5;10;0;0;1;1;0.1;0;0;;t;s
+2;2024-01-01T00:01:00;v1;shadow;0.7;5;10;1;0;0;1;0.1;0;0;;t;s
 """
     )
     trades.write_text("decision_id,profit\n1,10\n2,-5\n")

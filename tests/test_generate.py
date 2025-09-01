@@ -60,8 +60,8 @@ def test_sl_tp_features(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert "GetSLDistance()" in content
-    assert "GetTPDistance()" in content
+    assert "SLDistance()" in content
+    assert "TPDistance()" in content
 
 
 def test_polynomial_features(tmp_path: Path):
