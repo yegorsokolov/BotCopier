@@ -82,6 +82,7 @@ datetime ModelTimestamp = 0;
 datetime RiskWeightTimestamp = 0;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
+bool     GrpcConnected = false;
 int      FallbackEvents = 0;
 int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
@@ -479,8 +480,8 @@ void FlushPending(datetime now)
       int sent = 0;
       while(pending_trade_count > 0 && sent < SendBatchSize)
       {
-         if(GrpcSendTrade(pending_trades[pending_trade_head], ArraySize(pending_trades[pending_trade_head])))
-         {
+        if(GrpcSendTrade(pending_trades[pending_trade_head], ArraySize(pending_trades[pending_trade_head])))
+        {
             WriteCheckpoint(log_dir + "/pending_trades.chk", 1);
             ArrayResize(pending_trades[pending_trade_head], 0);
             pending_trade_lines[pending_trade_head] = "";
@@ -494,9 +495,10 @@ void FlushPending(datetime now)
             WriteCheckpoint(log_dir + "/pending_trades.chk", 0);
             sent++;
          }
-         else
-         {
+        else
+        {
             SocketErrors++;
+            GrpcConnected = false;
             trade_retry_count++;
             FallbackEvents++;
             trade_backoff = MathMin(trade_backoff*2, 3600);
@@ -532,9 +534,10 @@ void FlushPending(datetime now)
             WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
             msent++;
          }
-         else
-         {
+        else
+        {
             SocketErrors++;
+            GrpcConnected = false;
             metric_send_retry_count++;
             FallbackEvents++;
             metric_backoff = MathMin(metric_backoff*2, 3600);
@@ -1054,7 +1057,7 @@ int OnInit()
    ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_tail, pending_metric_count, metric_skip);
    TradeQueueDepth = pending_trade_count;
    MetricQueueDepth = pending_metric_count;
-   GrpcClientInit(GrpcServerHost, GrpcServerPort);
+   GrpcConnected = GrpcClientInit(GrpcServerHost, GrpcServerPort);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
    if(max_id >= NextEventId)
@@ -1241,6 +1244,8 @@ void OnTick()
 void OnTimer()
 {
    ProcessAnomalyQueue();
+   if(!GrpcConnected)
+      GrpcConnected = GrpcClientInit(GrpcServerHost, GrpcServerPort);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    FlushPending(now);
 
