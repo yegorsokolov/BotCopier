@@ -818,6 +818,45 @@ def test_pruned_features_omitted(tmp_path: Path):
     assert "// spread" not in content
 
 
+def test_mandatory_features_not_pruned(tmp_path: Path):
+    model = {
+        "model_id": "mand",
+        "magic": 123,
+        "coefficients": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": [
+            "hour",
+            "book_bid_vol",
+            "book_ask_vol",
+            "book_imbalance",
+            "equity",
+            "margin_level",
+        ],
+        "feature_importance": {
+            "hour": 0.3,
+            "book_bid_vol": 0.0,
+            "book_ask_vol": 0.0,
+            "book_imbalance": 0.0,
+            "equity": 0.0,
+            "margin_level": 0.0,
+        },
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir, lite_mode=True)
+    generated = list(out_dir.glob("Generated_mand_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert "BookBidVol()" in content
+    assert "BookAskVol()" in content
+    assert "BookImbalance()" in content
+    assert "AccountEquity()" in content
+    assert "AccountMarginLevel()" in content
+
+
 def test_hashed_feature_alignment(tmp_path: Path):
     model = {
         "model_id": "hash",

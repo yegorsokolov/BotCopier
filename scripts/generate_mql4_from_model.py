@@ -22,6 +22,15 @@ from datetime import datetime
 from typing import Iterable, List, Union, Optional
 
 
+MANDATORY_FEATURES = {
+    "book_bid_vol",
+    "book_ask_vol",
+    "book_imbalance",
+    "equity",
+    "margin_level",
+}
+
+
 def _fmt(value: float) -> str:
     """Format floats for insertion into MQL4 code."""
     return f"{value:.6g}"
@@ -39,7 +48,7 @@ def _prune_model_features(model: dict) -> dict:
     fi = model.get("feature_importance")
     names = model.get("feature_names")
     if isinstance(fi, dict) and isinstance(names, list):
-        keep = [i for i, n in enumerate(names) if fi.get(n, 0.0) > 0.0]
+        keep = [i for i, n in enumerate(names) if fi.get(n, 0.0) > 0.0 or n in MANDATORY_FEATURES]
         if len(keep) != len(names):
             model["feature_names"] = [names[i] for i in keep]
             # Keep related arrays in sync when their lengths match the feature list
@@ -143,9 +152,6 @@ def _build_feature_cases(
     }
 
     if lite_mode:
-        feature_map['book_bid_vol'] = '0.0'
-        feature_map['book_ask_vol'] = '0.0'
-        feature_map['book_imbalance'] = '0.0'
         feature_map['book_spread'] = '0.0'
         feature_map['bid_ask_ratio'] = '0.0'
         feature_map['book_imbalance_roll'] = '0.0'
