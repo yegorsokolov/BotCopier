@@ -157,6 +157,7 @@ datetime LastModelLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
 int      UncertainLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
+int      SocketErrors = 0;
 int      NextDecisionId = 1;
 int      ExecutedModelIdx = -1;
 bool UseOnnxEncoder = false;
@@ -1340,7 +1341,8 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
                                  NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
-      SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1);
+      if(SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1) <= 0)
+         SocketErrors++;
    }
    NextDecisionId++;
 }
@@ -1409,6 +1411,7 @@ bool RequestAdaptedWeights(int regime)
    StringToCharArray(msg, bytes, 0, WHOLE_ARRAY, CP_UTF8);
    if(SocketSend(sock, bytes, ArraySize(bytes)-1) <= 0)
    {
+      SocketErrors++;
       SocketClose(sock);
       return(false);
    }
