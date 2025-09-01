@@ -697,7 +697,7 @@ def generate(
                 sym2 = '_'.join(parts[1:])
                 return f'PairCorrelation("{sym1}", "{sym2}")'
             if len(parts) == 1:
-                return f'PairCorrelation("{parts[0]}")'
+                return f'PairCorrelation(SymbolToTrade, "{parts[0]}")'
         if fname.startswith('coint_residual_'):
             parts = fname[16:].split('_')
             if len(parts) >= 2:
