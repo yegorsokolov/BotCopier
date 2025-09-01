@@ -22,7 +22,11 @@ except Exception:  # pragma: no cover - optional
     hdbscan = None
 
 # Reuse data loading and feature extraction from training script
-from train_target_clone import _load_logs, _extract_features, _load_calendar  # type: ignore
+from train_target_clone import _load_logs, _load_calendar  # type: ignore
+try:
+    from scripts.features import _extract_features  # type: ignore
+except Exception:
+    from features import _extract_features  # type: ignore
 
 
 def cluster_features(
