@@ -215,28 +215,57 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
             coint_map.setdefault(a, {})[b] = stats
         graph["cointegration"] = coint_map
 
-    # Optional Node2Vec embeddings
-    if _HAS_PYG and edge_index:
-        try:  # pragma: no cover - heavy optional dependency
-            ei = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-            node2vec = Node2Vec(
-                ei, embedding_dim=8, walk_length=5, context_size=3, walks_per_node=10
-            )
-            optim = torch.optim.Adam(node2vec.parameters(), lr=0.01)
-            loader = node2vec.loader(batch_size=32, shuffle=True)
-            for _ in range(10):
-                for pos_rw, neg_rw in loader:
-                    optim.zero_grad()
-                    loss = node2vec.loss(pos_rw, neg_rw)
-                    loss.backward()
-                    optim.step()
-            emb = node2vec.embedding.weight.detach().cpu().numpy()
-            graph["embedding_dim"] = emb.shape[1]
+    # Optional Node2Vec embeddings.  When ``torch_geometric`` is not available
+    # fall back to a simple spectral embedding based on the adjacency matrix so
+    # downstream pipelines can still leverage graph-derived features during
+    # testing.
+    if edge_index:
+        emb = None
+        if _HAS_PYG:
+            try:  # pragma: no cover - heavy optional dependency
+                ei = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+                node2vec = Node2Vec(
+                    ei,
+                    embedding_dim=8,
+                    walk_length=5,
+                    context_size=3,
+                    walks_per_node=10,
+                )
+                optim = torch.optim.Adam(node2vec.parameters(), lr=0.01)
+                loader = node2vec.loader(batch_size=32, shuffle=True)
+                for _ in range(10):
+                    for pos_rw, neg_rw in loader:
+                        optim.zero_grad()
+                        loss = node2vec.loss(pos_rw, neg_rw)
+                        loss.backward()
+                        optim.step()
+                emb = node2vec.embedding.weight.detach().cpu().numpy()
+            except Exception:
+                emb = None
+        if emb is None:
+            try:
+                # Spectral embedding using SVD as a lightweight fallback.
+                u, s, _vt = np.linalg.svd(adj, full_matrices=False)
+                dim = min(8, len(s))
+                emb = (u[:, :dim] * s[:dim]).astype(float)
+            except Exception:
+                emb = None
+        if emb is not None:
+            graph["embedding_dim"] = int(emb.shape[1])
             graph["embeddings"] = {
                 sym: emb[i].astype(float).tolist() for i, sym in enumerate(symbols)
             }
-        except Exception:
-            pass
+
+    # Consolidate per-symbol metrics and embeddings for convenient lookup.
+    node_map: dict[str, dict[str, float | list[float]]] = {}
+    for i, sym in enumerate(symbols):
+        node_metrics: dict[str, float | list[float]] = {
+            m: float(vals[i]) for m, vals in metrics.items()
+        }
+        if graph.get("embeddings"):
+            node_metrics["embedding"] = graph["embeddings"].get(sym, [])
+        node_map[sym] = node_metrics
+    graph["nodes"] = node_map
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.suffix == ".parquet":

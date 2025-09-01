@@ -111,6 +111,7 @@ string GraphSymbols[] = {__GRAPH_SYMBOLS__};
 double GraphDegreeVals[] = {__GRAPH_DEGREE__};
 double GraphPagerankVals[] = {__GRAPH_PAGERANK__};
 int GraphEmbDim = __GRAPH_EMB_DIM__;
+int GraphEmbCount = __GRAPH_EMB_COUNT__;
 double GraphEmbeddings[__GRAPH_EMB_COUNT__][__GRAPH_EMB_DIM__] = {__GRAPH_EMB__};
 string CointBaseSymbols[] = {__COINT_BASE__};
 string CointPeerSymbols[] = {__COINT_PEER__};
