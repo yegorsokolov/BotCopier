@@ -297,8 +297,8 @@ def test_train(tmp_path: Path):
     assert "margin_level" in data.get("feature_names", [])
     assert data.get("weighted") is True
     assert data.get("weighted_by_net_profit") is True
-    assert "mean" in data
-    assert "std" in data
+    assert "feature_mean" in data
+    assert "feature_std" in data
     assert data.get("data_commit") == "abc123"
     assert data.get("data_checksum") == checksum
 

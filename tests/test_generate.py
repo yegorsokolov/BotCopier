@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import sys
 import pytest
@@ -494,8 +495,8 @@ def test_generate_scaling_arrays(tmp_path: Path):
         "intercept": 0.0,
         "threshold": 0.5,
         "feature_names": ["hour"],
-        "mean": [12.0],
-        "std": [3.0],
+        "feature_mean": [12.0],
+        "feature_std": [3.0],
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
@@ -508,8 +509,11 @@ def test_generate_scaling_arrays(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert "FeatureMean[]" in content
-    assert "FeatureStd[]" in content
+    m_mean = re.search(r"double FeatureMean\[] = {([^}]*)};", content)
+    m_std = re.search(r"double FeatureStd\[] = {([^}]*)};", content)
+    assert m_mean and m_std
+    assert m_mean.group(1) == "12"
+    assert m_std.group(1) == "3"
 
 
 def test_generate_account_features(tmp_path: Path):
@@ -716,8 +720,8 @@ def test_on_tick_logistic_inference(tmp_path: Path):
         "intercept": 0.05,
         "threshold": 0.6,
         "feature_names": ["hour", "spread"],
-        "mean": [12.0, 1.5],
-        "std": [3.0, 0.5],
+        "feature_mean": [12.0, 1.5],
+        "feature_std": [3.0, 0.5],
         "sl_coefficients": [0.2, 0.3],
         "sl_intercept": 0.01,
         "tp_coefficients": [0.4, 0.5],

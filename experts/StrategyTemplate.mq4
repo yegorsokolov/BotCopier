@@ -913,6 +913,7 @@ __FEATURE_CASES__      default:
          raw = 0.0;
          break;
    }
+   // Apply standardization using training set parameters when available
    if(index < ArraySize(FeatureMean) && index < ArraySize(FeatureStd) && FeatureStd[index] != 0)
       return((raw - FeatureMean[index]) / FeatureStd[index]);
    return(raw);
