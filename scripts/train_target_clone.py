@@ -4125,6 +4125,23 @@ def main():
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
     p.add_argument('--sequence-length', type=int, default=5, help='sequence length for LSTM/transformer models')
+    p.add_argument(
+        '--model-type',
+        choices=[
+            'logreg',
+            'bayes_logreg',
+            'random_forest',
+            'xgboost',
+            'lgbm',
+            'catboost',
+            'nn',
+            'lstm',
+            'transformer',
+            'tft',
+            'stack',
+        ],
+        help='override automatic model type selection',
+    )
     p.add_argument('--n-estimators', type=int, default=100, help='number of boosting rounds')
     p.add_argument('--learning-rate', type=float, default=0.1, help='learning rate for boosted trees')
     p.add_argument('--max-depth', type=int, default=3, help='tree depth for boosting models')
@@ -4222,6 +4239,7 @@ def main():
             max_depth=args.max_depth,
             incremental=args.incremental,
             sequence_length=args.sequence_length,
+            model_type=args.model_type,
             corr_map=corr_map,
             corr_window=args.corr_window,
             bayes_steps=args.bayes_steps or None,
