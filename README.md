@@ -80,6 +80,16 @@ The EA records trade openings, closings and order modifications through the `OnT
    python scripts/promote_best_models.py models --dest models/best
    ```
 
+## Modular Structure
+
+The Python tooling is organised into separate modules for clarity and reuse:
+
+- `scripts/features.py` implements `_extract_features` for transforming raw trade rows into feature dictionaries.
+- `scripts/model_fitting.py` exposes `fit_logistic_regression` which trains a simple classifier on feature matrices.
+- `scripts/evaluation.py` contains evaluation helpers such as `evaluate` for comparing predictions to actual trades.
+
+Each module has accompanying unit tests and they can be composed for end-to-end training and analysis.
+
 ## Rollback and Safety Limits
 
 `scripts/bandit_router.py` routes between multiple generated models and
