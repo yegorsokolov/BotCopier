@@ -137,6 +137,11 @@ int BookImbPos = 0;
 int BookImbCount = 0;
 double CachedNewsSentiment = 0.0;
 datetime CachedNewsTime = 0;
+#define TICK_VOL_WINDOW 100
+double TickReturns[TICK_VOL_WINDOW];
+int TickReturnPos = 0;
+int TickReturnCount = 0;
+double LastTickBid = 0.0;
 double TrendEstimate = 0.0;
 double TrendVariance = 1.0;
 double LastSlippage = 0.0;
@@ -879,8 +884,37 @@ double GetNewsSentiment()
       if(sym == SymbolToTrade)
          CachedNewsSentiment = sc;
    }
-   FileClose(h);
-   return(CachedNewsSentiment);
+  FileClose(h);
+  return(CachedNewsSentiment);
+}
+
+void UpdateTickReturns()
+{
+   double bid = MarketInfo(SymbolToTrade, MODE_BID);
+   if(LastTickBid > 0)
+   {
+      double ret = bid - LastTickBid;
+      TickReturns[TickReturnPos] = ret;
+      TickReturnPos = (TickReturnPos + 1) % TICK_VOL_WINDOW;
+      if(TickReturnCount < TICK_VOL_WINDOW)
+         TickReturnCount++;
+   }
+   LastTickBid = bid;
+}
+
+double StdDevRecentTicks()
+{
+   int count = TickReturnCount;
+   if(count < 2)
+      return(0.0);
+   double sum = 0.0;
+   for(int i=0; i<count; i++)
+      sum += TickReturns[i];
+   double mean = sum / count;
+   double var = 0.0;
+   for(int j=0; j<count; j++)
+      var += MathPow(TickReturns[j] - mean, 2);
+   return(MathSqrt(var / count));
 }
 
 double GetFeature(int index)
@@ -1460,6 +1494,7 @@ bool HasOpenOrders()
 
 void OnTick()
 {
+   UpdateTickReturns();
    PollRegimeRing();
    UpdateKalman(iClose(SymbolToTrade, 0, 0));
    // When ReloadModelInterval is set, periodically check for updated
