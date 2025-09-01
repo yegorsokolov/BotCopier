@@ -401,8 +401,11 @@ Compile the generated MQ4 file and the observer will begin evaluating prediction
 
 Supervised models can be further tuned with reinforcement learning. The
 ``train_rl_agent.py`` helper loads an existing ``model.json`` and fine-tunes it
-against historical trade logs using a DQN or PPO agent from
-``stable-baselines3`` when available.
+against historical trade logs using a DQN, C51, QR-DQN or PPO agent from
+``stable-baselines3`` (and ``sb3-contrib`` for distributional variants) when
+available. Multi-step returns and prioritized replay can be enabled with
+``--n-step`` and ``--replay-*`` options, and live metrics may be POSTed to a
+feedback service via ``--metrics-url`` for continual fine-tuning.
 
 ```bash
 pip install stable-baselines3 pandas

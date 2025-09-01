@@ -71,6 +71,10 @@ except Exception:  # pragma: no cover - executed when run from repo root
 
 import numpy as np
 try:  # pragma: no cover - optional dependency
+    import requests
+except Exception:  # pragma: no cover - optional dependency
+    requests = None  # type: ignore
+try:  # pragma: no cover - optional dependency
     from sklearn.feature_extraction import DictVectorizer
 except Exception:  # pragma: no cover - minimal fallback
     class DictVectorizer:  # type: ignore
@@ -155,6 +159,23 @@ logger = logging.getLogger(__name__)
 handler.setFormatter(JsonFormatter())
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
+
+
+# -------------------------------
+# Metrics feedback helper
+# -------------------------------
+
+def _send_live_metrics(url: str, metrics: Dict) -> Dict:
+    """POST metrics to ``url`` and return any hyperparameter updates."""
+    if not requests:
+        return {}
+    try:
+        resp = requests.post(url, json=metrics, timeout=5)
+        if resp.ok:
+            return resp.json()  # type: ignore[return-value]
+    except Exception:
+        pass
+    return {}
 
 
 # -------------------------------
@@ -399,6 +420,7 @@ def train(
     gamma: float = 0.9,
     replay_alpha: float = 0.6,
     replay_beta: float = 0.4,
+    n_step: int = 1,
     algo: str = "dqn",
     num_envs: int = 1,
     start_model: Path | None = None,
@@ -408,6 +430,7 @@ def train(
     kafka_brokers: str | None = None,
     federated_server: str | None = None,
     sync_interval: int = 50,
+    metrics_url: str | None = None,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     states, actions, rewards, next_states, vec = _build_dataset(data_dir, flight_uri, kafka_brokers)
@@ -421,7 +444,7 @@ def train(
         except Exception:
             init_model_data = None
 
-    algo_key = algo.lower()
+    algo_key = algo.lower().replace("-", "_")
 
     if self_play and algo_key not in {"ppo", "dqn", "c51", "qr_dqn", "a2c", "ddpg"}:
         raise ValueError("--self-play requires ppo, dqn, c51, qr_dqn, a2c, or ddpg algorithm")
@@ -583,10 +606,13 @@ def train(
             algo_map.update({"c51": sb3c.C51, "qr_dqn": sb3c.QRDQN})
         model_cls = algo_map[algo_key]
         replay_args: Dict = {}
-        if HAS_PRB and algo_key in {"dqn", "c51", "qr_dqn"}:
-            replay_args["replay_buffer_class"] = PrioritizedReplayBuffer
-            replay_args["replay_buffer_kwargs"] = {"alpha": replay_alpha, "beta": replay_beta}
-            replay_args["learning_starts"] = 0
+        if algo_key in {"dqn", "c51", "qr_dqn"}:
+            buffer_kwargs: Dict[str, float | int] = {"n_steps": n_step}
+            if HAS_PRB:
+                replay_args["replay_buffer_class"] = PrioritizedReplayBuffer
+                buffer_kwargs.update({"alpha": replay_alpha, "beta": replay_beta})
+                replay_args["learning_starts"] = 0
+            replay_args["replay_buffer_kwargs"] = buffer_kwargs
         model = model_cls(
             "MlpPolicy",
             env,
@@ -604,6 +630,15 @@ def train(
         else:
             model.learn(total_timesteps=training_steps)
         train_metrics = model.logger.get_log_dict()
+        if metrics_url:
+            updates = _send_live_metrics(metrics_url, train_metrics)
+            if isinstance(updates, dict):
+                extra_steps = int(updates.get("extra_steps", 0))
+                lr_new = updates.get("learning_rate")
+                if isinstance(lr_new, (int, float)) and hasattr(model, "lr_schedule"):
+                    model.lr_schedule = lambda _: lr_new
+                if extra_steps > 0:
+                    model.learn(total_timesteps=extra_steps)
         if self_play:
             model.set_env(env)
         preds: List[int] = []
@@ -709,6 +744,7 @@ def train(
         }
         model_info["replay_alpha"] = replay_alpha
         model_info["replay_beta"] = replay_beta
+        model_info["n_step"] = n_step
         if not np.isnan(expected_return):
             model_info["expected_return"] = expected_return
         if not np.isnan(downside_risk):
@@ -931,6 +967,7 @@ def main() -> None:
         p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
         p.add_argument("--replay-alpha", type=float, default=0.6, help="prioritized replay exponent")
         p.add_argument("--replay-beta", type=float, default=0.4, help="IS weight exponent")
+        p.add_argument("--n-step", type=int, default=1, help="n-step return length")
         p.add_argument("--num-envs", type=int, default=1, help="number of parallel environments")
         p.add_argument(
             "--algo",
@@ -954,6 +991,7 @@ def main() -> None:
             default=50,
             help="training iterations between federated buffer syncs",
         )
+        p.add_argument("--metrics-url", help="endpoint to POST live metrics for feedback")
         args = p.parse_args()
         train(
             Path(args.data_dir),
@@ -968,6 +1006,7 @@ def main() -> None:
             algo=args.algo,
             replay_alpha=args.replay_alpha,
             replay_beta=args.replay_beta,
+            n_step=args.n_step,
             num_envs=args.num_envs,
             start_model=Path(args.start_model) if args.start_model else None,
             compress_model=args.compress_model,
@@ -976,6 +1015,7 @@ def main() -> None:
             kafka_brokers=args.kafka_brokers,
             federated_server=args.federated_server,
             sync_interval=args.sync_interval,
+            metrics_url=args.metrics_url,
         )
         logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
 
