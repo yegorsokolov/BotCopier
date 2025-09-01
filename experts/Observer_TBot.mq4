@@ -70,8 +70,9 @@ extern int    MAX_TRADE_BUFFER           = 50;
 
 int timer_handle;
 
-int      tracked_tickets[];
+enum TradeState { STATE_OPEN=0, STATE_MODIFY=1, STATE_CLOSE=2 };
 CArrayInt ticket_map;
+CArrayInt ticket_state;
 int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
@@ -352,22 +353,34 @@ int FindBookIndex(string symbol)
    return(-1);
 }
 
-int MapGet(int key)
-{
-   return(ticket_map.Search(key));
-}
-
-void MapAdd(int key)
-{
-   if(ticket_map.Search(key) < 0)
-      ticket_map.Add(key);
-}
-
-void MapRemove(int key)
+int GetTicketState(int key)
 {
    int pos = ticket_map.Search(key);
    if(pos >= 0)
+      return(ticket_state.At(pos));
+   return(-1);
+}
+
+void SetTicketState(int key,int state)
+{
+   int pos = ticket_map.Search(key);
+   if(pos < 0)
+   {
+      ticket_map.Add(key);
+      ticket_state.Add(state);
+   }
+   else
+      ticket_state.Set(pos,state);
+}
+
+void RemoveTicket(int key)
+{
+   int pos = ticket_map.Search(key);
+   if(pos >= 0)
+   {
       ticket_map.Delete(pos);
+      ticket_state.Delete(pos);
+   }
 }
 
 void UpdateKalman(double measurement)
@@ -976,24 +989,6 @@ int PollAnomaly(string job_id, double &err)
    return(-1);
 }
 
-bool Contains(int &arr[], int value)
-{
-   int left = 0;
-   int right = ArraySize(arr) - 1;
-   while(left <= right)
-   {
-      int mid = (left + right) / 2;
-      int v = arr[mid];
-      if(v == value)
-         return(true);
-      if(v < value)
-         left = mid + 1;
-      else
-         right = mid - 1;
-   }
-   return(false);
-}
-
 void GetBookVolumes(string symbol, double &bid_vol, double &ask_vol, double &imbalance)
 {
    int idx = FindBookIndex(symbol);
@@ -1053,8 +1048,8 @@ int OnInit()
    LoadCalendar();
    if(StringLen(TraceId)==0)
       TraceId = GenId(16);
-   ArrayResize(tracked_tickets, 0);
    ticket_map.Clear();
+   ticket_state.Clear();
 
    string parts[];
    int cnt = StringSplit(TargetMagicNumbers, ',', parts);
@@ -1255,37 +1250,6 @@ bool SymbolMatches(string symbol)
    return(false);
 }
 
-bool IsTracked(int ticket)
-{
-   return(MapGet(ticket)>=0);
-}
-
-void AddTicket(int ticket)
-{
-   int n = ArraySize(tracked_tickets);
-   ArrayResize(tracked_tickets, n+1);
-   tracked_tickets[n] = ticket;
-   MapAdd(ticket);
-}
-
-void RemoveTicket(int ticket)
-{
-   int idx = -1;
-   for(int i=0; i<ArraySize(tracked_tickets); i++)
-   {
-      if(tracked_tickets[i]==ticket)
-      {
-         idx = i;
-         break;
-      }
-   }
-   if(idx<0)
-      return;
-   for(int j=idx; j<ArraySize(tracked_tickets)-1; j++)
-      tracked_tickets[j] = tracked_tickets[j+1];
-   ArrayResize(tracked_tickets, ArraySize(tracked_tickets)-1);
-   MapRemove(ticket);
-}
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &req,
@@ -1341,9 +1305,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                lots, price, req.price, sl, tp, 0.0, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), 0,
                bid_vol, ask_vol, book_imb, slippage, equity, margin, risk_weight);
-      if(!IsTracked(ticket))
-         AddTicket(ticket);
-      else if(entry==DEAL_ENTRY_INOUT && remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
+      SetTicketState(ticket, STATE_OPEN);
+      if(entry==DEAL_ENTRY_INOUT && remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
       {
          double cur_price = OrderOpenPrice();
          double cur_sl    = OrderStopLoss();
@@ -1355,6 +1318,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
                   bid_vol2, ask_vol2, book_imb2, slippage, equity, margin, risk_weight);
+         SetTicketState(ticket, STATE_MODIFY);
       }
    }
    else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
@@ -1371,7 +1335,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                lots, price, req.price, sl, tp, profit, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), open_time,
                bid_vol3, ask_vol3, book_imb3, slippage, equity, margin, risk_weight);
-      if(IsTracked(ticket) && remaining==0.0)
+      SetTicketState(ticket, STATE_CLOSE);
+      if(remaining==0.0)
          RemoveTicket(ticket);
       else if(remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
       {
@@ -1385,6 +1350,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
                   bid_vol4, ask_vol4, book_imb4, slippage, equity, margin, risk_weight);
+         SetTicketState(ticket, STATE_MODIFY);
       }
    }
 
@@ -1394,77 +1360,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 void OnTick()
 {
    uint tick_start = GetTickCount();
-   datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    UpdateKalman(iClose(Symbol(), 0, 0));
    datetime ts = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    if(ts != ModelTimestamp)
    {
       LoadModelState();
       ModelTimestamp = ts;
-   }
-   int current[];
-   int cur_idx = 0;
-   ArrayResize(current, OrdersTotal());
-
-   for(int i=0; i<OrdersTotal(); i++)
-   {
-      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-         continue;
-      if(!MagicMatches(OrderMagicNumber()))
-         continue;
-      if(!SymbolMatches(OrderSymbol()))
-         continue;
-
-      int ticket = OrderTicket();
-      current[cur_idx++] = ticket;
-
-      if(!IsTracked(ticket))
-      {
-         double profit_after = AccountBalance() + AccountProfit();
-         double bid_vol, ask_vol, book_imb;
-         GetBookVolumes(OrderSymbol(), bid_vol, ask_vol, book_imb);
-         int event_id = NextEventId++;
-         double equity = AccountEquity();
-         double margin = AccountMarginLevel();
-         double risk_weight = GetRiskWeight(OrderSymbol());
-         double lots = OrderLots() * risk_weight;
-         LogTrade(event_id, "OPEN", ticket, OrderMagicNumber(), "mt4", OrderSymbol(), OrderType(),
-                  lots, OrderOpenPrice(), OrderOpenPrice(), OrderStopLoss(), OrderTakeProfit(),
-                  0.0, profit_after, lots, now, OrderComment(),
-                  iVolume(OrderSymbol(), 0, 0), 0, bid_vol, ask_vol, book_imb,
-                  0.0, equity, margin, risk_weight);
-         AddTicket(ticket);
-      }
-   }
-   ArrayResize(current, cur_idx);
-   ArraySort(current, WHOLE_ARRAY, 0, MODE_ASCEND);
-
-   for(int t=0; t<ArraySize(tracked_tickets); t++)
-   {
-      int ticket = tracked_tickets[t];
-      bool still_open = Contains(current, ticket);
-      if(!still_open)
-      {
-         if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_HISTORY))
-         {
-             double profit_after2 = AccountBalance() + AccountProfit();
-             double bid_vol, ask_vol, book_imb;
-             GetBookVolumes(OrderSymbol(), bid_vol, ask_vol, book_imb);
-             int event_id = NextEventId++;
-             double equity = AccountEquity();
-             double margin = AccountMarginLevel();
-             double risk_weight = GetRiskWeight(OrderSymbol());
-             double lots = OrderLots() * risk_weight;
-             LogTrade(event_id, "CLOSE", ticket, OrderMagicNumber(), "mt4", OrderSymbol(),
-                       OrderType(), lots, OrderClosePrice(), OrderClosePrice(), OrderStopLoss(),
-                       OrderTakeProfit(), OrderProfit()+OrderSwap()+OrderCommission(),
-                       profit_after2, 0.0, now, OrderComment(),
-                       iVolume(OrderSymbol(), 0, 0), OrderOpenTime(),
-                       bid_vol, ask_vol, book_imb, 0.0, equity, margin, risk_weight);
-         }
-         RemoveTicket(ticket);
-         t--; // adjust index after removal
-      }
    }
    uint elapsed = GetTickCount() - tick_start;
    UpdateCpuLoad(elapsed);
