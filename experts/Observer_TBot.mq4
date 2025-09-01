@@ -67,6 +67,7 @@ extern int    FallbackRetryThreshold      = 5;
 extern string CalendarFileName           = "calendar.csv";
 extern int    CalendarEventWindowMinutes = 60;
 extern int    MAX_TRADE_BUFFER           = 50;
+extern int    SendBatchSize             = 10;
 
 int timer_handle;
 
@@ -76,11 +77,6 @@ CArrayInt ticket_state;
 int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
-int      trade_log_handle = INVALID_HANDLE;
-int      log_db_handle    = INVALID_HANDLE;
-string   trade_log_buffer[];
-int      metric_log_handle = INVALID_HANDLE;
-string   metric_log_buffer[];
 int      NextEventId = 1;
 datetime ModelTimestamp = 0;
 datetime RiskWeightTimestamp = 0;
@@ -329,14 +325,6 @@ void SendOtelSpan(string trace_id, string span_id, string name)
    WebRequest("POST", OtelEndpoint, headers, 5000, data, ArraySize(data)-1, result, rheaders);
 }
 
-enum LogBackend
-{
-   LOG_BACKEND_SQLITE = 0,
-   LOG_BACKEND_CSV    = 1
-};
-
-int CurrentBackend = LOG_BACKEND_CSV;
-
 string   book_symbols[];
 double   book_bid_cache[];
 double   book_ask_cache[];
@@ -488,64 +476,76 @@ void FlushPending(datetime now)
 {
    if(pending_trade_count > 0 && now >= next_trade_flush)
    {
-      if(GrpcSendTrade(pending_trades[pending_trade_head], ArraySize(pending_trades[pending_trade_head])))
+      int sent = 0;
+      while(pending_trade_count > 0 && sent < SendBatchSize)
       {
-         WriteCheckpoint(log_dir + "/pending_trades.chk", 1);
-         ArrayResize(pending_trades[pending_trade_head], 0);
-         pending_trade_lines[pending_trade_head] = "";
-         pending_trade_head = (pending_trade_head + 1) % ArraySize(pending_trades);
-         pending_trade_count--;
-         TradeQueueDepth = pending_trade_count;
-         trade_backoff = 1;
-         next_trade_flush = now;
-         trade_retry_count = 0;
-         SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_count);
-         WriteCheckpoint(log_dir + "/pending_trades.chk", 0);
-      }
-      else
-      {
-         SocketErrors++;
-         trade_retry_count++;
-         FallbackEvents++;
-         trade_backoff = MathMin(trade_backoff*2, 3600);
-         next_trade_flush = now + trade_backoff;
-         if(trade_retry_count >= FallbackRetryThreshold)
+         if(GrpcSendTrade(pending_trades[pending_trade_head], ArraySize(pending_trades[pending_trade_head])))
          {
-            string line = pending_trade_count > 0 ? pending_trade_lines[pending_trade_head] : "";
-            FallbackLog("trades", pending_trades[pending_trade_head], line);
+            WriteCheckpoint(log_dir + "/pending_trades.chk", 1);
+            ArrayResize(pending_trades[pending_trade_head], 0);
+            pending_trade_lines[pending_trade_head] = "";
+            pending_trade_head = (pending_trade_head + 1) % ArraySize(pending_trades);
+            pending_trade_count--;
+            TradeQueueDepth = pending_trade_count;
+            trade_backoff = 1;
+            next_trade_flush = now;
             trade_retry_count = 0;
+            SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_count);
+            WriteCheckpoint(log_dir + "/pending_trades.chk", 0);
+            sent++;
+         }
+         else
+         {
+            SocketErrors++;
+            trade_retry_count++;
+            FallbackEvents++;
+            trade_backoff = MathMin(trade_backoff*2, 3600);
+            next_trade_flush = now + trade_backoff;
+            if(trade_retry_count >= FallbackRetryThreshold)
+            {
+               string line = pending_trade_count > 0 ? pending_trade_lines[pending_trade_head] : "";
+               FallbackLog("trades", pending_trades[pending_trade_head], line);
+               trade_retry_count = 0;
+            }
+            break;
          }
       }
    }
 
    if(pending_metric_count > 0 && now >= next_metric_flush)
    {
-      if(GrpcSendMetrics(pending_metrics[pending_metric_head], ArraySize(pending_metrics[pending_metric_head])))
+      int msent = 0;
+      while(pending_metric_count > 0 && msent < SendBatchSize)
       {
-         WriteCheckpoint(log_dir + "/pending_metrics.chk", 1);
-         ArrayResize(pending_metrics[pending_metric_head], 0);
-         pending_metric_lines[pending_metric_head] = "";
-         pending_metric_head = (pending_metric_head + 1) % ArraySize(pending_metrics);
-         pending_metric_count--;
-         MetricQueueDepth = pending_metric_count;
-         metric_backoff = 1;
-         next_metric_flush = now;
-         metric_send_retry_count = 0;
-         SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_count);
-         WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
-      }
-      else
-      {
-         SocketErrors++;
-         metric_send_retry_count++;
-         FallbackEvents++;
-         metric_backoff = MathMin(metric_backoff*2, 3600);
-         next_metric_flush = now + metric_backoff;
-         if(metric_send_retry_count >= FallbackRetryThreshold)
+         if(GrpcSendMetrics(pending_metrics[pending_metric_head], ArraySize(pending_metrics[pending_metric_head])))
          {
-            string line = pending_metric_count > 0 ? pending_metric_lines[pending_metric_head] : "";
-            FallbackLog("metrics", pending_metrics[pending_metric_head], line);
+            WriteCheckpoint(log_dir + "/pending_metrics.chk", 1);
+            ArrayResize(pending_metrics[pending_metric_head], 0);
+            pending_metric_lines[pending_metric_head] = "";
+            pending_metric_head = (pending_metric_head + 1) % ArraySize(pending_metrics);
+            pending_metric_count--;
+            MetricQueueDepth = pending_metric_count;
+            metric_backoff = 1;
+            next_metric_flush = now;
             metric_send_retry_count = 0;
+            SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_count);
+            WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
+            msent++;
+         }
+         else
+         {
+            SocketErrors++;
+            metric_send_retry_count++;
+            FallbackEvents++;
+            metric_backoff = MathMin(metric_backoff*2, 3600);
+            next_metric_flush = now + metric_backoff;
+            if(metric_send_retry_count >= FallbackRetryThreshold)
+            {
+               string line = pending_metric_count > 0 ? pending_metric_lines[pending_metric_head] : "";
+               FallbackLog("metrics", pending_metrics[pending_metric_head], line);
+               metric_send_retry_count = 0;
+            }
+            break;
          }
       }
    }
@@ -685,40 +685,6 @@ void ReplayWal(string fname, uchar &queue[][], int &head, int &tail, int &count,
    FileClose(h);
 }
 
-void AppendWalLine(string fname, string line)
-{
-   int h = FileOpen(fname, FILE_WRITE|FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_WRITE|FILE_SHARE_READ);
-   if(h==INVALID_HANDLE)
-      h = FileOpen(fname, FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_WRITE);
-   if(h==INVALID_HANDLE)
-      return;
-   FileSeek(h, 0, SEEK_END);
-   FileWrite(h, line);
-   FileClose(h);
-}
-
-void ReplayWalLines(string fname, int handle)
-{
-   int h = FileOpen(fname, FILE_READ|FILE_TXT|FILE_COMMON);
-   if(h==INVALID_HANDLE || handle==INVALID_HANDLE)
-      return;
-   FileSeek(handle, 0, SEEK_END);
-   while(!FileIsEnding(h))
-   {
-      string line = FileReadString(h);
-      if(StringLen(line)==0 && FileIsEnding(h))
-         break;
-      int _wr = FileWrite(handle, line);
-      if(_wr <= 0)
-      {
-         FileWriteErrors++;
-         AppendWalLine(fname, line);
-         break;
-      }
-   }
-   FileClose(h);
-   FileDelete(fname);
-}
 
 
 double ExtractJsonNumber(string json, string key)
@@ -1121,87 +1087,6 @@ int OnInit()
 
    CachedBookRefreshSeconds = BookRefreshSeconds;
 
-   // Prefer SQLite backend, fall back to CSV
-   string db_fname = log_dir + "/trades_raw.sqlite";
-   log_db_handle = DatabaseOpen(db_fname, DATABASE_OPEN_READWRITE|DATABASE_OPEN_CREATE);
-   if(log_db_handle!=INVALID_HANDLE)
-   {
-      string create_sql = "CREATE TABLE IF NOT EXISTS logs (event_id INTEGER, event_time TEXT, broker_time TEXT, local_time TEXT, action TEXT, ticket INTEGER, magic INTEGER, source TEXT, symbol TEXT, order_type INTEGER, lots REAL, price REAL, sl REAL, tp REAL, profit REAL, profit_after_trade REAL, spread INTEGER, trace_id TEXT, span_id TEXT, comment TEXT, remaining_lots REAL, slippage REAL, volume INTEGER, open_time TEXT, book_bid_vol REAL, book_ask_vol REAL, book_imbalance REAL, sl_hit_dist REAL, tp_hit_dist REAL, executed_model_idx INTEGER, decision_id INTEGER, is_anomaly INTEGER, equity REAL, margin_level REAL, commission REAL, swap REAL, exit_reason TEXT, duration_sec INTEGER, calendar_event_id INTEGER, local_anomaly REAL, remote_anomaly REAL)";
-      DatabaseExecute(log_db_handle, create_sql);
-      // Resume event id from existing records
-      int stmt = DatabasePrepare(log_db_handle, "SELECT MAX(event_id) FROM logs");
-      if(stmt!=INVALID_HANDLE)
-      {
-         if(DatabaseRead(stmt))
-         {
-            int last_id = (int)DatabaseGetInteger(stmt, 0);
-            if(last_id > 0)
-               NextEventId = last_id + 1;
-         }
-         DatabaseFinalize(stmt);
-      }
-      CurrentBackend = LOG_BACKEND_SQLITE;
-      Print("Using SQLite log backend");
-   }
-   else
-   {
-      // Final fallback to CSV
-      string log_fname = log_dir + "/trades_raw.csv";
-      trade_log_handle = FileOpen(log_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-      if(trade_log_handle!=INVALID_HANDLE)
-      {
-         bool need_header = (FileSize(trade_log_handle)==0);
-         int last_id = 0;
-         if(!need_header)
-         {
-            FileSeek(trade_log_handle, 0, SEEK_SET);
-            while(!FileIsEnding(trade_log_handle))
-            {
-               string field = FileReadString(trade_log_handle);
-               if(field=="event_id")
-               {
-                  while(!FileIsLineEnding(trade_log_handle) && !FileIsEnding(trade_log_handle))
-                     FileReadString(trade_log_handle);
-                  continue;
-               }
-               int id = (int)StringToInteger(field);
-               if(id > last_id)
-                  last_id = id;
-               while(!FileIsLineEnding(trade_log_handle) && !FileIsEnding(trade_log_handle))
-                  FileReadString(trade_log_handle);
-            }
-            FileSeek(trade_log_handle, 0, SEEK_END);
-         }
-         if(last_id > 0)
-            NextEventId = last_id + 1;
-         if(need_header)
-         {
-        string header = "event_id;event_time;broker_time;local_time;action;ticket;magic;source;symbol;order_type;lots;price;sl;tp;profit;profit_after_trade;spread;trace_id;span_id;comment;remaining_lots;slippage;volume;open_time;book_bid_vol;book_ask_vol;book_imbalance;sl_hit_dist;tp_hit_dist;executed_model_idx;decision_id;is_anomaly;equity;margin_level;commission;swap;risk_weight;trend_estimate;trend_variance;exit_reason;duration_sec;calendar_event_id;local_anomaly;remote_anomaly";
-            int _wr = FileWrite(trade_log_handle, header);
-            if(_wr <= 0)
-               FileWriteErrors++;
-      }
-      ReplayWalLines(log_dir + "/trades_raw.wal", trade_log_handle);
-   }
-   CurrentBackend = LOG_BACKEND_CSV;
-   Print("Using CSV log backend");
-  }
-
-   string metric_fname = log_dir + "/metrics.csv";
-   metric_log_handle = FileOpen(metric_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
-   if(metric_log_handle!=INVALID_HANDLE)
-   {
-      bool metric_need_header = (FileSize(metric_log_handle)==0);
-      if(metric_need_header)
-      {
-         string metric_header = "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;fallback_events;fallback_flag;wal_size;trade_retry_count;metric_retry_count;anomaly_pending;anomaly_late;trace_id;span_id";
-         int _wrm = FileWrite(metric_log_handle, metric_header);
-         if(_wrm <= 0)
-            FileWriteErrors++;
-      }
-      ReplayWalLines(log_dir + "/metrics.wal", metric_log_handle);
-   }
-
    last_export = UseBrokerTime ? TimeCurrent() : TimeLocal();
    return(INIT_SUCCEEDED);
 }
@@ -1209,27 +1094,10 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   FlushTradeBuffer();
-   FlushMetricBuffer();
    SaveQueue(log_dir + "/pending_trades.bin", pending_trades, pending_trade_head, pending_trade_count);
    SaveQueue(log_dir + "/pending_metrics.bin", pending_metrics, pending_metric_head, pending_metric_count);
    SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_count);
    SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_count);
-   if(trade_log_handle!=INVALID_HANDLE)
-   {
-      FileClose(trade_log_handle);
-      trade_log_handle = INVALID_HANDLE;
-   }
-   if(metric_log_handle!=INVALID_HANDLE)
-   {
-      FileClose(metric_log_handle);
-      metric_log_handle = INVALID_HANDLE;
-   }
-   if(log_db_handle!=INVALID_HANDLE)
-   {
-      DatabaseClose(log_db_handle);
-      log_db_handle = INVALID_HANDLE;
-   }
 }
 
 bool MagicMatches(int magic)
@@ -1354,7 +1222,6 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       }
    }
 
-   FlushTradeBuffer();
 }
 
 void OnTick()
@@ -1374,8 +1241,6 @@ void OnTick()
 void OnTimer()
 {
    ProcessAnomalyQueue();
-   FlushTradeBuffer();
-   FlushMetricBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    FlushPending(now);
 
@@ -1802,13 +1667,10 @@ void WriteMetrics(datetime ts)
    int wal_size = 0;
    string tw = log_dir + "/pending_trades.wal";
    string mw = log_dir + "/pending_metrics.wal";
-   string fw = log_dir + "/trades_raw.wal";
    if(FileIsExist(tw))
       wal_size += (int)FileSize(tw);
    if(FileIsExist(mw))
       wal_size += (int)FileSize(mw);
-   if(FileIsExist(fw))
-      wal_size += (int)FileSize(fw);
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];
@@ -1896,9 +1758,6 @@ void WriteMetrics(datetime ts)
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
                                  anomaly_late, TraceId, span_id);
 
-      int mlb_idx = ArraySize(metric_log_buffer);
-      ArrayResize(metric_log_buffer, mlb_idx+1);
-      metric_log_buffer[mlb_idx] = line;
 
       uchar payload[];
       int len = SerializeMetrics(
@@ -2027,66 +1886,3 @@ void ManageMetrics(datetime ts)
   FileClose(out_h);
 }
 
-void FlushTradeBuffer()
-{
-   if(CurrentBackend!=LOG_BACKEND_CSV)
-      return;
-   if(trade_log_handle==INVALID_HANDLE)
-      return;
-   int n = ArraySize(trade_log_buffer);
-   if(n==0)
-      return;
-   FileSeek(trade_log_handle, 0, SEEK_END);
-   for(int i=0; i<n; i++)
-   {
-      int _wr = FileWrite(trade_log_handle, trade_log_buffer[i]);
-      if(_wr <= 0)
-      {
-         FileWriteErrors++;
-         AppendWalLine(log_dir + "/trades_raw.wal", trade_log_buffer[i]);
-      }
-   }
-   FileFlush(trade_log_handle);
-   ArrayResize(trade_log_buffer, 0);
-   SaveModelState();
-}
-
-void FlushMetricBuffer()
-{
-   if(CurrentBackend!=LOG_BACKEND_CSV)
-      return;
-   if(metric_log_handle==INVALID_HANDLE)
-      return;
-
-   ReplayWalLines(log_dir + "/metrics.wal", metric_log_handle);
-
-   int n = ArraySize(metric_log_buffer);
-   if(n==0)
-   {
-      SaveModelState();
-      return;
-   }
-   FileSeek(metric_log_handle, 0, SEEK_END);
-   bool ok = true;
-   for(int i=0; i<n; i++)
-   {
-      int _wr = FileWrite(metric_log_handle, metric_log_buffer[i]);
-      if(_wr <= 0)
-      {
-         FileWriteErrors++;
-         AppendWalLine(log_dir + "/metrics.wal", metric_log_buffer[i]);
-         ok = false;
-      }
-   }
-   if(ok)
-   {
-      FileFlush(metric_log_handle);
-      metric_retry_count = 0;
-   }
-   else
-   {
-      metric_retry_count++;
-   }
-   ArrayResize(metric_log_buffer, 0);
-   SaveModelState();
-}
