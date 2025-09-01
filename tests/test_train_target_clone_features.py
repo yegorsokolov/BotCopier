@@ -234,7 +234,7 @@ def test_model_serialization(tmp_path: Path):
     data_dir.mkdir()
     _write_sample_log(data_dir / "trades_sample.csv")
 
-    train(data_dir, out_dir)
+    train(data_dir, out_dir, use_orderbook=True)
 
     model_file = out_dir / "model.json"
     assert model_file.exists()
@@ -247,7 +247,53 @@ def test_model_serialization(tmp_path: Path):
     assert "val_accuracy" in data
     assert "spread" in data.get("feature_names", [])
     assert "slippage" in data.get("feature_names", [])
+    assert "book_spread" in data.get("feature_names", [])
+    assert "bid_ask_ratio" in data.get("feature_names", [])
+    assert "book_imbalance_roll" in data.get("feature_names", [])
     assert data.get("weighted_by_net_profit") is True
+
+
+def test_orderbook_feature_extraction():
+    rows = [
+        {
+            "event_time": datetime(2024, 1, 1, 0, 0),
+            "action": "OPEN",
+            "symbol": "EURUSD",
+            "order_type": "0",
+            "lots": 0.1,
+            "price": 1.1,
+            "sl": 1.0,
+            "tp": 1.2,
+            "profit": 0.0,
+            "spread": 0.0,
+            "book_bid_vol": 2.0,
+            "book_ask_vol": 3.0,
+            "book_imbalance": (2.0 - 3.0) / 5.0,
+        },
+        {
+            "event_time": datetime(2024, 1, 1, 0, 1),
+            "action": "OPEN",
+            "symbol": "EURUSD",
+            "order_type": "0",
+            "lots": 0.1,
+            "price": 1.1,
+            "sl": 1.0,
+            "tp": 1.2,
+            "profit": 0.0,
+            "spread": 0.0,
+            "book_bid_vol": 4.0,
+            "book_ask_vol": 1.0,
+            "book_imbalance": (4.0 - 1.0) / 5.0,
+        },
+    ]
+
+    feats, *_ = _extract_features(rows, use_orderbook=True)
+    first, second = feats
+    assert first["book_spread"] == pytest.approx(1.0)
+    assert first["bid_ask_ratio"] == pytest.approx(2.0 / 3.0)
+    assert first["book_imbalance_roll"] == pytest.approx(first["book_imbalance"])
+    expected_roll = (first["book_imbalance"] + second["book_imbalance"]) / 2.0
+    assert second["book_imbalance_roll"] == pytest.approx(expected_roll)
 
 
 def test_class_weight_flag(tmp_path: Path):

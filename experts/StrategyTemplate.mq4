@@ -129,6 +129,12 @@ double CachedBookBidVol = 0.0;
 double CachedBookAskVol = 0.0;
 double CachedBookImbalance = 0.0;
 datetime CachedBookTime = 0;
+double CachedBookSpread = 0.0;
+double CachedBidAskRatio = 0.0;
+double CachedBookImbalanceRoll = 0.0;
+double BookImbalanceHist[5];
+int BookImbPos = 0;
+int BookImbCount = 0;
 double CachedNewsSentiment = 0.0;
 datetime CachedNewsTime = 0;
 double TrendEstimate = 0.0;
@@ -753,6 +759,14 @@ void RefreshBookCache()
       CachedBookBidVol = bid;
       CachedBookAskVol = ask;
       CachedBookImbalance = (bid+ask>0) ? (bid-ask)/(bid+ask) : 0.0;
+      CachedBookSpread = ask - bid;
+      CachedBidAskRatio = (ask>0) ? bid/ask : 0.0;
+      BookImbalanceHist[BookImbPos] = CachedBookImbalance;
+      BookImbPos = (BookImbPos + 1) % 5;
+      if(BookImbCount < 5) BookImbCount++;
+      double sum = 0.0;
+      for(int j=0; j<BookImbCount; j++) sum += BookImbalanceHist[j];
+      CachedBookImbalanceRoll = (BookImbCount>0) ? sum / BookImbCount : 0.0;
       CachedBookTime = t;
    }
 }
@@ -773,6 +787,24 @@ double BookImbalance()
 {
    RefreshBookCache();
    return(CachedBookImbalance);
+}
+
+double BookSpread()
+{
+   RefreshBookCache();
+   return(CachedBookSpread);
+}
+
+double BidAskRatio()
+{
+   RefreshBookCache();
+   return(CachedBidAskRatio);
+}
+
+double BookImbalanceRoll()
+{
+   RefreshBookCache();
+   return(CachedBookImbalanceRoll);
 }
 
 double PairCorrelation(string sym1, string sym2="", int window=5)

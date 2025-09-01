@@ -635,6 +635,30 @@ def test_generate_volume_feature(tmp_path: Path):
     assert "iVolume(SymbolToTrade, 0, 0)" in content
 
 
+def test_generate_orderbook_metrics(tmp_path: Path):
+    model = {
+        "model_id": "obmet",
+        "magic": 55,
+        "coefficients": [0.1, 0.2, 0.3],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["book_spread", "bid_ask_ratio", "book_imbalance_roll"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+
+    generated = list(out_dir.glob("Generated_obmet_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert "BookSpread()" in content
+    assert "BidAskRatio()" in content
+    assert "BookImbalanceRoll()" in content
+
+
 def test_manage_open_orders_included(tmp_path: Path):
     model = {
         "model_id": "manage",
