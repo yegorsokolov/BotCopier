@@ -78,6 +78,8 @@ datetime last_export = 0;
 int      trade_log_handle = INVALID_HANDLE;
 int      log_db_handle    = INVALID_HANDLE;
 string   trade_log_buffer[];
+int      metric_log_handle = INVALID_HANDLE;
+string   metric_log_buffer[];
 int      NextEventId = 1;
 datetime ModelTimestamp = 0;
 datetime RiskWeightTimestamp = 0;
@@ -274,6 +276,7 @@ int     metric_backoff = 1;
 datetime next_trade_flush = 0;
 datetime next_metric_flush = 0;
 int     trade_retry_count = 0;
+int     metric_send_retry_count = 0;
 int     metric_retry_count = 0;
 
 void EnqueueAnomaly(PendingTrade &t)
@@ -514,22 +517,22 @@ void FlushPending(datetime now)
          MetricQueueDepth = pending_metric_count;
          metric_backoff = 1;
          next_metric_flush = now;
-         metric_retry_count = 0;
+         metric_send_retry_count = 0;
          SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_count);
          WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
       }
       else
       {
          SocketErrors++;
-         metric_retry_count++;
+         metric_send_retry_count++;
          FallbackEvents++;
          metric_backoff = MathMin(metric_backoff*2, 3600);
          next_metric_flush = now + metric_backoff;
-         if(metric_retry_count >= FallbackRetryThreshold)
+         if(metric_send_retry_count >= FallbackRetryThreshold)
          {
             string line = pending_metric_count > 0 ? pending_metric_lines[pending_metric_head] : "";
             FallbackLog("metrics", pending_metrics[pending_metric_head], line);
-            metric_retry_count = 0;
+            metric_send_retry_count = 0;
          }
       }
    }
@@ -1182,11 +1185,26 @@ int OnInit()
             int _wr = FileWrite(trade_log_handle, header);
             if(_wr <= 0)
                FileWriteErrors++;
-         }
-         ReplayWalLines(log_dir + "/trades_raw.wal", trade_log_handle);
       }
-      CurrentBackend = LOG_BACKEND_CSV;
-      Print("Using CSV log backend");
+      ReplayWalLines(log_dir + "/trades_raw.wal", trade_log_handle);
+   }
+   CurrentBackend = LOG_BACKEND_CSV;
+   Print("Using CSV log backend");
+  }
+
+   string metric_fname = log_dir + "/metrics.csv";
+   metric_log_handle = FileOpen(metric_fname, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+   if(metric_log_handle!=INVALID_HANDLE)
+   {
+      bool metric_need_header = (FileSize(metric_log_handle)==0);
+      if(metric_need_header)
+      {
+         string metric_header = "time;magic;win_rate;avg_profit;trade_count;drawdown;sharpe;sortino;expectancy;file_write_errors;socket_errors;cpu_load;book_refresh_seconds;var_breach_count;trade_queue_depth;metric_queue_depth;fallback_events;fallback_flag;wal_size;trade_retry_count;metric_retry_count;anomaly_pending;anomaly_late;trace_id;span_id";
+         int _wrm = FileWrite(metric_log_handle, metric_header);
+         if(_wrm <= 0)
+            FileWriteErrors++;
+      }
+      ReplayWalLines(log_dir + "/metrics.wal", metric_log_handle);
    }
 
    last_export = UseBrokerTime ? TimeCurrent() : TimeLocal();
@@ -1206,6 +1224,11 @@ void OnDeinit(const int reason)
    {
       FileClose(trade_log_handle);
       trade_log_handle = INVALID_HANDLE;
+   }
+   if(metric_log_handle!=INVALID_HANDLE)
+   {
+      FileClose(metric_log_handle);
+      metric_log_handle = INVALID_HANDLE;
    }
    if(log_db_handle!=INVALID_HANDLE)
    {
@@ -1960,7 +1983,7 @@ void WriteMetrics(datetime ts)
          if(profits[vb] < var95) var_breach_count++;
 
       string span_id = GenId(8);
-      int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
+      int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_send_retry_count >= FallbackRetryThreshold) ? 1 : 0;
       int anomaly_pending = AnomalyQueueDepth;
       int anomaly_late = AnomalyLateResponses;
       // emit file/socket errors, queue depth and retry counts for monitoring
@@ -1971,6 +1994,10 @@ void WriteMetrics(datetime ts)
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
                                  anomaly_late, TraceId, span_id);
+
+      int mlb_idx = ArraySize(metric_log_buffer);
+      ArrayResize(metric_log_buffer, mlb_idx+1);
+      metric_log_buffer[mlb_idx] = line;
 
       uchar payload[];
       int len = SerializeMetrics(
@@ -2125,5 +2152,40 @@ void FlushTradeBuffer()
 
 void FlushMetricBuffer()
 {
+   if(CurrentBackend!=LOG_BACKEND_CSV)
+      return;
+   if(metric_log_handle==INVALID_HANDLE)
+      return;
+
+   ReplayWalLines(log_dir + "/metrics.wal", metric_log_handle);
+
+   int n = ArraySize(metric_log_buffer);
+   if(n==0)
+   {
+      SaveModelState();
+      return;
+   }
+   FileSeek(metric_log_handle, 0, SEEK_END);
+   bool ok = true;
+   for(int i=0; i<n; i++)
+   {
+      int _wr = FileWrite(metric_log_handle, metric_log_buffer[i]);
+      if(_wr <= 0)
+      {
+         FileWriteErrors++;
+         AppendWalLine(log_dir + "/metrics.wal", metric_log_buffer[i]);
+         ok = false;
+      }
+   }
+   if(ok)
+   {
+      FileFlush(metric_log_handle);
+      metric_retry_count = 0;
+   }
+   else
+   {
+      metric_retry_count++;
+   }
+   ArrayResize(metric_log_buffer, 0);
    SaveModelState();
 }
