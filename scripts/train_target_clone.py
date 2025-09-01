@@ -1278,16 +1278,30 @@ def _extract_features(
                     a = symbols[i]
                     b = symbols[j]
                     pair_weights[(a, b)] = float(w)
-            metrics = graph_params.get("metrics", {})
-            for m_name, vals in metrics.items():
-                for i, sym in enumerate(symbols):
-                    sym_metrics.setdefault(sym, {})[m_name] = float(vals[i])
-            emb_map = graph_params.get("embeddings", {})
-            for sym, emb in emb_map.items():
-                try:
-                    sym_embeddings[sym] = [float(v) for v in emb]
-                except Exception:
-                    continue
+
+            # Prefer consolidated per-symbol node data when available.
+            nodes = graph_params.get("nodes") or {}
+            if nodes:
+                for sym, vals in nodes.items():
+                    for m_name, m_val in vals.items():
+                        if isinstance(m_val, list):
+                            try:
+                                sym_embeddings[sym] = [float(v) for v in m_val]
+                            except Exception:
+                                continue
+                        else:
+                            sym_metrics.setdefault(sym, {})[m_name] = float(m_val)
+            else:
+                metrics = graph_params.get("metrics", {})
+                for m_name, vals in metrics.items():
+                    for i, sym in enumerate(symbols):
+                        sym_metrics.setdefault(sym, {})[m_name] = float(vals[i])
+                emb_map = graph_params.get("embeddings", {})
+                for sym, emb in emb_map.items():
+                    try:
+                        sym_embeddings[sym] = [float(v) for v in emb]
+                    except Exception:
+                        continue
             coint = graph_params.get("cointegration", {})
             for base, peers in coint.items():
                 for peer, stats in peers.items():
@@ -1679,6 +1693,10 @@ def _extract_features(
         enabled_feats.extend(f"tf_{tf}" for tf in higher_timeframes)
     if news_sentiment is not None:
         enabled_feats.append("news_sentiment")
+    if sym_metrics:
+        enabled_feats.append("graph_metrics")
+    if sym_embeddings:
+        enabled_feats.append("graph_embeddings")
     logging.info("Enabled features: %s", sorted(enabled_feats))
 
     return (
@@ -3771,6 +3789,7 @@ def train(
             "embeddings": graph_params.get("embeddings", {}),
             "metrics": graph_params.get("metrics", {}),
             "cointegration": graph_params.get("cointegration", {}),
+            "nodes": graph_params.get("nodes", {}),
         }
     model["hourly_thresholds"] = hourly_thresholds
     if threshold_map:

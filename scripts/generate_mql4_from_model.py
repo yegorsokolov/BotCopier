@@ -701,6 +701,9 @@ def generate(
             return 'GraphDegree()'
         if fname == 'graph_pagerank':
             return 'GraphPagerank()'
+        if fname.startswith('graph_emb') and fname[9:].isdigit():
+            idx_g = int(fname[9:])
+            return f'GraphEmbedding({idx_g})'
         if fname.startswith('ae') and fname[2:].isdigit():
             idx_ae = int(fname[2:])
             return f'GetEncodedFeature({idx_ae})'

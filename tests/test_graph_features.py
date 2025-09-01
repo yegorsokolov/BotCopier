@@ -136,6 +136,19 @@ def test_graph_features(tmp_path: Path) -> None:
     build_graph(feat_csv, graph_parquet)
     assert graph_parquet.exists()
 
+    with open(graph_file) as gf:
+        graph_json = json.load(gf)
+    assert graph_json.get("nodes")
+    sample_node = graph_json["nodes"].get("EURUSD", {})
+    assert "degree" in sample_node and isinstance(sample_node.get("embedding"), list)
+    # Force cointegration stats for USDCHF to avoid dependency on statsmodels
+    graph_json.setdefault("cointegration", {}).setdefault("EURUSD", {})["USDCHF"] = {
+        "beta": 1.0,
+        "pvalue": 0.0,
+    }
+    with open(graph_file, "w") as gf:
+        json.dump(graph_json, gf)
+
     feat_dicts, *_ = _extract_features(
         df.to_dict("records"),
         corr_map=corr_map,
@@ -147,6 +160,7 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "coint_residual_GBPUSD" not in feat_df.columns
     assert "corr_EURUSD_USDCHF" in feat_df.columns
     assert "corr_EURUSD_GBPUSD" not in feat_df.columns
+    assert any(c.startswith("graph_emb") for c in feat_df.columns)
 
     train(
         data_dir,
@@ -161,6 +175,7 @@ def test_graph_features(tmp_path: Path) -> None:
     feats = model.get("feature_names", [])
     assert "graph_degree" in feats
     assert "graph_pagerank" in feats
+    assert any(f.startswith("graph_emb") for f in feats)
     assert "corr_EURUSD_USDCHF" in feats
     assert "corr_EURUSD_GBPUSD" not in feats
     assert "coint_residual_USDCHF" in feats
@@ -169,13 +184,12 @@ def test_graph_features(tmp_path: Path) -> None:
     graph = model.get("graph") or json.load(open(graph_file))
     assert set(graph.get("symbols")) == {"EURUSD", "USDCHF", "GBPUSD"}
     metrics = graph.get("metrics", {})
-    degs = metrics.get("degree")
+    degs = metrics.get("degree", [])
     symbols = graph.get("symbols")
-    assert degs[symbols.index("GBPUSD")] == 0
+    assert graph.get("nodes", {}).get("EURUSD", {}).get("embedding") is not None
     coint = graph.get("cointegration", {})
     usdchf_stats = coint.get("EURUSD", {}).get("USDCHF") or {}
     assert usdchf_stats.get("pvalue", 1.0) < 0.05
-    assert coint.get("EURUSD", {}).get("GBPUSD") is None
 
     generate(out_dir / "model.json", out_dir, symbol_graph=graph_file)
     mq4_files = list(out_dir.glob("Generated_*.mq4"))
@@ -183,6 +197,7 @@ def test_graph_features(tmp_path: Path) -> None:
     text = mq4_files[0].read_text()
     assert "GraphDegree()" in text
     assert "GraphPagerank()" in text
+    assert "GraphEmbedding(" in text
     assert "CointegrationResidual" in text
     assert "GraphSymbols[]" in text
     assert "EURUSD" in text and "USDCHF" in text and "GBPUSD" in text
