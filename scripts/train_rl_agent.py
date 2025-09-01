@@ -603,7 +603,7 @@ def train(
             model.learn(total_timesteps=training_steps - half)
         else:
             model.learn(total_timesteps=training_steps)
-
+        train_metrics = model.logger.get_log_dict()
         if self_play:
             model.set_env(env)
         preds: List[int] = []
@@ -632,6 +632,8 @@ def train(
         value_atoms: List[float] | None = None
         value_dist: List[float] | None = None
         value_quantiles: List[float] | None = None
+        value_mean: float | None = None
+        value_std: float | None = None
         if HAS_SB3_CONTRIB and algo_key in {"c51", "qr_dqn"} and torch is not None:
             with torch.no_grad():
                 obs_tensor = torch.tensor(states, dtype=torch.float32)
@@ -645,6 +647,10 @@ def train(
                     downside = [probs[i, a][atoms < 0].sum() for i, a in enumerate(best)]
                     value_atoms = atoms.tolist()
                     value_dist = probs[np.arange(len(q_vals)), best].mean(axis=0).tolist()
+                    _atoms = np.array(value_atoms, dtype=float)
+                    _dist = np.array(value_dist, dtype=float)
+                    value_mean = float(np.dot(_atoms, _dist))
+                    value_std = float(np.sqrt((( _atoms - value_mean) ** 2 * _dist).sum()))
                 else:
                     quantiles = dist.cpu().numpy()
                     q_vals = quantiles.mean(-1)
@@ -656,6 +662,8 @@ def train(
                     value_quantiles = (
                         quantiles[np.arange(len(q_vals)), best].mean(axis=0).tolist()
                     )
+                    value_mean = float(np.mean(value_quantiles))
+                    value_std = float(np.std(value_quantiles))
                 expected_return = float(np.mean(exp_returns))
                 downside_risk = float(np.mean(downside))
                 ctx_log = trace.get_current_span().get_span_context()
@@ -705,11 +713,16 @@ def train(
             model_info["expected_return"] = expected_return
         if not np.isnan(downside_risk):
             model_info["downside_risk"] = downside_risk
+        model_info["train_metrics"] = train_metrics
         if value_atoms and value_dist:
             model_info["value_atoms"] = value_atoms
             model_info["value_distribution"] = value_dist
         if value_quantiles:
             model_info["value_quantiles"] = value_quantiles
+        if value_mean is not None:
+            model_info["value_mean"] = value_mean
+        if value_std is not None:
+            model_info["value_std"] = value_std
         if self_play:
             model_info["training_type"] = "self_play"
         elif init_model_data is not None:
@@ -786,37 +799,67 @@ def train(
                 experiences = buffer_client.sync(experiences)
             total_r = 0.0
             td_errs: List[float] = []
-            buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
-            max_prio = 1.0
+            if HAS_PRB:
+                obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32)
+                action_space = spaces.Discrete(2)
+                pr_buffer = PrioritizedReplayBuffer(
+                    buffer_size, obs_space, action_space, alpha=replay_alpha
+                )
+            else:
+                buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
+                max_prio = 1.0
             for step, exp in enumerate(experiences):
                 s, a, r, ns = exp
                 total_r += r
-                if len(buffer) >= buffer_size:
-                    buffer.pop(0)
-                buffer.append((s, a, r, ns, max_prio))
+                if HAS_PRB:
+                    pr_buffer.add(s, ns, np.array([a]), np.array([r]), np.array([0.0]))
+                else:
+                    if len(buffer) >= buffer_size:
+                        buffer.pop(0)
+                    buffer.append((s, a, r, ns, max_prio))
 
-                if step % update_freq == 0 and len(buffer) >= batch_size:
-                    weights_arr = np.array([b[4] for b in buffer], dtype=float)
-                    scaled = weights_arr ** replay_alpha
-                    prob = scaled / scaled.sum()
-                    batch_idx = np.random.choice(len(buffer), size=batch_size, p=prob)
-                    max_w = (len(buffer) * prob.min()) ** (-replay_beta)
-                    for idx in batch_idx:
-                        bs, ba, br, bns, bw = buffer[idx]
-                        q_next0 = intercepts[0] + np.dot(weights[0], bns)
-                        q_next1 = intercepts[1] + np.dot(weights[1], bns)
-                        q_target = br + gamma * max(q_next0, q_next1)
-                        q_current = intercepts[ba] + np.dot(weights[ba], bs)
-                        td_err = q_target - q_current
-                        w = (len(buffer) * prob[idx]) ** (-replay_beta)
-                        w /= max_w
-                        weights[ba] += learning_rate * w * td_err * bs
-                        intercepts[ba] += learning_rate * w * td_err
-                        pr = float(abs(td_err)) + 1e-6
-                        buffer[idx] = (bs, ba, br, bns, pr)
-                        if pr > max_prio:
-                            max_prio = pr
-                        td_errs.append(abs(td_err))
+                if step % update_freq == 0:
+                    if HAS_PRB and pr_buffer.size() >= batch_size:
+                        sample = pr_buffer.sample(batch_size, beta=replay_beta)
+                        for j in range(batch_size):
+                            bs = sample.observations[j]
+                            ba = int(sample.actions[j])
+                            br = float(sample.rewards[j])
+                            bns = sample.next_observations[j]
+                            w = float(sample.weights[j])
+                            q_next0 = intercepts[0] + np.dot(weights[0], bns)
+                            q_next1 = intercepts[1] + np.dot(weights[1], bns)
+                            q_target = br + gamma * max(q_next0, q_next1)
+                            q_current = intercepts[ba] + np.dot(weights[ba], bs)
+                            td_err = q_target - q_current
+                            weights[ba] += learning_rate * w * td_err * bs
+                            intercepts[ba] += learning_rate * w * td_err
+                            pr_buffer.update_priorities(
+                                [sample.indices[j]], np.array([abs(td_err) + 1e-6])
+                            )
+                            td_errs.append(abs(td_err))
+                    elif not HAS_PRB and len(buffer) >= batch_size:
+                        weights_arr = np.array([b[4] for b in buffer], dtype=float)
+                        scaled = weights_arr ** replay_alpha
+                        prob = scaled / scaled.sum()
+                        batch_idx = np.random.choice(len(buffer), size=batch_size, p=prob)
+                        max_w = (len(buffer) * prob.min()) ** (-replay_beta)
+                        for idx in batch_idx:
+                            bs, ba, br, bns, bw = buffer[idx]
+                            q_next0 = intercepts[0] + np.dot(weights[0], bns)
+                            q_next1 = intercepts[1] + np.dot(weights[1], bns)
+                            q_target = br + gamma * max(q_next0, q_next1)
+                            q_current = intercepts[ba] + np.dot(weights[ba], bs)
+                            td_err = q_target - q_current
+                            w = (len(buffer) * prob[idx]) ** (-replay_beta)
+                            w /= max_w
+                            weights[ba] += learning_rate * w * td_err * bs
+                            intercepts[ba] += learning_rate * w * td_err
+                            pr = float(abs(td_err)) + 1e-6
+                            buffer[idx] = (bs, ba, br, bns, pr)
+                            if pr > max_prio:
+                                max_prio = pr
+                            td_errs.append(abs(td_err))
             episode_rewards.append(total_r / len(experiences))
             episode_totals.append(total_r)
             episode_td.append(float(np.mean(td_errs)) if td_errs else 0.0)

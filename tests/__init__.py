@@ -13,9 +13,15 @@ except Exception:
     HAS_SB3 = False
 
 try:
+    import sb3_contrib  # noqa: F401
+    HAS_SB3_CONTRIB = True
+except Exception:
+    HAS_SB3_CONTRIB = False
+
+try:
     import tensorflow  # noqa: F401
     HAS_TF = True
 except Exception:
     HAS_TF = False
 
-__all__ = ["HAS_NUMPY", "HAS_SB3", "HAS_TF"]
+__all__ = ["HAS_NUMPY", "HAS_SB3", "HAS_SB3_CONTRIB", "HAS_TF"]
