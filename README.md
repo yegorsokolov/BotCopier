@@ -460,7 +460,7 @@ The calculated drift metric is saved into ``model.json`` for audit purposes.
 Example cron job running every 15 minutes:
 
 ```cron
-*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2 --baseline-file baseline.csv --recent-file recent.csv --drift-threshold 0.2
+*/15 * * * * /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2 --baseline-file baseline.csv --recent-file recent.csv --drift-threshold 0.2 --uncertain-file /path/to/observer_logs/uncertain_decisions_labeled.csv --uncertain-weight 3.0
 ```
 
 Example systemd service and timer:
@@ -472,7 +472,7 @@ Description=BotCopier auto retrain
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2
+ExecStart=/usr/bin/python /path/to/BotCopier/scripts/auto_retrain.py --log-dir /path/to/observer_logs --out-dir /path/to/BotCopier/models --files-dir /path/to/MT4/MQL4/Files --win-rate-threshold 0.4 --drawdown-threshold 0.2 --uncertain-file /path/to/observer_logs/uncertain_decisions_labeled.csv --uncertain-weight 3.0
 ```
 
 ```ini

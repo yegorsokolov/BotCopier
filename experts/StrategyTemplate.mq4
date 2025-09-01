@@ -1318,7 +1318,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
       FileFlush(DecisionLogHandle);
    }
    double thr = GetTradeThreshold();
-   bool uncertain = MathAbs(prob - thr) <= UncertaintyMargin;
+   bool uncertain = MathAbs(prob - thr) < UncertaintyMargin;
    if(uncertain && UncertainLogHandle != INVALID_HANDLE)
    {
       // capture feature snapshot for active learning
