@@ -385,6 +385,7 @@ def test_generate_transformer(tmp_path: Path):
     with open(generated[0]) as f:
         content = f.read()
     assert "TransformerDenseWeights" in content
+    assert "ComputeDecisionTransformerScore" in content
     assert "MagicNumber = 444" in content
     assert "ModelOnnxFile = \"decision_transformer.onnx\"" in content
 

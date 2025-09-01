@@ -15,6 +15,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests import HAS_NUMPY, HAS_TF
 from scripts.train_target_clone import train, _load_logs, _load_calendar, _extract_features
+from scripts.generate_mql4_from_model import generate
 
 pytestmark = pytest.mark.skipif(not HAS_NUMPY, reason="NumPy is required for training tests")
 
@@ -649,6 +650,7 @@ def test_train_lstm(tmp_path: Path):
 
 
 @pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
+@pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
 def test_train_transformer(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
@@ -667,6 +669,44 @@ def test_train_transformer(tmp_path: Path):
     assert data.get("sequence_length") == 3
     assert data.get("weighted") is True
     assert data.get("weighted_by_net_profit") is True
+
+
+@pytest.mark.skipif(not HAS_TF, reason="TensorFlow required")
+def test_transformer_pipeline(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    train(data_dir, out_dir, model_type="transformer", sequence_length=3, early_stop=True)
+
+    model_file = out_dir / "model.json"
+    gen_dir = tmp_path / "ea"
+    generate(model_file, gen_dir)
+    generated = list(gen_dir.glob("Generated_*.mq4"))
+    assert generated
+    content = generated[0].read_text()
+    assert "TransformerQKernel" in content
+    assert "ComputeDecisionTransformerScore" in content
+    with open(model_file) as f:
+        data = json.load(f)
+    weights = [np.array(w) for w in data["transformer_weights"]]
+    seq_len = data["sequence_length"]
+    f_dim = len(data["feature_names"])
+    seq = np.zeros((seq_len, f_dim))
+    qk, qb, kk, kb, vk, vb, ok, ob, dw, db = weights
+    Q = seq @ qk + qb
+    K = seq @ kk + kb
+    V = seq @ vk + vb
+    scores = np.exp(Q @ K.T / np.sqrt(f_dim))
+    attn = scores / scores.sum(axis=1, keepdims=True)
+    context = attn @ V
+    out = context @ ok + ob
+    pooled = out.mean(axis=0)
+    z = pooled @ dw.reshape(-1) + float(np.array(db).reshape(-1)[0])
+    prob = 1.0 / (1.0 + np.exp(-z))
+    assert 0.0 <= prob <= 1.0
 
 
 def test_incremental_train(tmp_path: Path):

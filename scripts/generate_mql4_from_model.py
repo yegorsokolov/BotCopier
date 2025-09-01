@@ -403,6 +403,12 @@ def generate(
     output = output.replace('__TRANS_OB__', ob)
     output = output.replace('__TRANS_DENSE_W__', dw)
     output = output.replace('__TRANS_DENSE_B__', db)
+    trans_call = (
+        '   if(LSTMSequenceLength > 0 && ArraySize(TransformerDenseWeights) > 0)\n'
+        '      return(ComputeDecisionTransformerScore());\n'
+    )
+    if not trans_weights:
+        output = output.replace(trans_call, '')
 
     enc_weights = base.get('encoder_weights', [])
     enc_window = int(base.get('encoder_window', 0))
