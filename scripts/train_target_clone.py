@@ -2146,7 +2146,6 @@ def train(
             ) = loaded
             loaded_from_cache = True
 
-    price_map_total: dict[str, list[float]] = {}
     if not loaded_from_cache:
         rows_iter, data_commits, data_checksums = _load_logs(
             data_dir, lite_mode=True, flight_uri=flight_uri
@@ -2175,7 +2174,7 @@ def train(
                 h_chunk,
                 lot_chunk,
                 t_chunk,
-                p_chunk,
+                _,
             ) = _extract_features(
                 chunk.to_dict("records"),
                 use_sma=use_sma,
@@ -2204,8 +2203,6 @@ def train(
                 symbol_graph=graph_params,
                 poly_degree=poly_degree,
             )
-            for sym, prices in p_chunk.items():
-                price_map_total.setdefault(sym, []).extend(prices)
             features.extend(f_chunk)
             labels_list.append(l_chunk)
             sl_list.append(sl_chunk)
@@ -2263,7 +2260,6 @@ def train(
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
-    risk_parity, cov_matrix, cov_symbols = _compute_risk_parity(price_map_total)
     regime_info = None
     reg_centers = None
     try:
@@ -3717,11 +3713,6 @@ def train(
         "roc_auc": val_roc,
     }
     model["feature_flags"] = feature_flags
-    if risk_parity:
-        model["risk_parity_symbols"] = list(risk_parity.keys())
-        model["risk_parity_weights"] = [float(risk_parity[s]) for s in risk_parity]
-        model["risk_covariance_symbols"] = cov_symbols
-        model["risk_covariance_matrix"] = cov_matrix.tolist()
     if student_coef is not None and student_inter is not None:
         model["student_coefficients"] = student_coef
         model["student_intercept"] = student_inter
@@ -4039,25 +4030,18 @@ def train(
                 except Exception as exc:
                     logging.warning("exit timing model training failed: %s", exc)
 
-            # Risk parity weights based on profit covariance per symbol
+            # Risk parity weights based on return covariance per symbol
             try:
                 time_col = next((c for c in ["event_time", "time", "timestamp"] if c in df_logs.columns), None)
-                if time_col:
-                    pivot = df_logs.pivot_table(values="profit", index=time_col, columns="symbol")
-                    cov = pivot.cov().fillna(0.0)
-                    if not cov.empty:
-                        vol = np.sqrt(np.diag(cov))
-                        inv_vol = np.where(vol > 0, 1.0 / vol, 0.0)
-                        weight_sum = inv_vol.sum()
-                        weights = (
-                            inv_vol / weight_sum
-                            if weight_sum > 0
-                            else np.ones_like(inv_vol) / len(inv_vol)
-                        )
-                        model["risk_parity_symbols"] = cov.index.tolist()
-                        model["risk_parity_weights"] = weights.astype(float).tolist()
-                        model["risk_covariance_symbols"] = cov.index.tolist()
-                        model["risk_covariance_matrix"] = cov.values.tolist()
+                if time_col and "price" in df_logs.columns and "symbol" in df_logs.columns:
+                    pivot = df_logs.pivot_table(values="price", index=time_col, columns="symbol")
+                    price_map = {sym: pivot[sym].dropna().tolist() for sym in pivot.columns}
+                    rp, cov, syms = _compute_risk_parity(price_map, window=0)
+                    if rp:
+                        model["risk_parity_symbols"] = syms
+                        model["risk_parity_weights"] = [float(rp[s]) for s in syms]
+                        model["risk_covariance_symbols"] = syms
+                        model["risk_covariance_matrix"] = cov.astype(float).tolist()
             except Exception as exc:  # pragma: no cover - optional
                 logging.warning("risk parity computation failed: %s", exc)
     except Exception as exc:
