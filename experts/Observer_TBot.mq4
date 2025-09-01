@@ -80,6 +80,7 @@ int      log_db_handle    = INVALID_HANDLE;
 string   trade_log_buffer[];
 int      NextEventId = 1;
 datetime ModelTimestamp = 0;
+datetime RiskWeightTimestamp = 0;
 int      FileWriteErrors = 0;
 int      SocketErrors = 0;
 int      FallbackEvents = 0;
@@ -1095,6 +1096,7 @@ int OnInit()
    if(max_id >= NextEventId)
       NextEventId = max_id + 1;
    LoadRiskWeights();
+   RiskWeightTimestamp = FileGetInteger(ModelFileName, FILE_MODIFY_DATE);
    LoadAutoencoder();
    ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    string symbols_json = "[";
@@ -1452,6 +1454,13 @@ void OnTimer()
    FlushMetricBuffer();
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    FlushPending(now);
+
+   datetime ts = FileGetInteger(ModelFileName, FILE_MODIFY_DATE);
+   if(ts != RiskWeightTimestamp)
+   {
+      LoadRiskWeights();
+      RiskWeightTimestamp = ts;
+   }
 
    if(now - last_export < LearningExportIntervalMinutes*60)
       return;
