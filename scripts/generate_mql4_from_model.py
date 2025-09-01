@@ -607,6 +607,9 @@ def generate(
         'book_bid_vol': 'BookBidVol()',
         'book_ask_vol': 'BookAskVol()',
         'book_imbalance': 'BookImbalance()',
+        'book_spread': 'BookSpread()',
+        'bid_ask_ratio': 'BidAskRatio()',
+        'book_imbalance_roll': 'BookImbalanceRoll()',
         'trend_estimate': 'TrendEstimate',
         'trend_variance': 'TrendVariance',
         'duration_sec': 'TradeDuration()',
@@ -616,6 +619,9 @@ def generate(
         feature_map['book_bid_vol'] = '0.0'
         feature_map['book_ask_vol'] = '0.0'
         feature_map['book_imbalance'] = '0.0'
+        feature_map['book_spread'] = '0.0'
+        feature_map['bid_ask_ratio'] = '0.0'
+        feature_map['book_imbalance_roll'] = '0.0'
 
     tf_const = {
         'M1': 'PERIOD_M1',

@@ -1228,6 +1228,7 @@ def _extract_features(
     prices = []
     hours = []
     times = []
+    imbalance_history: list[float] = []
     price_map = {sym: [] for sym in (extra_price_series or {}).keys()}
     macd_state = {}
     higher_timeframes = [str(tf).upper() for tf in (higher_timeframes or [])]
@@ -1460,11 +1461,22 @@ def _extract_features(
             feat["dom_cos"] = dom_cos
 
         if use_orderbook:
+            bid_vol = float(r.get("book_bid_vol", 0) or 0)
+            ask_vol = float(r.get("book_ask_vol", 0) or 0)
+            imbalance = float(r.get("book_imbalance", 0) or 0)
+            imbalance_history.append(imbalance)
+            window = 5
+            roll = sum(imbalance_history[-window:]) / min(len(imbalance_history), window)
+            spread_vol = ask_vol - bid_vol
+            ratio = bid_vol / (ask_vol + 1e-9)
             feat.update(
                 {
-                    "book_bid_vol": float(r.get("book_bid_vol", 0) or 0),
-                    "book_ask_vol": float(r.get("book_ask_vol", 0) or 0),
-                    "book_imbalance": float(r.get("book_imbalance", 0) or 0),
+                    "book_bid_vol": bid_vol,
+                    "book_ask_vol": ask_vol,
+                    "book_imbalance": imbalance,
+                    "book_spread": spread_vol,
+                    "bid_ask_ratio": ratio,
+                    "book_imbalance_roll": roll,
                 }
             )
 
