@@ -108,6 +108,14 @@ from opentelemetry.trace import format_span_id, format_trace_id
 SCHEMA_VERSION = 3
 START_EVENT_ID = 0
 
+MANDATORY_FEATURES = {
+    "book_bid_vol",
+    "book_ask_vol",
+    "book_imbalance",
+    "equity",
+    "margin_level",
+}
+
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_target_clone")})
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
@@ -2954,7 +2962,11 @@ def train(
         feature_importance = {}
 
     if prune_threshold > 0.0 and feature_importance:
-        keep_idx = [i for i, name in enumerate(feature_names) if feature_importance.get(name, 0.0) >= prune_threshold]
+        keep_idx = [
+            i
+            for i, name in enumerate(feature_names)
+            if feature_importance.get(name, 0.0) >= prune_threshold or name in MANDATORY_FEATURES
+        ]
         removed_ratio = 1 - len(keep_idx) / len(feature_names)
         if removed_ratio > prune_warn:
             logging.warning("Pruning removed %.1f%% of features", removed_ratio * 100)
