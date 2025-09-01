@@ -397,6 +397,8 @@ def train(
     buffer_size: int = 100,
     update_freq: int = 1,
     gamma: float = 0.9,
+    replay_alpha: float = 0.6,
+    replay_beta: float = 0.4,
     algo: str = "dqn",
     num_envs: int = 1,
     start_model: Path | None = None,
@@ -583,7 +585,7 @@ def train(
         replay_args: Dict = {}
         if HAS_PRB and algo_key in {"dqn", "c51", "qr_dqn"}:
             replay_args["replay_buffer_class"] = PrioritizedReplayBuffer
-            replay_args["replay_buffer_kwargs"] = {"alpha": 0.6, "beta": 0.4}
+            replay_args["replay_buffer_kwargs"] = {"alpha": replay_alpha, "beta": replay_beta}
             replay_args["learning_starts"] = 0
         model = model_cls(
             "MlpPolicy",
@@ -697,6 +699,8 @@ def train(
             "num_samples": len(actions),
             "weights_file": weights_path.with_suffix(".zip").name,
         }
+        model_info["replay_alpha"] = replay_alpha
+        model_info["replay_beta"] = replay_beta
         if not np.isnan(expected_return):
             model_info["expected_return"] = expected_return
         if not np.isnan(downside_risk):
@@ -752,6 +756,7 @@ def train(
                 bias = float(init_model_data["intercept"])
                 weights = np.vstack([coefs / 2.0, -coefs / 2.0])
                 intercepts = np.array([bias / 2.0, -bias / 2.0], dtype=float)
+    episode_td: List[float] = []
     if algo_key == "cql":
         alpha = 0.01  # conservative penalty strength
         for i in range(training_steps):
@@ -780,19 +785,22 @@ def train(
             if buffer_client is not None and i % sync_interval == 0:
                 experiences = buffer_client.sync(experiences)
             total_r = 0.0
+            td_errs: List[float] = []
             buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
+            max_prio = 1.0
             for step, exp in enumerate(experiences):
                 s, a, r, ns = exp
                 total_r += r
                 if len(buffer) >= buffer_size:
                     buffer.pop(0)
-                # add with initial priority weight of 1.0
-                buffer.append((s, a, r, ns, 1.0))
+                buffer.append((s, a, r, ns, max_prio))
 
                 if step % update_freq == 0 and len(buffer) >= batch_size:
                     weights_arr = np.array([b[4] for b in buffer], dtype=float)
-                    prob = weights_arr / weights_arr.sum()
+                    scaled = weights_arr ** replay_alpha
+                    prob = scaled / scaled.sum()
                     batch_idx = np.random.choice(len(buffer), size=batch_size, p=prob)
+                    max_w = (len(buffer) * prob.min()) ** (-replay_beta)
                     for idx in batch_idx:
                         bs, ba, br, bns, bw = buffer[idx]
                         q_next0 = intercepts[0] + np.dot(weights[0], bns)
@@ -800,12 +808,18 @@ def train(
                         q_target = br + gamma * max(q_next0, q_next1)
                         q_current = intercepts[ba] + np.dot(weights[ba], bs)
                         td_err = q_target - q_current
-                        weights[ba] += learning_rate * td_err * bs
-                        intercepts[ba] += learning_rate * td_err
-                        # update priority weight based on TD error
-                        buffer[idx] = (bs, ba, br, bns, float(abs(td_err)) + 1e-6)
+                        w = (len(buffer) * prob[idx]) ** (-replay_beta)
+                        w /= max_w
+                        weights[ba] += learning_rate * w * td_err * bs
+                        intercepts[ba] += learning_rate * w * td_err
+                        pr = float(abs(td_err)) + 1e-6
+                        buffer[idx] = (bs, ba, br, bns, pr)
+                        if pr > max_prio:
+                            max_prio = pr
+                        td_errs.append(abs(td_err))
             episode_rewards.append(total_r / len(experiences))
             episode_totals.append(total_r)
+            episode_td.append(float(np.mean(td_errs)) if td_errs else 0.0)
         training_type = "rl_only" if init_model_data is None else "supervised+rl"
     preds: List[int] = []
     for s in states:
@@ -835,9 +849,13 @@ def train(
         "learning_rate": learning_rate,
         "gamma": gamma,
         "epsilon": epsilon,
+        "replay_alpha": replay_alpha,
+        "replay_beta": replay_beta,
         "val_accuracy": float("nan"),
         "accuracy": float("nan"),
         "num_samples": len(actions),
+        "avg_td_error": float(np.mean(episode_td)) if episode_td else 0.0,
+        "td_errors": [float(e) for e in episode_td],
     }
     model["training_type"] = training_type
     if training_type != "offline_rl" and init_model_data is not None:
@@ -868,6 +886,8 @@ def main() -> None:
         p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
         p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
         p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
+        p.add_argument("--replay-alpha", type=float, default=0.6, help="prioritized replay exponent")
+        p.add_argument("--replay-beta", type=float, default=0.4, help="IS weight exponent")
         p.add_argument("--num-envs", type=int, default=1, help="number of parallel environments")
         p.add_argument(
             "--algo",
@@ -903,6 +923,8 @@ def main() -> None:
             buffer_size=args.buffer_size,
             update_freq=args.update_freq,
             algo=args.algo,
+            replay_alpha=args.replay_alpha,
+            replay_beta=args.replay_beta,
             num_envs=args.num_envs,
             start_model=Path(args.start_model) if args.start_model else None,
             compress_model=args.compress_model,
