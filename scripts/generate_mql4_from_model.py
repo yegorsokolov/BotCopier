@@ -65,6 +65,243 @@ template_path = (
 )
 
 
+def _build_feature_cases(
+    feature_names: List[str],
+    lite_mode: bool,
+    hash_size: int | None = None,
+) -> tuple[str, set[str]]:
+    """Create switch cases mapping each feature index to its runtime expression.
+
+    Parameters
+    ----------
+    feature_names : list of str
+        Ordered list of feature names extracted from ``model.json``.
+    lite_mode : bool
+        If True, disable order book related features by mapping them to ``0.0``.
+    hash_size : int, optional
+        Size of the feature hashing space.  When provided the incoming
+        ``feature_names`` are hashed into ``hash_size`` buckets and expressions
+        are accumulated per bucket.
+
+    Returns
+    -------
+    tuple
+        ``(case_block, used_tfs)`` where ``case_block`` is the formatted switch
+        statement snippet and ``used_tfs`` contains any timeframe constants used
+        by indicator based features.
+
+    Raises
+    ------
+    ValueError
+        If a feature name cannot be resolved to a runtime expression.  This
+        prevents silently returning zero for unknown features.
+    """
+
+    # time-derived features
+    feature_map = {
+        'hour': 'TimeHour(TimeCurrent())',
+        'hour_sin': 'HourSin()',
+        'hour_cos': 'HourCos()',
+        'dow_sin': 'DowSin()',
+        'dow_cos': 'DowCos()',
+        'month_sin': 'MonthSin()',
+        'month_cos': 'MonthCos()',
+        'dom_sin': 'DomSin()',
+        'dom_cos': 'DomCos()',
+        'spread': 'MarketInfo(SymbolToTrade, MODE_SPREAD)',
+        'slippage': 'GetSlippage()',
+        'lots': 'Lots',
+        'sl_dist': 'SLDistance()',
+        'tp_dist': 'TPDistance()',
+        'equity': 'AccountEquity()',
+        'margin_level': 'AccountMarginLevel()',
+        'sma': 'CachedSMA[TFIdx(0)]',
+        'rsi': 'CachedRSI[TFIdx(0)]',
+        'macd': 'CachedMACD[TFIdx(0)]',
+        'macd_signal': 'CachedMACDSignal[TFIdx(0)]',
+        'volatility': 'StdDevRecentTicks()',
+        'atr': 'iATR(SymbolToTrade, 0, 14, 0)',
+        'bollinger_upper': 'iBands(SymbolToTrade, 0, 20, 2, 0, PRICE_CLOSE, MODE_UPPER, 0)',
+        'bollinger_middle': 'iBands(SymbolToTrade, 0, 20, 2, 0, PRICE_CLOSE, MODE_MAIN, 0)',
+        'bollinger_lower': 'iBands(SymbolToTrade, 0, 20, 2, 0, PRICE_CLOSE, MODE_LOWER, 0)',
+        'stochastic_k': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_MAIN, 0)',
+        'stochastic_d': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 0)',
+        'adx': 'iADX(SymbolToTrade, 0, 14, PRICE_CLOSE, MODE_MAIN, 0)',
+        'volume': 'iVolume(SymbolToTrade, 0, 0)',
+        'event_flag': 'CalendarFlag()',
+        'event_impact': 'CalendarImpact()',
+        'calendar_event_id': 'CalendarEventId()',
+        'book_bid_vol': 'BookBidVol()',
+        'book_ask_vol': 'BookAskVol()',
+        'book_imbalance': 'BookImbalance()',
+        'book_spread': 'BookSpread()',
+        'bid_ask_ratio': 'BidAskRatio()',
+        'book_imbalance_roll': 'BookImbalanceRoll()',
+        'trend_estimate': 'TrendEstimate',
+        'trend_variance': 'TrendVariance',
+        'duration_sec': 'TradeDuration()',
+    }
+
+    if lite_mode:
+        feature_map['book_bid_vol'] = '0.0'
+        feature_map['book_ask_vol'] = '0.0'
+        feature_map['book_imbalance'] = '0.0'
+        feature_map['book_spread'] = '0.0'
+        feature_map['bid_ask_ratio'] = '0.0'
+        feature_map['book_imbalance_roll'] = '0.0'
+
+    tf_const = {
+        'M1': 'PERIOD_M1',
+        'M5': 'PERIOD_M5',
+        'M15': 'PERIOD_M15',
+        'M30': 'PERIOD_M30',
+        'H1': 'PERIOD_H1',
+        'H4': 'PERIOD_H4',
+        'D1': 'PERIOD_D1',
+        'W1': 'PERIOD_W1',
+        'MN1': 'PERIOD_MN1',
+    }
+
+    import re
+
+    cases: List[str] = []
+    used_tfs: set[str] = {'0'}
+    tf_pattern = re.compile(r'^(sma|rsi|macd|macd_signal)_([A-Za-z0-9]+)$')
+    indicator_expr = {
+        'sma': 'CachedSMA',
+        'rsi': 'CachedRSI',
+        'macd': 'CachedMACD',
+        'macd_signal': 'CachedMACDSignal',
+    }
+
+    def resolve_expr(fname: str) -> Optional[str]:
+        expr = feature_map.get(fname)
+        if expr is not None:
+            return expr
+        m = tf_pattern.match(fname)
+        if m:
+            ind, tf = m.groups()
+            tf = tf.upper()
+            tf_val = tf_const.get(tf, '0')
+            used_tfs.add(tf_val)
+            return f"{indicator_expr[ind]}[TFIdx({tf_val})]"
+        if '*' in fname or '^' in fname:
+            parts = fname.split('*')
+            sub: List[str] = []
+            for p in parts:
+                if '^' in p:
+                    base, pow_str = p.split('^', 1)
+                    base_expr = resolve_expr(base)
+                    if base_expr is None:
+                        return None
+                    try:
+                        pw = int(pow_str)
+                    except ValueError:
+                        return None
+                    if pw == 2:
+                        sub.append(f"({base_expr} * {base_expr})")
+                    else:
+                        sub.append(f"MathPow({base_expr}, {pw})")
+                else:
+                    base_expr = resolve_expr(p)
+                    if base_expr is None:
+                        return None
+                    sub.append(base_expr)
+            return '(' + ' * '.join(sub) + ')'
+        if fname.startswith('regime_') and fname[7:].isdigit():
+            rid = int(fname.split('_')[1])
+            return f'(GetRegime() == {rid} ? 1.0 : 0.0)'
+        if fname == 'regime':
+            return 'GetRegime()'
+        if fname.startswith('ratio_'):
+            parts = fname[6:].split('_')
+            if len(parts) == 2:
+                return f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
+            if len(parts) == 1:
+                return f'iClose(SymbolToTrade, 0, 0) / iClose("{parts[0]}", 0, 0)'
+        if fname.startswith('corr_'):
+            parts = fname[5:].split('_')
+            if len(parts) >= 2:
+                sym1 = parts[0]
+                sym2 = '_'.join(parts[1:])
+                return f'PairCorrelation("{sym1}", "{sym2}")'
+            if len(parts) == 1:
+                return f'PairCorrelation(SymbolToTrade, "{parts[0]}")'
+        if fname.startswith('coint_residual_'):
+            parts = fname[16:].split('_')
+            if len(parts) >= 2:
+                sym1 = parts[0]
+                sym2 = '_'.join(parts[1:])
+                return f'CointegrationResidual("{sym1}", "{sym2}")'
+            if len(parts) == 1:
+                return f'CointegrationResidual("{parts[0]}")'
+        if fname.startswith('exit_reason='):
+            reason = fname.split('=', 1)[1]
+            return f'ExitReasonFlag("{reason}")'
+        if fname == 'graph_degree':
+            return 'GraphDegree()'
+        if fname == 'graph_pagerank':
+            return 'GraphPagerank()'
+        if fname.startswith('graph_emb') and fname[9:].isdigit():
+            idx_g = int(fname[9:])
+            return f'GraphEmbedding({idx_g})'
+        if fname.startswith('ae') and fname[2:].isdigit():
+            idx_ae = int(fname[2:])
+            return f'GetEncodedFeature({idx_ae})'
+        if fname == 'news_sentiment':
+            return 'GetNewsSentiment()'
+        return None
+
+    if hash_size:
+        hasher = FeatureHasher(n_features=hash_size, input_type="dict")
+        idx_map: dict[int, List[tuple[str, float]]] = {}
+        for name in feature_names:
+            vec = hasher.transform([{name: 1.0}]).toarray()[0]
+            hidx = int(np.flatnonzero(vec)[0])
+            sign = 1.0 if vec[hidx] >= 0 else -1.0
+            idx_map.setdefault(hidx, []).append((name, sign))
+        for idx, items in sorted(idx_map.items()):
+            expr_parts: List[str] = []
+            names: List[str] = []
+            for name, sign in items:
+                expr = resolve_expr(name)
+                if expr is None:
+                    logging.error(
+                        "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
+                        name,
+                    )
+                    raise ValueError(
+                        f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
+                    )
+                names.append(name)
+                part = f"({expr})"
+                if sign < 0:
+                    part = f"-({expr})"
+                expr_parts.append(part)
+            expr_sum = ' + '.join(expr_parts)
+            cases.append(
+                f"      case {idx}: // {', '.join(names)}\\n         raw = {expr_sum};\\n         break;",
+            )
+    else:
+        for idx, name in enumerate(feature_names):
+            expr = resolve_expr(name)
+            if expr is None:
+                logging.error(
+                    "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
+                    name,
+                )
+                raise ValueError(
+                    f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
+                )
+            cases.append(
+                f"      case {idx}: // {name}\\n         raw = ({expr});\\n         break;",
+            )
+
+    case_block = "\n".join(cases)
+    if case_block:
+        case_block += "\n"
+    return case_block, used_tfs
+
 def generate(
     model_jsons: Union[Path, Iterable[Path]],
     out_dir: Path,
@@ -569,207 +806,7 @@ def generate(
     output = output.replace('__CALENDAR_IMPACTS__', impact_vals)
     output = output.replace('__CALENDAR_IDS__', id_vals)
     output = output.replace('__EVENT_WINDOW__', event_window)
-
-    # time-derived features
-    feature_map = {
-        'hour': 'TimeHour(TimeCurrent())',
-        'hour_sin': 'HourSin()',
-        'hour_cos': 'HourCos()',
-        'dow_sin': 'DowSin()',
-        'dow_cos': 'DowCos()',
-        'month_sin': 'MonthSin()',
-        'month_cos': 'MonthCos()',
-        'dom_sin': 'DomSin()',
-        'dom_cos': 'DomCos()',
-        'spread': 'MarketInfo(SymbolToTrade, MODE_SPREAD)',
-        'slippage': 'GetSlippage()',
-        'lots': 'Lots',
-        'sl_dist': 'SLDistance()',
-        'tp_dist': 'TPDistance()',
-        'equity': 'AccountEquity()',
-        'margin_level': 'AccountMarginLevel()',
-        'sma': 'CachedSMA[TFIdx(0)]',
-        'rsi': 'CachedRSI[TFIdx(0)]',
-        'macd': 'CachedMACD[TFIdx(0)]',
-        'macd_signal': 'CachedMACDSignal[TFIdx(0)]',
-        'volatility': 'StdDevRecentTicks()',
-        'atr': 'iATR(SymbolToTrade, 0, 14, 0)',
-        'bollinger_upper': 'iBands(SymbolToTrade, 0, 20, 2, 0, PRICE_CLOSE, MODE_UPPER, 0)',
-        'bollinger_middle': 'iBands(SymbolToTrade, 0, 20, 2, 0, PRICE_CLOSE, MODE_MAIN, 0)',
-        'bollinger_lower': 'iBands(SymbolToTrade, 0, 20, 2, 0, PRICE_CLOSE, MODE_LOWER, 0)',
-        'stochastic_k': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_MAIN, 0)',
-        'stochastic_d': 'iStochastic(SymbolToTrade, 0, 14, 3, 3, MODE_SMA, 0, MODE_SIGNAL, 0)',
-        'adx': 'iADX(SymbolToTrade, 0, 14, PRICE_CLOSE, MODE_MAIN, 0)',
-        'volume': 'iVolume(SymbolToTrade, 0, 0)',
-        'event_flag': 'CalendarFlag()',
-        'event_impact': 'CalendarImpact()',
-        'calendar_event_id': 'CalendarEventId()',
-        'book_bid_vol': 'BookBidVol()',
-        'book_ask_vol': 'BookAskVol()',
-        'book_imbalance': 'BookImbalance()',
-        'book_spread': 'BookSpread()',
-        'bid_ask_ratio': 'BidAskRatio()',
-        'book_imbalance_roll': 'BookImbalanceRoll()',
-        'trend_estimate': 'TrendEstimate',
-        'trend_variance': 'TrendVariance',
-        'duration_sec': 'TradeDuration()',
-    }
-
-    if lite_mode:
-        feature_map['book_bid_vol'] = '0.0'
-        feature_map['book_ask_vol'] = '0.0'
-        feature_map['book_imbalance'] = '0.0'
-        feature_map['book_spread'] = '0.0'
-        feature_map['bid_ask_ratio'] = '0.0'
-        feature_map['book_imbalance_roll'] = '0.0'
-
-    tf_const = {
-        'M1': 'PERIOD_M1',
-        'M5': 'PERIOD_M5',
-        'M15': 'PERIOD_M15',
-        'M30': 'PERIOD_M30',
-        'H1': 'PERIOD_H1',
-        'H4': 'PERIOD_H4',
-        'D1': 'PERIOD_D1',
-        'W1': 'PERIOD_W1',
-        'MN1': 'PERIOD_MN1',
-    }
-
-    import re
-    cases = []
-    used_tfs = {'0'}
-    tf_pattern = re.compile(r'^(sma|rsi|macd|macd_signal)_([A-Za-z0-9]+)$')
-    indicator_expr = {
-        'sma': 'CachedSMA',
-        'rsi': 'CachedRSI',
-        'macd': 'CachedMACD',
-        'macd_signal': 'CachedMACDSignal',
-    }
-    def resolve_expr(fname: str) -> str | None:
-        expr = feature_map.get(fname)
-        if expr is not None:
-            return expr
-        m = tf_pattern.match(fname)
-        if m:
-            ind, tf = m.groups()
-            tf = tf.upper()
-            tf_val = tf_const.get(tf, '0')
-            used_tfs.add(tf_val)
-            return f"{indicator_expr[ind]}[TFIdx({tf_val})]"
-        if '*' in fname or '^' in fname:
-            parts = fname.split('*')
-            sub = []
-            for p in parts:
-                if '^' in p:
-                    base, pow_str = p.split('^', 1)
-                    base_expr = resolve_expr(base)
-                    if base_expr is None:
-                        return None
-                    try:
-                        pw = int(pow_str)
-                    except ValueError:
-                        return None
-                    if pw == 2:
-                        sub.append(f"({base_expr} * {base_expr})")
-                    else:
-                        sub.append(f"MathPow({base_expr}, {pw})")
-                else:
-                    base_expr = resolve_expr(p)
-                    if base_expr is None:
-                        return None
-                    sub.append(base_expr)
-            return '(' + ' * '.join(sub) + ')'
-        if fname.startswith('regime_') and fname[7:].isdigit():
-            rid = int(fname.split('_')[1])
-            return f'(GetRegime() == {rid} ? 1.0 : 0.0)'
-        if fname == 'regime':
-            return 'GetRegime()'
-        if fname.startswith('ratio_'):
-            parts = fname[6:].split('_')
-            if len(parts) == 2:
-                return f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
-            if len(parts) == 1:
-                return f'iClose(SymbolToTrade, 0, 0) / iClose("{parts[0]}", 0, 0)'
-        if fname.startswith('corr_'):
-            parts = fname[5:].split('_')
-            if len(parts) >= 2:
-                sym1 = parts[0]
-                sym2 = '_'.join(parts[1:])
-                return f'PairCorrelation("{sym1}", "{sym2}")'
-            if len(parts) == 1:
-                return f'PairCorrelation(SymbolToTrade, "{parts[0]}")'
-        if fname.startswith('coint_residual_'):
-            parts = fname[16:].split('_')
-            if len(parts) >= 2:
-                sym1 = parts[0]
-                sym2 = '_'.join(parts[1:])
-                return f'CointegrationResidual("{sym1}", "{sym2}")'
-            if len(parts) == 1:
-                return f'CointegrationResidual("{parts[0]}")'
-        if fname.startswith('exit_reason='):
-            reason = fname.split('=', 1)[1]
-            return f'ExitReasonFlag("{reason}")'
-        if fname == 'graph_degree':
-            return 'GraphDegree()'
-        if fname == 'graph_pagerank':
-            return 'GraphPagerank()'
-        if fname.startswith('graph_emb') and fname[9:].isdigit():
-            idx_g = int(fname[9:])
-            return f'GraphEmbedding({idx_g})'
-        if fname.startswith('ae') and fname[2:].isdigit():
-            idx_ae = int(fname[2:])
-            return f'GetEncodedFeature({idx_ae})'
-        if fname == 'news_sentiment':
-            return 'GetNewsSentiment()'
-        return None
-
-    if hash_size:
-        hasher = FeatureHasher(n_features=hash_size, input_type="dict")
-        idx_map: dict[int, list[tuple[str, float]]] = {}
-        for name in feature_names:
-            vec = hasher.transform([{name: 1.0}]).toarray()[0]
-            hidx = int(np.flatnonzero(vec)[0])
-            sign = 1.0 if vec[hidx] >= 0 else -1.0
-            idx_map.setdefault(hidx, []).append((name, sign))
-        for idx, items in sorted(idx_map.items()):
-            expr_parts = []
-            names = []
-            for name, sign in items:
-                expr = resolve_expr(name)
-                if expr is None:
-                    logging.error(
-                        "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
-                        name,
-                    )
-                    raise ValueError(
-                        f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
-                    )
-                names.append(name)
-                part = f"({expr})"
-                if sign < 0:
-                    part = f"-({expr})"
-                expr_parts.append(part)
-            expr_sum = ' + '.join(expr_parts)
-            cases.append(
-                f"      case {idx}: // {', '.join(names)}\\n         raw = {expr_sum};\\n         break;",
-            )
-    else:
-        for idx, name in enumerate(feature_names):
-            expr = resolve_expr(name)
-            if expr is None:
-                logging.error(
-                    "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
-                    name,
-                )
-                raise ValueError(
-                    f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
-                )
-            cases.append(
-                f"      case {idx}: // {name}\\n         raw = ({expr});\\n         break;",
-            )
-    case_block = "\n".join(cases)
-    if case_block:
-        case_block += "\n"
+    case_block, used_tfs = _build_feature_cases(feature_names, lite_mode, hash_size)
     output = output.replace('__FEATURE_CASES__', case_block)
     output = output.replace('__FEATURE_COUNT__', str(feature_count))
 
