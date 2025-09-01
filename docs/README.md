@@ -103,6 +103,10 @@ script multiplies the weight of these rows (configurable with
 ``--uncertain-weight``) so the newly labeled examples influence the next model
 more heavily.
 
+To continuously fold this feedback into the live model,
+``scripts/auto_retrain.py`` accepts matching ``--uncertain-file`` and
+``--uncertain-weight`` options and can be scheduled via cron or systemd.
+
 This loop—log uncertain decisions, label them and retrain—provides a lightweight
 form of active learning that incrementally improves the strategy where it
 previously hesitated.

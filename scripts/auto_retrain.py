@@ -198,12 +198,18 @@ def retrain_if_needed(
     recent_file: Optional[Path] = None,
     drift_threshold: float = 0.2,
     drift_method: str = "psi",
+    uncertain_file: Optional[Path] = None,
+    uncertain_weight: float = 2.0,
 ) -> bool:
     """Retrain and publish a model when metrics degrade or drift is detected.
 
     ``baseline_file`` and ``recent_file`` may point to CSV files or directories
     containing CSV logs. When directories are supplied the most recent file is
     used each time the function runs, enabling periodic drift checks.
+
+    ``uncertain_file`` can supply labeled uncertain decisions that will be
+    weighted by ``uncertain_weight`` during training to incorporate feedback
+    from previously hesitant actions.
     """
     with tracer.start_as_current_span("retrain_if_needed"):
         metrics_path = metrics_file or (log_dir / "metrics.csv")
@@ -236,7 +242,13 @@ def retrain_if_needed(
         tc = _load_train_module()
         last_id = _read_last_event_id(out_dir)
         tc.START_EVENT_ID = last_id
-        tc.train(log_dir, out_dir, incremental=True)
+        tc.train(
+            log_dir,
+            out_dir,
+            incremental=True,
+            uncertain_file=uncertain_file,
+            uncertain_weight=uncertain_weight,
+        )
 
         model_json = out_dir / "model.json"
         model_onnx = out_dir / "model.onnx"
@@ -277,6 +289,16 @@ def main() -> None:
     p.add_argument("--recent-file", help="CSV with recent feature data")
     p.add_argument("--drift-method", choices=["psi", "ks"], default="psi")
     p.add_argument("--drift-threshold", type=float, default=0.2)
+    p.add_argument(
+        "--uncertain-file",
+        help="CSV with labeled uncertain decisions to emphasize during training",
+    )
+    p.add_argument(
+        "--uncertain-weight",
+        type=float,
+        default=2.0,
+        help="sample weight multiplier for labeled uncertainties",
+    )
     p.add_argument("--interval", type=float, help="seconds between checks (loop)" )
     args = p.parse_args()
 
@@ -287,6 +309,7 @@ def main() -> None:
     tick_path = Path(args.tick_file) if args.tick_file else None
     baseline_path = Path(args.baseline_file) if args.baseline_file else None
     recent_path = Path(args.recent_file) if args.recent_file else None
+    uncertain_path = Path(args.uncertain_file) if args.uncertain_file else None
 
     if args.interval:
         while True:
@@ -302,6 +325,8 @@ def main() -> None:
                 recent_file=recent_path,
                 drift_threshold=args.drift_threshold,
                 drift_method=args.drift_method,
+                uncertain_file=uncertain_path,
+                uncertain_weight=args.uncertain_weight,
             )
             time.sleep(args.interval)
     else:
@@ -317,6 +342,8 @@ def main() -> None:
             recent_file=recent_path,
             drift_threshold=args.drift_threshold,
             drift_method=args.drift_method,
+            uncertain_file=uncertain_path,
+            uncertain_weight=args.uncertain_weight,
         )
     logger.info("auto retrain finished", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
     span.end()

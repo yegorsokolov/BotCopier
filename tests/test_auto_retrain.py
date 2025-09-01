@@ -41,8 +41,8 @@ def test_retrain_trigger(monkeypatch, tmp_path: Path):
     class FakeTC:
         START_EVENT_ID = 0
 
-        def train(self, ld, od, incremental=True):
-            called["train"] = (ld, od, incremental, self.START_EVENT_ID)
+        def train(self, ld, od, incremental=True, **kwargs):
+            called["train"] = (ld, od, incremental, kwargs, self.START_EVENT_ID)
             (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
 
     fake_tc = FakeTC()
@@ -60,7 +60,7 @@ def test_retrain_trigger(monkeypatch, tmp_path: Path):
     result = retrain_if_needed(log_dir, out_dir, files_dir)
 
     assert result is True
-    assert called.get("train") == (log_dir, out_dir, True, 5)
+    assert called.get("train") == (log_dir, out_dir, True, {"uncertain_file": None, "uncertain_weight": 2.0}, 5)
     assert called.get("publish") == (out_dir / "model.json", files_dir)
     assert called.get("backtest") == (out_dir / "model.json", log_dir / "trades_raw.csv")
     assert last_id_file.read_text() == "8"
@@ -114,7 +114,7 @@ def test_retrain_no_improvement(monkeypatch, tmp_path: Path):
     class FakeTC:
         START_EVENT_ID = 0
 
-        def train(self, ld, od, incremental=True):
+        def train(self, ld, od, incremental=True, **kwargs):
             called["train"] = True
             (od / "model.json").write_text(json.dumps({"last_event_id": 1}))
 
@@ -153,7 +153,7 @@ def test_retrain_prefers_onnx(monkeypatch, tmp_path: Path):
     class FakeTC:
         START_EVENT_ID = 0
 
-        def train(self, ld, od, incremental=True):
+        def train(self, ld, od, incremental=True, **kwargs):
             (od / "model.json").write_text(json.dumps({"last_event_id": 8}))
             (od / "model.onnx").write_bytes(b"x")
 
@@ -192,7 +192,7 @@ def test_drift_triggers_retrain(monkeypatch, tmp_path: Path):
     class FakeTC:
         START_EVENT_ID = 0
 
-        def train(self, ld, od, incremental=True):
+        def train(self, ld, od, incremental=True, **kwargs):
             called["train"] = True
             (od / "model.json").write_text(json.dumps({}))
 
@@ -240,7 +240,7 @@ def test_drift_directory(monkeypatch, tmp_path: Path):
     class FakeTC:
         START_EVENT_ID = 0
 
-        def train(self, ld, od, incremental=True):
+        def train(self, ld, od, incremental=True, **kwargs):
             called["train"] = True
             (od / "model.json").write_text(json.dumps({}))
 
