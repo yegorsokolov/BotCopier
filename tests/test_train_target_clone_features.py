@@ -241,8 +241,8 @@ def test_model_serialization(tmp_path: Path):
     with open(model_file) as f:
         data = json.load(f)
     assert "feature_names" in data
-    assert "mean" in data
-    assert "std" in data
+    assert "feature_mean" in data
+    assert "feature_std" in data
     assert "threshold" in data
     assert "val_accuracy" in data
     assert "spread" in data.get("feature_names", [])

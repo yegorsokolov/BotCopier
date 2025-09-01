@@ -1900,6 +1900,8 @@ def _train_lite_mode(
         "feature_importance": {},
         "mean": scaler.mean_.astype(np.float32).tolist(),
         "std": scaler.scale_.astype(np.float32).tolist(),
+        "feature_mean": scaler.mean_.astype(np.float32).tolist(),
+        "feature_std": scaler.scale_.astype(np.float32).tolist(),
         "coefficients": clf.coef_[0].astype(np.float32).tolist(),
         "intercept": float(clf.intercept_[0]),
         "classes": [int(c) for c in clf.classes_],
@@ -2323,6 +2325,8 @@ def train(
                 "feature_names": vec_reg.get_feature_names_out().tolist(),
                 "mean": reg_mean.astype(np.float32).tolist(),
                 "std": reg_std.astype(np.float32).tolist(),
+                "feature_mean": reg_mean.astype(np.float32).tolist(),
+                "feature_std": reg_std.astype(np.float32).tolist(),
                 "centers": reg_centers.astype(np.float32).tolist(),
             }
     except Exception as exc:
@@ -2358,6 +2362,8 @@ def train(
             "bias": [b.astype(np.float32).tolist() for b in ae_model.intercepts_],
             "mean": ae_mean.astype(np.float32).tolist(),
             "std": ae_std.astype(np.float32).tolist(),
+            "feature_mean": ae_mean.astype(np.float32).tolist(),
+            "feature_std": ae_std.astype(np.float32).tolist(),
             "threshold": ae_threshold,
             "feature_order": ae_feature_order,
         }
@@ -2809,6 +2815,8 @@ def train(
             "last_event_id": int(last_event_id),
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
+            "feature_mean": feature_mean.astype(np.float32).tolist(),
+            "feature_std": feature_std.astype(np.float32).tolist(),
             "mode": mode,
             "class_weight": class_weight or "none",
             "train_accuracy": float("nan"),
@@ -2989,6 +2997,8 @@ def train(
             "last_event_id": int(last_event_id),
             "mean": feature_mean.astype(np.float32).tolist(),
             "std": feature_std.astype(np.float32).tolist(),
+            "feature_mean": feature_mean.astype(np.float32).tolist(),
+            "feature_std": feature_std.astype(np.float32).tolist(),
             "hourly_thresholds": hourly_thresholds,
             "conformal_lower": conformal_lower,
             "conformal_upper": conformal_upper,
@@ -3730,6 +3740,8 @@ def train(
         "feature_importance": feature_importance,
         "mean": feature_mean.astype(np.float32).tolist(),
         "std": feature_std.astype(np.float32).tolist(),
+        "feature_mean": feature_mean.astype(np.float32).tolist(),
+        "feature_std": feature_std.astype(np.float32).tolist(),
     }
     model["split_sizes"] = split_sizes
     model["validation_metrics"] = {
