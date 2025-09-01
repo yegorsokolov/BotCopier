@@ -554,34 +554,26 @@ double DomCos()
    return(MathCos(angle));
 }
 
-double GetSLDistance()
+bool OrderIsBuy()
 {
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-      if(OrderSelect(i, SELECT_BY_POS) &&
-         OrderMagicNumber() == MagicNumber &&
-         OrderSymbol() == SymbolToTrade)
-      {
-         if(OrderType() == OP_BUY)
-            return(Bid - OrderStopLoss());
-         else
-            return(OrderStopLoss() - Ask);
-      }
-   return(0.0);
+   return(OrderType() == OP_BUY);
 }
 
-double GetTPDistance()
+double SideValue(double buy_val, double sell_val)
 {
-   for(int i = OrdersTotal() - 1; i >= 0; i--)
-      if(OrderSelect(i, SELECT_BY_POS) &&
-         OrderMagicNumber() == MagicNumber &&
-         OrderSymbol() == SymbolToTrade)
-      {
-         if(OrderType() == OP_BUY)
-            return(OrderTakeProfit() - Bid);
-         else
-            return(Ask - OrderTakeProfit());
-      }
-   return(0.0);
+   return(OrderIsBuy() ? buy_val : sell_val);
+}
+
+double SLDistance()
+{
+   if(OrderTicket() <= 0) return(0.0);
+   return(SideValue(Bid - OrderStopLoss(), OrderStopLoss() - Ask));
+}
+
+double TPDistance()
+{
+   if(OrderTicket() <= 0) return(0.0);
+   return(SideValue(OrderTakeProfit() - Bid, Ask - OrderTakeProfit()));
 }
 
 double GetSlippage()
