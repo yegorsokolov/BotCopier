@@ -533,13 +533,13 @@ def _extract_features(
             ratio = 0.0
             if peer_seq and peer_seq[-1] != 0:
                 ratio = base_seq[-1] / peer_seq[-1]
-            feat[f"corr_{peer}"] = corr
-            feat[f"ratio_{peer}"] = ratio
+            feat[f"corr_{symbol}_{peer}"] = corr
+            feat[f"ratio_{symbol}_{peer}"] = ratio
             stats = coint_stats.get((symbol, peer))
             if stats is not None and peer_seq:
                 beta = stats.get("beta", 0.0)
                 resid = base_seq[-1] - beta * peer_seq[-1]
-                feat[f"coint_residual_{peer}"] = resid
+                feat[f"coint_residual_{symbol}_{peer}"] = resid
 
         if pair_weights:
             for (a, b), w in pair_weights.items():

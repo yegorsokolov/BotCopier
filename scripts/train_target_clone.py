@@ -3515,7 +3515,10 @@ def main():
     p.add_argument('--start-event-id', type=int, default=0, help='only load rows with event_id greater than this value from SQLite logs')
     p.add_argument('--resume', action='store_true', help='resume from last processed event_id in existing model.json')
     p.add_argument('--no-cache', action='store_true', help='recompute features even if cached')
-    p.add_argument('--corr-symbols', help='comma separated correlated symbol pairs e.g. EURUSD:USDCHF')
+    p.add_argument(
+        '--corr-symbols',
+        help='comma separated symbol pairs (e.g. EURUSD:USDJPY or EURUSD_USDJPY)'
+    )
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--symbol-graph', help='JSON file describing symbol correlation graph')
     p.add_argument('--poly-degree', type=int, default=2, help='max polynomial feature degree (1 disables)')
@@ -3578,9 +3581,16 @@ def main():
         if args.corr_symbols:
             corr_map = {}
             for p in args.corr_symbols.split(','):
+                p = p.strip()
+                if not p:
+                    continue
                 if ':' in p:
                     base, peer = p.split(':', 1)
-                    corr_map.setdefault(base, []).append(peer)
+                elif '_' in p:
+                    base, peer = p.split('_', 1)
+                else:
+                    continue
+                corr_map.setdefault(base, []).append(peer)
         else:
             corr_map = None
         if args.symbol_graph:
