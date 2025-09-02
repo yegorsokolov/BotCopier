@@ -39,3 +39,5 @@ METRIC_SCHEMA = pa.schema([
     ("socket_errors", pa.int32()),
     ("book_refresh_seconds", pa.int32()),
 ])
+
+__all__ = ["MetricEvent", "METRIC_SCHEMA"]

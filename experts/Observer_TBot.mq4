@@ -2,12 +2,12 @@
 #include "model_interface.mqh"
 #include <Arrays/ArrayInt.mqh>
 
-#import "observer_grpc.dll"
+#import "observer_flight.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
 int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
-bool GrpcClientInit(string host, int port);
-bool GrpcSendTrade(uchar &payload[], int len);
-bool GrpcSendMetrics(uchar &payload[], int len);
+bool FlightClientInit(string host, int port);
+bool FlightSendTrade(uchar &payload[], int len);
+bool FlightSendMetrics(uchar &payload[], int len);
 #import
 
 #import "kernel32.dll"
@@ -61,8 +61,8 @@ extern double AnomalyThreshold             = 0.1;
 extern int    AnomalyTimeoutSeconds       = 5;
 extern string OtelEndpoint                = "";
 extern string ModelStateFile              = "model_online.json";
-extern string GrpcServerHost             = "127.0.0.1";
-extern int    GrpcServerPort             = 50051;
+extern string FlightServerHost           = "127.0.0.1";
+extern int    FlightServerPort           = 50051;
 extern int    FallbackRetryThreshold      = 5;
 extern string CalendarFileName           = "calendar.csv";
 extern int    CalendarEventWindowMinutes = 60;
@@ -82,8 +82,8 @@ int      NextEventId = 1;
 datetime ModelTimestamp = 0;
 datetime RiskWeightTimestamp = 0;
 int      FileWriteErrors = 0;
-int      SocketErrors = 0;
-bool     GrpcConnected = false;
+int      FlightErrors = 0;
+bool     FlightConnected = false;
 int      FallbackEvents = 0;
 int      TradeQueueDepth = 0;
 int      MetricQueueDepth = 0;
@@ -490,7 +490,7 @@ void FlushPending(datetime now)
       while(pending_trade_count > 0 && sent < SendBatchSize)
       {
         int tlen = pending_trade_sizes[pending_trade_head];
-        if(GrpcSendTrade(pending_trades[pending_trade_head], tlen))
+        if(FlightSendTrade(pending_trades[pending_trade_head], tlen))
         {
             WriteCheckpoint(log_dir + "/pending_trades.chk", 1);
             pending_trade_lines[pending_trade_head] = "";
@@ -506,8 +506,8 @@ void FlushPending(datetime now)
          }
         else
         {
-            SocketErrors++;
-            GrpcConnected = false;
+            FlightErrors++;
+            FlightConnected = false;
             trade_retry_count++;
             FallbackEvents++;
             trade_backoff = MathMin(trade_backoff*2, 3600);
@@ -530,7 +530,7 @@ void FlushPending(datetime now)
       while(pending_metric_count > 0 && msent < SendBatchSize)
       {
          int mlen = pending_metric_sizes[pending_metric_head];
-         if(GrpcSendMetrics(pending_metrics[pending_metric_head], mlen))
+         if(FlightSendMetrics(pending_metrics[pending_metric_head], mlen))
          {
             WriteCheckpoint(log_dir + "/pending_metrics.chk", 1);
             pending_metric_lines[pending_metric_head] = "";
@@ -546,8 +546,8 @@ void FlushPending(datetime now)
          }
         else
         {
-            SocketErrors++;
-            GrpcConnected = false;
+            FlightErrors++;
+            FlightConnected = false;
             metric_retry_count++;
             FallbackEvents++;
             metric_backoff = MathMin(metric_backoff*2, 3600);
@@ -1072,7 +1072,7 @@ int OnInit()
    ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_tail, pending_metric_count, metric_skip);
    TradeQueueDepth = pending_trade_count;
    MetricQueueDepth = pending_metric_count;
-   GrpcConnected = GrpcClientInit(GrpcServerHost, GrpcServerPort);
+   FlightConnected = FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
    int max_id = GetMaxEventIdFromLogs(log_dir);
    if(max_id >= NextEventId)
@@ -1251,8 +1251,8 @@ void OnTick()
 void OnTimer()
 {
    ProcessAnomalyQueue();
-   if(!GrpcConnected)
-      GrpcConnected = GrpcClientInit(GrpcServerHost, GrpcServerPort);
+   if(!FlightConnected)
+      FlightConnected = FlightClientInit(FlightServerHost, FlightServerPort);
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    FlushPending(now);
 
@@ -1766,7 +1766,7 @@ void WriteMetrics(datetime ts)
       string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
                                  TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
                                  trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
-                                 SocketErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count,
+                                 FlightErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count,
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
                                  anomaly_late, TraceId, span_id);
@@ -1776,7 +1776,7 @@ void WriteMetrics(datetime ts)
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, SocketErrors, CpuLoad,
+         trades, max_dd, sharpe, FileWriteErrors, FlightErrors, CpuLoad,
          CachedBookRefreshSeconds, var_breach_count, trade_q_depth,
          metric_q_depth, FallbackEvents, fallback_flag, wal_size,
          trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,

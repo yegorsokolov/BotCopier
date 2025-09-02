@@ -72,6 +72,9 @@ def test_flight_server_roundtrip():
         pa.array([0.0]),
         pa.array([0.0]),
         pa.array([0]),
+        pa.array([0]),  # decision_id
+        pa.array([""]),  # exit_reason
+        pa.array([0]),  # duration_sec
     ], schema=TRADE_SCHEMA)
     t_writer, t_reader = client.do_put(t_desc, TRADE_SCHEMA)
 

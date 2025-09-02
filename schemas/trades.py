@@ -72,3 +72,5 @@ TRADE_SCHEMA = pa.schema([
     ("exit_reason", pa.string()),
     ("duration_sec", pa.int32()),
 ])
+
+__all__ = ["TradeEvent", "TRADE_SCHEMA"]
