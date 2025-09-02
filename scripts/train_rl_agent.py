@@ -972,6 +972,17 @@ def main() -> None:
         p.add_argument(
             "--algo",
             default="dqn",
+            choices=[
+                "dqn",
+                "ppo",
+                "a2c",
+                "ddpg",
+                "c51",
+                "qr_dqn",
+                "qlearn",
+                "cql",
+                "decision_transformer",
+            ],
             help=(
                 "RL algorithm: dqn (default), ppo, a2c, ddpg, c51, qr_dqn, qlearn, cql, or "
                 "decision_transformer (requires transformers)."

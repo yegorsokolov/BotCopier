@@ -407,6 +407,9 @@ available. Multi-step returns and prioritized replay can be enabled with
 ``--n-step`` and ``--replay-*`` options, and live metrics may be POSTed to a
 feedback service via ``--metrics-url`` for continual fine-tuning.
 
+Sample configurations using prioritized replay buffers are provided in
+``configs/prioritized_c51.json`` and ``configs/prioritized_qr_dqn.json``.
+
 ```bash
 pip install stable-baselines3 pandas
 python scripts/train_rl_agent.py --data-dir logs --out-dir models --start-model models/model.json --algo ppo --training-steps 1000

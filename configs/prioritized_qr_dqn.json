@@ -1,0 +1,10 @@
+{
+  "data_dir": "logs",
+  "out_dir": "models",
+  "algo": "qr_dqn",
+  "training_steps": 10000,
+  "buffer_size": 5000,
+  "replay_alpha": 0.6,
+  "replay_beta": 0.4,
+  "n_step": 3
+}
