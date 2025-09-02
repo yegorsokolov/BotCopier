@@ -95,15 +95,11 @@ def _build_feature_cases(
     Returns
     -------
     tuple
-        ``(case_block, used_tfs)`` where ``case_block`` is the formatted switch
-        statement snippet and ``used_tfs`` contains any timeframe constants used
-        by indicator based features.
+        ``(case_block, used_tfs, missing)`` where ``case_block`` is the formatted
+        switch statement snippet, ``used_tfs`` contains any timeframe constants
+        used by indicator based features and ``missing`` lists unresolved feature
+        names.
 
-    Raises
-    ------
-    ValueError
-        If a feature name cannot be resolved to a runtime expression.  This
-        prevents silently returning zero for unknown features.
     """
 
     # time-derived features
@@ -152,6 +148,9 @@ def _build_feature_cases(
     }
 
     if lite_mode:
+        feature_map['book_bid_vol'] = '0.0'
+        feature_map['book_ask_vol'] = '0.0'
+        feature_map['book_imbalance'] = '0.0'
         feature_map['book_spread'] = '0.0'
         feature_map['bid_ask_ratio'] = '0.0'
         feature_map['book_imbalance_roll'] = '0.0'
@@ -258,6 +257,7 @@ def _build_feature_cases(
             return 'GetNewsSentiment()'
         return None
 
+    missing: List[str] = []
     if hash_size:
         hasher = FeatureHasher(n_features=hash_size, input_type="dict")
         idx_map: dict[int, List[tuple[str, float]]] = {}
@@ -269,6 +269,7 @@ def _build_feature_cases(
         for idx, items in sorted(idx_map.items()):
             expr_parts: List[str] = []
             names: List[str] = []
+            unk: List[str] = []
             for name, sign in items:
                 expr = resolve_expr(name)
                 if expr is None:
@@ -276,18 +277,23 @@ def _build_feature_cases(
                         "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
                         name,
                     )
-                    raise ValueError(
-                        f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
-                    )
+                    unk.append(name)
+                    continue
                 names.append(name)
                 part = f"({expr})"
                 if sign < 0:
                     part = f"-({expr})"
                 expr_parts.append(part)
-            expr_sum = ' + '.join(expr_parts)
-            cases.append(
-                f"      case {idx}: // {', '.join(names)}\\n         raw = {expr_sum};\\n         break;",
-            )
+            if unk:
+                missing.extend(unk)
+                cases.append(
+                    f"      case {idx}: // {', '.join(unk)}\\n         #error \"Unknown feature(s): {', '.join(unk)}\"\\n",
+                )
+            else:
+                expr_sum = ' + '.join(expr_parts)
+                cases.append(
+                    f"      case {idx}: // {', '.join(names)}\\n         raw = {expr_sum};\\n         break;",
+                )
     else:
         for idx, name in enumerate(feature_names):
             expr = resolve_expr(name)
@@ -296,9 +302,11 @@ def _build_feature_cases(
                     "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
                     name,
                 )
-                raise ValueError(
-                    f"Unknown feature '{name}'. Update StrategyTemplate.mq4 with a matching GetFeature() case."
+                missing.append(name)
+                cases.append(
+                    f"      case {idx}: // {name}\\n         #error \"Unknown feature: {name}\"\\n",
                 )
+                continue
             cases.append(
                 f"      case {idx}: // {name}\\n         raw = ({expr});\\n         break;",
             )
@@ -306,7 +314,7 @@ def _build_feature_cases(
     case_block = "\n".join(cases)
     if case_block:
         case_block += "\n"
-    return case_block, used_tfs
+    return case_block, used_tfs, missing
 
 def generate(
     model_jsons: Union[Path, Iterable[Path]],
@@ -812,7 +820,7 @@ def generate(
     output = output.replace('__CALENDAR_IMPACTS__', impact_vals)
     output = output.replace('__CALENDAR_IDS__', id_vals)
     output = output.replace('__EVENT_WINDOW__', event_window)
-    case_block, used_tfs = _build_feature_cases(feature_names, lite_mode, hash_size)
+    case_block, used_tfs, missing_feats = _build_feature_cases(feature_names, lite_mode, hash_size)
     output = output.replace('__FEATURE_CASES__', case_block)
     output = output.replace('__FEATURE_COUNT__', str(feature_count))
 
@@ -879,6 +887,10 @@ def generate(
     with open(out_file, 'w') as f:
         f.write(output)
     print(f"Strategy written to {out_file}")
+    if missing_feats:
+        raise ValueError(
+            "Unknown feature mapping(s): " + ", ".join(sorted(missing_feats))
+        )
 
 
 def main():
