@@ -36,6 +36,7 @@ extern int    AdaptationInterval = 0; // seconds, 0=disabled
 extern string AdaptationLogFile = "adaptations.csv";
 extern bool   EnableShadowTrading = false;
 extern string ShadowTradesFile = "shadow_trades.csv";
+extern string RegimeLogFile = "regime_log.csv";
 
 string HierarchyJson = "__HIERARCHY_JSON__";
 
@@ -182,6 +183,7 @@ double   ShadowSL[];
 double   ShadowTP[];
 double   ShadowLots[];
 datetime ShadowOpenTime[];
+int      RegimeLogHandle = INVALID_HANDLE;
 
 string GenId(int bytes)
 {
@@ -470,6 +472,15 @@ int OnInit()
    }
    else
       Print("Uncertain decision log open failed: ", GetLastError());
+   RegimeLogHandle = FileOpen(RegimeLogFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
+   if(RegimeLogHandle != INVALID_HANDLE)
+   {
+      if(FileSize(RegimeLogHandle) == 0)
+         FileWrite(RegimeLogHandle, "timestamp;regime;model_idx");
+      FileSeek(RegimeLogHandle, 0, SEEK_END);
+   }
+   else
+      Print("Regime log open failed: ", GetLastError());
    if(StringLen(AdaptationLogFile) > 0)
    {
       AdaptLogHandle = FileOpen(AdaptationLogFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
@@ -1571,6 +1582,11 @@ void OnTick()
    ExecutedModelIdx = modelIdx;
    if(EnableDebugLogging)
       Print("Regime=", reg, " Model=", modelIdx);
+   if(RegimeLogHandle != INVALID_HANDLE)
+   {
+      FileWrite(RegimeLogHandle, TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), reg, modelIdx);
+      FileFlush(RegimeLogHandle);
+   }
 
    double feats[100];
    for(int i=0; i<FeatureCount && i<100; i++)
@@ -1816,5 +1832,7 @@ void OnDeinit(const int reason)
       FileClose(AdaptLogHandle);
    if(ShadowTradeHandle != INVALID_HANDLE)
       FileClose(ShadowTradeHandle);
+   if(RegimeLogHandle != INVALID_HANDLE)
+      FileClose(RegimeLogHandle);
    MarketBookRelease(SymbolToTrade);
 }

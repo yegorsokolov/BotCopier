@@ -393,9 +393,13 @@ def generate(
         with open_func(mj, 'rt') as f:
             data = json.load(f)
         data = _prune_model_features(data)
-        if data.get('regime_models') and data.get('meta_model'):
-            gating_data = _prune_model_features(data.get('meta_model'))
-            base_info = {k: v for k, v in data.items() if k not in ('regime_models', 'meta_model')}
+        if data.get('regime_models') and (data.get('regime_router') or data.get('meta_model')):
+            gating_data = _prune_model_features(data.get('regime_router') or data.get('meta_model'))
+            base_info = {
+                k: v
+                for k, v in data.items()
+                if k not in ('regime_models', 'meta_model', 'regime_router')
+            }
             for sm in data.get('regime_models', []):
                 m = base_info.copy()
                 m.update(sm)

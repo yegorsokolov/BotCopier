@@ -1248,7 +1248,7 @@ def train(
                     f.pop(k, None)
         vec_reg = DictVectorizer(sparse=False)
         Xr = vec_reg.fit_transform(feat_reg)
-        n_reg = min(3, len(feat_reg))
+        n_reg = min(getattr(args, "n_regimes", 3), len(feat_reg))
         if n_reg > 1:
             kmeans = KMeans(n_clusters=n_reg, random_state=42, n_init=10)
             regimes = kmeans.fit_predict(Xr)
@@ -1911,6 +1911,11 @@ def train(
             "model_type": "regime_logreg",
             "class_weight": class_weight or "none",
             "meta_model": {
+                "feature_names": feature_names,
+                "coefficients": gating_clf.coef_.astype(np.float32).tolist(),
+                "intercepts": gating_clf.intercept_.astype(np.float32).tolist(),
+            },
+            "regime_router": {
                 "feature_names": feature_names,
                 "coefficients": gating_clf.coef_.astype(np.float32).tolist(),
                 "intercepts": gating_clf.intercept_.astype(np.float32).tolist(),
@@ -3134,6 +3139,7 @@ def main():
     p.add_argument('--compress-model', action='store_true', help='write model.json.gz')
     p.add_argument('--regime-model', help='JSON file with precomputed regime centers')
     p.add_argument('--regime-json', help='regime detection JSON produced by detect_regime.py')
+    p.add_argument('--n-regimes', type=int, default=3, help='number of regimes for clustering')
     p.add_argument('--moe', action='store_true', help='train mixture-of-experts model per symbol')
     p.add_argument('--federated-server', help='URL of federated averaging server')
     p.add_argument('--use-encoder', action='store_true', help='apply pretrained contrastive encoder')
