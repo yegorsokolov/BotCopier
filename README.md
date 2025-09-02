@@ -162,14 +162,14 @@ A small web dashboard can display trades, metrics and training progress in real 
 
 ### Arrow Flight Logging
 
-`Observer_TBot` streams trade and metric events over [Apache Arrow Flight](https://arrow.apache.org/).
-Start the in-memory server and point clients to it:
+`Observer_TBot` streams trade and metric events over [Apache Arrow Flight](https://arrow.apache.org/) using schemas defined in `schemas/trades.py` and `schemas/metrics.py`. The EA falls back to a write‑ahead log when the Flight server is unavailable. Start the in-memory server and point clients to it:
 
 ```bash
 python scripts/flight_server.py
+python scripts/stream_listener.py --flight-host 127.0.0.1 --flight-port 8815
 ```
 
-`train_target_clone.py` accepts `--flight-uri` (defaulting to `$FLIGHT_URI`) and the dashboard pre-loads data when `FLIGHT_URI` is set.
+`stream_listener.py` validates each incoming record batch against the schema and appends it to a local Parquet dataset under `$FLIGHT_DATA_DIR` (default `data/`). `train_target_clone.py` accepts `--flight-uri` (defaulting to `$FLIGHT_URI`) and the dashboard pre-loads data when `FLIGHT_URI` is set.
 
 #### Latency Benchmark
 

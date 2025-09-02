@@ -44,13 +44,15 @@ except Exception:  # pragma: no cover - optional dependency
 try:  # optional Arrow Flight dependency
     import pyarrow as pa  # type: ignore
     import pyarrow.flight as flight  # type: ignore
+    import pyarrow.parquet as pq  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     pa = None  # type: ignore
     flight = None  # type: ignore
+    pq = None  # type: ignore
 try:  # pydantic validation schemas
     from pydantic import ValidationError  # type: ignore
-    from schemas.trades import TradeEvent  # type: ignore
-    from schemas.metrics import MetricEvent  # type: ignore
+    from schemas.trades import TradeEvent, TRADE_SCHEMA  # type: ignore
+    from schemas.metrics import MetricEvent, METRIC_SCHEMA  # type: ignore
 except Exception:  # pragma: no cover - minimal fallback
     class ValidationError(Exception):
         pass
@@ -346,6 +348,29 @@ def append_csv(path: Path, record: dict) -> None:
         )
 
 
+def validate_and_persist(table, schema, dest: Path) -> bool:
+    """Validate ``table`` against ``schema`` and append to a Parquet dataset.
+
+    Returns ``True`` on success otherwise ``False``."""
+    if pa is None or pq is None:
+        logger.warning({"error": "pyarrow not available"})
+        return False
+    if not table.schema.equals(schema):
+        logger.warning({
+            "error": "schema mismatch",
+            "expected": schema.to_string(),
+            "got": table.schema.to_string(),
+        })
+        return False
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        pq.write_to_dataset(table, root_path=str(dest))
+        return True
+    except Exception as e:  # pragma: no cover - disk full etc.
+        logger.error({"error": "persist failure", "details": str(e), "path": str(dest)})
+        return False
+
+
 def write_run_info() -> None:
     global run_info_written
     if run_info_written:
@@ -633,18 +658,21 @@ def main() -> int:
 
     async def _flight_run() -> None:
         client = flight.FlightClient(f"grpc://{args.flight_host}:{args.flight_port}")
+        persist_root = Path(os.getenv("FLIGHT_DATA_DIR", "data"))
 
-        async def poll(path: str, handler) -> None:
+        async def poll(path: str, handler, schema) -> None:
             last = 0
             ticket = flight.Ticket(path.encode())
+            dest = persist_root / path
             while True:
                 try:
                     reader = client.do_get(ticket)
                     table = reader.read_all()
-                    rows = table.to_pylist()
-                    for row in rows[last:]:
-                        handler(SimpleNamespace(**row))
-                    last = len(rows)
+                    if validate_and_persist(table, schema, dest):
+                        rows = table.to_pylist()
+                        for row in rows[last:]:
+                            handler(SimpleNamespace(**row))
+                        last = len(rows)
                 except Exception as e:  # pragma: no cover - network issues
                     logger.warning({"error": "flight error", "details": str(e), "path": path})
                     await asyncio.sleep(1)
@@ -653,7 +681,8 @@ def main() -> int:
 
         _sd_notify_ready()
         await asyncio.gather(
-            poll("trades", process_trade), poll("metrics", process_metric)
+            poll("trades", process_trade, TRADE_SCHEMA),
+            poll("metrics", process_metric, METRIC_SCHEMA),
         )
 
     try:
