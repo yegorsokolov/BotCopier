@@ -155,6 +155,36 @@ def _build_feature_cases(
         feature_map['bid_ask_ratio'] = '0.0'
         feature_map['book_imbalance_roll'] = '0.0'
 
+    # Categorise features for readability when rendering switch cases
+    group_map = {
+        # time features
+        'hour': 'time',
+        'hour_sin': 'time',
+        'hour_cos': 'time',
+        'dow_sin': 'time',
+        'dow_cos': 'time',
+        'month_sin': 'time',
+        'month_cos': 'time',
+        'dom_sin': 'time',
+        'dom_cos': 'time',
+        'duration_sec': 'time',
+        # order-book features
+        'book_bid_vol': 'order-book',
+        'book_ask_vol': 'order-book',
+        'book_imbalance': 'order-book',
+        'book_spread': 'order-book',
+        'bid_ask_ratio': 'order-book',
+        'book_imbalance_roll': 'order-book',
+        # account features
+        'equity': 'account',
+        'margin_level': 'account',
+        'lots': 'account',
+        'sl_dist': 'account',
+        'tp_dist': 'account',
+    }
+
+    group_order = ['time', 'order-book', 'account', 'other']
+
     tf_const = {
         'M1': 'PERIOD_M1',
         'M5': 'PERIOD_M5',
@@ -287,29 +317,38 @@ def _build_feature_cases(
             if unk:
                 missing.extend(unk)
                 cases.append(
-                    f"      case {idx}: // {', '.join(unk)}\\n         #error \"Unknown feature(s): {', '.join(unk)}\"\\n",
+                    f"      case {idx}: // {', '.join(unk)}\n         #error \"Unknown feature(s): {', '.join(unk)}\"\n",
                 )
             else:
                 expr_sum = ' + '.join(expr_parts)
                 cases.append(
-                    f"      case {idx}: // {', '.join(names)}\\n         raw = {expr_sum};\\n         break;",
+                    f"      case {idx}: // {', '.join(names)}\n         raw = {expr_sum};\n         break;",
                 )
     else:
+        grouped: dict[str, List[tuple[int, str]]] = {g: [] for g in group_order}
         for idx, name in enumerate(feature_names):
-            expr = resolve_expr(name)
-            if expr is None:
-                logging.error(
-                    "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
-                    name,
-                )
-                missing.append(name)
-                cases.append(
-                    f"      case {idx}: // {name}\\n         #error \"Unknown feature: {name}\"\\n",
-                )
+            grouped[group_map.get(name, 'other')].append((idx, name))
+        for grp in group_order:
+            feats = grouped.get(grp, [])
+            if not feats:
                 continue
-            cases.append(
-                f"      case {idx}: // {name}\\n         raw = ({expr});\\n         break;",
-            )
+            if grp != 'other':
+                cases.append(f"      // {grp} features")
+            for idx, name in feats:
+                expr = resolve_expr(name)
+                if expr is None:
+                    logging.error(
+                        "Unknown feature '%s'. Please add a matching GetFeature() case to StrategyTemplate.mq4.",
+                        name,
+                    )
+                    missing.append(name)
+                    cases.append(
+                        f"      case {idx}: // {name}\n         #error \"Unknown feature: {name}\"\n",
+                    )
+                    continue
+                cases.append(
+                    f"      case {idx}: // {name}\n         raw = ({expr});\n         break;",
+                )
 
     case_block = "\n".join(cases)
     if case_block:
