@@ -77,6 +77,8 @@ FIELDS = [
     "file_write_errors",
     "socket_errors",
     "cpu_load",
+    "flush_latency_ms",
+    "network_latency_ms",
     "book_refresh_seconds",
     "var_breach_count",
     "trade_queue_depth",
@@ -286,6 +288,10 @@ def serve(
                 "Fallback logging event count",
             )
             cpu_load_g = Gauge("bot_cpu_load", "CPU load")
+            flush_latency_g = Gauge("bot_flush_latency_ms", "Log flush latency in ms")
+            network_latency_g = Gauge(
+                "bot_network_latency_ms", "Network send latency in ms"
+            )
             book_refresh_g = Gauge(
                 "bot_book_refresh_seconds",
                 "Cached book refresh interval",
@@ -375,6 +381,16 @@ def serve(
                 if (v := row.get("cpu_load")) is not None:
                     try:
                         cpu_load_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("flush_latency_ms")) is not None:
+                    try:
+                        flush_latency_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("network_latency_ms")) is not None:
+                    try:
+                        network_latency_g.set(float(v))
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("book_refresh_seconds")) is not None:

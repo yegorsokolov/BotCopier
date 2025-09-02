@@ -4,7 +4,7 @@
 
 #import "observer_flight.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
 bool FlightClientInit(string host, int port);
 bool FlightSendTrade(uchar &payload[], int len);
 bool FlightSendMetrics(uchar &payload[], int len);
@@ -93,6 +93,8 @@ int      AnomalyLateResponses = 0;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
+double   FlushLatencyMs = 0.0;
+double   NetworkLatencyMs = 0.0;
 string   RiskParitySymbols[];
 double   RiskParityWeights[];
 double   trend_estimate = 0.0;
@@ -484,14 +486,22 @@ void WriteCheckpoint(string fname, int count);
 
 void FlushPending(datetime now)
 {
+   ulong t0;
+   double flush_ms = 0.0;
+   double network_ms = 0.0;
+
    if(pending_trade_count > 0 && now >= next_trade_flush)
    {
       int sent = 0;
       while(pending_trade_count > 0 && sent < SendBatchSize)
       {
         int tlen = pending_trade_sizes[pending_trade_head];
-        if(FlightSendTrade(pending_trades[pending_trade_head], tlen))
+        t0 = GetMicrosecondCount();
+        bool ok = FlightSendTrade(pending_trades[pending_trade_head], tlen);
+        network_ms += (GetMicrosecondCount() - t0) / 1000.0;
+        if(ok)
         {
+            t0 = GetMicrosecondCount();
             WriteCheckpoint(log_dir + "/pending_trades.chk", 1);
             pending_trade_lines[pending_trade_head] = "";
             pending_trade_head = (pending_trade_head + 1) % ArraySize(pending_trades);
@@ -502,6 +512,7 @@ void FlushPending(datetime now)
             trade_retry_count = 0;
             SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_count);
             WriteCheckpoint(log_dir + "/pending_trades.chk", 0);
+            flush_ms += (GetMicrosecondCount() - t0) / 1000.0;
             sent++;
          }
         else
@@ -530,8 +541,12 @@ void FlushPending(datetime now)
       while(pending_metric_count > 0 && msent < SendBatchSize)
       {
          int mlen = pending_metric_sizes[pending_metric_head];
-         if(FlightSendMetrics(pending_metrics[pending_metric_head], mlen))
+         t0 = GetMicrosecondCount();
+         bool mok = FlightSendMetrics(pending_metrics[pending_metric_head], mlen);
+         network_ms += (GetMicrosecondCount() - t0) / 1000.0;
+         if(mok)
          {
+            t0 = GetMicrosecondCount();
             WriteCheckpoint(log_dir + "/pending_metrics.chk", 1);
             pending_metric_lines[pending_metric_head] = "";
             pending_metric_head = (pending_metric_head + 1) % ArraySize(pending_metrics);
@@ -542,6 +557,7 @@ void FlushPending(datetime now)
             metric_retry_count = 0;
             SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_count);
             WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
+            flush_ms += (GetMicrosecondCount() - t0) / 1000.0;
             msent++;
          }
         else
@@ -563,6 +579,9 @@ void FlushPending(datetime now)
          }
       }
    }
+
+   FlushLatencyMs = flush_ms;
+   NetworkLatencyMs = network_ms;
 }
 
 uint WalChecksum(uchar &msg[], int len)
@@ -1762,11 +1781,12 @@ void WriteMetrics(datetime ts)
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
       int anomaly_pending = AnomalyQueueDepth;
       int anomaly_late = AnomalyLateResponses;
-      // emit file/socket errors, queue depth and retry counts for monitoring
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
+      // emit file/socket errors, queue depth, retry counts and latencies for monitoring
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
                                  TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
                                  trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
-                                 FlightErrors, CpuLoad, CachedBookRefreshSeconds, var_breach_count,
+                                 FlightErrors, CpuLoad, FlushLatencyMs, NetworkLatencyMs,
+                                 CachedBookRefreshSeconds, var_breach_count,
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
                                  anomaly_late, TraceId, span_id);
@@ -1777,8 +1797,8 @@ void WriteMetrics(datetime ts)
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
          trades, max_dd, sharpe, FileWriteErrors, FlightErrors, CpuLoad,
-         CachedBookRefreshSeconds, var_breach_count, trade_q_depth,
-         metric_q_depth, FallbackEvents, fallback_flag, wal_size,
+         FlushLatencyMs, NetworkLatencyMs, CachedBookRefreshSeconds, var_breach_count,
+         trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size,
          trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,
          payload);
       if(len>0)
