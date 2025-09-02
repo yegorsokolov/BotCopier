@@ -135,7 +135,7 @@ def _build_feature_cases(
         'volume': 'iVolume(SymbolToTrade, 0, 0)',
         'event_flag': 'CalendarFlag()',
         'event_impact': 'CalendarImpact()',
-        'calendar_event_id': 'CalendarEventId()',
+        'calendar_event_id': 'CalendarEventIdAt(TimeCurrent())',
         'book_bid_vol': 'BookBidVol()',
         'book_ask_vol': 'BookAskVol()',
         'book_imbalance': 'BookImbalance()',
@@ -270,6 +270,9 @@ def _build_feature_cases(
                 return f'CointegrationResidual("{sym1}", "{sym2}")'
             if len(parts) == 1:
                 return f'CointegrationResidual("{parts[0]}")'
+        if fname.startswith('event_id_') and fname[9:].isdigit():
+            eid = int(fname[9:])
+            return f'(CalendarEventIdAt(TimeCurrent()) == {eid} ? 1.0 : 0.0)'
         if fname.startswith('exit_reason='):
             reason = fname.split('=', 1)[1]
             return f'ExitReasonFlag("{reason}")'

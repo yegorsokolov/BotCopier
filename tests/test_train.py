@@ -418,6 +418,32 @@ def test_train_with_calendar(tmp_path: Path):
     feats = data.get("feature_names", [])
     assert "event_flag" in feats
     assert "event_impact" in feats
+    assert "calendar_event_id" in feats
+    assert any(f.startswith("event_id_") for f in feats)
+
+
+def test_train_auto_calendar_file(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_test.csv"
+    _write_log(log_file)
+
+    cal_src = Path(__file__).with_name("sample_calendar.csv")
+    cal_dst = data_dir / "calendar.csv"
+    cal_dst.write_bytes(cal_src.read_bytes())
+
+    train(data_dir, out_dir, event_window=60)
+
+    model_file = out_dir / "model.json"
+    assert model_file.exists()
+    with open(model_file) as f:
+        data = json.load(f)
+    feats = data.get("feature_names", [])
+    assert "event_flag" in feats
+    assert "event_impact" in feats
+    assert "calendar_event_id" in feats
+    assert any(f.startswith("event_id_") for f in feats)
 
 
 def test_load_logs_with_metrics(tmp_path: Path):

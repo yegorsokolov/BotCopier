@@ -599,15 +599,16 @@ double ExitReasonFlag(string reason)
 double CalendarImpactAt(datetime ts)
 {
    double maxImp = 0.0;
-   LastCalendarEventId = -1;
+   int bestId = -1;
    for(int i=0; i<ArraySize(CalendarTimes); i++)
       if(MathAbs(ts - CalendarTimes[i]) <= EventWindowMinutes * 60)
          if(CalendarImpacts[i] > maxImp)
          {
             maxImp = CalendarImpacts[i];
             if(i < ArraySize(CalendarIds))
-               LastCalendarEventId = CalendarIds[i];
+               bestId = CalendarIds[i];
          }
+   LastCalendarEventId = bestId;
    return(maxImp);
 }
 
@@ -623,7 +624,22 @@ double CalendarFlag()
 
 int CalendarEventId()
 {
-   return(LastCalendarEventId);
+   return(CalendarEventIdAt(TimeCurrent()));
+}
+
+int CalendarEventIdAt(datetime ts)
+{
+   int bestId = -1;
+   double maxImp = 0.0;
+   for(int i=0; i<ArraySize(CalendarTimes); i++)
+      if(MathAbs(ts - CalendarTimes[i]) <= EventWindowMinutes * 60)
+         if(CalendarImpacts[i] > maxImp)
+         {
+            maxImp = CalendarImpacts[i];
+            if(i < ArraySize(CalendarIds))
+               bestId = CalendarIds[i];
+         }
+   return(bestId);
 }
 
 double GetEncodedFeature(int idx)

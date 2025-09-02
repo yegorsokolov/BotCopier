@@ -479,6 +479,8 @@ def _extract_features(
         feat["event_flag"] = flag
         feat["event_impact"] = impact_val
         feat["calendar_event_id"] = event_id_val
+        if event_id_val:
+            feat[f"event_id_{event_id_val}"] = 1.0
 
         if use_volume:
             feat["volume"] = float(r.get("volume", 0) or 0)

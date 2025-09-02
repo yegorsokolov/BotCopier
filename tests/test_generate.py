@@ -718,10 +718,10 @@ def test_calendar_features(tmp_path: Path):
     model = {
         "model_id": "cal",
         "magic": 111,
-        "coefficients": [0.1, 0.2, 0.3],
+        "coefficients": [0.1, 0.2, 0.3, 0.4],
         "intercept": 0.0,
         "threshold": 0.5,
-        "feature_names": ["event_flag", "event_impact", "calendar_event_id"],
+        "feature_names": ["event_flag", "event_impact", "calendar_event_id", "event_id_1"],
         "calendar_events": [["2024-01-01T00:30:00", 1.0, 1]],
         "event_window": 60.0,
     }
@@ -731,6 +731,10 @@ def test_calendar_features(tmp_path: Path):
 
     out_dir = tmp_path / "out"
     generate(model_file, out_dir)
+    mq4 = next(out_dir.glob("*.mq4"))
+    text = mq4.read_text()
+    assert "CalendarEventIdAt(TimeCurrent())" in text
+    assert "CalendarEventIdAt(TimeCurrent()) == 1 ? 1.0 : 0.0" in text
 
     generated = list(out_dir.glob("Generated_cal_*.mq4"))
     assert len(generated) == 1
