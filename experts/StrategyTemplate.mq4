@@ -981,7 +981,6 @@ __FEATURE_CASES__      default:
 
 double GetFeature(int index)
 {
-   RefreshIndicatorCache();
    if(index >= 0 && index < ArraySize(CachedFeatures))
       return(CachedFeatures[index]);
    return(0.0);
@@ -1544,6 +1543,7 @@ void OnTick()
 {
    if(Time[0] != LastFeatureTime)
       NeedsFeatureRefresh = true;
+   RefreshIndicatorCache();
    UpdateTickReturns();
    PollRegimeRing();
    UpdateKalman(iClose(SymbolToTrade, 0, 0));
