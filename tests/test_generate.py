@@ -250,6 +250,11 @@ def test_unknown_feature_raises(tmp_path: Path):
     out_dir = tmp_path / "out"
     with pytest.raises(ValueError, match="mystery_feature"):
         generate(model_file, out_dir)
+    generated = list(out_dir.glob("Generated_unknown_*.mq4"))
+    assert generated
+    content = generated[0].read_text()
+    assert "#error" in content
+    assert "mystery_feature" in content
 
 
 def test_news_sentiment_feature(tmp_path: Path):
