@@ -755,11 +755,21 @@ void RefreshBookCache()
                ask += book[i].volume;
          }
       }
-      CachedBookBidVol = bid;
-      CachedBookAskVol = ask;
-      CachedBookImbalance = (bid+ask>0) ? (bid-ask)/(bid+ask) : 0.0;
-      CachedBookSpread = ask - bid;
-      CachedBidAskRatio = (ask>0) ? bid/ask : 0.0;
+      double total = bid + ask;
+      if(total > 0)
+      {
+         CachedBookBidVol = bid / total;
+         CachedBookAskVol = ask / total;
+         CachedBookImbalance = (bid - ask) / total;
+      }
+      else
+      {
+         CachedBookBidVol = 0.0;
+         CachedBookAskVol = 0.0;
+         CachedBookImbalance = 0.0;
+      }
+      CachedBookSpread = CachedBookAskVol - CachedBookBidVol;
+      CachedBidAskRatio = (CachedBookAskVol>0) ? CachedBookBidVol/CachedBookAskVol : 0.0;
       BookImbalanceHist[BookImbPos] = CachedBookImbalance;
       BookImbPos = (BookImbPos + 1) % 5;
       if(BookImbCount < 5) BookImbCount++;

@@ -435,9 +435,17 @@ def _extract_features(
             feat["dom_sin"] = dom_sin
             feat["dom_cos"] = dom_cos
 
-        bid_vol = float(r.get("book_bid_vol", 0) or 0)
-        ask_vol = float(r.get("book_ask_vol", 0) or 0)
-        imbalance = float(r.get("book_imbalance", 0) or 0)
+        bid_vol_raw = float(r.get("book_bid_vol", 0) or 0)
+        ask_vol_raw = float(r.get("book_ask_vol", 0) or 0)
+        total_vol = bid_vol_raw + ask_vol_raw
+        if total_vol > 0:
+            bid_vol = bid_vol_raw / total_vol
+            ask_vol = ask_vol_raw / total_vol
+            imbalance = (bid_vol - ask_vol)
+        else:
+            bid_vol = 0.0
+            ask_vol = 0.0
+            imbalance = 0.0
         feat.update(
             {
                 "book_bid_vol": bid_vol,

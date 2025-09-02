@@ -289,7 +289,7 @@ def test_orderbook_feature_extraction():
 
     feats, *_ = _extract_features(rows, use_orderbook=True)
     first, second = feats
-    assert first["book_spread"] == pytest.approx(1.0)
+    assert first["book_spread"] == pytest.approx(0.2)
     assert first["bid_ask_ratio"] == pytest.approx(2.0 / 3.0)
     assert first["book_imbalance_roll"] == pytest.approx(first["book_imbalance"])
     expected_roll = (first["book_imbalance"] + second["book_imbalance"]) / 2.0
