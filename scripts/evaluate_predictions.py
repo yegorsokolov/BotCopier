@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 
 try:
+    from .model_fitting import load_logs
+except ImportError:
+    from model_fitting import load_logs
+
+try:
     from .evaluation import evaluate
 except ImportError:  # when run as a script
     from evaluation import evaluate
@@ -22,6 +27,9 @@ def main() -> None:
         help="Path to write JSON summary (default: evaluation.json next to prediction file)",
     )
     args = p.parse_args()
+
+    # Ensure actual log can be parsed using shared loader
+    load_logs(Path(args.actual_log))
 
     stats = evaluate(
         Path(args.predicted_log),

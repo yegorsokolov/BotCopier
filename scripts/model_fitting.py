@@ -1,5 +1,25 @@
+import json
+import logging
+import sqlite3
+from pathlib import Path
+from typing import Iterable, List, Tuple
+
 import numpy as np
+import pandas as pd
+from pydantic import ValidationError  # type: ignore
+from schemas.trades import TradeEvent  # type: ignore
 from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+
+try:  # pragma: no cover - optional dependency
+    import pyarrow as pa
+    import pyarrow.flight as flight
+except Exception:  # pragma: no cover - optional dependency
+    pa = None  # type: ignore
+    flight = None  # type: ignore
+
+SCHEMA_VERSION = 3
+START_EVENT_ID = 0
 
 
 def fit_logistic_regression(
@@ -25,4 +45,444 @@ def fit_logistic_regression(
     clf.fit(X, y, sample_weight=sample_weight)
     return clf
 
+
+def load_logs_db(db_file: Path) -> pd.DataFrame:
+    """Load log rows from a SQLite database."""
+
+    conn = sqlite3.connect(db_file)
+    try:
+        query = "SELECT * FROM logs"
+        params: tuple = ()
+        if START_EVENT_ID > 0:
+            query += " WHERE CAST(event_id AS INTEGER) > ?"
+            params = (START_EVENT_ID,)
+        df_logs = pd.read_sql_query(
+            query, conn, params=params, parse_dates=["event_time", "open_time"]
+        )
+    finally:
+        conn.close()
+
+    df_logs.columns = [c.lower() for c in df_logs.columns]
+
+    if "schema_version" in df_logs.columns:
+        df_logs["schema_version"] = (
+            pd.to_numeric(df_logs["schema_version"], errors="coerce")
+            .fillna(SCHEMA_VERSION)
+            .astype(int)
+        )
+        mismatch_mask = df_logs["schema_version"] != SCHEMA_VERSION
+        if mismatch_mask.any():
+            logging.warning(
+                "Dropping %s rows with schema version != %s",
+                mismatch_mask.sum(),
+                SCHEMA_VERSION,
+            )
+            df_logs = df_logs[~mismatch_mask]
+    else:
+        logging.warning("schema_version column missing; assuming %s", SCHEMA_VERSION)
+        df_logs["schema_version"] = SCHEMA_VERSION
+
+    if "open_time" in df_logs.columns:
+        df_logs["trade_duration"] = (
+            pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
+        ).dt.total_seconds().fillna(0)
+    if "duration_sec" in df_logs.columns:
+        df_logs["duration_sec"] = (
+            pd.to_numeric(df_logs["duration_sec"], errors="coerce").fillna(0).astype(int)
+        )
+    else:
+        df_logs["duration_sec"] = df_logs.get("trade_duration", 0).astype(int)
+    if "exit_reason" in df_logs.columns:
+        df_logs["exit_reason"] = df_logs["exit_reason"].fillna("").astype(str).str.upper()
+    else:
+        df_logs["exit_reason"] = ""
+    for col in [
+        "book_bid_vol",
+        "book_ask_vol",
+        "book_imbalance",
+        "commission",
+        "swap",
+        "trend_estimate",
+        "trend_variance",
+    ]:
+        if col not in df_logs.columns:
+            df_logs[col] = 0.0
+        else:
+            df_logs[col] = pd.to_numeric(df_logs[col], errors="coerce").fillna(0.0)
+    if "is_anomaly" not in df_logs.columns:
+        df_logs["is_anomaly"] = 0
+    else:
+        df_logs["is_anomaly"] = (
+            pd.to_numeric(df_logs["is_anomaly"], errors="coerce").fillna(0).astype(int)
+        )
+
+    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
+    if "action" in df_logs.columns:
+        df_logs["action"] = df_logs["action"].fillna("").str.upper()
+        df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
+
+    invalid_rows = pd.DataFrame(columns=df_logs.columns)
+    if "event_id" in df_logs.columns:
+        dup_mask = df_logs.duplicated(subset="event_id", keep="first")
+        if dup_mask.any():
+            invalid_rows = pd.concat([invalid_rows, df_logs[dup_mask]])
+            logging.warning("Dropping %s duplicate event_id rows", dup_mask.sum())
+        df_logs = df_logs[~dup_mask]
+
+    if set(["ticket", "action"]).issubset(df_logs.columns):
+        crit_mask = (
+            df_logs["ticket"].isna()
+            | (df_logs["ticket"].astype(str) == "")
+            | df_logs["action"].isna()
+            | (df_logs["action"].astype(str) == "")
+        )
+        if crit_mask.any():
+            invalid_rows = pd.concat([invalid_rows, df_logs[crit_mask]])
+            logging.warning("Dropping %s rows with missing ticket/action", crit_mask.sum())
+        df_logs = df_logs[~crit_mask]
+
+    if "lots" in df_logs.columns:
+        df_logs["lots"] = pd.to_numeric(df_logs["lots"], errors="coerce")
+    if "price" in df_logs.columns:
+        df_logs["price"] = pd.to_numeric(df_logs["price"], errors="coerce")
+    unreal_mask = pd.Series(False, index=df_logs.index)
+    if "lots" in df_logs.columns:
+        unreal_mask |= df_logs["lots"] < 0
+    if "price" in df_logs.columns:
+        unreal_mask |= df_logs["price"].isna()
+    if unreal_mask.any():
+        invalid_rows = pd.concat([invalid_rows, df_logs[unreal_mask]])
+        logging.warning("Dropping %s rows with negative lots or NaN price", unreal_mask.sum())
+    df_logs = df_logs[~unreal_mask]
+
+    if not invalid_rows.empty:
+        invalid_file = db_file.with_name("invalid_rows.csv")
+        try:
+            invalid_rows.to_csv(invalid_file, index=False)
+        except Exception:  # pragma: no cover - disk issues
+            pass
+
+    return df_logs
+
+
+def load_logs(
+    data_dir: Path,
+    *,
+    lite_mode: bool = False,
+    chunk_size: int = 50000,
+    flight_uri: str | None = None,
+    kafka_brokers: str | None = None,
+) -> tuple[pd.DataFrame | Iterable[pd.DataFrame], List[str], List[str]]:
+    """Load log rows from ``data_dir``.
+
+    ``MODIFY`` entries are retained alongside ``OPEN`` and ``CLOSE``.
+
+    Parameters
+    ----------
+    data_dir : Path
+        Directory containing ``trades_*.csv`` files or a SQLite ``.db`` file.
+    """
+
+    if kafka_brokers:
+        raise NotImplementedError("kafka_brokers not supported in load_logs")
+
+    if flight_uri:
+        client = flight.FlightClient(flight_uri)
+        desc = flight.FlightDescriptor.for_path("trades")
+        info = client.get_flight_info(desc)
+        reader = client.do_get(info.endpoints[0].ticket)
+        if lite_mode:
+            def _iter_batches():
+                for batch in reader:
+                    yield pa.Table.from_batches([batch]).to_pandas()
+            return _iter_batches(), [], []
+        table = reader.read_all()
+        df = table.to_pandas()
+        df.columns = [c.lower() for c in df.columns]
+        return df, [], []
+
+    if data_dir.suffix == ".db" or data_dir.suffix in {".sqlite", ".sqlite3"}:
+        df = load_logs_db(data_dir)
+        return df, [], []
+
+    if data_dir.is_file():
+        df = pd.read_csv(data_dir, sep=";", header=0, dtype=str, engine="python")
+        df.columns = [c.lower() for c in df.columns]
+        return df, [], []
+
+    fields = [
+        "schema_version",
+        "event_id",
+        "event_time",
+        "broker_time",
+        "local_time",
+        "action",
+        "ticket",
+        "magic",
+        "source",
+        "symbol",
+        "order_type",
+        "lots",
+        "price",
+        "sl",
+        "tp",
+        "sl_dist",
+        "tp_dist",
+        "sl_hit_dist",
+        "tp_hit_dist",
+        "executed_model_idx",
+        "decision_id",
+        "profit",
+        "spread",
+        "comment",
+        "remaining_lots",
+        "slippage",
+        "volume",
+        "open_time",
+        "book_bid_vol",
+        "book_ask_vol",
+        "book_imbalance",
+        "equity",
+        "margin_level",
+        "commission",
+        "swap",
+        "is_anomaly",
+        "trend_estimate",
+        "trend_variance",
+        "exit_reason",
+        "duration_sec",
+    ]
+
+    data_commits: List[str] = []
+    data_checksums: List[str] = []
+
+    metrics_file = data_dir / "metrics.csv"
+    df_metrics = None
+    key_col: str | None = None
+    if metrics_file.exists():
+        df_metrics = pd.read_csv(metrics_file, sep=";")
+        df_metrics.columns = [c.lower() for c in df_metrics.columns]
+        if "schema_version" in df_metrics.columns:
+            df_metrics["schema_version"] = (
+                pd.to_numeric(df_metrics["schema_version"], errors="coerce")
+                .fillna(SCHEMA_VERSION)
+                .astype(int)
+            )
+            m_mask = df_metrics["schema_version"] != SCHEMA_VERSION
+            if m_mask.any():
+                logging.warning(
+                    "Dropping %s metric rows with schema version != %s",
+                    m_mask.sum(),
+                    SCHEMA_VERSION,
+                )
+                df_metrics = df_metrics[~m_mask]
+        else:
+            logging.warning(
+                "schema_version column missing in metrics; assuming %s", SCHEMA_VERSION
+            )
+            df_metrics["schema_version"] = SCHEMA_VERSION
+        if "magic" in df_metrics.columns:
+            key_col = "magic"
+        elif "model_id" in df_metrics.columns:
+            key_col = "model_id"
+
+    invalid_file = data_dir / "invalid_rows.csv"
+
+    def iter_chunks():
+        seen_ids: set[str] = set()
+        invalid_rows: List[pd.DataFrame] = []
+        for log_file in sorted(data_dir.glob("trades_*.csv")):
+            reader = pd.read_csv(
+                log_file,
+                sep=";",
+                header=0,
+                dtype=str,
+                chunksize=chunk_size,
+                engine="python",
+            )
+            manifest_file = log_file.with_suffix(".manifest.json")
+            if manifest_file.exists():
+                try:
+                    with open(manifest_file) as mf:
+                        meta = json.load(mf)
+                    commit = meta.get("commit")
+                    checksum = meta.get("checksum")
+                    if commit:
+                        data_commits.append(str(commit))
+                    if checksum:
+                        data_checksums.append(str(checksum))
+                except Exception:
+                    pass
+            for chunk in reader:
+                chunk = chunk.reindex(columns=fields)
+                chunk.columns = [c.lower() for c in chunk.columns]
+                invalid = pd.DataFrame(columns=chunk.columns)
+                chunk["schema_version"] = (
+                    pd.to_numeric(chunk.get("schema_version"), errors="coerce")
+                    .fillna(SCHEMA_VERSION)
+                    .astype(int)
+                )
+                ver_mask = chunk["schema_version"] != SCHEMA_VERSION
+                if ver_mask.any():
+                    invalid = pd.concat([invalid, chunk[ver_mask]])
+                    logging.warning(
+                        "Found %s rows with schema version != %s; coercing",
+                        ver_mask.sum(),
+                        SCHEMA_VERSION,
+                    )
+                    chunk.loc[ver_mask, "schema_version"] = SCHEMA_VERSION
+                chunk["event_time"] = pd.to_datetime(chunk.get("event_time"), errors="coerce")
+                if "broker_time" in chunk.columns:
+                    chunk["broker_time"] = pd.to_datetime(
+                        chunk.get("broker_time"), errors="coerce"
+                    )
+                    chunk["broker_time"] = chunk["broker_time"].where(
+                        ~chunk["broker_time"].isna(), None
+                    )
+                if "local_time" in chunk.columns:
+                    chunk["local_time"] = pd.to_datetime(
+                        chunk.get("local_time"), errors="coerce"
+                    )
+                    chunk["local_time"] = chunk["local_time"].where(
+                        ~chunk["local_time"].isna(), None
+                    )
+                if "open_time" in chunk.columns:
+                    chunk["open_time"] = pd.to_datetime(
+                        chunk.get("open_time"), errors="coerce"
+                    )
+                    chunk["trade_duration"] = (
+                        chunk["event_time"] - chunk["open_time"]
+                    ).dt.total_seconds().fillna(0)
+                else:
+                    chunk["trade_duration"] = 0.0
+                if "duration_sec" in chunk.columns:
+                    chunk["duration_sec"] = (
+                        pd.to_numeric(chunk.get("duration_sec"), errors="coerce")
+                        .fillna(0)
+                        .astype(int)
+                    )
+                else:
+                    chunk["duration_sec"] = chunk["trade_duration"].astype(int)
+                for col in [
+                    "book_bid_vol",
+                    "book_ask_vol",
+                    "book_imbalance",
+                    "equity",
+                    "margin_level",
+                    "commission",
+                    "swap",
+                    "trend_estimate",
+                    "trend_variance",
+                ]:
+                    chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
+                chunk["exit_reason"] = chunk.get("exit_reason", "").fillna("").astype(str).str.upper()
+                chunk["is_anomaly"] = pd.to_numeric(
+                    chunk.get("is_anomaly", 0), errors="coerce"
+                ).fillna(0)
+                for col in ["source", "comment"]:
+                    if col in chunk.columns:
+                        chunk[col] = chunk[col].fillna("").astype(str)
+                valid_actions = {"OPEN", "CLOSE", "MODIFY"}
+                chunk["action"] = chunk["action"].fillna("").str.upper()
+                chunk = chunk[(chunk["action"] == "") | chunk["action"].isin(valid_actions)]
+                if "event_id" in chunk.columns:
+                    dup_mask = (
+                        chunk["event_id"].isin(seen_ids)
+                        | chunk.duplicated(subset="event_id", keep="first")
+                    )
+                    if dup_mask.any():
+                        invalid = pd.concat([invalid, chunk[dup_mask]])
+                        logging.warning(
+                            "Dropping %s duplicate event_id rows", dup_mask.sum()
+                        )
+                    seen_ids.update(chunk.loc[~dup_mask, "event_id"].tolist())
+                    chunk = chunk[~dup_mask]
+                if {"ticket", "action"}.issubset(chunk.columns):
+                    crit_mask = (
+                        chunk["ticket"].isna()
+                        | (chunk["ticket"].astype(str) == "")
+                        | chunk["action"].isna()
+                        | (chunk["action"].astype(str) == "")
+                    )
+                    if crit_mask.any():
+                        invalid = pd.concat([invalid, chunk[crit_mask]])
+                        logging.warning(
+                            "Dropping %s rows with missing ticket/action", crit_mask.sum()
+                        )
+                    chunk = chunk[~crit_mask]
+                if "lots" in chunk.columns:
+                    chunk["lots"] = pd.to_numeric(chunk["lots"], errors="coerce")
+                if "price" in chunk.columns:
+                    chunk["price"] = pd.to_numeric(chunk["price"], errors="coerce")
+                unreal_mask = pd.Series(False, index=chunk.index)
+                if "lots" in chunk.columns:
+                    unreal_mask |= chunk["lots"] < 0
+                if "price" in chunk.columns:
+                    unreal_mask |= chunk["price"].isna()
+                if unreal_mask.any():
+                    invalid = pd.concat([invalid, chunk[unreal_mask]])
+                    logging.warning(
+                        "Dropping %s rows with negative lots or NaN price", unreal_mask.sum()
+                    )
+                chunk = chunk[~unreal_mask]
+                if "magic" in chunk.columns:
+                    chunk["magic"] = (
+                        pd.to_numeric(chunk["magic"], errors="coerce").fillna(0).astype(int)
+                    )
+                if "executed_model_idx" in chunk.columns:
+                    chunk["executed_model_idx"] = (
+                        pd.to_numeric(chunk["executed_model_idx"], errors="coerce")
+                        .fillna(-1)
+                        .astype(int)
+                    )
+                if "decision_id" in chunk.columns:
+                    chunk["decision_id"] = (
+                        pd.to_numeric(chunk["decision_id"], errors="coerce")
+                        .fillna(0)
+                        .astype(int)
+                    )
+                if df_metrics is not None and key_col is not None and "magic" in chunk.columns:
+                    if key_col == "magic":
+                        chunk = chunk.merge(df_metrics, how="left", on="magic")
+                    else:
+                        chunk = chunk.merge(
+                            df_metrics, how="left", left_on="magic", right_on="model_id"
+                        )
+                        chunk = chunk.drop(columns=["model_id"])
+                records = []
+                for row in chunk.to_dict(orient="records"):
+                    try:
+                        TradeEvent(**row)
+                        records.append(row)
+                    except ValidationError:
+                        invalid = pd.concat([invalid, pd.DataFrame([row])])
+                if records:
+                    chunk = pd.DataFrame(records, columns=chunk.columns)
+                else:
+                    chunk = pd.DataFrame(columns=chunk.columns)
+                if not invalid.empty:
+                    invalid_rows.append(invalid)
+                yield chunk
+        if invalid_rows:
+            try:
+                pd.concat(invalid_rows, ignore_index=True).to_csv(
+                    invalid_file, index=False
+                )
+            except Exception:  # pragma: no cover - disk issues
+                pass
+
+    if lite_mode:
+        return iter_chunks(), data_commits, data_checksums
+    dfs = list(iter_chunks())
+    if dfs:
+        df_logs = pd.concat(dfs, ignore_index=True)
+    else:
+        df_logs = pd.DataFrame(columns=[c.lower() for c in fields])
+    return df_logs, data_commits, data_checksums
+
+
+def scale_features(scaler: StandardScaler, X: np.ndarray) -> np.ndarray:
+    """Update ``scaler`` with ``X`` and return scaled data."""
+    scaler.partial_fit(X)
+    return scaler.transform(X)
 

@@ -8,6 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+try:
+    from .model_fitting import load_logs
+except ImportError:
+    from model_fitting import load_logs
+
 import logging
 import pandas as pd
 
@@ -182,138 +187,6 @@ def _send_live_metrics(url: str, metrics: Dict) -> Dict:
 # Data loading utilities
 # -------------------------------
 
-def _load_logs(
-    data_dir: Path,
-    flight_uri: str | None = None,
-    kafka_brokers: str | None = None,
-) -> pd.DataFrame:
-    """Load raw log rows from local files, Arrow Flight, or Kafka."""
-
-    fields = [
-        "event_id",
-        "event_time",
-        "broker_time",
-        "local_time",
-        "action",
-        "ticket",
-        "magic",
-        "source",
-        "symbol",
-        "order_type",
-        "lots",
-        "price",
-        "sl",
-        "tp",
-        "profit",
-        "comment",
-        "remaining_lots",
-    ]
-
-    if kafka_brokers:
-        from confluent_kafka import Consumer
-        from fastavro import parse_schema, schemaless_reader
-        from io import BytesIO
-        from schemas import TRADE_AVRO_SCHEMA
-
-        schema = parse_schema(TRADE_AVRO_SCHEMA)
-        consumer = Consumer(
-            {
-                "bootstrap.servers": kafka_brokers,
-                "group.id": "train_rl_agent",
-                "auto.offset.reset": "earliest",
-            }
-        )
-        consumer.subscribe(["trades"])
-        rows = []
-        none_count = 0
-        try:
-            while none_count < 5:
-                msg = consumer.poll(1.0)
-                if msg is None:
-                    none_count += 1
-                    continue
-                if msg.error():
-                    continue
-                none_count = 0
-                buf = BytesIO(msg.value())
-                rows.append(schemaless_reader(buf, schema))
-        finally:
-            consumer.close()
-        df_logs = pd.DataFrame(rows, columns=fields)
-    elif flight_uri:
-        client = flight.FlightClient(flight_uri)
-        desc = flight.FlightDescriptor.for_path("trades")
-        info = client.get_flight_info(desc)
-        reader = client.do_get(info.endpoints[0].ticket)
-        table = reader.read_all()
-        df_logs = table.to_pandas()
-    else:
-        dfs: List[pd.DataFrame] = []
-        log_files = sorted(data_dir.glob("trades_raw.csv"))
-        if not log_files:
-            log_files = sorted(data_dir.glob("trades*.csv"))
-        for log_file in log_files:
-            df = pd.read_csv(
-                log_file,
-                sep=";",
-                names=fields,
-                header=0,
-                parse_dates=["event_time"],
-            )
-            dfs.append(df)
-
-        if dfs:
-            df_logs = pd.concat(dfs, ignore_index=True)
-        else:
-            df_logs = pd.DataFrame(columns=fields)
-
-    df_logs.columns = [c.lower() for c in df_logs.columns]
-
-    valid_actions = {"OPEN", "CLOSE", "MODIFY"}
-    df_logs["action"] = df_logs["action"].fillna("").str.upper()
-    df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
-    invalid_rows = pd.DataFrame(columns=df_logs.columns)
-    if "event_id" in df_logs.columns:
-        dup_mask = df_logs.duplicated(subset="event_id", keep="first")
-        if dup_mask.any():
-            invalid_rows = pd.concat([invalid_rows, df_logs[dup_mask]])
-            logging.warning("Dropping %s duplicate event_id rows", dup_mask.sum())
-        df_logs = df_logs[~dup_mask]
-
-    if set(["ticket", "action"]).issubset(df_logs.columns):
-        crit_mask = (
-            df_logs["ticket"].isna()
-            | (df_logs["ticket"].astype(str) == "")
-            | df_logs["action"].isna()
-            | (df_logs["action"].astype(str) == "")
-        )
-        if crit_mask.any():
-            invalid_rows = pd.concat([invalid_rows, df_logs[crit_mask]])
-            logging.warning("Dropping %s rows with missing ticket/action", crit_mask.sum())
-        df_logs = df_logs[~crit_mask]
-
-    if "lots" in df_logs.columns:
-        df_logs["lots"] = pd.to_numeric(df_logs["lots"], errors="coerce")
-    if "price" in df_logs.columns:
-        df_logs["price"] = pd.to_numeric(df_logs["price"], errors="coerce")
-    unreal_mask = pd.Series(False, index=df_logs.index)
-    if "lots" in df_logs.columns:
-        unreal_mask |= df_logs["lots"] < 0
-    if "price" in df_logs.columns:
-        unreal_mask |= df_logs["price"].isna()
-    if unreal_mask.any():
-        invalid_rows = pd.concat([invalid_rows, df_logs[unreal_mask]])
-        logging.warning("Dropping %s rows with negative lots or NaN price", unreal_mask.sum())
-    df_logs = df_logs[~unreal_mask]
-
-    if not invalid_rows.empty:
-        invalid_file = data_dir / "invalid_rows.csv"
-        try:
-            invalid_rows.to_csv(invalid_file, index=False)
-        except Exception:  # pragma: no cover - disk issues
-            pass
-
-    return df_logs
 
 
 def _pair_trades(rows: List[Dict]) -> List[Dict]:
@@ -377,7 +250,9 @@ def _build_dataset(
     tuple and the next state is simply the next trade's state.
     """
 
-    rows_df = _load_logs(data_dir, flight_uri, kafka_brokers)
+    rows_df, _, _ = load_logs(data_dir, flight_uri=flight_uri)
+    if kafka_brokers:
+        raise NotImplementedError("kafka_brokers not supported")
     trades = _pair_trades(rows_df.to_dict("records"))
     if not trades:
         raise ValueError(f"No training data found in {data_dir}")
