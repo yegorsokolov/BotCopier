@@ -21,6 +21,7 @@
   "drift_metric": 0.0,
   "drift_history": [],
   "retrain_history": [],
+  "labeled_uncertainties": 0,
   "teacher_accuracy": 0.0,
   "teacher_metrics": {
     "accuracy": 0.0,

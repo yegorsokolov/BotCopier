@@ -5,7 +5,9 @@ Reads ``uncertain_decisions.csv`` produced by the Expert Advisor and writes a
 new ``uncertain_decisions_labeled.csv`` with the ``label`` column populated. The
 input file already contains an empty ``label`` field for each record; this tool
 fills it either interactively or via ``--label`` to support simple heuristic
-labeling.
+labeling.  The resulting labeled file can be supplied to
+``train_target_clone.py`` via ``--uncertain-file`` to emphasize these samples
+with higher weights during training.
 """
 from __future__ import annotations
 

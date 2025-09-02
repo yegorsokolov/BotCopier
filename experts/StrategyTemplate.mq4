@@ -1380,8 +1380,6 @@ void CalcStops(double &sl_dist, double &tp_dist)
 
 void LogDecision(double &feats[], double prob, string action, int modelIdx, int regime, double riskWeight, double variance, int chosen)
 {
-   if(!EnableDecisionLogging)
-      return;
    double sl_dist, tp_dist;
    CalcStops(sl_dist, tp_dist);
    double lots = CalcLots();
@@ -1396,13 +1394,13 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    string span_id  = GenId(8);
    LastTraceId = trace_id;
    LastSpanId  = span_id;
-   if(DecisionLogHandle != INVALID_HANDLE)
+   double thr = GetTradeThreshold();
+   bool uncertain = MathAbs(prob - thr) < UncertaintyMargin;
+   if(EnableDecisionLogging && DecisionLogHandle != INVALID_HANDLE)
    {
       FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       FileFlush(DecisionLogHandle);
    }
-   double thr = GetTradeThreshold();
-   bool uncertain = MathAbs(prob - thr) < UncertaintyMargin;
    if(uncertain && UncertainLogHandle != INVALID_HANDLE)
    {
       // capture feature snapshot for active learning
@@ -1410,7 +1408,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
                 ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, feat_vals, "");
       FileFlush(UncertainLogHandle);
    }
-   if(DecisionSocket != INVALID_HANDLE)
+   if(EnableDecisionLogging && DecisionSocket != INVALID_HANDLE)
    {
       string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"chosen\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"executed_model_idx\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
                                  NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);

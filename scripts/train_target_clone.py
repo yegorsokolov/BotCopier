@@ -829,6 +829,7 @@ def _train_lite_mode(
         "accuracy": float("nan"),
         "num_samples": int(sample_count),
         "feature_importance": {},
+        "labeled_uncertainties": 0,
         "mean": scaler.mean_.astype(np.float32).tolist(),
         "std": scaler.scale_.astype(np.float32).tolist(),
         "feature_mean": scaler.mean_.astype(np.float32).tolist(),
@@ -1227,6 +1228,9 @@ def train(
     if added:
         logger.info("loaded %d labeled uncertain decisions from %s", added, ufile)
     uncertainty_mask = np.concatenate([np.zeros(base_len), np.ones(added)])
+    feedback_count = int(added)
+    if existing_model:
+        feedback_count += int(existing_model.get("labeled_uncertainties", 0))
     if not features:
         raise ValueError(f"No training data found in {data_dir}")
     regime_info = None
@@ -1759,6 +1763,7 @@ def train(
             "val_f1": float("nan"),
             "val_roc_auc": float("nan"),
             "accuracy": float("nan"),
+            "labeled_uncertainties": int(feedback_count),
         }
         model["feature_flags"] = feature_flags
         model["half_life_days"] = float(decay_half_life or 0.0)
@@ -1942,6 +1947,7 @@ def train(
             "hourly_thresholds": hourly_thresholds,
             "conformal_lower": conformal_lower,
             "conformal_upper": conformal_upper,
+            "labeled_uncertainties": int(feedback_count),
         }
         model["split_sizes"] = split_sizes
         model["validation_metrics"] = {
@@ -2683,6 +2689,7 @@ def train(
         "std": feature_std.astype(np.float32).tolist(),
         "feature_mean": feature_mean.astype(np.float32).tolist(),
         "feature_std": feature_std.astype(np.float32).tolist(),
+        "labeled_uncertainties": int(feedback_count),
     }
     model["split_sizes"] = split_sizes
     model["validation_metrics"] = {
