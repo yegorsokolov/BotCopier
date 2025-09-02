@@ -67,6 +67,7 @@ extern int    FallbackRetryThreshold      = 5;
 extern string CalendarFileName           = "calendar.csv";
 extern int    CalendarEventWindowMinutes = 60;
 extern int    MAX_TRADE_BUFFER           = 50;
+extern int    MAX_METRIC_BUFFER          = 50;
 extern int    SendBatchSize             = 10;
 
 int timer_handle;
@@ -259,9 +260,14 @@ public:
 PendingTrade AnomalyQueue[];
 int AnomalyQueueDepth = 0;
 
-uchar   pending_trades[][1];
+#define MAX_TRADE_MSG_SIZE 2048
+#define MAX_METRIC_MSG_SIZE 1024
+
+uchar   pending_trades[][MAX_TRADE_MSG_SIZE];
+int     pending_trade_sizes[];
 string  pending_trade_lines[];
-uchar   pending_metrics[][1];
+uchar   pending_metrics[][MAX_METRIC_MSG_SIZE];
+int     pending_metric_sizes[];
 string  pending_metric_lines[];
 int     pending_trade_head = 0;
 int     pending_trade_tail = 0;
@@ -419,13 +425,17 @@ void EnqueueMessage(uchar &queue[][], uchar &msg[])
    ArrayCopy(queue[idx], msg);
 }
 
-void EnqueuePending(uchar &queue[][], string &lines[], int &head, int &tail, int &count, uchar &msg[], string line, string wal_fname)
+void EnqueuePending(uchar &queue[][], int &sizes[], string &lines[], int &head, int &tail, int &count, uchar &msg[], string line, string wal_fname)
 {
    int cap = ArraySize(queue);
-   ArrayResize(queue[tail], ArraySize(msg));
-   ArrayCopy(queue[tail], msg);
+   int max_len = ArrayRange(queue, 1);
+   int len = ArraySize(msg);
+   if(len > max_len)
+      len = max_len;
+   ArrayCopy(queue[tail], msg, 0, 0, len);
+   sizes[tail] = len;
    lines[tail] = line;
-   AppendWal(wal_fname, msg);
+   AppendWal(wal_fname, queue[tail], len);
    tail = (tail + 1) % cap;
    if(count < cap)
       count++;
@@ -440,7 +450,7 @@ bool LogToJournald(string tag, string line)
    return(r > 31);
 }
 
-void FallbackLog(string tag, uchar &payload[], string line)
+void FallbackLog(string tag, uchar &payload[], int len, string line)
 {
    if(StringLen(line)>0 && LogToJournald("botcopier-" + tag, line))
       return;
@@ -456,7 +466,7 @@ void FallbackLog(string tag, uchar &payload[], string line)
       string out_line = line;
       if(StringLen(out_line)==0)
       {
-         out_line = CharArrayToString(payload, 0, ArraySize(payload));
+         out_line = CharArrayToString(payload, 0, len);
       }
       int _wr = FileWrite(h, out_line);
       if(_wr <= 0)
@@ -469,7 +479,7 @@ void FallbackLog(string tag, uchar &payload[], string line)
    }
 }
 
-uint WalChecksum(uchar &msg[]);
+uint WalChecksum(uchar &msg[], int len);
 int ReadCheckpoint(string fname);
 void WriteCheckpoint(string fname, int count);
 
@@ -480,10 +490,10 @@ void FlushPending(datetime now)
       int sent = 0;
       while(pending_trade_count > 0 && sent < SendBatchSize)
       {
-        if(GrpcSendTrade(pending_trades[pending_trade_head], ArraySize(pending_trades[pending_trade_head])))
+        int tlen = pending_trade_sizes[pending_trade_head];
+        if(GrpcSendTrade(pending_trades[pending_trade_head], tlen))
         {
             WriteCheckpoint(log_dir + "/pending_trades.chk", 1);
-            ArrayResize(pending_trades[pending_trade_head], 0);
             pending_trade_lines[pending_trade_head] = "";
             pending_trade_head = (pending_trade_head + 1) % ArraySize(pending_trades);
             pending_trade_count--;
@@ -491,7 +501,7 @@ void FlushPending(datetime now)
             trade_backoff = 1;
             next_trade_flush = now;
             trade_retry_count = 0;
-            SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_count);
+            SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_count);
             WriteCheckpoint(log_dir + "/pending_trades.chk", 0);
             sent++;
          }
@@ -506,7 +516,7 @@ void FlushPending(datetime now)
             if(trade_retry_count >= FallbackRetryThreshold)
             {
                string line = pending_trade_count > 0 ? pending_trade_lines[pending_trade_head] : "";
-               FallbackLog("trades", pending_trades[pending_trade_head], line);
+               FallbackLog("trades", pending_trades[pending_trade_head], tlen, line);
                trade_retry_count = 0;
             }
             break;
@@ -519,10 +529,10 @@ void FlushPending(datetime now)
       int msent = 0;
       while(pending_metric_count > 0 && msent < SendBatchSize)
       {
-         if(GrpcSendMetrics(pending_metrics[pending_metric_head], ArraySize(pending_metrics[pending_metric_head])))
+         int mlen = pending_metric_sizes[pending_metric_head];
+         if(GrpcSendMetrics(pending_metrics[pending_metric_head], mlen))
          {
             WriteCheckpoint(log_dir + "/pending_metrics.chk", 1);
-            ArrayResize(pending_metrics[pending_metric_head], 0);
             pending_metric_lines[pending_metric_head] = "";
             pending_metric_head = (pending_metric_head + 1) % ArraySize(pending_metrics);
             pending_metric_count--;
@@ -530,7 +540,7 @@ void FlushPending(datetime now)
             metric_backoff = 1;
             next_metric_flush = now;
             metric_send_retry_count = 0;
-            SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_count);
+            SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_count);
             WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
             msent++;
          }
@@ -545,7 +555,7 @@ void FlushPending(datetime now)
             if(metric_send_retry_count >= FallbackRetryThreshold)
             {
                string line = pending_metric_count > 0 ? pending_metric_lines[pending_metric_head] : "";
-               FallbackLog("metrics", pending_metrics[pending_metric_head], line);
+               FallbackLog("metrics", pending_metrics[pending_metric_head], mlen, line);
                metric_send_retry_count = 0;
             }
             break;
@@ -554,10 +564,9 @@ void FlushPending(datetime now)
    }
 }
 
-uint WalChecksum(uchar &msg[])
+uint WalChecksum(uchar &msg[], int len)
 {
    uint sum = 0;
-   int len = ArraySize(msg);
    for(int i=0; i<len; i++)
       sum += msg[i];
    return(sum);
@@ -582,7 +591,7 @@ void WriteCheckpoint(string fname, int count)
    FileClose(h);
 }
 
-void AppendWal(string fname, uchar &msg[])
+void AppendWal(string fname, uchar &msg[], int len)
 {
    int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_READ|FILE_COMMON);
    if(h==INVALID_HANDLE)
@@ -590,14 +599,13 @@ void AppendWal(string fname, uchar &msg[])
    if(h==INVALID_HANDLE)
       return;
    FileSeek(h, 0, SEEK_END);
-   int len = ArraySize(msg);
    FileWriteInteger(h, len);
    FileWriteArray(h, msg, 0, len);
-    FileWriteInteger(h, WalChecksum(msg));
+   FileWriteInteger(h, WalChecksum(msg, len));
    FileClose(h);
 }
 
-void SaveQueue(string fname, uchar &queue[][], int head, int count)
+void SaveQueue(string fname, uchar &queue[][], int &sizes[], int head, int count)
 {
    int cap = ArraySize(queue);
    int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
@@ -606,15 +614,15 @@ void SaveQueue(string fname, uchar &queue[][], int head, int count)
    for(int i=0; i<count; i++)
    {
       int idx = (head + i) % cap;
-      int len = ArraySize(queue[idx]);
+      int len = sizes[idx];
       FileWriteInteger(h, len);
       FileWriteArray(h, queue[idx], 0, len);
-      FileWriteInteger(h, WalChecksum(queue[idx]));
+      FileWriteInteger(h, WalChecksum(queue[idx], len));
    }
    FileClose(h);
 }
 
-void LoadQueue(string fname, uchar &queue[][], int &head, int &tail, int &count)
+void LoadQueue(string fname, uchar &queue[][], int &sizes[], int &head, int &tail, int &count)
 {
    head = 0; tail = 0; count = 0;
    int cap = ArraySize(queue);
@@ -632,13 +640,15 @@ void LoadQueue(string fname, uchar &queue[][], int &head, int &tail, int &count)
       if(rd!=len)
          break;
       uint expected = FileReadInteger(h);
-      if(WalChecksum(tmp)!=expected)
+      if(WalChecksum(tmp, len)!=expected)
       {
          Print("Corrupt WAL entry in " + fname + ", skipping");
          continue;
       }
-      ArrayResize(queue[tail], len);
-      ArrayCopy(queue[tail], tmp);
+      if(len > ArrayRange(queue,1))
+         len = ArrayRange(queue,1);
+      ArrayCopy(queue[tail], tmp, 0, 0, len);
+      sizes[tail] = len;
       tail = (tail + 1) % cap;
       if(count < cap)
          count++;
@@ -649,7 +659,7 @@ void LoadQueue(string fname, uchar &queue[][], int &head, int &tail, int &count)
    FileDelete(fname);
 }
 
-void ReplayWal(string fname, uchar &queue[][], int &head, int &tail, int &count, int skip=0)
+void ReplayWal(string fname, uchar &queue[][], int &sizes[], int &head, int &tail, int &count, int skip=0)
 {
    int cap = ArraySize(queue);
    int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
@@ -667,7 +677,7 @@ void ReplayWal(string fname, uchar &queue[][], int &head, int &tail, int &count,
       if(rd!=len)
          break;
       uint expected = FileReadInteger(h);
-      if(WalChecksum(tmp)!=expected)
+      if(WalChecksum(tmp, len)!=expected)
       {
          Print("Corrupt WAL entry in " + fname + ", skipping");
          continue;
@@ -677,8 +687,10 @@ void ReplayWal(string fname, uchar &queue[][], int &head, int &tail, int &count,
          processed++;
          continue;
       }
-      ArrayResize(queue[tail], len);
-      ArrayCopy(queue[tail], tmp);
+      if(len > ArrayRange(queue,1))
+         len = ArrayRange(queue,1);
+      ArrayCopy(queue[tail], tmp, 0, 0, len);
+      sizes[tail] = len;
       tail = (tail + 1) % cap;
       if(count < cap)
          count++;
@@ -1045,16 +1057,18 @@ int OnInit()
       Print("Log directory exists: " + log_dir);
    ArrayResize(pending_trades, MAX_TRADE_BUFFER);
    ArrayResize(pending_trade_lines, MAX_TRADE_BUFFER);
-   ArrayResize(pending_metrics, MAX_TRADE_BUFFER);
-   ArrayResize(pending_metric_lines, MAX_TRADE_BUFFER);
+   ArrayResize(pending_trade_sizes, MAX_TRADE_BUFFER);
+   ArrayResize(pending_metrics, MAX_METRIC_BUFFER);
+   ArrayResize(pending_metric_lines, MAX_METRIC_BUFFER);
+   ArrayResize(pending_metric_sizes, MAX_METRIC_BUFFER);
    pending_trade_head = pending_trade_tail = pending_trade_count = 0;
    pending_metric_head = pending_metric_tail = pending_metric_count = 0;
-   LoadQueue(log_dir + "/pending_trades.bin", pending_trades, pending_trade_head, pending_trade_tail, pending_trade_count);
-   LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics, pending_metric_head, pending_metric_tail, pending_metric_count);
+   LoadQueue(log_dir + "/pending_trades.bin", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_tail, pending_trade_count);
+   LoadQueue(log_dir + "/pending_metrics.bin", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_tail, pending_metric_count);
    int trade_skip = ReadCheckpoint(log_dir + "/pending_trades.chk");
    int metric_skip = ReadCheckpoint(log_dir + "/pending_metrics.chk");
-   ReplayWal(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_tail, pending_trade_count, trade_skip);
-   ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_tail, pending_metric_count, metric_skip);
+   ReplayWal(log_dir + "/pending_trades.wal", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_tail, pending_trade_count, trade_skip);
+   ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_tail, pending_metric_count, metric_skip);
    TradeQueueDepth = pending_trade_count;
    MetricQueueDepth = pending_metric_count;
    GrpcConnected = GrpcClientInit(GrpcServerHost, GrpcServerPort);
@@ -1097,10 +1111,10 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   SaveQueue(log_dir + "/pending_trades.bin", pending_trades, pending_trade_head, pending_trade_count);
-   SaveQueue(log_dir + "/pending_metrics.bin", pending_metrics, pending_metric_head, pending_metric_count);
-   SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_head, pending_trade_count);
-   SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_head, pending_metric_count);
+   SaveQueue(log_dir + "/pending_trades.bin", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_count);
+   SaveQueue(log_dir + "/pending_metrics.bin", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_count);
+   SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_count);
+   SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_count);
 }
 
 bool MagicMatches(int magic)
@@ -1303,7 +1317,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.executed_model_idx, t.decision_id, t.exit_reason, t.duration_sec, payload);
    if(len>0)
    {
-      EnqueuePending(pending_trades, pending_trade_lines, pending_trade_head,
+      EnqueuePending(pending_trades, pending_trade_sizes, pending_trade_lines, pending_trade_head,
                      pending_trade_tail, pending_trade_count, payload, line,
                      log_dir + "/pending_trades.wal");
       TradeQueueDepth = pending_trade_count;
@@ -1775,7 +1789,7 @@ void WriteMetrics(datetime ts)
          payload);
       if(len>0)
       {
-         EnqueuePending(pending_metrics, pending_metric_lines, pending_metric_head,
+         EnqueuePending(pending_metrics, pending_metric_sizes, pending_metric_lines, pending_metric_head,
                         pending_metric_tail, pending_metric_count, payload, line,
                         log_dir + "/pending_metrics.wal");
          MetricQueueDepth = pending_metric_count;
