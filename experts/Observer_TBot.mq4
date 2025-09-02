@@ -280,7 +280,6 @@ int     metric_backoff = 1;
 datetime next_trade_flush = 0;
 datetime next_metric_flush = 0;
 int     trade_retry_count = 0;
-int     metric_send_retry_count = 0;
 int     metric_retry_count = 0;
 
 void EnqueueAnomaly(PendingTrade &t)
@@ -515,6 +514,7 @@ void FlushPending(datetime now)
             next_trade_flush = now + trade_backoff;
             if(trade_retry_count >= FallbackRetryThreshold)
             {
+               PrintFormat("trade_retry_count %d exceeded FallbackRetryThreshold %d", trade_retry_count, FallbackRetryThreshold);
                string line = pending_trade_count > 0 ? pending_trade_lines[pending_trade_head] : "";
                FallbackLog("trades", pending_trades[pending_trade_head], tlen, line);
                trade_retry_count = 0;
@@ -539,7 +539,7 @@ void FlushPending(datetime now)
             MetricQueueDepth = pending_metric_count;
             metric_backoff = 1;
             next_metric_flush = now;
-            metric_send_retry_count = 0;
+            metric_retry_count = 0;
             SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_count);
             WriteCheckpoint(log_dir + "/pending_metrics.chk", 0);
             msent++;
@@ -548,15 +548,16 @@ void FlushPending(datetime now)
         {
             SocketErrors++;
             GrpcConnected = false;
-            metric_send_retry_count++;
+            metric_retry_count++;
             FallbackEvents++;
             metric_backoff = MathMin(metric_backoff*2, 3600);
             next_metric_flush = now + metric_backoff;
-            if(metric_send_retry_count >= FallbackRetryThreshold)
+            if(metric_retry_count >= FallbackRetryThreshold)
             {
+               PrintFormat("metric_retry_count %d exceeded FallbackRetryThreshold %d", metric_retry_count, FallbackRetryThreshold);
                string line = pending_metric_count > 0 ? pending_metric_lines[pending_metric_head] : "";
                FallbackLog("metrics", pending_metrics[pending_metric_head], mlen, line);
-               metric_send_retry_count = 0;
+               metric_retry_count = 0;
             }
             break;
          }
@@ -1765,7 +1766,7 @@ void WriteMetrics(datetime ts)
          if(profits[vb] < var95) var_breach_count++;
 
       string span_id = GenId(8);
-      int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_send_retry_count >= FallbackRetryThreshold) ? 1 : 0;
+      int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
       int anomaly_pending = AnomalyQueueDepth;
       int anomaly_late = AnomalyLateResponses;
       // emit file/socket errors, queue depth and retry counts for monitoring
