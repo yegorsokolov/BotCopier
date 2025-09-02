@@ -19,12 +19,27 @@
         const ctx = document.getElementById('metricsChart').getContext('2d');
         const metricsChart = new Chart(ctx, {
             type: 'line',
-            data: { labels: [], datasets: [{ label: 'Win Rate', data: [] }] },
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Win Rate', data: [], yAxisID: 'y' },
+                    { label: 'Flush Latency (ms)', data: [], yAxisID: 'y1' },
+                    { label: 'Network Latency (ms)', data: [], yAxisID: 'y1' }
+                ]
+            },
+            options: {
+                scales: {
+                    y: { type: 'linear', position: 'left' },
+                    y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } }
+                }
+            }
         });
 
         function updateChart(metric) {
             metricsChart.data.labels.push(metric.time);
             metricsChart.data.datasets[0].data.push(metric.win_rate);
+            metricsChart.data.datasets[1].data.push(metric.flush_latency_ms);
+            metricsChart.data.datasets[2].data.push(metric.network_latency_ms);
             metricsChart.update();
         }
 
