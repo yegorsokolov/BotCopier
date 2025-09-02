@@ -95,6 +95,9 @@ double TransformerDenseWeights[] = {__TRANS_DENSE_W__};
 double TransformerDenseBias = __TRANS_DENSE_B__;
 double FeatureMean[] = {__FEATURE_MEAN__};
 double FeatureStd[] = {__FEATURE_STD__};
+double CachedFeatures[__FEATURE_COUNT__];
+bool NeedsFeatureRefresh = true;
+datetime LastFeatureTime = 0;
 int SymbolEmbDim = __SYM_EMB_DIM__;
 int SymbolEmbCount = __SYM_EMB_COUNT__;
 string SymbolEmbSymbols[] = {__SYM_EMB_SYMBOLS__};
@@ -703,6 +706,10 @@ int TFIdx(int tf)
 
 void RefreshIndicatorCache()
 {
+   if(!NeedsFeatureRefresh)
+      return;
+   NeedsFeatureRefresh = false;
+   LastFeatureTime = Time[0];
    int curPeriod = Period();
    if(curPeriod != LastCalcPeriod)
    {
@@ -725,6 +732,9 @@ void RefreshIndicatorCache()
          CachedMACDSignal[i] = iMACD(SymbolToTrade, actual_tf, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0);
       }
    }
+   int n = MathMin(FeatureCount, ArraySize(CachedFeatures));
+   for(int i=0; i<n; i++)
+      CachedFeatures[i] = ComputeFeature(i);
 }
 
 void RefreshBookCache()
@@ -917,13 +927,9 @@ double StdDevRecentTicks()
    return(MathSqrt(var / count));
 }
 
-double GetFeature(int index)
+double ComputeFeature(int index)
 {
-   /* Return a simple set of features for the logistic model.
-      Feature mapping is intentionally minimal and should be kept in
-      sync with the Python training script.  Unknown indices default
-      to zero. */
-   RefreshIndicatorCache();
+   /* Compute the raw feature value and apply standardization. */
    double raw = 0.0;
    switch(index)
    {
@@ -931,10 +937,17 @@ __FEATURE_CASES__      default:
          raw = 0.0;
          break;
    }
-   // Apply standardization using training set parameters when available
    if(index < ArraySize(FeatureMean) && index < ArraySize(FeatureStd) && FeatureStd[index] != 0)
       return((raw - FeatureMean[index]) / FeatureStd[index]);
    return(raw);
+}
+
+double GetFeature(int index)
+{
+   RefreshIndicatorCache();
+   if(index >= 0 && index < ArraySize(CachedFeatures))
+      return(CachedFeatures[index]);
+   return(0.0);
 }
 int GetSessionIndex()
 {
@@ -1494,6 +1507,8 @@ bool HasOpenOrders()
 
 void OnTick()
 {
+   if(Time[0] != LastFeatureTime)
+      NeedsFeatureRefresh = true;
    UpdateTickReturns();
    PollRegimeRing();
    UpdateKalman(iClose(SymbolToTrade, 0, 0));
