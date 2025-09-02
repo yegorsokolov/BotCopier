@@ -158,6 +158,7 @@ int RegimeCount = __REGIME_COUNT__;
 int RegimeFeatureCount = __REGIME_FEATURE_COUNT__;
 double RegimeCenters[__REGIME_COUNT__][__REGIME_FEATURE_COUNT__] = {__REGIME_CENTERS__};
 int RegimeFeatureIdx[] = {__REGIME_FEATURE_IDX__};
+double RegimeCenterNorms[__REGIME_COUNT__];
 const int MSG_REGIME = 3;
 int CurrentRegime = -1;
 double RegimeThresholds[__REGIME_COUNT__] = {__REGIME_THRESHOLDS__};
@@ -381,6 +382,20 @@ bool ParseModelCsv(string line)
    return(true);
 }
 
+void ComputeRegimeCenterNorms()
+{
+   for(int c=0; c<RegimeCount; c++)
+   {
+      double norm = 0.0;
+      for(int j=0; j<RegimeFeatureCount; j++)
+      {
+         double v = RegimeCenters[c][j];
+         norm += v * v;
+      }
+      RegimeCenterNorms[c] = norm;
+   }
+}
+
 bool LoadModel()
 {
    string lower = StringToLower(ModelFileName);
@@ -414,10 +429,14 @@ bool LoadModel()
          content += FileReadString(h);
       FileClose(h);
    }
+   bool ok;
    if(StringFind(lower, ".json") >= 0)
-      return(ParseModelJson(content));
+      ok = ParseModelJson(content);
    else
-      return(ParseModelCsv(content));
+      ok = ParseModelCsv(content);
+   if(ok)
+      ComputeRegimeCenterNorms();
+   return(ok);
 }
 
 int OnInit()
@@ -426,6 +445,7 @@ int OnInit()
    LastModelLoad = TimeCurrent();
    if(!ok)
       Print("Using built-in model parameters");
+   ComputeRegimeCenterNorms();
    if(StringLen(EncoderOnnxFile) > 0 && FileIsExist(EncoderOnnxFile))
       UseOnnxEncoder = true;
    if(StringLen(ModelOnnxFile) > 0 && FileIsExist(ModelOnnxFile))
@@ -680,26 +700,44 @@ double GetEncodedFeature(int idx)
 
 int GetRegime()
 {
-   double feats[100];
-   for(int i=0; i<RegimeFeatureCount && i<100; i++)
-      feats[i] = GetFeature(RegimeFeatureIdx[i]);
-   int best = 0;
-   double bestDist = 0.0;
-   for(int c=0; c<RegimeCount; c++)
+   static datetime lastTick = 0;
+   static double feats[100];
+   static double featNorm = 0.0;
+   static int cached = -1;
+   datetime now = TimeCurrent();
+   if(now != lastTick)
    {
-      double d = 0.0;
-      for(int j=0; j<RegimeFeatureCount; j++)
+      bool changed = false;
+      featNorm = 0.0;
+      for(int i=0; i<RegimeFeatureCount && i<100; i++)
       {
-         double diff = feats[j] - RegimeCenters[c][j];
-         d += diff * diff;
+         double f = GetFeature(RegimeFeatureIdx[i]);
+         if(f != feats[i])
+            changed = true;
+         feats[i] = f;
+         featNorm += f * f;
       }
-      if(c == 0 || d < bestDist)
+      if(changed || cached < 0)
       {
-         bestDist = d;
-         best = c;
+         int best = 0;
+         double bestDist = 0.0;
+         for(int c=0; c<RegimeCount; c++)
+         {
+            double dot = 0.0;
+            for(int j=0; j<RegimeFeatureCount; j++)
+               dot += feats[j] * RegimeCenters[c][j];
+            double d = featNorm + RegimeCenterNorms[c] - 2.0 * dot;
+            if(c == 0 || d < bestDist)
+            {
+               bestDist = d;
+               best = c;
+            }
+         }
+         cached = best;
       }
+      lastTick = now;
    }
-   return(best);
+   return(cached);
 }
 
 void PollRegimeRing()
