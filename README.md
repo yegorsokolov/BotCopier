@@ -748,7 +748,9 @@ sudo systemctl enable --now online-trainer.service
 ```
 
 Example systemd unit files are provided under `docs/systemd/` for running
-`stream_listener.py`, `metrics_collector.py` and the online trainer. After
+`stream_listener.py`, `metrics_collector.py` and the online trainer. The
+trainer tails `logs/trades_raw.csv`, applies `partial_fit` on new rows and
+rewrites `model.json` so running Expert Advisors reload updated weights. After
 copying the listener and collector units to `/etc/systemd/system/`, enable the
 services with:
 

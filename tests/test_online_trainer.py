@@ -1,4 +1,5 @@
 import json
+import logging
 import subprocess
 from pathlib import Path
 
@@ -28,4 +29,17 @@ def test_online_trainer_updates(tmp_path: Path, monkeypatch):
     trainer2.update([{"a": 1.0, "b": 1.0, "y": 1}])
     after = trainer2.clf.coef_.copy()
     assert not np.array_equal(before, after)
+
+
+def test_online_trainer_logs_validation(tmp_path: Path, caplog):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2, run_generator=False)
+    batch = [
+        {"a": 1.0, "b": 0.0, "y": 1},
+        {"a": 0.0, "b": 1.0, "y": 0},
+    ]
+    with caplog.at_level(logging.INFO):
+        trainer.update(batch)
+    events = [r.msg for r in caplog.records if isinstance(r.msg, dict) and r.msg.get("event") == "validation"]
+    assert events and "accuracy" in events[0]
 
