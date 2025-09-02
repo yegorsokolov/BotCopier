@@ -11,6 +11,19 @@ from typing import Iterable
 import numpy as np
 import psutil
 
+try:  # Numba is optional
+    from numba import jit
+    NUMBA_AVAILABLE = True
+except Exception:  # pragma: no cover - fallback when numba isn't installed
+    NUMBA_AVAILABLE = False
+
+    def jit(*args, **kwargs):  # type: ignore
+        """Fallback ``jit`` decorator when Numba is unavailable."""
+        def wrapper(func):
+            return func
+
+        return wrapper
+
 
 def _sma(values, window):
     """Simple moving average for the last ``window`` values."""
@@ -90,24 +103,52 @@ def _macd_update(state, price, short=12, long=26, signal=9):
     return macd, ema_signal
 
 
+@jit(nopython=True)
+def _stochastic_k_nb(price: float, prices: np.ndarray) -> float:
+    low = prices.min()
+    high = prices.max()
+    if high == low:
+        return 0.0
+    return (price - low) / (high - low) * 100.0
+
+
 def _stochastic_update(state, price, k_period=14, d_period=3):
     """Update and return stochastic %K and %D values."""
     prices = state.setdefault("prices", [])
     prices.append(price)
     if len(prices) > k_period:
         del prices[0]
-    low = min(prices)
-    high = max(prices)
-    if high == low:
-        k = 0.0
-    else:
-        k = (price - low) / (high - low) * 100.0
+    arr = np.array(prices, dtype=np.float64)
+    if NUMBA_AVAILABLE:
+        k = float(_stochastic_k_nb(price, arr))
+    else:  # fallback to numpy implementation
+        low = float(arr.min())
+        high = float(arr.max())
+        k = 0.0 if high == low else (price - low) / (high - low) * 100.0
+
     k_history = state.setdefault("k_values", [])
     k_history.append(k)
     if len(k_history) > d_period:
         del k_history[0]
-    d = float(sum(k_history) / len(k_history))
+
+    if NUMBA_AVAILABLE:
+        d = float(np.mean(np.array(k_history, dtype=np.float64)))
+    else:
+        d = float(sum(k_history) / len(k_history))
     return float(k), d
+
+
+@jit(nopython=True)
+def _adx_dx_nb(plus_dm: np.ndarray, minus_dm: np.ndarray, tr: np.ndarray) -> float:
+    atr = tr.mean()
+    if atr == 0:
+        di_plus = 0.0
+        di_minus = 0.0
+    else:
+        di_plus = 100.0 * plus_dm.mean() / atr
+        di_minus = 100.0 * minus_dm.mean() / atr
+    denom = di_plus + di_minus
+    return 0.0 if denom == 0 else 100.0 * abs(di_plus - di_minus) / denom
 
 
 def _adx_update(state, price, period=14):
@@ -136,20 +177,55 @@ def _adx_update(state, price, period=14):
     if len(tr_list) > period:
         del tr_list[0]
 
-    atr = sum(tr_list) / len(tr_list)
-    if atr == 0:
-        di_plus = di_minus = 0.0
-    else:
-        di_plus = 100.0 * (sum(plus_dm) / len(plus_dm)) / atr
-        di_minus = 100.0 * (sum(minus_dm) / len(minus_dm)) / atr
+    arr_plus = np.array(plus_dm, dtype=np.float64)
+    arr_minus = np.array(minus_dm, dtype=np.float64)
+    arr_tr = np.array(tr_list, dtype=np.float64)
 
-    denom = di_plus + di_minus
-    dx = 0.0 if denom == 0 else 100.0 * abs(di_plus - di_minus) / denom
+    if NUMBA_AVAILABLE:
+        dx = float(_adx_dx_nb(arr_plus, arr_minus, arr_tr))
+    else:
+        atr = arr_tr.mean()
+        if atr == 0:
+            di_plus = di_minus = 0.0
+        else:
+            di_plus = 100.0 * (arr_plus.mean()) / atr
+            di_minus = 100.0 * (arr_minus.mean()) / atr
+        denom = di_plus + di_minus
+        dx = 0.0 if denom == 0 else 100.0 * abs(di_plus - di_minus) / denom
+
     dx_list.append(dx)
     if len(dx_list) > period:
         del dx_list[0]
-    adx = sum(dx_list) / len(dx_list)
-    return float(adx)
+
+    if NUMBA_AVAILABLE:
+        adx = float(np.mean(np.array(dx_list, dtype=np.float64)))
+    else:
+        adx = float(sum(dx_list) / len(dx_list))
+    return adx
+
+
+@jit(nopython=True)
+def _rolling_corr_nb(arr1: np.ndarray, arr2: np.ndarray) -> float:
+    n = arr1.size
+    mean1 = 0.0
+    mean2 = 0.0
+    for i in range(n):
+        mean1 += arr1[i]
+        mean2 += arr2[i]
+    mean1 /= n
+    mean2 /= n
+    num = 0.0
+    denom1 = 0.0
+    denom2 = 0.0
+    for i in range(n):
+        d1 = arr1[i] - mean1
+        d2 = arr2[i] - mean2
+        num += d1 * d2
+        denom1 += d1 * d1
+        denom2 += d2 * d2
+    if denom1 == 0.0 or denom2 == 0.0:
+        return 0.0
+    return num / math.sqrt(denom1 * denom2)
 
 
 def _rolling_corr(a, b, window=5):
@@ -159,10 +235,12 @@ def _rolling_corr(a, b, window=5):
     w = min(len(a), len(b), window)
     if w < 2:
         return 0.0
-    arr1 = np.array(a[-w:], dtype=float)
-    arr2 = np.array(b[-w:], dtype=float)
+    arr1 = np.array(a[-w:], dtype=np.float64)
+    arr2 = np.array(b[-w:], dtype=np.float64)
     if arr1.std(ddof=0) == 0 or arr2.std(ddof=0) == 0:
         return 0.0
+    if NUMBA_AVAILABLE:
+        return float(_rolling_corr_nb(arr1, arr2))
     return float(np.corrcoef(arr1, arr2)[0, 1])
 
 
