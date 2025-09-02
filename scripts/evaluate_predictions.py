@@ -53,6 +53,11 @@ def main() -> None:
         print(
             f"Probability coverage : {stats['conformal_coverage']*100:.1f}%"
         )
+        if "model_value_mean" in stats and "model_value_std" in stats:
+            print(
+                f"Model value mean : {stats['model_value_mean']:.2f}"
+                f" (std: {stats['model_value_std']:.2f})"
+            )
 
 
 if __name__ == "__main__":

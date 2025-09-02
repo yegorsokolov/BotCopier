@@ -104,12 +104,22 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
     actual_trades = _load_actual_trades(actual_log)
     conformal_lower = None
     conformal_upper = None
+    model_value_mean = None
+    model_value_std = None
+    model_value_atoms = None
+    model_value_dist = None
+    model_value_quantiles = None
     if model_json is not None:
         try:
             with open(model_json) as f:
                 m = json.load(f)
             conformal_lower = m.get("conformal_lower")
             conformal_upper = m.get("conformal_upper")
+            model_value_mean = m.get("value_mean")
+            model_value_std = m.get("value_std")
+            model_value_atoms = m.get("value_atoms")
+            model_value_dist = m.get("value_distribution")
+            model_value_quantiles = m.get("value_quantiles")
         except Exception:
             pass
     matches = 0
@@ -192,7 +202,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
         if downside_dev > 0:
             sortino = mean / downside_dev
     conformal = bound_in / bound_total if bound_total else None
-    return {
+    stats: Dict[str, object] = {
         "matched_events": matches,
         "predicted_events": len(predictions),
         "actual_events": len(actual_trades),
@@ -212,6 +222,16 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
         "predictions_per_model": predictions_per_model,
         "matches_per_model": matches_per_model,
     }
+    if model_value_mean is not None:
+        stats["model_value_mean"] = model_value_mean
+    if model_value_std is not None:
+        stats["model_value_std"] = model_value_std
+    if model_value_atoms and model_value_dist:
+        stats["model_value_atoms"] = model_value_atoms
+        stats["model_value_distribution"] = model_value_dist
+    if model_value_quantiles:
+        stats["model_value_quantiles"] = model_value_quantiles
+    return stats
 
 
 def evaluate_model(model, X, y) -> float:
