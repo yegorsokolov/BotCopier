@@ -135,6 +135,7 @@ def _build_feature_cases(
         'volume': 'iVolume(SymbolToTrade, 0, 0)',
         'event_flag': 'CalendarFlag()',
         'event_impact': 'CalendarImpact()',
+        'calendar_impact': 'CalendarImpact()',
         'calendar_event_id': 'CalendarEventIdAt(TimeCurrent())',
         'book_bid_vol': 'BookBidVol()',
         'book_ask_vol': 'BookAskVol()',
@@ -168,6 +169,7 @@ def _build_feature_cases(
         'dom_sin': 'time',
         'dom_cos': 'time',
         'duration_sec': 'time',
+        'calendar_impact': 'time',
         # order-book features
         'book_bid_vol': 'order-book',
         'book_ask_vol': 'order-book',
