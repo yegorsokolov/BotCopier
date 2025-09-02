@@ -114,6 +114,7 @@ MANDATORY_FEATURES = {
     "book_bid_vol",
     "book_ask_vol",
     "book_imbalance",
+    "calendar_impact",
     "equity",
     "margin_level",
 }
@@ -779,6 +780,7 @@ def _train_lite_mode(
         if not f_chunk:
             continue
         for f in f_chunk:
+            f["calendar_impact"] = f.get("event_flag", 0.0) * f.get("event_impact", 0.0)
             feature_names_set.update(f.keys())
         if vec_reg is not None and f_chunk:
             Xr = vec_reg.transform(f_chunk)
@@ -1168,6 +1170,8 @@ def train(
                 symbol_graph=graph_params,
                 poly_degree=poly_degree,
             )
+            for f in f_chunk:
+                f["calendar_impact"] = f.get("event_flag", 0.0) * f.get("event_impact", 0.0)
             features.extend(f_chunk)
             labels_list.append(l_chunk)
             sl_list.append(sl_chunk)

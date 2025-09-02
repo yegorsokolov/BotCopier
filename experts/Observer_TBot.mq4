@@ -1184,26 +1184,22 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 
    if(entry==DEAL_ENTRY_IN || entry==DEAL_ENTRY_INOUT)
    {
-      double bid_vol, ask_vol, book_imb;
-      GetBookVolumes(symbol, bid_vol, ask_vol, book_imb);
       int event_id = NextEventId++;
       LogTrade(event_id, "OPEN", ticket, magic, "mt4", symbol, order_type,
                lots, price, req.price, sl, tp, 0.0, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), 0,
-               bid_vol, ask_vol, book_imb, slippage, equity, margin, risk_weight);
+               slippage, equity, margin, risk_weight);
       SetTicketState(ticket, STATE_OPEN);
       if(entry==DEAL_ENTRY_INOUT && remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
       {
          double cur_price = OrderOpenPrice();
          double cur_sl    = OrderStopLoss();
          double cur_tp    = OrderTakeProfit();
-         double bid_vol2, ask_vol2, book_imb2;
-         GetBookVolumes(symbol, bid_vol2, ask_vol2, book_imb2);
          event_id = NextEventId++;
          LogTrade(event_id, "MODIFY", ticket, magic, "mt4", symbol, order_type,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
-                  bid_vol2, ask_vol2, book_imb2, slippage, equity, margin, risk_weight);
+                  slippage, equity, margin, risk_weight);
          SetTicketState(ticket, STATE_MODIFY);
       }
    }
@@ -1214,13 +1210,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          open_time = OrderOpenTime();
       else if(OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
          open_time = OrderOpenTime();
-      double bid_vol3, ask_vol3, book_imb3;
-      GetBookVolumes(symbol, bid_vol3, ask_vol3, book_imb3);
       int event_id = NextEventId++;
       LogTrade(event_id, "CLOSE", ticket, magic, "mt4", symbol, order_type,
                lots, price, req.price, sl, tp, profit, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), open_time,
-               bid_vol3, ask_vol3, book_imb3, slippage, equity, margin, risk_weight);
+               slippage, equity, margin, risk_weight);
       SetTicketState(ticket, STATE_CLOSE);
       if(remaining==0.0)
          RemoveTicket(ticket);
@@ -1229,13 +1223,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
          double cur_price = OrderOpenPrice();
          double cur_sl    = OrderStopLoss();
          double cur_tp    = OrderTakeProfit();
-         double bid_vol4, ask_vol4, book_imb4;
-         GetBookVolumes(symbol, bid_vol4, ask_vol4, book_imb4);
          event_id = NextEventId++;
          LogTrade(event_id, "MODIFY", ticket, magic, "mt4", symbol, order_type,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
-                  bid_vol4, ask_vol4, book_imb4, slippage, equity, margin, risk_weight);
+                  slippage, equity, margin, risk_weight);
          SetTicketState(ticket, STATE_MODIFY);
       }
    }
@@ -1422,10 +1414,11 @@ void LogTrade(int event_id, string action, int ticket, int magic, string source,
               double req_price, double sl, double tp, double profit,
               double profit_after, double remaining, datetime time_event,
               string comment, double volume, datetime open_time,
-              double book_bid_vol, double book_ask_vol, double book_imbalance,
               double slippage, double equity, double margin_level,
               double risk_weight)
   {
+   double book_bid_vol, book_ask_vol, book_imbalance;
+   GetBookVolumes(symbol, book_bid_vol, book_ask_vol, book_imbalance);
    PendingTrade t;
    t.id = event_id;
    string trace_id = "";

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import logging
+import shutil
 
 import pytest
 
@@ -233,6 +234,7 @@ def test_model_serialization(tmp_path: Path):
     out_dir = tmp_path / "out"
     data_dir.mkdir()
     _write_sample_log(data_dir / "trades_sample.csv")
+    shutil.copy(Path(__file__).parent / "sample_calendar.csv", data_dir / "calendar.csv")
 
     train(data_dir, out_dir, use_orderbook=True)
 
@@ -250,6 +252,8 @@ def test_model_serialization(tmp_path: Path):
     assert "book_spread" in data.get("feature_names", [])
     assert "bid_ask_ratio" in data.get("feature_names", [])
     assert "book_imbalance_roll" in data.get("feature_names", [])
+    assert "book_imbalance" in data.get("feature_names", [])
+    assert "calendar_impact" in data.get("feature_names", [])
     assert data.get("weighted_by_net_profit") is True
 
 

@@ -891,3 +891,24 @@ def test_hashed_feature_alignment(tmp_path: Path):
     idx_spread = int(np.flatnonzero(vec_spread)[0])
     assert f"case {idx_hour}:" in content
     assert f"case {idx_spread}:" in content
+
+
+def test_calendar_and_book_features(tmp_path: Path):
+    model = {
+        "model_id": "calbook",
+        "magic": 321,
+        "coefficients": [0.1, 0.2],
+        "intercept": 0.0,
+        "threshold": 0.5,
+        "feature_names": ["calendar_impact", "book_imbalance"],
+    }
+    model_file = tmp_path / "model.json"
+    with open(model_file, "w") as f:
+        json.dump(model, f)
+    out_dir = tmp_path / "out"
+    generate(model_file, out_dir)
+    generated = list(out_dir.glob("Generated_calbook_*.mq4"))
+    assert len(generated) == 1
+    content = generated[0].read_text()
+    assert "CalendarImpact()" in content
+    assert "BookImbalance()" in content
