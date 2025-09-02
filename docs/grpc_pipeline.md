@@ -27,6 +27,10 @@ for each stream, and an alert is printed when either exceeds
 `SerializeMetrics`, allowing monitoring to distinguish which stream is
 failing.
 
+`anomaly_timeout_count` and `anomaly_retry_count` expose delays in anomaly
+evaluation so operators can track missing or slow responses from the
+background worker.
+
 The Python `scripts/metrics_collector.py` tool exposes these counters as
 Prometheus gauges and emits warnings when they grow, allowing operators to
 alert on gRPC backpressure or outages.

@@ -4,7 +4,7 @@
 
 #import "observer_flight.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, int anomaly_timeout_count, int anomaly_retry_count, uchar &out[]);
 bool FlightClientInit(string host, int port);
 bool FlightSendTrade(uchar &payload[], int len);
 bool FlightSendMetrics(uchar &payload[], int len);
@@ -90,6 +90,8 @@ int      MetricQueueDepth = 0;
 string   log_dir = "";
 const int SCHEMA_VERSION = 3;
 int      AnomalyLateResponses = 0;
+int      AnomalyTimeoutCount = 0;
+int      AnomalyRetryCount = 0;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -963,31 +965,28 @@ bool CheckAnomaly(string job_id, double price, double sl, double tp, double lots
       }
    }
    string payload = StringFormat("{\"id\":\"%s\",\"payload\":[%.5f,%.5f,%.5f,%.2f,%.5f,%.5f]}", job_id, price, sl, tp, lots, spread, slippage);
-   uchar data[];
-   StringToCharArray(payload, data);
-   uchar result[];
-   string headers = "Content-Type: application/json";
-   string rheaders = "";
-   int res = WebRequest("POST", AnomalyServiceUrl, headers, 1000, data, ArraySize(data)-1, result, rheaders);
-   return(res>=200 && res<300);
+   string fname = log_dir + "/anomaly_requests/" + job_id + ".json";
+   int h = FileOpen(fname, FILE_WRITE|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ);
+   if(h==INVALID_HANDLE)
+      return(false);
+   FileWriteString(h, payload);
+   FileClose(h);
+   return(true);
 }
 
 int PollAnomaly(string job_id, double &err)
 {
-   string url = AnomalyServiceUrl + "?id=" + job_id;
-   uchar data[];
-   uchar result[];
-   string rheaders = "";
-   int res = WebRequest("GET", url, "", 1000, data, 0, result, rheaders);
-   if(res==200)
-   {
-      string txt = CharArrayToString(result);
-      err = StrToDouble(txt);
-      return(1);
-   }
-   if(res==404)
+   string fname = log_dir + "/anomaly_results/" + job_id + ".txt";
+   if(!FileIsExist(fname))
       return(0);
-   return(-1);
+   int h = FileOpen(fname, FILE_READ|FILE_TXT|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE)
+      return(-1);
+   string txt = FileReadString(h);
+   FileClose(h);
+   err = StrToDouble(txt);
+   FileDelete(fname);
+   return(1);
 }
 
 void GetBookVolumes(string symbol, double &bid_vol, double &ask_vol, double &imbalance)
@@ -1075,6 +1074,13 @@ int OnInit()
    }
    else
       Print("Log directory exists: " + log_dir);
+
+   string aq_dir = log_dir + "/anomaly_requests";
+   if(!FileIsExist(aq_dir))
+      FolderCreate(aq_dir);
+   string ar_dir = log_dir + "/anomaly_results";
+   if(!FileIsExist(ar_dir))
+      FolderCreate(ar_dir);
    ArrayResize(pending_trades, MAX_TRADE_BUFFER);
    ArrayResize(pending_trade_lines, MAX_TRADE_BUFFER);
    ArrayResize(pending_trade_sizes, MAX_TRADE_BUFFER);
@@ -1354,15 +1360,12 @@ void ProcessAnomalyQueue()
          t.anomaly_local = lerr;
          t.anomaly_sent = true;
          t.anomaly_sent_time = now;
+         AnomalyRetryCount = 0;
          AnomalyQueue[0] = t;
       }
       else
       {
-         t.anomaly_local = lerr;
-         t.anomaly_status = "enqueue_fail";
-         t.comment_with_span = t.comment_with_span + ";anom_enqueue_fail" + StringFormat(";local=%.5f;remote=%.5f", t.anomaly_local, t.anomaly_remote);
-         FinalizeTradeEntry(t, false);
-         RemoveAnomaly(0);
+         AnomalyRetryCount++;
       }
       return;
    }
@@ -1377,6 +1380,7 @@ void ProcessAnomalyQueue()
       t.comment_with_span = t.comment_with_span + StringFormat(";local=%.5f;remote=%.5f", t.anomaly_local, t.anomaly_remote);
       FinalizeTradeEntry(t, is_anom);
       RemoveAnomaly(0);
+      AnomalyRetryCount = 0;
       return;
    }
    if(now - t.anomaly_sent_time > AnomalyTimeoutSeconds)
@@ -1386,8 +1390,11 @@ void ProcessAnomalyQueue()
       t.comment_with_span = t.comment_with_span + ";anom_timeout" + StringFormat(";local=%.5f;remote=%.5f", t.anomaly_local, t.anomaly_remote);
       FinalizeTradeEntry(t, HasAe ? (t.anomaly_local > AnomalyThreshold) : false);
       RemoveAnomaly(0);
+      AnomalyTimeoutCount++;
+      AnomalyRetryCount = 0;
       return;
    }
+   AnomalyRetryCount++;
    AnomalyQueue[0] = t;
 }
 
@@ -1781,15 +1788,17 @@ void WriteMetrics(datetime ts)
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
       int anomaly_pending = AnomalyQueueDepth;
       int anomaly_late = AnomalyLateResponses;
+      int anomaly_timeouts = AnomalyTimeoutCount;
+      int anomaly_retries = AnomalyRetryCount;
       // emit file/socket errors, queue depth, retry counts and latencies for monitoring
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
                                  TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
                                  trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
                                  FlightErrors, CpuLoad, FlushLatencyMs, NetworkLatencyMs,
                                  CachedBookRefreshSeconds, var_breach_count,
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
-                                 anomaly_late, TraceId, span_id);
+                                 anomaly_late, anomaly_timeouts, anomaly_retries, TraceId, span_id);
 
 
       uchar payload[];
@@ -1800,7 +1809,7 @@ void WriteMetrics(datetime ts)
          FlushLatencyMs, NetworkLatencyMs, CachedBookRefreshSeconds, var_breach_count,
          trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size,
          trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,
-         payload);
+         anomaly_timeouts, anomaly_retries, payload);
       if(len>0)
       {
          EnqueuePending(pending_metrics, pending_metric_sizes, pending_metric_lines, pending_metric_head,
