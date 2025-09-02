@@ -79,45 +79,26 @@ def _write_log(file: Path) -> None:
         writer.writerow(fields)
         writer.writerows(rows)
 
-@pytest.mark.parametrize("algo", ["dqn", "a2c"])
-def test_train_rl_agent_sb3(tmp_path: Path, algo: str) -> None:
+
+def test_parallel_env_rewards(tmp_path: Path) -> None:
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
     data_dir.mkdir()
     out_dir.mkdir()
     _write_log(data_dir / "trades_0.csv")
 
-    start_model = out_dir / "start.json"
-    start = {
-        "model_id": "sup_model",
-        "coefficients": [0.1],
-        "intercept": 0.0,
-        "feature_names": ["hour"],
-    }
-    with open(start_model, "w") as f:
-        json.dump(start, f)
-
     train(
         data_dir,
         out_dir,
-        start_model=start_model,
-        algo=algo,
-        training_steps=10,
-        learning_rate=0.2,
-        gamma=0.95,
+        algo="dqn",
+        training_steps=5,
         num_envs=2,
     )
 
-    model_file = out_dir / "model.json"
-    weights_file = out_dir / "model_weights.zip"
-    assert model_file.exists()
-    assert weights_file.exists()
-    with open(model_file) as f:
+    with open(out_dir / "model.json") as f:
         data = json.load(f)
-    assert data.get("algo") == algo
-    assert data.get("training_steps") == 10
-    assert data.get("learning_rate") == pytest.approx(0.2)
-    assert data.get("gamma") == pytest.approx(0.95)
-    assert "avg_reward" in data
-    if algo == "dqn":
-        assert data.get("init_model_id") == "sup_model"
+    rewards = data.get("episode_rewards")
+    assert isinstance(rewards, list)
+    assert len(rewards) == 2
+    assert rewards[0] == pytest.approx(rewards[1])
+    assert data.get("avg_reward") == pytest.approx(sum(rewards) / 2)

@@ -482,11 +482,13 @@ def train(
         model_cls = algo_map[algo_key]
         replay_args: Dict = {}
         if algo_key in {"dqn", "c51", "qr_dqn"}:
-            buffer_kwargs: Dict[str, float | int] = {"n_steps": n_step}
+            buffer_kwargs: Dict[str, float | int] = {}
             if HAS_PRB:
                 replay_args["replay_buffer_class"] = PrioritizedReplayBuffer
                 buffer_kwargs.update({"alpha": replay_alpha, "beta": replay_beta})
                 replay_args["learning_starts"] = 0
+                if n_step > 1:
+                    buffer_kwargs["n_step"] = n_step
             replay_args["replay_buffer_kwargs"] = buffer_kwargs
         model = model_cls(
             "MlpPolicy",
@@ -504,7 +506,10 @@ def train(
             model.learn(total_timesteps=training_steps - half)
         else:
             model.learn(total_timesteps=training_steps)
-        train_metrics = model.logger.get_log_dict()
+        try:
+            train_metrics = model.logger.get_log_dict()  # type: ignore[attr-defined]
+        except Exception:
+            train_metrics = {}
         if metrics_url:
             updates = _send_live_metrics(metrics_url, train_metrics)
             if isinstance(updates, dict):
@@ -517,7 +522,6 @@ def train(
         if self_play:
             model.set_env(env)
         preds: List[int] = []
-        total_r = 0.0
         obs, _ = eval_env.reset()
         obs = obs.reshape(1, -1)
         for i in range(len(actions)):
@@ -527,7 +531,6 @@ def train(
                 preds.append(act_i)
                 obs, reward, done, _, _ = eval_env.step(act_i)
                 obs = obs.reshape(1, -1)
-                total_r += float(reward)
                 dctx = dspan.get_span_context()
                 logger.info(
                     {"decision_id": i, "action": act_i, "reward": float(reward)},
@@ -536,6 +539,24 @@ def train(
                 if done:
                     break
         train_acc = float(np.mean(np.array(preds) == np.array(actions)))
+
+        # Evaluate episodic rewards for each environment
+        eval_vec_env = make_vec_env(make_trade_env, n_envs=num_envs, vec_env_cls=vec_cls)
+        vec_obs = eval_vec_env.reset()
+        dones = np.zeros(num_envs, dtype=bool)
+        episode_rewards = np.zeros(num_envs, dtype=float)
+        while not np.all(dones):
+            acts, _ = model.predict(vec_obs, deterministic=True)
+            vec_obs, rewards_step, dones, _ = eval_vec_env.step(acts)
+            episode_rewards += rewards_step
+        ctx_env = trace.get_current_span().get_span_context()
+        for idx, r in enumerate(episode_rewards.tolist()):
+            logger.info(
+                {"env_id": idx, "episode_reward": float(r)},
+                extra={"trace_id": ctx_env.trace_id, "span_id": ctx_env.span_id},
+            )
+        avg_ep_reward = float(np.mean(episode_rewards))
+        eval_vec_env.close()
 
         expected_return = float("nan")
         downside_risk = float("nan")
@@ -607,7 +628,8 @@ def train(
             "trained_at": datetime.utcnow().isoformat(),
             "feature_names": vec.get_feature_names_out().tolist(),
             "train_accuracy": train_acc,
-            "avg_reward": float(total_r / max(1, len(actions))),
+            "avg_reward": avg_ep_reward,
+            "episode_rewards": episode_rewards.tolist(),
             "training_steps": training_steps,
             "learning_rate": learning_rate,
             "epsilon": epsilon,
