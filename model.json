@@ -19,6 +19,8 @@
   "training_mode": "lite",
   "mode": "lite",
   "drift_metric": 0.0,
+  "drift_history": [],
+  "retrain_history": [],
   "teacher_accuracy": 0.0,
   "teacher_metrics": {
     "accuracy": 0.0,
