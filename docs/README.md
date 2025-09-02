@@ -27,7 +27,7 @@ Downstream components read these flags to stay in sync:
 When order‑book logging is active the trainer derives additional features:
 ``book_spread`` (ask minus bid volume), ``bid_ask_ratio`` and a rolling
 ``book_imbalance_roll`` averaged over the last five updates. These complement
-the raw ``book_bid_vol``, ``book_ask_vol`` and ``book_imbalance`` inputs
+the normalised ``book_bid_vol``, ``book_ask_vol`` and ``book_imbalance`` inputs
 extracted from the Observer EA.
 
 This metadata is persisted in ``model.json`` so that models trained on one
