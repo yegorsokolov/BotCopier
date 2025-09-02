@@ -241,6 +241,14 @@ class OnlineTrainer:
         y = [int(rec["y"]) for rec in batch]
         return np.asarray(X), np.asarray(y)
 
+    def _log_validation(self, X: np.ndarray, y: np.ndarray) -> None:
+        try:
+            preds = self.clf.predict(X)
+            acc = float(np.mean(preds == y))
+        except Exception:
+            acc = 0.0
+        logger.info({"event": "validation", "size": len(y), "accuracy": acc})
+
     def update(self, batch: List[Dict[str, Any]]) -> bool:
         with tracer.start_as_current_span("train_batch") as span:
             X, y = self._vectorise(batch)
@@ -250,11 +258,12 @@ class OnlineTrainer:
                 self.clf.partial_fit(X, y)
             coef = self.clf.coef_[0].tolist()
             intercept = float(self.clf.intercept_[0])
-            changed = self._prev_coef != coef + [intercept]
-            if changed:
-                self._prev_coef = coef + [intercept]
-                self._save()
-                self._maybe_generate()
+            prev = self._prev_coef
+            self._prev_coef = coef + [intercept]
+            changed = prev != self._prev_coef
+            self._save()
+            self._maybe_generate()
+            self._log_validation(X, y)
             ctx = span.get_span_context()
             logger.info(
                 {
