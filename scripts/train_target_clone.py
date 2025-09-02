@@ -940,6 +940,10 @@ def train(
 ):
     """Train a simple classifier model from the log directory."""
     news_data = _load_news_sentiment(news_sentiment_file) if news_sentiment_file else None
+    if calendar_events is None:
+        cal_file = data_dir / "calendar.csv"
+        if cal_file.exists():
+            calendar_events = _load_calendar(cal_file)
     if replay_file:
         try:
             rep_df = pd.read_csv(replay_file)
@@ -1474,7 +1478,6 @@ def train(
         f.pop("tp_hit_dist", None)
         f.pop("symbol", None)
         f.pop("event_id", None)
-        f.pop("calendar_event_id", None)
     for f in feat_val_clf:
         feature_names_set2.update(f.keys())
         f.pop("profit", None)
@@ -1485,7 +1488,6 @@ def train(
         f.pop("tp_hit_dist", None)
         f.pop("symbol", None)
         f.pop("event_id", None)
-        f.pop("calendar_event_id", None)
 
     feat_train_reg = [dict(f) for f in feat_train_clf]
     feat_val_reg = [dict(f) for f in feat_val_clf]

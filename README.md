@@ -379,6 +379,17 @@ Feature extraction results are cached to ``features.parquet`` and reused on
 subsequent runs when the ``feature_names`` and ``last_event_id`` in
 ``model.json`` match. Use ``--no-cache`` to force recomputation if needed.
 
+### Calendar events
+
+If a ``calendar.csv`` file is present alongside exported logs or supplied via
+``--calendar-file``, the training script augments each trade with nearby
+economic event information. The CSV requires columns ``time`` (parseable
+timestamp), ``impact`` (numeric severity) and an optional ``id`` identifying the
+event. Features ``event_flag``, ``event_impact`` and ``calendar_event_id`` (with
+one-hot ``event_id_*`` entries) are added for events occurring within the
+``--event-window`` minutes around each trade. The generated Expert Advisor uses
+``CalendarEventIdAt()`` to expose these IDs via ``GetFeature()``.
+
 When ``--incremental`` is used with the default ``logreg`` model, training
 updates the existing classifier in place by calling ``partial_fit`` on batches
 of new samples. The class vector ``[0, 1]`` is stored in ``model.json`` so
