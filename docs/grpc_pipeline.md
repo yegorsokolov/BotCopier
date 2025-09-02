@@ -20,8 +20,12 @@ appended to CSV files for downstream processing.
 (`pending_trades` and `pending_metrics`). `LogTrade` and `WriteMetrics`
 push messages into these buffers and the `OnTimer` handler periodically
 drains them via `GrpcSendTrade` and `GrpcSendMetrics`. Failed sends are
-retried with exponential backoff and the retry counters `trade_retry_count`
-and `metric_retry_count` are exported through `SerializeMetrics`.
+retried with exponential backoff. Separate counters
+`trade_retry_count` and `metric_retry_count` track consecutive failures
+for each stream, and an alert is printed when either exceeds
+`FallbackRetryThreshold`. Both counters are exported through
+`SerializeMetrics`, allowing monitoring to distinguish which stream is
+failing.
 
 The Python `scripts/metrics_collector.py` tool exposes these counters as
 Prometheus gauges and emits warnings when they grow, allowing operators to
