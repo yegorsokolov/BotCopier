@@ -252,10 +252,12 @@ def _build_feature_cases(
             return 'GetRegime()'
         if fname.startswith('ratio_'):
             parts = fname[6:].split('_')
-            if len(parts) == 2:
-                return f'iClose("{parts[0]}", 0, 0) / iClose("{parts[1]}", 0, 0)'
+            if len(parts) >= 2:
+                sym1 = parts[0]
+                sym2 = '_'.join(parts[1:])
+                return f'PriceRatio("{sym1}", "{sym2}")'
             if len(parts) == 1:
-                return f'iClose(SymbolToTrade, 0, 0) / iClose("{parts[0]}", 0, 0)'
+                return f'PriceRatio("{parts[0]}")'
         if fname.startswith('corr_'):
             parts = fname[5:].split('_')
             if len(parts) >= 2:

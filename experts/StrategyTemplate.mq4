@@ -919,6 +919,20 @@ double BookImbalanceRoll()
    return(CachedBookImbalanceRoll);
 }
 
+double PriceRatio(string sym1, string sym2="")
+{
+   if(sym2 == "")
+   {
+      sym2 = sym1;
+      sym1 = SymbolToTrade;
+   }
+   double close1 = iClose(sym1, 0, 0);
+   double close2 = iClose(sym2, 0, 0);
+   if(close2 == 0.0)
+      return(0.0);
+   return(close1 / close2);
+}
+
 double PairCorrelation(string sym1, string sym2="", int window=5)
 {
    if(sym2 == "")

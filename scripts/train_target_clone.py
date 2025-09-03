@@ -431,19 +431,6 @@ def _export_onnx(clf, feature_names: List[str], out_dir: Path) -> None:
         print(f"ONNX conversion skipped: {exc}")
 
 
-    """Return correlation of the last ``window`` points of ``a`` and ``b``."""
-    if not a or not b:
-        return 0.0
-    w = min(len(a), len(b), window)
-    if w < 2:
-        return 0.0
-    arr1 = np.array(a[-w:], dtype=float)
-    arr2 = np.array(b[-w:], dtype=float)
-    if arr1.std(ddof=0) == 0 or arr2.std(ddof=0) == 0:
-        return 0.0
-    return float(np.corrcoef(arr1, arr2)[0, 1])
-
-
 
 
 def _load_calendar(file: Path) -> list[tuple[datetime, float, int]]:
@@ -3123,7 +3110,7 @@ def main():
     p.add_argument('--no-cache', action='store_true', help='recompute features even if cached')
     p.add_argument(
         '--corr-symbols',
-        help='comma separated symbol pairs (e.g. EURUSD:USDJPY or EURUSD_USDJPY)'
+        help='comma separated symbol pairs (e.g. EURUSD:USDCHF) used for correlation/ratio features'
     )
     p.add_argument('--corr-window', type=int, default=5, help='window for correlation calculations')
     p.add_argument('--symbol-graph', help='JSON file describing symbol correlation graph')
