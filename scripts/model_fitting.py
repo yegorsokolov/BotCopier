@@ -9,6 +9,8 @@ import pandas as pd
 from pydantic import ValidationError  # type: ignore
 from schemas.trades import TradeEvent  # type: ignore
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
 try:  # pragma: no cover - optional dependency
@@ -44,6 +46,27 @@ def fit_logistic_regression(
         clf.intercept_ = np.array([existing_model.get("intercept", 0.0)])
     clf.fit(X, y, sample_weight=sample_weight)
     return clf
+
+
+def _compute_decay_weights(
+    event_times: np.ndarray, half_life_days: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return age in days and exponential decay weights.
+
+    Parameters
+    ----------
+    event_times : np.ndarray
+        Array of event timestamps as ``datetime64``.
+    half_life_days : float
+        Half-life in days controlling the decay rate.
+    """
+
+    ref_time = event_times.max()
+    age_days = (
+        (ref_time - event_times).astype("timedelta64[s]").astype(float) / (24 * 3600)
+    )
+    weights = 0.5 ** (age_days / half_life_days)
+    return age_days, weights
 
 
 def load_logs_db(db_file: Path) -> pd.DataFrame:
@@ -485,4 +508,68 @@ def scale_features(scaler: StandardScaler, X: np.ndarray) -> np.ndarray:
     """Update ``scaler`` with ``X`` and return scaled data."""
     scaler.partial_fit(X)
     return scaler.transform(X)
+
+
+def train_model(
+    X: np.ndarray,
+    y: np.ndarray,
+    event_times: np.ndarray,
+    out_dir: Path,
+    *,
+    half_life_days: float = 0.0,
+    C: float = 1.0,
+) -> dict:
+    """Train logistic regression with time-decayed sample weights.
+
+    A chronological ``TimeSeriesSplit`` is used to obtain a validation set from
+    the most recent data to prevent leakage.  When ``half_life_days`` is
+    positive, sample weights are decayed exponentially based on the age of each
+    trade.
+    """
+
+    n_splits = max(1, min(5, len(y) - 1))
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+    train_idx, val_idx = list(tscv.split(X))[-1]
+    X_train, X_val = X[train_idx], X[val_idx]
+    y_train, y_val = y[train_idx], y[val_idx]
+
+    sw = None
+    if half_life_days > 0:
+        _, decay = _compute_decay_weights(event_times[train_idx], half_life_days)
+        sw = decay
+
+    clf = fit_logistic_regression(X_train, y_train, sample_weight=sw, C=C)
+
+    preds = clf.predict(X_val)
+    probas = clf.predict_proba(X_val)[:, 1]
+    val_acc = accuracy_score(y_val, preds)
+    val_f1 = f1_score(y_val, preds)
+    if len(np.unique(y_val)) > 1:
+        val_roc = roc_auc_score(y_val, probas)
+    else:  # pragma: no cover - single-class validation set
+        val_roc = float("nan")
+
+    model = {
+        "coefficients": clf.coef_[0].astype(float).tolist(),
+        "intercept": float(clf.intercept_[0]),
+        "classes": [int(c) for c in clf.classes_],
+        "half_life_days": float(half_life_days),
+        "validation_metrics": {
+            "accuracy": float(val_acc),
+            "f1": float(val_f1),
+            "roc_auc": float(val_roc),
+        },
+    }
+
+    if half_life_days > 0:
+        model["weight_decay"] = {
+            "half_life_days": float(half_life_days),
+            "ref_time": np.datetime_as_string(event_times.max(), unit="s"),
+        }
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model, f)
+
+    return model
 
