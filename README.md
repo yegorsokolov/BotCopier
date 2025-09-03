@@ -52,6 +52,13 @@ The EA records trade openings, closings and order modifications through the `OnT
    ```bash
    python scripts/train_target_clone.py --data-dir logs --out-dir models
    ```
+   To add rolling correlations or price ratios with peer symbols include
+   pairs via ``--corr-symbols``:
+
+   ```bash
+   python scripts/train_target_clone.py --data-dir logs --out-dir models \
+       --corr-symbols EURUSD:USDCHF
+   ```
    The script inspects CPU, RAM, GPU and disk space and enables advanced
    indicators or deep models only when sufficient resources are available.
    On constrained VPS instances it defaults to a lean configuration with a

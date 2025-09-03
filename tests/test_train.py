@@ -831,13 +831,19 @@ def test_corr_features(tmp_path: Path):
     _write_log(log_file)
     extra = {"USDCHF": [0.9, 0.8]}
 
-    train(data_dir, out_dir, corr_map={"EURUSD": ["USDCHF"]}, extra_price_series=extra)
+    train(
+        data_dir,
+        out_dir,
+        corr_map={"EURUSD": ["USDCHF"]},
+        extra_price_series=extra,
+        grid_search=False,
+    )
 
     with open(out_dir / "model.json") as f:
         data = json.load(f)
     feats = data.get("feature_names", [])
-    assert "ratio_USDCHF" in feats
-    assert "corr_USDCHF" in feats
+    assert "ratio_EURUSD_USDCHF" in feats
+    assert "corr_EURUSD_USDCHF" in feats
 
     df, _, _ = _load_logs(data_dir)
     feature_dicts, *_ = _extract_features(
@@ -845,7 +851,23 @@ def test_corr_features(tmp_path: Path):
         corr_map={"EURUSD": ["USDCHF"]},
         extra_price_series=extra,
     )
-    assert feature_dicts[1]["ratio_USDCHF"] == pytest.approx(1.1000 / 0.9)
+    assert feature_dicts[1]["ratio_EURUSD_USDCHF"] == pytest.approx(1.2000 / 0.8)
+
+    # ensure feature is kept during generation
+    with open(out_dir / "model.json") as f:
+        model = json.load(f)
+    fi = model.setdefault("feature_importance", {})
+    fi["corr_EURUSD_USDCHF"] = 1.0
+    fi["ratio_EURUSD_USDCHF"] = 1.0
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model, f)
+
+    ea_dir = tmp_path / "ea"
+    generate(out_dir / "model.json", ea_dir)
+    generated = list(ea_dir.glob("Generated_*_*.mq4"))
+    assert generated
+    content = generated[0].read_text()
+    assert 'PairCorrelation("EURUSD", "USDCHF")' in content
 
 
 def test_slippage_feature(tmp_path: Path):

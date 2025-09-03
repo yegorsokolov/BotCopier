@@ -441,7 +441,7 @@ def test_generate_ratio_feature(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert 'iClose("EURUSD", 0, 0) / iClose("USDCHF", 0, 0)' in content
+    assert 'PriceRatio("EURUSD", "USDCHF")' in content
 
 
 def test_generate_corr_feature(tmp_path: Path):
@@ -451,7 +451,7 @@ def test_generate_corr_feature(tmp_path: Path):
         "coefficients": [0.1],
         "intercept": 0.0,
         "threshold": 0.5,
-        "feature_names": ["corr_USDCHF"],
+        "feature_names": ["corr_EURUSD_USDCHF"],
     }
     model_file = tmp_path / "model.json"
     with open(model_file, "w") as f:
@@ -464,7 +464,7 @@ def test_generate_corr_feature(tmp_path: Path):
     assert len(generated) == 1
     with open(generated[0]) as f:
         content = f.read()
-    assert 'PairCorrelation(SymbolToTrade, "USDCHF")' in content
+    assert 'PairCorrelation("EURUSD", "USDCHF")' in content
 
 
 def test_generate_rl_fused(tmp_path: Path):
