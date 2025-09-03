@@ -5,7 +5,7 @@ import pyarrow as pa
 import pyarrow.flight as flight
 
 from scripts.flight_server import FlightServer
-from schemas import METRIC_SCHEMA, TRADE_SCHEMA
+from schemas import METRIC_SCHEMA, TRADE_SCHEMA, DECISION_SCHEMA
 
 
 def test_flight_server_roundtrip():
@@ -83,6 +83,34 @@ def test_flight_server_roundtrip():
     assert t_ack_buf.to_pybytes() == b"1"
     t_writer.close()
 
+    # send a decision batch
+    d_desc = flight.FlightDescriptor.for_path("decisions")
+    d_batch = pa.record_batch([
+        pa.array([1]),  # schema_version
+        pa.array([1]),  # event_id
+        pa.array(["2024-01-01T00:00:00"]),
+        pa.array(["v1"]),
+        pa.array(["buy"]),
+        pa.array([0.5]),
+        pa.array([1.0]),
+        pa.array([1.0]),
+        pa.array([0]),
+        pa.array([0]),
+        pa.array([1]),
+        pa.array([0.1]),
+        pa.array([0.2]),
+        pa.array([0.1]),
+        pa.array([0]),
+        pa.array(["f"]),
+        pa.array(["trace"]),
+        pa.array(["span"]),
+    ], schema=DECISION_SCHEMA)
+    d_writer, d_reader = client.do_put(d_desc, DECISION_SCHEMA)
+    d_writer.write_batch(d_batch)
+    d_ack_buf = d_reader.read()
+    assert d_ack_buf.to_pybytes() == b"1"
+    d_writer.close()
+
     # verify metrics
     m_info = client.get_flight_info(m_desc)
     m_reader = client.do_get(m_info.endpoints[0].ticket)
@@ -94,6 +122,12 @@ def test_flight_server_roundtrip():
     t_reader = client.do_get(t_info.endpoints[0].ticket)
     t_table = t_reader.read_all()
     assert t_table.num_rows == 1
+
+    # verify decisions
+    d_info = client.get_flight_info(d_desc)
+    d_reader = client.do_get(d_info.endpoints[0].ticket)
+    d_table = d_reader.read_all()
+    assert d_table.num_rows == 1
 
     server.shutdown()
     t.join(timeout=1)

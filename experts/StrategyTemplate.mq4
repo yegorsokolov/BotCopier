@@ -6,6 +6,12 @@ bool ShmRingInit(string name, int size);
 bool ShmRingRead(int &msg_type, uchar &payload[], int &len);
 #import
 
+#import "observer_flight.dll"
+int SerializeDecision(int schema_version, int event_id, string timestamp, string model_version, string action, double probability, double sl_dist, double tp_dist, int model_idx, int regime, int chosen, double risk_weight, double variance, double lots_predicted, int executed_model_idx, string features, string trace_id, string span_id, uchar &out[]);
+bool FlightClientInit(string host, int port);
+bool FlightSendDecision(uchar &payload[], int len);
+#import
+
 extern string SymbolToTrade = "EURUSD";
 extern double Lots = 0.1;
 extern int MagicNumber = 1234;
@@ -25,6 +31,8 @@ extern double UncertaintyMargin = 0.05;
 extern double MaxPredictiveVariance = 0.1;
 extern string DecisionLogSocketHost = "127.0.0.1";
 extern int    DecisionLogSocketPort = 9001;
+extern string FlightServerHost = "127.0.0.1";
+extern int    FlightServerPort = 50051;
 extern string ModelVersion = "";
 extern string EncoderOnnxFile = "__ENCODER_ONNX__";
 extern string ModelOnnxFile = "__MODEL_ONNX__";
@@ -168,6 +176,9 @@ int      DecisionLogHandle = INVALID_HANDLE;
 int      UncertainLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
 int      SocketErrors = 0;
+bool     DecisionFlightConnected = false;
+int      FlightErrors = 0;
+const int DECISION_SCHEMA_VERSION = 1;
 int      NextDecisionId = 1;
 int      ExecutedModelIdx = -1;
 bool UseOnnxEncoder = false;
@@ -501,7 +512,8 @@ int OnInit()
          else
             Print("Decision log open failed: ", GetLastError());
       }
-  }
+      DecisionFlightConnected = FlightClientInit(FlightServerHost, FlightServerPort);
+   }
    UncertainLogHandle = FileOpen(UncertainDecisionFile, FILE_CSV|FILE_WRITE|FILE_READ|FILE_TXT|FILE_SHARE_WRITE|FILE_SHARE_READ, ';');
    if(UncertainLogHandle != INVALID_HANDLE)
    {
@@ -1500,11 +1512,29 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    if(EnableDecisionLogging && DecisionSocket != INVALID_HANDLE)
    {
       string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"chosen\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"executed_model_idx\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
-                                 NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
+                                NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       if(SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1) <= 0)
          SocketErrors++;
+   }
+   if(EnableDecisionLogging && DecisionFlightConnected)
+   {
+      uchar payload[];
+      int dlen = SerializeDecision(DECISION_SCHEMA_VERSION, NextDecisionId,
+                                   TimeToString(now, TIME_DATE|TIME_SECONDS),
+                                   ModelVersion, action, prob, sl_dist, tp_dist,
+                                   modelIdx, regime, chosen, riskWeight, variance,
+                                   lots, ExecutedModelIdx, feat_vals, trace_id,
+                                   span_id, payload);
+      if(dlen > 0)
+      {
+         if(!FlightSendDecision(payload, dlen))
+         {
+            FlightErrors++;
+            DecisionFlightConnected = false;
+         }
+      }
    }
    NextDecisionId++;
 }

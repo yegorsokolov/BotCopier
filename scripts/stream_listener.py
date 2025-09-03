@@ -53,6 +53,7 @@ try:  # pydantic validation schemas
     from pydantic import ValidationError  # type: ignore
     from schemas.trades import TradeEvent, TRADE_SCHEMA  # type: ignore
     from schemas.metrics import MetricEvent, METRIC_SCHEMA  # type: ignore
+    from schemas.decisions import DecisionEvent, DECISION_SCHEMA  # type: ignore
 except Exception:  # pragma: no cover - minimal fallback
     class ValidationError(Exception):
         pass
@@ -64,7 +65,7 @@ except Exception:  # pragma: no cover - minimal fallback
         def dict(self):  # mimic pydantic API
             return dict(self)
 
-    TradeEvent = MetricEvent = _Event  # type: ignore
+    TradeEvent = MetricEvent = DecisionEvent = _Event  # type: ignore
 try:  # optional websocket client
     from websocket import create_connection, WebSocket  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -284,6 +285,7 @@ logger = TraceAdapter(logger, {})
 # optional dashboard websocket connections
 ws_trades: WebSocket | None = None
 ws_metrics: WebSocket | None = None
+ws_decisions: WebSocket | None = None
 
 # ADWIN drift detectors
 ADWIN_STATE_PATH = Path("logs/adwin_state.pkl")
@@ -598,6 +600,55 @@ def process_metric(msg) -> None:
             _save_adwin()
 
 
+def process_decision(msg) -> None:
+    """Handle decision events from the strategy."""
+    global current_trace_id, current_span_id
+    trace_id = _get(msg, "traceId", "trace_id") or ""
+    span_id = _get(msg, "spanId", "span_id") or ""
+    try:
+        record = {
+            "schema_version": SCHEMA_VERSION,
+            "event_id": _get(msg, "eventId", "event_id"),
+            "timestamp": _get(msg, "timestamp"),
+            "model_version": _get(msg, "modelVersion", "model_version"),
+            "action": _get(msg, "action"),
+            "probability": _get(msg, "probability"),
+            "sl_dist": _get(msg, "slDist", "sl_dist"),
+            "tp_dist": _get(msg, "tpDist", "tp_dist"),
+            "model_idx": _get(msg, "modelIdx", "model_idx"),
+            "regime": _get(msg, "regime"),
+            "chosen": _get(msg, "chosen"),
+            "risk_weight": _get(msg, "riskWeight", "risk_weight"),
+            "variance": _get(msg, "variance"),
+            "lots_predicted": _get(msg, "lotsPredicted", "lots_predicted"),
+            "executed_model_idx": _get(msg, "executedModelIdx", "executed_model_idx"),
+            "features": _get(msg, "features"),
+        }
+        record = DecisionEvent(**record).dict()
+    except (AttributeError, ValidationError, TypeError) as e:
+        logger.warning({"error": "invalid decision event", "details": str(e)})
+        return
+    ctx_in = _context_from_ids(trace_id, span_id)
+    with tracer.start_as_current_span("process_decision", context=ctx_in) as span:
+        ctx = span.get_span_context()
+        record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
+        record.setdefault("span_id", span_id or format_span_id(ctx.span_id))
+        extra = {}
+        try:
+            extra["trace_id"] = int(record["trace_id"], 16)
+            extra["span_id"] = int(record["span_id"], 16)
+        except (KeyError, ValueError):
+            pass
+        logger.info(record, extra=extra)
+        current_trace_id = record.get("trace_id", "")
+        current_span_id = record.get("span_id", "")
+        if ws_decisions:
+            try:
+                ws_decisions.send(json.dumps(record))
+            except Exception as e:  # pragma: no cover
+                logger.warning({"error": "websocket send failed", "details": str(e)})
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Listen for observer events")
     p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
@@ -610,15 +661,17 @@ def main() -> int:
     start_system_monitor()
 
     if args.ws_url and create_connection:
-        global ws_trades, ws_metrics
+        global ws_trades, ws_metrics, ws_decisions
         try:
             headers = [f"Authorization: Bearer {args.api_token}"] if args.api_token else []
             ws_trades = create_connection(f"{args.ws_url}/ws/trades", header=headers)
             ws_metrics = create_connection(f"{args.ws_url}/ws/metrics", header=headers)
+            ws_decisions = create_connection(f"{args.ws_url}/ws/decisions", header=headers)
         except Exception as e:  # pragma: no cover - network issues
             logger.warning({"error": "websocket connect failed", "details": str(e)})
             ws_trades = None
             ws_metrics = None
+            ws_decisions = None
 
     write_run_info()
     ring = None
@@ -654,6 +707,11 @@ def main() -> int:
                     ws_metrics.close()
                 except Exception:
                     pass
+            if ws_decisions:
+                try:
+                    ws_decisions.close()
+                except Exception:
+                    pass
         return 0
 
     async def _flight_run() -> None:
@@ -683,6 +741,7 @@ def main() -> int:
         await asyncio.gather(
             poll("trades", process_trade, TRADE_SCHEMA),
             poll("metrics", process_metric, METRIC_SCHEMA),
+            poll("decisions", process_decision, DECISION_SCHEMA),
         )
 
     try:
@@ -696,6 +755,11 @@ def main() -> int:
         if ws_metrics:
             try:
                 ws_metrics.close()
+            except Exception:
+                pass
+        if ws_decisions:
+            try:
+                ws_decisions.close()
             except Exception:
                 pass
     return 0

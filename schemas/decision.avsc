@@ -1,0 +1,25 @@
+{
+  "type": "record",
+  "name": "DecisionEvent",
+  "namespace": "bot",
+  "fields": [
+    {"name": "schema_version", "type": "int"},
+    {"name": "event_id", "type": "int"},
+    {"name": "timestamp", "type": "string"},
+    {"name": "model_version", "type": "string"},
+    {"name": "action", "type": "string"},
+    {"name": "probability", "type": "double"},
+    {"name": "sl_dist", "type": "double"},
+    {"name": "tp_dist", "type": "double"},
+    {"name": "model_idx", "type": "int"},
+    {"name": "regime", "type": "int"},
+    {"name": "chosen", "type": "int"},
+    {"name": "risk_weight", "type": "double"},
+    {"name": "variance", "type": "double"},
+    {"name": "lots_predicted", "type": "double"},
+    {"name": "executed_model_idx", "type": "int"},
+    {"name": "features", "type": "string"},
+    {"name": "trace_id", "type": "string", "default": ""},
+    {"name": "span_id", "type": "string", "default": ""}
+  ]
+}
