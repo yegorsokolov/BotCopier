@@ -450,6 +450,26 @@ int OnInit()
       UseOnnxEncoder = true;
    if(StringLen(ModelOnnxFile) > 0 && FileIsExist(ModelOnnxFile))
       UseOnnxModel = true;
+   // Sort calendar times and keep impacts/ids paired
+   int calCount = ArraySize(CalendarTimes);
+   if(calCount > 1)
+   {
+      int order[];
+      ArrayResize(order, calCount);
+      ArraySort(CalendarTimes, WHOLE_ARRAY, 0, MODE_ASCEND, order);
+      double impTmp[];
+      int idTmp[];
+      ArrayResize(impTmp, calCount);
+      ArrayResize(idTmp, calCount);
+      for(int i=0; i<calCount; i++)
+      {
+         impTmp[i] = CalendarImpacts[order[i]];
+         if(i < ArraySize(CalendarIds))
+            idTmp[i] = CalendarIds[order[i]];
+      }
+      ArrayCopy(CalendarImpacts, impTmp);
+      ArrayCopy(CalendarIds, idTmp);
+   }
    MarketBookAdd(SymbolToTrade);
    ShmRingInit("regime_ring", 1<<10);
    if(EnableDecisionLogging)
@@ -660,16 +680,34 @@ int CalendarEventId()
 
 int CalendarEventIdAt(datetime ts)
 {
-   int bestId = -1;
+   int n = ArraySize(CalendarTimes);
+   if(n == 0)
+      return(-1);
+   int idx = ArrayBsearch(CalendarTimes, ts);
    double maxImp = 0.0;
-   for(int i=0; i<ArraySize(CalendarTimes); i++)
-      if(MathAbs(ts - CalendarTimes[i]) <= EventWindowMinutes * 60)
-         if(CalendarImpacts[i] > maxImp)
-         {
-            maxImp = CalendarImpacts[i];
-            if(i < ArraySize(CalendarIds))
-               bestId = CalendarIds[i];
-         }
+   int bestId = -1;
+   int i = idx;
+   while(i >= 0 && MathAbs(ts - CalendarTimes[i]) <= EventWindowMinutes * 60)
+   {
+      if(CalendarImpacts[i] > maxImp)
+      {
+         maxImp = CalendarImpacts[i];
+         if(i < ArraySize(CalendarIds))
+            bestId = CalendarIds[i];
+      }
+      i--;
+   }
+   i = idx + 1;
+   while(i < n && MathAbs(ts - CalendarTimes[i]) <= EventWindowMinutes * 60)
+   {
+      if(CalendarImpacts[i] > maxImp)
+      {
+         maxImp = CalendarImpacts[i];
+         if(i < ArraySize(CalendarIds))
+            bestId = CalendarIds[i];
+      }
+      i++;
+   }
    return(bestId);
 }
 
