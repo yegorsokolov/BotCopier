@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monitor feature drift using PSI or ADWIN and retrain model when necessary."""
+"""Monitor feature drift using PSI and KS statistics and retrain when necessary."""
 
 from __future__ import annotations
 
@@ -13,11 +13,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-try:  # optional dependency
-    from river.drift import ADWIN  # type: ignore
-except Exception:  # pragma: no cover - optional
-    ADWIN = None
 
 try:  # pragma: no cover - fallback for package import
     from otel_logging import setup_logging
@@ -44,12 +39,28 @@ def _psi(expected: pd.Series, actual: pd.Series, bins: int = 10) -> float:
     )
 
 
-def _compute_psi(baseline_file: Path, recent_file: Path) -> float:
-    """Average PSI across common columns."""
+def _ks(expected: pd.Series, actual: pd.Series) -> float:
+    """Kolmogorov-Smirnov statistic between two distributions."""
+    try:  # pragma: no cover - external dependency
+        from scipy.stats import ks_2samp  # type: ignore
+    except Exception:  # Fallback implementation
+        expected_sorted = np.sort(expected)
+        actual_sorted = np.sort(actual)
+        all_vals = np.union1d(expected_sorted, actual_sorted)
+        cdf1 = np.searchsorted(expected_sorted, all_vals, side="right") / len(expected_sorted)
+        cdf2 = np.searchsorted(actual_sorted, all_vals, side="right") / len(actual_sorted)
+        return float(np.max(np.abs(cdf1 - cdf2)))
+    else:
+        return float(ks_2samp(expected, actual).statistic)
+
+
+def _compute_metrics(baseline_file: Path, recent_file: Path) -> dict[str, float]:
+    """Return average PSI and KS across common columns."""
     base = pd.read_csv(baseline_file)
     recent = pd.read_csv(recent_file)
     features = [c for c in base.columns if c in recent.columns]
-    drifts: list[float] = []
+    psi_vals: list[float] = []
+    ks_vals: list[float] = []
     for col in features:
         try:
             b = base[col].astype(float).dropna()
@@ -58,39 +69,16 @@ def _compute_psi(baseline_file: Path, recent_file: Path) -> float:
             continue
         if b.empty or r.empty:
             continue
-        drifts.append(_psi(b, r))
-    return float(np.mean(drifts)) if drifts else 0.0
+        psi_vals.append(_psi(b, r))
+        ks_vals.append(_ks(b, r))
+    return {
+        "psi": float(np.mean(psi_vals)) if psi_vals else 0.0,
+        "ks": float(np.mean(ks_vals)) if ks_vals else 0.0,
+    }
 
 
-def _compute_adwin(baseline_file: Path, recent_file: Path) -> float:
-    """Fraction of features where ADWIN detects drift."""
-    if ADWIN is None:
-        logger.warning("ADWIN not available; returning 0 drift")
-        return 0.0
-    base = pd.read_csv(baseline_file)
-    recent = pd.read_csv(recent_file)
-    features = [c for c in base.columns if c in recent.columns]
-    if not features:
-        return 0.0
-    drifted = 0
-    for col in features:
-        try:
-            series = pd.concat([base[col], recent[col]]).astype(float).dropna()
-        except Exception:
-            continue
-        det = ADWIN()
-        flagged = False
-        for val in series:
-            det.update(float(val))
-            if det.drift_detected:
-                flagged = True
-        if flagged:
-            drifted += 1
-    return drifted / len(features)
-
-
-def _update_model(model_json: Path, metric: float, method: str, retrained: bool) -> None:
-    """Record drift metric and retrain timestamp in ``model.json``."""
+def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) -> None:
+    """Record drift metrics and retrain timestamp in ``model.json``."""
     ts = datetime.utcnow().isoformat()
     data: dict[str, object] = {}
     if model_json.exists():
@@ -98,14 +86,18 @@ def _update_model(model_json: Path, metric: float, method: str, retrained: bool)
             data = json.loads(model_json.read_text())
         except Exception:
             data = {}
-    data["drift_metric"] = metric
+    max_metric = max(metrics.values()) if metrics else 0.0
+    data["drift_metric"] = max_metric
+    data["drift_metrics"] = metrics
     history = data.setdefault("drift_history", [])
     if isinstance(history, list):
-        history.append({"time": ts, "metric": metric, "method": method})
+        entry = {"time": ts, **metrics}
+        history.append(entry)
     if retrained:
         retrain_hist = data.setdefault("retrain_history", [])
         if isinstance(retrain_hist, list):
-            retrain_hist.append({"time": ts, "metric": metric, "method": method})
+            entry = {"time": ts, **metrics}
+            retrain_hist.append(entry)
     model_json.write_text(json.dumps(data, indent=2))
 
 
@@ -113,29 +105,39 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Monitor drift and trigger retraining")
     p.add_argument("--baseline-file", type=Path, required=True)
     p.add_argument("--recent-file", type=Path, required=True)
-    p.add_argument("--method", choices=["psi", "adwin"], default="psi")
     p.add_argument("--drift-threshold", type=float, default=0.2)
     p.add_argument("--model-json", type=Path, default=Path("model.json"))
-    p.add_argument("--experts-dir", type=Path, default=Path("experts"))
+    p.add_argument("--log-dir", type=Path, required=True)
+    p.add_argument("--out-dir", type=Path, required=True)
+    p.add_argument("--files-dir", type=Path, required=True)
     args = p.parse_args()
 
-    if args.method == "adwin":
-        metric = _compute_adwin(args.baseline_file, args.recent_file)
-    else:
-        metric = _compute_psi(args.baseline_file, args.recent_file)
-
-    logger.info({"drift_metric": metric, "method": args.method})
-    retrain = metric > args.drift_threshold
-    _update_model(args.model_json, metric, args.method, retrain)
+    metrics = _compute_metrics(args.baseline_file, args.recent_file)
+    logger.info({"drift_metrics": metrics})
+    method = max(metrics, key=metrics.get)
+    metric_val = metrics[method]
+    retrain = metric_val > args.drift_threshold
+    _update_model(args.model_json, metrics, retrain)
     if retrain:
         base = Path(__file__).resolve().parent
-        subprocess.run([sys.executable, str(base / "train_target_clone.py")], check=True)
         subprocess.run(
             [
                 sys.executable,
-                str(base / "generate_mql4_from_model.py"),
-                str(args.model_json),
-                str(args.experts_dir),
+                str(base / "auto_retrain.py"),
+                "--log-dir",
+                str(args.log_dir),
+                "--out-dir",
+                str(args.out_dir),
+                "--files-dir",
+                str(args.files_dir),
+                "--baseline-file",
+                str(args.baseline_file),
+                "--recent-file",
+                str(args.recent_file),
+                "--drift-method",
+                method,
+                "--drift-threshold",
+                str(args.drift_threshold),
             ],
             check=True,
         )
@@ -144,4 +146,3 @@ def main() -> int:
 
 if __name__ == "__main__":  # pragma: no cover - script entry point
     raise SystemExit(main())
-

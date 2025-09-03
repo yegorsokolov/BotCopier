@@ -19,6 +19,10 @@
   "training_mode": "lite",
   "mode": "lite",
   "drift_metric": 0.0,
+  "drift_metrics": {
+    "psi": 0.0,
+    "ks": 0.0
+  },
   "drift_history": [],
   "retrain_history": [],
   "labeled_uncertainties": 0,
