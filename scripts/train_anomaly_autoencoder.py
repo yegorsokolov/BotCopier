@@ -35,10 +35,23 @@ def main() -> None:
     p.add_argument("input", type=Path, default=Path("tests/fixtures/trades_small.csv"), nargs="?")
     p.add_argument("--model", type=Path, default=Path("model.json"))
     p.add_argument("--latent", type=int, default=3)
+    p.add_argument(
+        "--chunksize",
+        type=int,
+        default=0,
+        help="Number of rows per chunk when reading the input CSV (0 reads all rows)",
+    )
     args = p.parse_args()
 
-    df = pd.read_csv(args.input, sep=";")
-    X = build_features(df)
+    if args.chunksize > 0:
+        reader = pd.read_csv(args.input, sep=";", chunksize=args.chunksize)
+        feats: list[np.ndarray] = []
+        for chunk in reader:
+            feats.append(build_features(chunk))
+        X = np.vstack(feats) if feats else np.empty((0, 6), dtype=np.float32)
+    else:
+        df = pd.read_csv(args.input, sep=";")
+        X = build_features(df)
     mean, std, W = train_autoencoder(X, latent_dim=args.latent)
 
     if args.model.exists():
