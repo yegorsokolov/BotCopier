@@ -1,6 +1,6 @@
 #property strict
 #include "model_interface.mqh"
-#include <Arrays/ArrayInt.mqh>
+#include <Containers/LongLongMap.mqh>
 
 #import "observer_flight.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
@@ -73,8 +73,7 @@ extern int    SendBatchSize             = 10;
 int timer_handle;
 
 enum TradeState { STATE_OPEN=0, STATE_MODIFY=1, STATE_CLOSE=2 };
-CArrayInt ticket_map;
-CArrayInt ticket_state;
+CLongLongMap ticket_map;
 int      target_magics[];
 string   track_symbols[];
 datetime last_export = 0;
@@ -351,34 +350,27 @@ int FindBookIndex(string symbol)
    return(-1);
 }
 
-int GetTicketState(int key)
+int MapGet(int key)
 {
-   int pos = ticket_map.Search(key);
-   if(pos >= 0)
-      return(ticket_state.At(pos));
+   long state=0;
+   if(ticket_map.Get((long)key,state))
+      return(int)state;
    return(-1);
 }
 
-void SetTicketState(int key,int state)
+void MapAdd(int key,int state)
 {
-   int pos = ticket_map.Search(key);
-   if(pos < 0)
-   {
-      ticket_map.Add(key);
-      ticket_state.Add(state);
-   }
-   else
-      ticket_state.Set(pos,state);
+   ticket_map.Insert((long)key,(long)state);
+}
+
+void MapRemove(int key)
+{
+   ticket_map.Remove((long)key);
 }
 
 void RemoveTicket(int key)
 {
-   int pos = ticket_map.Search(key);
-   if(pos >= 0)
-   {
-      ticket_map.Delete(pos);
-      ticket_state.Delete(pos);
-   }
+   MapRemove(key);
 }
 
 void UpdateKalman(double measurement)
@@ -1049,7 +1041,6 @@ int OnInit()
    if(StringLen(TraceId)==0)
       TraceId = GenId(16);
    ticket_map.Clear();
-   ticket_state.Clear();
 
    string parts[];
    int cnt = StringSplit(TargetMagicNumbers, ',', parts);
@@ -1214,7 +1205,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                lots, price, req.price, sl, tp, 0.0, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), 0,
                slippage, equity, margin, risk_weight);
-      SetTicketState(ticket, STATE_OPEN);
+      MapAdd(ticket, STATE_OPEN);
       if(entry==DEAL_ENTRY_INOUT && remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
       {
          double cur_price = OrderOpenPrice();
@@ -1225,7 +1216,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
                   slippage, equity, margin, risk_weight);
-         SetTicketState(ticket, STATE_MODIFY);
+         MapAdd(ticket, STATE_MODIFY);
       }
    }
    else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY)
@@ -1240,7 +1231,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                lots, price, req.price, sl, tp, profit, profit_after,
                remaining, now, comment, iVolume(symbol, 0, 0), open_time,
                slippage, equity, margin, risk_weight);
-      SetTicketState(ticket, STATE_CLOSE);
+      MapAdd(ticket, STATE_CLOSE);
       if(remaining==0.0)
          RemoveTicket(ticket);
       else if(remaining>0.0 && OrderSelect(ticket, SELECT_BY_TICKET, MODE_TRADES))
@@ -1253,7 +1244,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                   0.0, cur_price, cur_price, cur_sl, cur_tp, 0.0, profit_after,
                   remaining, now, comment, iVolume(symbol, 0, 0), 0,
                   slippage, equity, margin, risk_weight);
-         SetTicketState(ticket, STATE_MODIFY);
+         MapAdd(ticket, STATE_MODIFY);
       }
    }
 
