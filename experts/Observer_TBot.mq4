@@ -4,7 +4,7 @@
 
 #import "observer_flight.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, int anomaly_timeout_count, int anomaly_retry_count, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, int anomaly_timeout_count, int anomaly_retry_count, int anomaly_backlog_bytes, int anomaly_replay_count, uchar &out[]);
 bool FlightClientInit(string host, int port);
 bool FlightSendTrade(uchar &payload[], int len);
 bool FlightSendMetrics(uchar &payload[], int len);
@@ -91,6 +91,7 @@ const int SCHEMA_VERSION = 3;
 int      AnomalyLateResponses = 0;
 int      AnomalyTimeoutCount = 0;
 int      AnomalyRetryCount = 0;
+int      AnomalyReplayCount = 0;
 
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
@@ -296,7 +297,10 @@ void EnqueueAnomaly(PendingTrade &t)
    int n = ArraySize(AnomalyQueue);
    ArrayResize(AnomalyQueue, n+1);
    AnomalyQueue[n] = t;
-    AnomalyQueueDepth = n+1;
+   uchar buf[];
+   int len = StructToCharArray(t, buf);
+   AppendWal(log_dir + "/anomaly_queue.wal", buf, len);
+   AnomalyQueueDepth = n+1;
 }
 
 void RemoveAnomaly(int index)
@@ -306,6 +310,7 @@ void RemoveAnomaly(int index)
       AnomalyQueue[i] = AnomalyQueue[i+1];
    ArrayResize(AnomalyQueue, n-1);
    AnomalyQueueDepth = n-1;
+   SaveAnomalyWal(log_dir + "/anomaly_queue.wal");
 }
 
 
@@ -711,7 +716,56 @@ void ReplayWal(string fname, uchar &queue[][], int &sizes[], int &head, int &tai
       else
          head = (head + 1) % cap;
    }
+  FileClose(h);
+}
+
+void SaveAnomalyWal(string fname)
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_WRITE|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   for(int i=0; i<ArraySize(AnomalyQueue); i++)
+   {
+      uchar tmp[];
+      int len = StructToCharArray(AnomalyQueue[i], tmp);
+      FileWriteInteger(h, len);
+      FileWriteArray(h, tmp, 0, len);
+      FileWriteInteger(h, WalChecksum(tmp, len));
+   }
    FileClose(h);
+}
+
+void ReplayAnomalyWal(string fname)
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h==INVALID_HANDLE)
+      return;
+   while(!FileIsEnding(h))
+   {
+      int len = FileReadInteger(h);
+      if(len <= 0)
+         break;
+      uchar tmp[];
+      ArrayResize(tmp, len);
+      int rd = FileReadArray(h, tmp, 0, len);
+      if(rd!=len)
+         break;
+      uint expected = FileReadInteger(h);
+      if(WalChecksum(tmp, len)!=expected)
+      {
+         Print("Corrupt WAL entry in " + fname + ", skipping");
+         continue;
+      }
+      PendingTrade t;
+      CharArrayToStruct(tmp, t);
+      int n = ArraySize(AnomalyQueue);
+      ArrayResize(AnomalyQueue, n+1);
+      AnomalyQueue[n] = t;
+      AnomalyQueueDepth = n+1;
+      AnomalyReplayCount++;
+   }
+   FileClose(h);
+   FileDelete(fname);
 }
 
 
@@ -1086,6 +1140,7 @@ int OnInit()
    int metric_skip = ReadCheckpoint(log_dir + "/pending_metrics.chk");
    ReplayWal(log_dir + "/pending_trades.wal", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_tail, pending_trade_count, trade_skip);
    ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_tail, pending_metric_count, metric_skip);
+   ReplayAnomalyWal(log_dir + "/anomaly_queue.wal");
    TradeQueueDepth = pending_trade_count;
    MetricQueueDepth = pending_metric_count;
    FlightConnected = FlightClientInit(FlightServerHost, FlightServerPort);
@@ -1132,6 +1187,7 @@ void OnDeinit(const int reason)
    SaveQueue(log_dir + "/pending_metrics.bin", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_count);
    SaveQueue(log_dir + "/pending_trades.wal", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_count);
    SaveQueue(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_count);
+   SaveAnomalyWal(log_dir + "/anomaly_queue.wal");
 }
 
 bool MagicMatches(int magic)
@@ -1695,12 +1751,20 @@ void WriteMetrics(datetime ts)
    int trade_q_depth = TradeQueueDepth;
    int metric_q_depth = MetricQueueDepth;
    int wal_size = 0;
+   int anomaly_backlog = 0;
    string tw = log_dir + "/pending_trades.wal";
    string mw = log_dir + "/pending_metrics.wal";
+   string aw = log_dir + "/anomaly_queue.wal";
    if(FileIsExist(tw))
       wal_size += (int)FileSize(tw);
    if(FileIsExist(mw))
       wal_size += (int)FileSize(mw);
+   if(FileIsExist(aw))
+   {
+      int sz = (int)FileSize(aw);
+      wal_size += sz;
+      anomaly_backlog = sz;
+   }
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];
@@ -1781,15 +1845,16 @@ void WriteMetrics(datetime ts)
       int anomaly_late = AnomalyLateResponses;
       int anomaly_timeouts = AnomalyTimeoutCount;
       int anomaly_retries = AnomalyRetryCount;
+      int anomaly_replays = AnomalyReplayCount;
       // emit file/socket errors, queue depth, retry counts and latencies for monitoring
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
                                  TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
                                  trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
                                  FlightErrors, CpuLoad, FlushLatencyMs, NetworkLatencyMs,
                                  CachedBookRefreshSeconds, var_breach_count,
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
-                                 anomaly_late, anomaly_timeouts, anomaly_retries, TraceId, span_id);
+                                 anomaly_late, anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, TraceId, span_id);
 
 
       uchar payload[];
@@ -1800,7 +1865,7 @@ void WriteMetrics(datetime ts)
          FlushLatencyMs, NetworkLatencyMs, CachedBookRefreshSeconds, var_breach_count,
          trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size,
          trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,
-         anomaly_timeouts, anomaly_retries, payload);
+         anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, payload);
       if(len>0)
       {
          EnqueuePending(pending_metrics, pending_metric_sizes, pending_metric_lines, pending_metric_head,
