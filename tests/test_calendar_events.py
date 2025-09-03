@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
+import bisect
 
 
 def _load_calendar(file: Path):
@@ -85,6 +86,27 @@ def _calendar_event_id_at(times, impacts, ids, ts, window_minutes):
     return best
 
 
+def _calendar_event_id_at_bsearch(times, impacts, ids, ts, window_minutes):
+    if not times:
+        return -1
+    idx = bisect.bisect_right(times, ts) - 1
+    best = -1
+    max_imp = 0.0
+    i = idx
+    while i >= 0 and abs((ts - times[i]).total_seconds()) <= window_minutes * 60:
+        if impacts[i] > max_imp:
+            max_imp = impacts[i]
+            best = ids[i]
+        i -= 1
+    i = idx + 1
+    while i < len(times) and abs((ts - times[i]).total_seconds()) <= window_minutes * 60:
+        if impacts[i] > max_imp:
+            max_imp = impacts[i]
+            best = ids[i]
+        i += 1
+    return best
+
+
 def test_event_id_lookup(tmp_path: Path):
     cal = tmp_path / "cal.csv"
     with open(cal, "w", newline="") as f:
@@ -104,6 +126,23 @@ def test_event_id_lookup(tmp_path: Path):
     assert eid2 == 2
     ts3 = datetime(2024, 1, 1, 8, 0)
     assert _calendar_event_id_at(times, impacts, ids, ts3, window_minutes=59) == -1
+
+
+def test_event_id_lookup_bsearch(tmp_path: Path):
+    cal = tmp_path / "cal.csv"
+    with open(cal, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["time", "impact", "id"])
+        writer.writerow(["2024-01-01 10:00:00", "0.5", "1"])
+        writer.writerow(["2024-01-01 09:00:00", "1.0", "2"])
+        writer.writerow(["2024-01-01 10:15:00", "0.8", "3"])
+    times, impacts, ids = _load_calendar(cal)
+    ts = datetime(2024, 1, 1, 10, 5)
+    assert _calendar_event_id_at_bsearch(times, impacts, ids, ts, 20) == 3
+    ts2 = datetime(2024, 1, 1, 9, 5)
+    assert _calendar_event_id_at_bsearch(times, impacts, ids, ts2, 10) == 2
+    ts3 = datetime(2024, 1, 1, 8, 0)
+    assert _calendar_event_id_at_bsearch(times, impacts, ids, ts3, 59) == -1
 
 
 def test_large_calendar_sort(tmp_path: Path):
