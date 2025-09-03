@@ -17,17 +17,19 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 # In-memory stores
 trades: List[dict] = []
 metrics: List[dict] = []
+decisions: List[dict] = []
 training_progress: List[dict] = []
 
 # Active WebSocket connections
 trade_connections: Set[WebSocket] = set()
 metric_connections: Set[WebSocket] = set()
+decision_connections: Set[WebSocket] = set()
 training_connections: Set[WebSocket] = set()
 
 if FLIGHT_URI:
     try:
         client = flight.FlightClient(FLIGHT_URI)
-        for name, store in (("trades", trades), ("metrics", metrics)):
+        for name, store in (("trades", trades), ("metrics", metrics), ("decisions", decisions)):
             desc = flight.FlightDescriptor.for_path(name)
             info = client.get_flight_info(desc)
             reader = client.do_get(info.endpoints[0].ticket)
@@ -56,6 +58,11 @@ async def get_trades(_: Request = Depends(verify_token)):
 @app.get("/metrics")
 async def get_metrics(_: Request = Depends(verify_token)):
     return metrics
+
+
+@app.get("/decisions")
+async def get_decisions(_: Request = Depends(verify_token)):
+    return decisions
 
 
 @app.get("/training_progress")
@@ -103,6 +110,11 @@ async def ws_trades(ws: WebSocket):
 @app.websocket("/ws/metrics")
 async def ws_metrics(ws: WebSocket):
     await _ws_handler(ws, metrics, metric_connections)
+
+
+@app.websocket("/ws/decisions")
+async def ws_decisions(ws: WebSocket):
+    await _ws_handler(ws, decisions, decision_connections)
 
 
 @app.websocket("/ws/training_progress")

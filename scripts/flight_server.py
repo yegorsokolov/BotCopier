@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Arrow Flight server exposing trade and metric streams.
+"""Arrow Flight server exposing trade, metric and decision streams.
 
 Incoming record batches are retained in memory for clients and mirrored
 to both SQLite databases and Parquet datasets.  A short summary of each
 batch is emitted via the standard :mod:`logging` framework which routes
-to journald when available. Two logical paths are served:
+to journald when available. Three logical paths are served:
 
 * ``trades``
 * ``metrics``
+* ``decisions``
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import pyarrow as pa
 import pyarrow.flight as flight
 import pyarrow.parquet as pq
 
-from schemas import TRADE_SCHEMA, METRIC_SCHEMA
+from schemas import TRADE_SCHEMA, METRIC_SCHEMA, DECISION_SCHEMA
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
@@ -50,12 +51,17 @@ class FlightServer(flight.FlightServerBase):
         self._batches: Dict[str, List[pa.RecordBatch]] = {
             "trades": [],
             "metrics": [],
+            "decisions": [],
         }
         self._dir = Path(data_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._sqlite: Dict[str, sqlite3.Connection] = {}
         self._sqlite_sql: Dict[str, str] = {}
-        for name, schema in (("trades", TRADE_SCHEMA), ("metrics", METRIC_SCHEMA)):
+        for name, schema in (
+            ("trades", TRADE_SCHEMA),
+            ("metrics", METRIC_SCHEMA),
+            ("decisions", DECISION_SCHEMA),
+        ):
             conn = sqlite3.connect(self._dir / f"{name}.db", check_same_thread=False)
             cols = [f.name for f in schema]
             col_defs = ",".join(f"{c} TEXT" for c in cols)
@@ -69,9 +75,14 @@ class FlightServer(flight.FlightServerBase):
         self, context: flight.ServerCallContext, descriptor: flight.FlightDescriptor
     ) -> flight.FlightInfo:
         path = descriptor.path[0].decode()
-        if path not in ("trades", "metrics"):
+        if path not in ("trades", "metrics", "decisions"):
             raise KeyError(f"unknown path: {path}")
-        schema = TRADE_SCHEMA if path == "trades" else METRIC_SCHEMA
+        if path == "trades":
+            schema = TRADE_SCHEMA
+        elif path == "metrics":
+            schema = METRIC_SCHEMA
+        else:
+            schema = DECISION_SCHEMA
         ticket = flight.Ticket(path.encode())
         endpoint = flight.FlightEndpoint(ticket, [flight.Location.for_grpc_tcp(self._host, self.port)])
         return flight.FlightInfo(schema, descriptor, [endpoint], -1, -1)
@@ -85,10 +96,15 @@ class FlightServer(flight.FlightServerBase):
         writer: flight.ServerStreamWriter,
     ) -> None:
         path = descriptor.path[0].decode()
-        if path not in ("trades", "metrics"):
+        if path not in ("trades", "metrics", "decisions"):
             raise KeyError(f"unknown path: {path}")
         batches = self._batches.setdefault(path, [])
-        schema = TRADE_SCHEMA if path == "trades" else METRIC_SCHEMA
+        if path == "trades":
+            schema = TRADE_SCHEMA
+        elif path == "metrics":
+            schema = METRIC_SCHEMA
+        else:
+            schema = DECISION_SCHEMA
         for chunk in reader:
             batch = chunk.data
             batches.append(batch)
@@ -105,8 +121,10 @@ class FlightServer(flight.FlightServerBase):
             logger.info("stored %d %s rows", batch.num_rows, path)
             if path == "trades":
                 ack_id = batch.column("event_id")[batch.num_rows - 1].as_py()
-            else:
+            elif path == "metrics":
                 ack_id = batch.column("time")[batch.num_rows - 1].as_py()
+            else:
+                ack_id = batch.column("event_id")[batch.num_rows - 1].as_py()
             writer.write(pa.py_buffer(str(ack_id).encode()))
 
     # ------------------------------------------------------------------
@@ -114,9 +132,14 @@ class FlightServer(flight.FlightServerBase):
         self, context: flight.ServerCallContext, ticket: flight.Ticket
     ) -> flight.RecordBatchStream:
         path = ticket.ticket.decode()
-        if path not in ("trades", "metrics"):
+        if path not in ("trades", "metrics", "decisions"):
             raise KeyError(f"unknown path: {path}")
-        schema = TRADE_SCHEMA if path == "trades" else METRIC_SCHEMA
+        if path == "trades":
+            schema = TRADE_SCHEMA
+        elif path == "metrics":
+            schema = METRIC_SCHEMA
+        else:
+            schema = DECISION_SCHEMA
         table = pa.Table.from_batches(self._batches.get(path, []), schema=schema)
         return flight.RecordBatchStream(table)
 
