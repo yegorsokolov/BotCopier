@@ -688,6 +688,7 @@ def _train_lite_mode(
     flight_uri: str | None = None,
     mode: str = "lite",
     hash_size: int = 0,
+    graph_params: dict | None = None,
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
@@ -703,6 +704,15 @@ def _train_lite_mode(
             encoder = json.load(f)
 
     feature_names_set: set[str] = set()
+    sym_emb_map: dict[str, list[float]] = {}
+    if graph_params:
+        try:
+            sym_emb_map = {
+                k: [float(v) for v in vals]
+                for k, vals in graph_params.get("embeddings", {}).items()
+            }
+        except Exception:
+            sym_emb_map = {}
     if hash_size > 0:
         vec = FeatureHasher(n_features=hash_size, input_type="dict")
     else:
@@ -768,6 +778,10 @@ def _train_lite_mode(
             continue
         for f in f_chunk:
             f["calendar_impact"] = f.get("event_flag", 0.0) * f.get("event_impact", 0.0)
+            emb = sym_emb_map.get(f.get("symbol"))
+            if emb:
+                for j, v in enumerate(emb):
+                    f[f"sym_emb_{j}"] = float(v)
             feature_names_set.update(f.keys())
         if vec_reg is not None and f_chunk:
             Xr = vec_reg.transform(f_chunk)
@@ -1017,6 +1031,7 @@ def train(
             flight_uri=flight_uri,
             mode=mode,
             hash_size=hash_size,
+            graph_params=graph_params,
         )
         return
     feature_flags = {
