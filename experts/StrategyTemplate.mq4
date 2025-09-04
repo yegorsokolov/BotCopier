@@ -20,6 +20,8 @@ extern double MinLots = 0.01;
 extern double MaxLots = 0.1;
 extern string ModelFileName = "model.json";
 extern int ReloadModelInterval = 0; // seconds, 0=disabled
+extern string RiskWeightFileName = "";
+extern int ReloadRiskWeightInterval = 0; // seconds, 0=disabled
 extern double BreakEvenPips = 0;
 extern double TrailingPips = 0;
 extern bool   EnableDecisionLogging = true;
@@ -172,6 +174,7 @@ int CurrentRegime = -1;
 double RegimeThresholds[__REGIME_COUNT__] = {__REGIME_THRESHOLDS__};
 int RegimeModelIdx[__REGIME_COUNT__] = {__REGIME_MODEL_IDX__};
 datetime LastModelLoad = 0;
+datetime LastRiskWeightLoad = 0;
 int      DecisionLogHandle = INVALID_HANDLE;
 int      UncertainLogHandle = INVALID_HANDLE;
 int      DecisionSocket = INVALID_HANDLE;
@@ -450,10 +453,53 @@ bool LoadModel()
    return(ok);
 }
 
+bool UpdateRiskParityWeights()
+{
+   string fname = RiskWeightFileName;
+   if(StringLen(fname) == 0)
+      fname = ModelFileName;
+   string lower = StringToLower(fname);
+   bool is_gz = StringFind(lower, ".gz") >= 0;
+   int mode = FILE_READ|FILE_COMMON|(is_gz ? FILE_BIN : FILE_TXT);
+   int h = FileOpen(fname, mode);
+   if(h == INVALID_HANDLE)
+   {
+      Print("Risk weight load failed: ", GetLastError());
+      return(false);
+   }
+   string content = "";
+   if(is_gz)
+   {
+      int size = FileSize(h);
+      uchar data[];
+      ArrayResize(data, size);
+      FileReadArray(h, data, 0, size);
+      FileClose(h);
+      uchar raw[];
+      if(!CryptDecode(CRYPT_ARCHIVE_GZIP, data, raw))
+      {
+         Print("Gzip decode failed");
+         return(false);
+      }
+      content = CharArrayToString(raw, 0, WHOLE_ARRAY, CP_UTF8);
+   }
+   else
+   {
+      while(!FileIsEnding(h))
+         content += FileReadString(h);
+      FileClose(h);
+   }
+   ExtractJsonStringArray(content, "\"risk_parity_symbols\"", RiskParitySymbols);
+   ExtractJsonArray(content, "\"risk_parity_weights\"", RiskParityWeights);
+   return(true);
+}
+
 int OnInit()
 {
    bool ok = LoadModel();
    LastModelLoad = TimeCurrent();
+   UpdateRiskParityWeights();
+   LastRiskWeightLoad = TimeCurrent();
    if(!ok)
       Print("Using built-in model parameters");
    ComputeRegimeCenterNorms();
@@ -1676,6 +1722,12 @@ void OnTick()
          Print("Model parameters reloaded");
       LastModelLoad = TimeCurrent();
    }
+   if(ReloadRiskWeightInterval > 0 && TimeCurrent() - LastRiskWeightLoad >= ReloadRiskWeightInterval)
+   {
+      if(UpdateRiskParityWeights())
+         Print("Risk parity weights reloaded");
+      LastRiskWeightLoad = TimeCurrent();
+   }
    if(AdaptationInterval > 0 && TimeCurrent() - LastAdaptRequest >= AdaptationInterval)
    {
       int reg = GetRegime();
@@ -1717,6 +1769,7 @@ void OnTick()
    ArrayResize(pvs, ModelCount);
    double risk_weights[];
    ArrayResize(risk_weights, ModelCount);
+   double rp_weight = GetRiskParityWeight(SymbolToTrade);
    for(int idx=0; idx<ModelCount; idx++)
    {
       pvs[idx] = ComputePredictiveVariance(idx);
@@ -1724,7 +1777,7 @@ void OnTick()
       if(pvs[idx] > 0.0)
          rw /= pvs[idx];
       double pr = ReplayProbability(feats, idx);
-      LogDecision(feats, pr, "shadow", idx, reg, rw, pvs[idx], 0);
+      LogDecision(feats, pr, "shadow", idx, reg, rw*rp_weight, pvs[idx], 0);
       probs[idx] = pr;
       risk_weights[idx] = rw;
    }
@@ -1732,6 +1785,7 @@ void OnTick()
    double prob = probs[modelIdx];
    double pv = pvs[modelIdx];
    double risk_weight = risk_weights[modelIdx];
+   double applied_weight = risk_weight * rp_weight;
 
    if(prob < ConformalLower || prob > ConformalUpper)
       Print("Probability outside conformal bounds: " +
@@ -1753,7 +1807,7 @@ void OnTick()
    {
       Print("Skipping trade due to high predictive variance: " + DoubleToString(pv, 6));
       int decision_id = NextDecisionId;
-      LogDecision(feats, prob, "skip", modelIdx, reg, risk_weight, pv, 1);
+      LogDecision(feats, prob, "skip", modelIdx, reg, applied_weight, pv, 1);
       if(UncertainLogHandle != INVALID_HANDLE)
       {
          double sl_dist, tp_dist;
@@ -1767,7 +1821,7 @@ void OnTick()
          datetime now = TimeCurrent();
          double thr = GetTradeThreshold();
          double lots = CalcLots();
-         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, thr, sl_dist, tp_dist, modelIdx, reg, 1, risk_weight, pv, lots, feat_vals, "");
+         FileWrite(UncertainLogHandle, decision_id, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, "skip", prob, thr, sl_dist, tp_dist, modelIdx, reg, 1, applied_weight, pv, lots, feat_vals, "");
          FileFlush(UncertainLogHandle);
       }
       return;
@@ -1794,7 +1848,7 @@ void OnTick()
    double thr = EntryThreshold;
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
-   LogDecision(feats, prob, action, modelIdx, reg, risk_weight, pv, 1);
+   LogDecision(feats, prob, action, modelIdx, reg, applied_weight, pv, 1);
    string order_comment = StringFormat("decision_id=%d;trace_id=%s;span_id=%s;model=%d", decision_id, LastTraceId, LastSpanId, modelIdx);
    if(prob > thr)
    {
