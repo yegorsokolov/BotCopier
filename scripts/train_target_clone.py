@@ -11,6 +11,7 @@ import argparse
 import json
 import gzip
 from datetime import datetime
+from datetime import timedelta
 import math
 import time
 from pathlib import Path
@@ -235,6 +236,68 @@ def _encode_features(model: ContrastiveEncoder | None, X: np.ndarray) -> np.ndar
         t = torch.from_numpy(X.astype("float32"))
         out = model(t).cpu().numpy()
     return out
+
+
+if _HAS_TORCH:
+    class PriceGANGenerator(nn.Module):
+        """Mirror of the generator used in ``train_price_gan.py``."""
+
+        def __init__(self, latent_dim: int, seq_len: int):
+            super().__init__()
+            self.latent_dim = latent_dim
+            self.seq_len = seq_len
+            self.net = nn.Sequential(
+                nn.Linear(latent_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, 128),
+                nn.ReLU(),
+                nn.Linear(128, seq_len),
+            )
+
+        def forward(self, z: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple
+            return self.net(z)
+
+
+    def _load_price_gan(path: Path) -> tuple["PriceGANGenerator", int]:
+        state = torch.load(path, map_location="cpu")
+        latent = int(state.get("latent_dim", 0))
+        seq_len = int(state.get("seq_len", 0))
+        model = PriceGANGenerator(latent, seq_len)
+        model.load_state_dict(state["state_dict"])
+        model.eval()
+        return model, latent
+
+
+    def _generate_synthetic_rows(
+        model: PriceGANGenerator, count: int, latent_dim: int, base_time: datetime
+    ) -> list[dict]:
+        rows: list[dict] = []
+        for i in range(count):
+            z = torch.randn(1, latent_dim)
+            with torch.no_grad():
+                seq = model(z).view(-1).cpu().numpy()
+            price = float(seq[-1] + 1.0)
+            rows.append(
+                {
+                    "event_time": base_time + timedelta(seconds=i + 1),
+                    "action": "OPEN",
+                    "order_type": 0 if price >= 1.0 else 1,
+                    "price": price,
+                    "sl": price - 0.001,
+                    "tp": price + 0.001,
+                    "lots": 1.0,
+                    "symbol": "SYNTH",
+                    "synthetic": True,
+                }
+            )
+        return rows
+else:  # pragma: no cover - torch not available
+
+    def _load_price_gan(path: Path):  # type: ignore
+        raise ImportError("PyTorch not available")
+
+    def _generate_synthetic_rows(*args, **kwargs):  # type: ignore
+        return []
 
 
 def detect_resources():
@@ -689,6 +752,9 @@ def _train_lite_mode(
     mode: str = "lite",
     hash_size: int = 0,
     graph_params: dict | None = None,
+    gan_model: object | None = None,
+    gan_latent: int = 0,
+    synth_ratio: float = 0.0,
 ) -> None:
     """Stream features and train an SGD classifier incrementally."""
 
@@ -737,6 +803,11 @@ def _train_lite_mode(
             max_id = pd.to_numeric(chunk["event_id"], errors="coerce").max()
             if not pd.isna(max_id):
                 last_event_id = max(last_event_id, int(max_id))
+        rows = chunk.to_dict("records")
+        if gan_model is not None and synth_ratio > 0 and rows:
+            synth_n = max(1, int(len(rows) * synth_ratio))
+            base_t = rows[-1].get("event_time", datetime.utcnow())
+            rows.extend(_generate_synthetic_rows(gan_model, synth_n, gan_latent, base_t))
         (
             f_chunk,
             l_chunk,
@@ -747,7 +818,7 @@ def _train_lite_mode(
             _,
             _,
         ) = _extract_features(
-            chunk.to_dict("records"),
+            rows,
             use_sma=use_sma,
             sma_window=sma_window,
             use_rsi=use_rsi,
@@ -1034,6 +1105,9 @@ def train(
             mode=mode,
             hash_size=hash_size,
             graph_params=graph_params,
+            gan_model=gan_model,
+            gan_latent=gan_latent,
+            synth_ratio=synth_ratio,
         )
         return
     feature_flags = {
@@ -1138,6 +1212,11 @@ def train(
                 max_id = pd.to_numeric(chunk["event_id"], errors="coerce").max()
                 if not pd.isna(max_id):
                     last_event_id = max(last_event_id, int(max_id))
+            rows = chunk.to_dict("records")
+            if gan_model is not None and synth_ratio > 0 and rows:
+                synth_n = max(1, int(len(rows) * synth_ratio))
+                base_t = rows[-1].get("event_time", datetime.utcnow())
+                rows.extend(_generate_synthetic_rows(gan_model, synth_n, gan_latent, base_t))
             (
                 f_chunk,
                 l_chunk,
@@ -1148,7 +1227,7 @@ def train(
                 t_chunk,
                 _,
             ) = _extract_features(
-                chunk.to_dict("records"),
+                rows,
                 use_sma=use_sma,
                 sma_window=sma_window,
                 use_rsi=use_rsi,
@@ -3170,6 +3249,9 @@ def main():
     p.add_argument('--calendar-file', help='CSV file with columns time,impact[,id] for events')
     p.add_argument('--event-window', type=float, default=60.0, help='minutes around events to flag')
     p.add_argument('--volatility-file', help='JSON file with precomputed volatility')
+    p.add_argument('--price-gan-model', help='trained GAN model for synthetic ticks')
+    p.add_argument('--synthetic-ratio', type=float, default=0.0,
+                   help='fraction of synthetic rows to mix in during feature extraction')
     p.add_argument('--grid-search', action='store_true', help='enable grid search with cross-validation')
     p.add_argument('--c-values', type=float, nargs='*')
     p.add_argument('--sequence-length', type=int, default=5, help='sequence length for LSTM/transformer models')
@@ -3261,6 +3343,16 @@ def main():
             events = _load_calendar(Path(args.calendar_file))
         else:
             events = None
+        if args.price_gan_model and _HAS_TORCH:
+            try:
+                gan_model, gan_latent = _load_price_gan(Path(args.price_gan_model))
+            except Exception:
+                gan_model = None
+                gan_latent = 0
+        else:
+            gan_model = None
+            gan_latent = 0
+        synth_ratio = max(0.0, float(getattr(args, "synthetic_ratio", 0.0)))
         if args.corr_symbols:
             corr_map = {}
             for p in args.corr_symbols.split(','):

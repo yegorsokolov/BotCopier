@@ -333,6 +333,35 @@ def run_backtest(
     return result
 
 
+def evaluate_augmentation(
+    params_file: Path,
+    tick_file: Path,
+    augmented_tick_file: Path,
+    evaluation_out: Optional[Path] = None,
+) -> Dict[str, float]:
+    """Backtest on original and augmented data and record deltas."""
+
+    base = run_backtest(params_file, tick_file, evaluation_out=None)
+    aug = run_backtest(params_file, augmented_tick_file, evaluation_out=None)
+    metrics = base.copy()
+    metrics.update(
+        {
+            "win_rate_aug": aug.get("win_rate", 0.0),
+            "profit_factor_aug": aug.get("profit_factor", 0.0),
+            "delta_win_rate": aug.get("win_rate", 0.0) - base.get("win_rate", 0.0),
+            "delta_profit_factor": aug.get("profit_factor", 0.0)
+            - base.get("profit_factor", 0.0),
+        }
+    )
+    eval_path = evaluation_out or params_file.parent / "evaluation.json"
+    try:
+        with open(eval_path, "w") as f:
+            json.dump(metrics, f, indent=2)
+    except Exception:  # pragma: no cover - best effort
+        pass
+    return metrics
+
+
 def backtest_model(model_path: Path, log_file: Path) -> Dict[str, float]:
     """Convenience helper to backtest ``model_path`` against ``log_file``.
 
@@ -365,12 +394,23 @@ def main() -> None:
         default="backtest_report.json",
         help="Output report JSON file (default: backtest_report.json)",
     )
+    p.add_argument(
+        "--augmented-tick-file",
+        help="Optional CSV of augmented ticks to evaluate augmentation impact",
+    )
     p.add_argument("--metrics-file", help="metrics.csv to append results to")
     p.add_argument("--min-win-rate", type=float, default=0.0)
     p.add_argument("--min-profit-factor", type=float, default=0.0)
     args = p.parse_args()
 
-    result = run_backtest(Path(args.params_file), Path(args.tick_file))
+    if args.augmented_tick_file:
+        result = evaluate_augmentation(
+            Path(args.params_file),
+            Path(args.tick_file),
+            Path(args.augmented_tick_file),
+        )
+    else:
+        result = run_backtest(Path(args.params_file), Path(args.tick_file))
 
     try:
         check_performance(result, args.min_win_rate, args.min_profit_factor)
