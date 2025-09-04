@@ -86,6 +86,7 @@ FIELDS = [
     "trade_retry_count",  # backpressure on trade sends
     "metric_retry_count",  # backpressure on metric sends
     "fallback_events",
+    "risk_weight",
     "trace_id",
     "span_id",
 ]
