@@ -19,6 +19,7 @@ extern bool EnableDebugLogging = false;
 extern double MinLots = 0.01;
 extern double MaxLots = 0.1;
 extern string ModelFileName = "model.json";
+extern string ModelBinFile = "model.bin";
 extern int ReloadModelInterval = 0; // seconds, 0=disabled
 extern string RiskWeightFileName = "";
 extern int ReloadRiskWeightInterval = 0; // seconds, 0=disabled
@@ -502,6 +503,57 @@ bool LoadModel()
    return(ok);
 }
 
+bool LoadModelBin(string fname)
+{
+   int h = FileOpen(fname, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(h == INVALID_HANDLE)
+      return(false);
+   int size = FileSize(h);
+   uchar data[];
+   ArrayResize(data, size);
+   FileReadArray(h, data, 0, size);
+   FileClose(h);
+   uchar raw[];
+   if(!CryptDecode(CRYPT_ARCHIVE_GZIP, data, raw))
+      return(false);
+   string tmp = fname + ".tmp";
+   int ht = FileOpen(tmp, FILE_BIN|FILE_WRITE|FILE_COMMON);
+   if(ht == INVALID_HANDLE)
+      return(false);
+   FileWriteArray(ht, raw, 0, ArraySize(raw));
+   FileClose(ht);
+   ht = FileOpen(tmp, FILE_BIN|FILE_READ|FILE_COMMON);
+   if(ht == INVALID_HANDLE)
+      return(false);
+   int mc = FileReadInteger(ht);
+   int fc = FileReadInteger(ht);
+   for(int i=0; i<mc && i<ArrayRange(ModelCoefficients,0); i++)
+      for(int j=0; j<fc && j<ArrayRange(ModelCoefficients,1); j++)
+         ModelCoefficients[i][j] = FileReadFloat(ht);
+   int sc = FileReadInteger(ht);
+   int sd = FileReadInteger(ht);
+   for(int i=0; i<sc && i<ArrayRange(SymbolEmbeddings,0); i++)
+      for(int j=0; j<sd && j<ArrayRange(SymbolEmbeddings,1); j++)
+         SymbolEmbeddings[i][j] = FileReadFloat(ht);
+   int gc = FileReadInteger(ht);
+   int gd = FileReadInteger(ht);
+   for(int i=0; i<gc && i<ArrayRange(GraphEmbeddings,0); i++)
+      for(int j=0; j<gd && j<ArrayRange(GraphEmbeddings,1); j++)
+         GraphEmbeddings[i][j] = FileReadFloat(ht);
+   int thr_len = FileReadInteger(ht);
+   for(int i=0; i<thr_len && i<ArraySize(ModelThreshold); i++)
+      ModelThreshold[i] = FileReadFloat(ht);
+   int reg_len = FileReadInteger(ht);
+   for(int i=0; i<reg_len && i<ArraySize(RegimeThresholds); i++)
+      RegimeThresholds[i] = FileReadFloat(ht);
+   int sym_len = FileReadInteger(ht);
+   for(int i=0; i<sym_len && i<ArraySize(SymbolThresholdValues); i++)
+      SymbolThresholdValues[i] = FileReadFloat(ht);
+   FileClose(ht);
+   FileDelete(tmp);
+   return(true);
+}
+
 bool UpdateRiskParityWeights()
 {
    string fname = RiskWeightFileName;
@@ -546,6 +598,7 @@ bool UpdateRiskParityWeights()
 int OnInit()
 {
    bool ok = LoadModel();
+   LoadModelBin(ModelBinFile);
    LastModelLoad = TimeCurrent();
    UpdateRiskParityWeights();
    LastRiskWeightLoad = TimeCurrent();
