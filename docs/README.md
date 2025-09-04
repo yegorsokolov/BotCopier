@@ -19,16 +19,13 @@ powerful hardware. |
 
 Downstream components read these flags to stay in sync:
 
-* :mod:`scripts.generate_mql4_from_model.py` skips embedding order‑book
-  functions unless ``feature_flags.order_book`` is ``true``.
-* :mod:`scripts.online_trainer.py` filters unsupported features and passes the
-  appropriate ``--lite-mode`` flag when regenerating Expert Advisors.
+* :mod:`scripts.online_trainer.py` filters unsupported features and adapts training accordingly.
 
 When order‑book logging is active the trainer derives additional features:
 ``book_spread`` (ask minus bid volume), ``bid_ask_ratio`` and a rolling
 ``book_imbalance_roll`` averaged over the last five updates. These complement
 the normalised ``book_bid_vol``, ``book_ask_vol`` and ``book_imbalance`` inputs
-extracted from the Observer EA.
+extracted from the observer.
 
 This metadata is persisted in ``model.json`` so that models trained on one
 machine can be safely deployed on another with different capabilities.
@@ -36,11 +33,10 @@ machine can be safely deployed on another with different capabilities.
 ## ONNX Runtime GPU Fallback
 
 Training exports an INT8‑quantized ``model.int8.onnx`` alongside the JSON
-metadata.  During strategy generation the tool inspects
-``onnxruntime.get_available_providers()`` and embeds a ``UseOnnxGPU`` flag in the
-Expert Advisor.  At runtime the EA loads the quantized model and runs inference
-on the GPU whenever the ``CUDAExecutionProvider`` is available, otherwise it
-automatically falls back to the CPU.
+metadata.  During strategy execution the runner inspects
+``onnxruntime.get_available_providers()`` and uses the GPU whenever the
+``CUDAExecutionProvider`` is available, otherwise it automatically falls back
+to the CPU.
 
 ## Risk-Parity Allocation
 
@@ -124,7 +120,7 @@ previously hesitated.
 
 When migrating to a more capable VM or heavier model it can be helpful to
 re‑evaluate historical trades. Each order comment contains the original
-``decision_id`` so that :mod:`experts.Observer_TBot` can associate fills with
+``decision_id`` so that ``observer.py`` can associate fills with
 their source decisions and record the identifier in ``trades_raw.csv`` and the
 Arrow/JSON export.
 
@@ -139,9 +135,6 @@ Feed this back into training to emphasise corrections and scale them further::
 
     python scripts/train_target_clone.py --replay-file divergences.csv --replay-weight 3
 
-Exported experts also accept ``ReplayDecisions=true``.  When enabled, the EA
-scans ``DecisionLogFile`` at start-up and prints any discrepancies between the
-old and new probabilities, providing immediate feedback after upgrades.
 
 ## Symbol Graph Embeddings
 
@@ -154,10 +147,7 @@ simple metrics like degree and PageRank, and per-symbol embedding vectors.
 Supply this graph to ``scripts.train_target_clone.py`` via the
 ``--symbol-graph`` option.  During feature extraction the trainer appends the
 active symbol's embedding components (``sym_emb_*``) to the feature vector and
-records them in ``feature_names``.  ``scripts.generate_mql4_from_model.py``
-reads these embeddings from ``model.json`` and injects them into the generated
-Expert Advisor.  At runtime the EA exposes the values through
-``GetFeature()`` so models can leverage cross‑symbol relationships.
+records them in ``feature_names``.  The strategy runner reads these embeddings from ``model.json`` so models can leverage cross‑symbol relationships.
 
 ## Bandit Router
 

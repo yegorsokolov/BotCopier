@@ -11,7 +11,6 @@ Check for drift each hour and promote a new model when necessary:
 ```cron
 0 * * * * /usr/bin/python3 /opt/BotCopier/scripts/auto_retrain.py \
   --log-dir /opt/BotCopier/logs --out-dir /opt/BotCopier/models \
-  --files-dir /opt/MT4/MQL4/Files \
   --baseline-file /opt/BotCopier/logs/baseline.csv \
   --recent-file /opt/BotCopier/logs/recent.csv \
   --drift-threshold 0.2 >> /var/log/botcopier/retrain.log 2>&1
@@ -29,7 +28,7 @@ Description=Retrain model on feature drift
 Type=oneshot
 WorkingDirectory=/opt/BotCopier
 ExecStart=/usr/bin/python3 scripts/auto_retrain.py \
-  --log-dir logs --out-dir models --files-dir /opt/MT4/MQL4/Files \
+  --log-dir logs --out-dir models \
   --baseline-file logs/baseline.csv --recent-file logs/recent.csv \
   --drift-threshold 0.2
 Environment=PYTHONUNBUFFERED=1

@@ -4,9 +4,7 @@
 The trainer is designed to run continuously.  It tails
 ``logs/trades_raw.csv`` or subscribes to an Arrow Flight stream.  After each batch it updates
 an :class:`~sklearn.linear_model.SGDClassifier` using :meth:`partial_fit` and
-persists the coefficients to ``model.json``.  Whenever the coefficients change
-the script invokes ``generate_mql4_from_model.py`` so the corresponding Expert
-Advisor can be reloaded by MetaTrader.
+persists the coefficients to ``model.json`` for downstream consumers.
 
 Hardware capabilities are sampled via :func:`detect_resources` to determine an
 appropriate throttling level.  On lightweight VPS hosts the trainer yields
@@ -20,8 +18,6 @@ import argparse
 import csv
 import json
 import logging
-import subprocess
-import sys
 import time
 import os
 import threading
@@ -128,11 +124,9 @@ class OnlineTrainer:
         self,
         model_path: Path | str = Path("model.json"),
         batch_size: int = 32,
-        run_generator: bool = True,
     ) -> None:
         self.model_path = Path(model_path)
         self.batch_size = batch_size
-        self.run_generator = run_generator
         self.clf = SGDClassifier(loss="log_loss")
         self.feature_names: List[str] = []
         self.feature_flags: Dict[str, bool] = {}
@@ -207,17 +201,6 @@ class OnlineTrainer:
         if self.weight_decay:
             payload["weight_decay"] = self.weight_decay
         self.model_path.write_text(json.dumps(payload))
-
-    def _maybe_generate(self) -> None:
-        if not self.run_generator:
-            return
-        script = Path(__file__).resolve().with_name("generate_mql4_from_model.py")
-        experts_dir = Path(__file__).resolve().parents[1] / "experts"
-        cmd = [sys.executable, str(script), str(self.model_path), str(experts_dir)]
-        if not self.feature_flags.get("order_book", False):
-            cmd.append("--lite-mode")
-        subprocess.run(cmd, check=False)
-
     # ------------------------------------------------------------------
     # Incremental training
     # ------------------------------------------------------------------
@@ -262,7 +245,6 @@ class OnlineTrainer:
             self._prev_coef = coef + [intercept]
             changed = prev != self._prev_coef
             self._save()
-            self._maybe_generate()
             self._log_validation(X, y)
             ctx = span.get_span_context()
             logger.info(
@@ -365,14 +347,9 @@ def main(argv: List[str] | None = None) -> None:
     p.add_argument("--model", type=Path, default=Path("model.json"))
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--flight-path", default="trades", help="Flight path name")
-    p.add_argument(
-        "--no-generate",
-        action="store_true",
-        help="Do not run generate_mql4_from_model.py on updates",
-    )
     args = p.parse_args(argv)
 
-    trainer = OnlineTrainer(args.model, args.batch_size, not args.no_generate)
+    trainer = OnlineTrainer(args.model, args.batch_size)
     _sd_notify_ready()
     _start_watchdog_thread()
     if args.csv:

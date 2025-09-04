@@ -4,10 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 
-# MetaTrader build artifacts
-*.ex4
-
-# Log directories
+# Logs
 logs/
 observer_logs/
 *.log
@@ -20,4 +17,17 @@ models/best/
 *.temp
 *~
 *.swp
+
+# Legacy MQL4 sources
+*.mq4
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local configuration
+*.env
+
 /models

@@ -1,25 +1,20 @@
 # Unified gRPC Pipeline
 
-The observer Expert Advisor serialises trade and metric events with the
+The observer script serialises trade and metric events with the
 Protocol Buffer definitions in `proto/trade_event.proto` and
-`proto/metric_event.proto`.  Events are sent to a Python service over gRPC,
-replacing the previous Arrow Flight and shared‑memory transports.
-
-The EA loads `observer_grpc.dll` which exposes helpers to encode the messages
-and to transmit them using `GrpcSendTrade` and `GrpcSendMetrics`.  The target
-host and port are configured via the `GrpcServerHost` and `GrpcServerPort`
-inputs.
+`proto/metric_event.proto`. Events are sent to a Python service over gRPC,
+replacing the previous Arrow Flight and shared-memory transports.
 
 On the server side `scripts/grpc_log_service.py` implements the
-`tbot.LogService` with `LogTrade` and `LogMetrics` RPCs.  Each request is
+`tbot.LogService` with `LogTrade` and `LogMetrics` RPCs. Each request is
 appended to CSV files for downstream processing.
 
 ### Buffering and backpressure
 
-`Observer_TBot.mq4` queues encoded trade and metric payloads in ring buffers
+`observer.py` queues encoded trade and metric payloads in ring buffers
 (`pending_trades` and `pending_metrics`). `LogTrade` and `WriteMetrics`
-push messages into these buffers and the `OnTimer` handler periodically
-drains them via `GrpcSendTrade` and `GrpcSendMetrics`. Failed sends are
+push messages into these buffers and the timer handler periodically
+drains them via gRPC. Failed sends are
 retried with exponential backoff. Separate counters
 `trade_retry_count` and `metric_retry_count` track consecutive failures
 for each stream, and an alert is printed when either exceeds
@@ -47,5 +42,5 @@ Start the logging service with:
 python -m scripts.grpc_log_service --port 50051
 ```
 
-This setup provides a single, reliable path for streaming telemetry from
-MetaTrader to Python.
+This setup provides a single, reliable path for streaming telemetry to
+Python services.

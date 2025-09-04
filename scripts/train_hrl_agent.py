@@ -9,8 +9,7 @@ systems without the optional dependency.
 
 The resulting hierarchy is saved into ``model.json`` with a ``hierarchy``
 field that contains metadata and (when SB3 is available) learned
-parameters.  ``generate_mql4_from_model.py`` can embed this metadata in
-rendered MQL4 strategies.
+parameters.
 """
 from __future__ import annotations
 
