@@ -710,7 +710,9 @@ def _extract_features(
                 continue
             if row_idx < len(series):
                 price_map.setdefault(sym, []).append(float(series[row_idx]))
-
+        # Propagate synthetic flag for downstream weighting if present
+        if str(r.get("synthetic", "0")).lower() in ("1", "true", "yes"):
+            feat["synthetic"] = 1.0
         feature_dicts.append(feat)
         labels.append(label)
         sl_targets.append(sl_dist)
