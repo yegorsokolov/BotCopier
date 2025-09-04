@@ -93,6 +93,10 @@ int      AnomalyTimeoutCount = 0;
 int      AnomalyRetryCount = 0;
 int      AnomalyReplayCount = 0;
 
+int      WalBytesTrades   = 0;
+int      WalBytesMetrics  = 0;
+int      WalBytesAnomaly  = 0;
+
 double   CpuLoad = 0.0;
 int      CachedBookRefreshSeconds = 0;
 double   FlushLatencyMs = 0.0;
@@ -618,10 +622,31 @@ void AppendWal(string fname, uchar &msg[], int len)
    if(h==INVALID_HANDLE)
       return;
    FileSeek(h, 0, SEEK_END);
-   FileWriteInteger(h, len);
-   FileWriteArray(h, msg, 0, len);
-   FileWriteInteger(h, WalChecksum(msg, len));
+   uchar zipped[];
+   int bytes;
+   if(CryptEncode(CRYPT_ARCHIVE_GZIP, msg, zipped))
+   {
+      int zlen = ArraySize(zipped);
+      FileWriteInteger(h, zlen);
+      FileWriteArray(h, zipped, 0, zlen);
+      FileWriteInteger(h, WalChecksum(zipped, zlen));
+      bytes = 8 + zlen;
+   }
+   else
+   {
+      FileWriteInteger(h, len);
+      FileWriteArray(h, msg, 0, len);
+      FileWriteInteger(h, WalChecksum(msg, len));
+      bytes = 8 + len;
+   }
    FileClose(h);
+
+   if(StringFind(fname, "pending_trades.wal") >= 0)
+      WalBytesTrades += bytes;
+   else if(StringFind(fname, "pending_metrics.wal") >= 0)
+      WalBytesMetrics += bytes;
+   else if(StringFind(fname, "anomaly_queue.wal") >= 0)
+      WalBytesAnomaly += bytes;
 }
 
 void SaveQueue(string fname, uchar &queue[][], int &sizes[], int head, int count)
@@ -634,11 +659,34 @@ void SaveQueue(string fname, uchar &queue[][], int &sizes[], int head, int count
    {
       int idx = (head + i) % cap;
       int len = sizes[idx];
+      bool do_comp = StringFind(fname, ".wal") >= 0;
+      if(do_comp)
+      {
+         uchar tmp[];
+         ArrayResize(tmp, len);
+         ArrayCopy(tmp, queue[idx], 0, 0, len);
+         uchar zipped[];
+         if(CryptEncode(CRYPT_ARCHIVE_GZIP, tmp, zipped))
+         {
+            int zlen = ArraySize(zipped);
+            FileWriteInteger(h, zlen);
+            FileWriteArray(h, zipped, 0, zlen);
+            FileWriteInteger(h, WalChecksum(zipped, zlen));
+            continue;
+         }
+      }
       FileWriteInteger(h, len);
       FileWriteArray(h, queue[idx], 0, len);
       FileWriteInteger(h, WalChecksum(queue[idx], len));
    }
    FileClose(h);
+
+   if(StringFind(fname, "pending_trades.wal") >= 0)
+      WalBytesTrades = (int)FileSize(fname);
+   else if(StringFind(fname, "pending_metrics.wal") >= 0)
+      WalBytesMetrics = (int)FileSize(fname);
+   else if(StringFind(fname, "anomaly_queue.wal") >= 0)
+      WalBytesAnomaly = (int)FileSize(fname);
 }
 
 void LoadQueue(string fname, uchar &queue[][], int &sizes[], int &head, int &tail, int &count)
@@ -690,13 +738,13 @@ void ReplayWal(string fname, uchar &queue[][], int &sizes[], int &head, int &tai
       int len = FileReadInteger(h);
       if(len <= 0)
          break;
-      uchar tmp[];
-      ArrayResize(tmp, len);
-      int rd = FileReadArray(h, tmp, 0, len);
+      uchar cmp[];
+      ArrayResize(cmp, len);
+      int rd = FileReadArray(h, cmp, 0, len);
       if(rd!=len)
          break;
       uint expected = FileReadInteger(h);
-      if(WalChecksum(tmp, len)!=expected)
+      if(WalChecksum(cmp, len)!=expected)
       {
          Print("Corrupt WAL entry in " + fname + ", skipping");
          continue;
@@ -706,10 +754,14 @@ void ReplayWal(string fname, uchar &queue[][], int &sizes[], int &head, int &tai
          processed++;
          continue;
       }
-      if(len > ArrayRange(queue,1))
-         len = ArrayRange(queue,1);
-      ArrayCopy(queue[tail], tmp, 0, 0, len);
-      sizes[tail] = len;
+      uchar tmp[];
+      if(!CryptDecode(CRYPT_ARCHIVE_GZIP, cmp, tmp))
+         ArrayCopy(tmp, cmp, 0, 0, len);
+      int ulen = ArraySize(tmp);
+      if(ulen > ArrayRange(queue,1))
+         ulen = ArrayRange(queue,1);
+      ArrayCopy(queue[tail], tmp, 0, 0, ulen);
+      sizes[tail] = ulen;
       tail = (tail + 1) % cap;
       if(count < cap)
          count++;
@@ -728,11 +780,23 @@ void SaveAnomalyWal(string fname)
    {
       uchar tmp[];
       int len = StructToCharArray(AnomalyQueue[i], tmp);
-      FileWriteInteger(h, len);
-      FileWriteArray(h, tmp, 0, len);
-      FileWriteInteger(h, WalChecksum(tmp, len));
+      uchar zipped[];
+      if(CryptEncode(CRYPT_ARCHIVE_GZIP, tmp, zipped))
+      {
+         int zlen = ArraySize(zipped);
+         FileWriteInteger(h, zlen);
+         FileWriteArray(h, zipped, 0, zlen);
+         FileWriteInteger(h, WalChecksum(zipped, zlen));
+      }
+      else
+      {
+         FileWriteInteger(h, len);
+         FileWriteArray(h, tmp, 0, len);
+         FileWriteInteger(h, WalChecksum(tmp, len));
+      }
    }
    FileClose(h);
+   WalBytesAnomaly = (int)FileSize(fname);
 }
 
 void ReplayAnomalyWal(string fname)
@@ -745,17 +809,20 @@ void ReplayAnomalyWal(string fname)
       int len = FileReadInteger(h);
       if(len <= 0)
          break;
-      uchar tmp[];
-      ArrayResize(tmp, len);
-      int rd = FileReadArray(h, tmp, 0, len);
+      uchar cmp[];
+      ArrayResize(cmp, len);
+      int rd = FileReadArray(h, cmp, 0, len);
       if(rd!=len)
          break;
       uint expected = FileReadInteger(h);
-      if(WalChecksum(tmp, len)!=expected)
+      if(WalChecksum(cmp, len)!=expected)
       {
          Print("Corrupt WAL entry in " + fname + ", skipping");
          continue;
       }
+      uchar tmp[];
+      if(!CryptDecode(CRYPT_ARCHIVE_GZIP, cmp, tmp))
+         ArrayCopy(tmp, cmp, 0, 0, len);
       PendingTrade t;
       CharArrayToStruct(tmp, t);
       int n = ArraySize(AnomalyQueue);
@@ -766,6 +833,7 @@ void ReplayAnomalyWal(string fname)
    }
    FileClose(h);
    FileDelete(fname);
+   WalBytesAnomaly = 0;
 }
 
 
@@ -1141,6 +1209,12 @@ int OnInit()
    ReplayWal(log_dir + "/pending_trades.wal", pending_trades, pending_trade_sizes, pending_trade_head, pending_trade_tail, pending_trade_count, trade_skip);
    ReplayWal(log_dir + "/pending_metrics.wal", pending_metrics, pending_metric_sizes, pending_metric_head, pending_metric_tail, pending_metric_count, metric_skip);
    ReplayAnomalyWal(log_dir + "/anomaly_queue.wal");
+   string tw = log_dir + "/pending_trades.wal";
+   string mw = log_dir + "/pending_metrics.wal";
+   string aw = log_dir + "/anomaly_queue.wal";
+   WalBytesTrades = FileIsExist(tw) ? (int)FileSize(tw) : 0;
+   WalBytesMetrics = FileIsExist(mw) ? (int)FileSize(mw) : 0;
+   WalBytesAnomaly = FileIsExist(aw) ? (int)FileSize(aw) : 0;
    TradeQueueDepth = pending_trade_count;
    MetricQueueDepth = pending_metric_count;
    FlightConnected = FlightClientInit(FlightServerHost, FlightServerPort);
@@ -1757,21 +1831,8 @@ void WriteMetrics(datetime ts)
    datetime cutoff = ts - MetricsRollingDays*24*60*60;
    int trade_q_depth = TradeQueueDepth;
    int metric_q_depth = MetricQueueDepth;
-   int wal_size = 0;
-   int anomaly_backlog = 0;
-   string tw = log_dir + "/pending_trades.wal";
-   string mw = log_dir + "/pending_metrics.wal";
-   string aw = log_dir + "/anomaly_queue.wal";
-   if(FileIsExist(tw))
-      wal_size += (int)FileSize(tw);
-   if(FileIsExist(mw))
-      wal_size += (int)FileSize(mw);
-   if(FileIsExist(aw))
-   {
-      int sz = (int)FileSize(aw);
-      wal_size += sz;
-      anomaly_backlog = sz;
-   }
+   int wal_size = WalBytesTrades + WalBytesMetrics + WalBytesAnomaly;
+   int anomaly_backlog = WalBytesAnomaly;
    for(int m=0; m<ArraySize(target_magics); m++)
    {
       int magic = target_magics[m];
