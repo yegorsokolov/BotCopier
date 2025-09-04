@@ -7,7 +7,10 @@ from typing import Iterable, List, Tuple
 import numpy as np
 import pandas as pd
 from pydantic import ValidationError  # type: ignore
-from schemas.trades import TradeEvent  # type: ignore
+try:  # pragma: no cover - optional dependency
+    from schemas.trades import TradeEvent  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    TradeEvent = None  # type: ignore
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
@@ -472,17 +475,18 @@ def load_logs(
                             df_metrics, how="left", left_on="magic", right_on="model_id"
                         )
                         chunk = chunk.drop(columns=["model_id"])
-                records = []
-                for row in chunk.to_dict(orient="records"):
-                    try:
-                        TradeEvent(**row)
-                        records.append(row)
-                    except ValidationError:
-                        invalid = pd.concat([invalid, pd.DataFrame([row])])
-                if records:
-                    chunk = pd.DataFrame(records, columns=chunk.columns)
-                else:
-                    chunk = pd.DataFrame(columns=chunk.columns)
+                if TradeEvent is not None:
+                    records = []
+                    for row in chunk.to_dict(orient="records"):
+                        try:
+                            TradeEvent(**row)
+                            records.append(row)
+                        except ValidationError:
+                            invalid = pd.concat([invalid, pd.DataFrame([row])])
+                    if records:
+                        chunk = pd.DataFrame(records, columns=chunk.columns)
+                    else:
+                        chunk = pd.DataFrame(columns=chunk.columns)
                 if not invalid.empty:
                     invalid_rows.append(invalid)
                 yield chunk
@@ -572,4 +576,43 @@ def train_model(
         json.dump(model, f)
 
     return model
+
+
+def main() -> None:
+    """Command line interface for fitting a logistic regression model.
+
+    The input dataset is expected to be an ``.npz`` file containing ``X``,
+    ``y`` and ``event_times`` arrays.  The ``--half-life-days`` flag applies an
+    exponential decay weight of ``0.5 ** (age_days / half_life_days)`` to each
+    sample before fitting so that older trades influence the model less.
+    """
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Fit logistic regression")
+    parser.add_argument("dataset", help="NPZ file with X, y and event_times arrays")
+    parser.add_argument("out_dir", help="Directory to write model.json")
+    parser.add_argument(
+        "--half-life-days",
+        type=float,
+        default=0.0,
+        help="half-life in days for sample weight decay",
+    )
+    parser.add_argument("--C", type=float, default=1.0, help="inverse regularization strength")
+    args = parser.parse_args()
+
+    data = np.load(args.dataset)
+    out_dir = Path(args.out_dir)
+    train_model(
+        data["X"],
+        data["y"],
+        data["event_times"],
+        out_dir,
+        half_life_days=args.half_life_days,
+        C=args.C,
+    )
+
+
+if __name__ == "__main__":
+    main()
 
