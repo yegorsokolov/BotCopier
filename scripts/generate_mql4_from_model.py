@@ -775,6 +775,12 @@ def generate(
     output = output.replace('__FEATURE_STD__', ', '.join(std_vec))
 
     emb_data = base.get('symbol_embeddings', {})
+    if not emb_data and symbol_graph:
+        try:
+            with open(symbol_graph) as f:
+                emb_data = json.load(f).get('embeddings', {})
+        except Exception:
+            emb_data = {}
     if emb_data:
         emb_symbols = list(emb_data.keys())
         emb_dim = len(next(iter(emb_data.values()), []))

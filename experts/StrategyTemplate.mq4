@@ -1111,6 +1111,7 @@ double GraphEmbedding(int idx)
 
 double SymbolEmbedding(int idx)
 {
+   // Lookup Node2Vec embedding for the active symbol
    for(int i=0; i<SymbolEmbCount; i++)
       if(SymbolEmbSymbols[i] == SymbolToTrade)
          if(idx >= 0 && idx < SymbolEmbDim)
