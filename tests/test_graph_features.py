@@ -156,10 +156,10 @@ def test_graph_features(tmp_path: Path) -> None:
         symbol_graph=graph_file,
     )
     feat_df = pd.DataFrame(feat_dicts)
-    assert "coint_residual_USDCHF" in feat_df.columns
-    assert "coint_residual_GBPUSD" not in feat_df.columns
+    assert "coint_residual_EURUSD_USDCHF" in feat_df.columns
+    assert "coint_residual_EURUSD_GBPUSD" not in feat_df.columns
     assert "corr_EURUSD_USDCHF" in feat_df.columns
-    assert "corr_EURUSD_GBPUSD" not in feat_df.columns
+    assert "corr_EURUSD_GBPUSD" in feat_df.columns
     assert any(c.startswith("graph_emb") for c in feat_df.columns)
 
     train(
@@ -168,6 +168,7 @@ def test_graph_features(tmp_path: Path) -> None:
         corr_map=corr_map,
         extra_price_series=extra,
         symbol_graph=graph_file,
+        grid_search=False,
     )
 
     with open(out_dir / "model.json") as f:
@@ -176,11 +177,13 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "graph_degree" in feats
     assert "graph_pagerank" in feats
     assert any(f.startswith("graph_emb") for f in feats)
+    assert any(f.startswith("sym_emb_") for f in feats)
     assert "corr_EURUSD_USDCHF" in feats
-    assert "corr_EURUSD_GBPUSD" not in feats
-    assert "coint_residual_USDCHF" in feats
-    assert "coint_residual_GBPUSD" not in feats
+    assert "corr_EURUSD_GBPUSD" in feats
+    assert "coint_residual_EURUSD_USDCHF" in feats
+    assert "coint_residual_EURUSD_GBPUSD" not in feats
     assert model.get("weighted_by_net_profit") is True
+    assert model.get("symbol_embeddings")
     graph = model.get("graph") or json.load(open(graph_file))
     assert set(graph.get("symbols")) == {"EURUSD", "USDCHF", "GBPUSD"}
     metrics = graph.get("metrics", {})
@@ -198,6 +201,8 @@ def test_graph_features(tmp_path: Path) -> None:
     assert "GraphDegree()" in text
     assert "GraphPagerank()" in text
     assert "GraphEmbedding(" in text
+    assert "SymbolEmbedding(" in text
+    assert "SymbolEmbeddings" in text
     assert "CointegrationResidual" in text
     assert "GraphSymbols[]" in text
     assert "EURUSD" in text and "USDCHF" in text and "GBPUSD" in text
