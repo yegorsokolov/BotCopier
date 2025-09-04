@@ -157,5 +157,6 @@
   "ae_shape": [
     6,
     2
-  ]
+  ],
+  "onnx_int8": "model.int8.onnx"
 }

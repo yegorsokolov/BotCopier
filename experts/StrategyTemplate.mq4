@@ -191,6 +191,7 @@ int      NextDecisionId = 1;
 int      ExecutedModelIdx = -1;
 bool UseOnnxEncoder = false;
 bool UseOnnxModel = false;
+bool UseOnnxGPU = __USE_ONNX_GPU__;
 int      AdaptLogHandle = INVALID_HANDLE;
 datetime LastAdaptRequest = 0;
 string   LastTraceId = "";
