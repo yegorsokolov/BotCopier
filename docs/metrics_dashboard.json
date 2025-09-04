@@ -86,6 +86,14 @@
       "targets": [
         {"expr": "bot_fallback_events_total"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CVaR",
+      "id": 11,
+      "targets": [
+        {"expr": "bot_cvar"}
+      ]
     }
   ]
 }
