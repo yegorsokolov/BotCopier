@@ -607,6 +607,12 @@ def generate(
     thr_str = ', '.join(_fmt(t) for t in hourly_thr)
     output = output.replace('__HOURLY_THRESHOLDS__', thr_str)
 
+    sym_thr = base.get('symbol_thresholds', {})
+    sym_thr_symbols = ', '.join(f'"{k}"' for k in sym_thr.keys())
+    sym_thr_values = ', '.join(_fmt(v) for v in sym_thr.values())
+    output = output.replace('__SYMBOL_THRESHOLD_SYMBOLS__', sym_thr_symbols)
+    output = output.replace('__SYMBOL_THRESHOLD_VALUES__', sym_thr_values)
+
     sl_coeff = base.get('sl_coefficients', [])
     sl_str = ', '.join(_fmt(c) for c in sl_coeff)
     output = output.replace('__SL_COEFFICIENTS__', sl_str)
