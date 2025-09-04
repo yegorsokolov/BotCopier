@@ -67,7 +67,8 @@ The EA records trade openings, closings and order modifications through the `OnT
    with the `feature_names` and `last_event_id`. When these match the existing
    model, subsequent runs reuse the cache and skip feature generation for faster
    reproducible training. Use the `--half-life-days` flag to weight recent trades
-   more heavily via an exponential decay (set to `0` to disable). The script also
+   more heavily via an exponential decay where each sample weight is
+   `0.5 ** (age_days / half_life_days)` (set to `0` to disable). The script also
    checks for class imbalance and fits `LogisticRegression` with
    `class_weight='balanced'` when necessary. The selected decay half-life and
    class-weighting strategy are stored in `model.json` so future training runs and online
