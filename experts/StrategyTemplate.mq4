@@ -1062,6 +1062,15 @@ double GraphEmbedding(int idx)
    return(0.0);
 }
 
+double SymbolEmbedding(int idx)
+{
+   for(int i=0; i<SymbolEmbCount; i++)
+      if(SymbolEmbSymbols[i] == SymbolToTrade)
+         if(idx >= 0 && idx < SymbolEmbDim)
+            return(SymbolEmbeddings[i][idx]);
+   return(0.0);
+}
+
 double GetNewsSentiment()
 {
    if(TimeCurrent() == CachedNewsTime)

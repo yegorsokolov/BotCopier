@@ -134,6 +134,22 @@ Exported experts also accept ``ReplayDecisions=true``.  When enabled, the EA
 scans ``DecisionLogFile`` at start-up and prints any discrepancies between the
 old and new probabilities, providing immediate feedback after upgrades.
 
+## Symbol Graph Embeddings
+
+Correlation structure between symbols can be captured with
+``scripts/build_symbol_graph.py`` which aggregates rolling correlations into a
+weighted graph and, when ``torch_geometric`` is available, trains a Node2Vec
+embedding for each node.  The resulting JSON contains adjacency information,
+simple metrics like degree and PageRank, and per-symbol embedding vectors.
+
+Supply this graph to ``scripts.train_target_clone.py`` via the
+``--symbol-graph`` option.  During feature extraction the trainer appends the
+active symbol's embedding components (``sym_emb_*``) to the feature vector and
+records them in ``feature_names``.  ``scripts.generate_mql4_from_model.py``
+reads these embeddings from ``model.json`` and injects them into the generated
+Expert Advisor.  At runtime the EA exposes the values through
+``GetFeature()`` so models can leverage cross‑symbol relationships.
+
 ## Bandit Router
 
 ``scripts/bandit_router.py`` exposes a lightweight HTTP service that chooses

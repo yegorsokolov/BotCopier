@@ -287,6 +287,9 @@ def _build_feature_cases(
         if fname.startswith('graph_emb') and fname[9:].isdigit():
             idx_g = int(fname[9:])
             return f'GraphEmbedding({idx_g})'
+        if fname.startswith('sym_emb_') and fname[8:].isdigit():
+            idx_s = int(fname[8:])
+            return f'SymbolEmbedding({idx_s})'
         if fname.startswith('ae') and fname[2:].isdigit():
             idx_ae = int(fname[2:])
             return f'GetEncodedFeature({idx_ae})'
