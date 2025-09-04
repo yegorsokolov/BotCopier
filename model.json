@@ -63,6 +63,8 @@
   ],
   "exit_intercept": 0.0,
   "exit_threshold": 0.0,
+  "conformal_lower": 0.0,
+  "conformal_upper": 1.0,
   "hourly_thresholds": [
     0.0,
     0.0,

@@ -842,6 +842,8 @@ def _train_lite_mode(
         "last_event_id": int(last_event_id),
         "mode": mode,
         "half_life_days": 0.0,
+        "conformal_lower": 0.0,
+        "conformal_upper": 1.0,
     }
     model["feature_flags"] = {
         "sma": use_sma,
@@ -1766,6 +1768,8 @@ def train(
             "val_roc_auc": float("nan"),
             "accuracy": float("nan"),
             "labeled_uncertainties": int(feedback_count),
+            "conformal_lower": 0.0,
+            "conformal_upper": 1.0,
         }
         model["feature_flags"] = feature_flags
         model["half_life_days"] = float(decay_half_life or 0.0)
@@ -1917,9 +1921,19 @@ def train(
             upper_bounds = np.clip(proba_val + scores, 0.0, 1.0)
             conformal_lower = float(np.quantile(lower_bounds, 0.05))
             conformal_upper = float(np.quantile(upper_bounds, 0.95))
+            coverage = float(np.mean((y_val >= conformal_lower) & (y_val <= conformal_upper)))
         else:
             conformal_lower = 0.0
             conformal_upper = 1.0
+            coverage = float("nan")
+        logger.info(
+            {
+                "event": "conformal_interval",
+                "lower": conformal_lower,
+                "upper": conformal_upper,
+                "coverage": coverage,
+            }
+        )
 
         model = {
             "model_id": (existing_model.get("model_id") if existing_model else "target_clone"),
@@ -1967,6 +1981,7 @@ def train(
             "accuracy": val_acc,
             "f1": val_f1,
             "roc_auc": val_roc,
+            "coverage": coverage,
         }
         model["regime_centers"] = regime_info.get("centers", [])
         model["regime_feature_names"] = regime_info.get("feature_names", [])
@@ -2650,6 +2665,25 @@ def train(
                 val_acc = float("nan")
             train_preds = (train_proba >= threshold).astype(int)
             train_acc = float(accuracy_score(y_train, train_preds))
+            if len(y_val) > 0:
+                scores = np.abs(y_val - val_proba)
+                lower_bounds = np.clip(val_proba - scores, 0.0, 1.0)
+                upper_bounds = np.clip(val_proba + scores, 0.0, 1.0)
+                conformal_lower = float(np.quantile(lower_bounds, 0.05))
+                conformal_upper = float(np.quantile(upper_bounds, 0.95))
+                coverage = float(np.mean((y_val >= conformal_lower) & (y_val <= conformal_upper)))
+            else:
+                conformal_lower = 0.0
+                conformal_upper = 1.0
+                coverage = float("nan")
+            logger.info(
+                {
+                    "event": "conformal_interval",
+                    "lower": conformal_lower,
+                    "upper": conformal_upper,
+                    "coverage": coverage,
+                }
+            )
 
             try:
                 if model_type in ("logreg", "bayes_logreg"):
@@ -2713,6 +2747,8 @@ def train(
         "std": feature_std.astype(np.float32).tolist(),
         "feature_mean": feature_mean.astype(np.float32).tolist(),
         "feature_std": feature_std.astype(np.float32).tolist(),
+        "conformal_lower": conformal_lower,
+        "conformal_upper": conformal_upper,
         "labeled_uncertainties": int(feedback_count),
     }
     model["split_sizes"] = split_sizes
@@ -2720,6 +2756,7 @@ def train(
         "accuracy": val_acc,
         "f1": val_f1,
         "roc_auc": val_roc,
+        "coverage": coverage,
     }
     model["teacher_metrics"] = {
         "accuracy": val_acc,

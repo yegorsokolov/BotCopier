@@ -613,6 +613,9 @@ def generate(
     output = output.replace('__SYMBOL_THRESHOLD_SYMBOLS__', sym_thr_symbols)
     output = output.replace('__SYMBOL_THRESHOLD_VALUES__', sym_thr_values)
 
+    output = output.replace('__CONFORMAL_LOWER__', _fmt(base.get('conformal_lower', 0.0)))
+    output = output.replace('__CONFORMAL_UPPER__', _fmt(base.get('conformal_upper', 1.0)))
+
     sl_coeff = base.get('sl_coefficients', [])
     sl_str = ', '.join(_fmt(c) for c in sl_coeff)
     output = output.replace('__SL_COEFFICIENTS__', sl_str)
