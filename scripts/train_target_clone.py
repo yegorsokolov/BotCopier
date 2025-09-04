@@ -2961,6 +2961,17 @@ def train(
                     output_names=["output"],
                     dynamic_axes={"input": {0: "batch"}},
                 )
+                try:
+                    from onnxruntime.quantization import quantize_dynamic, QuantType
+
+                    quantize_dynamic(
+                        out_dir / "model.onnx",
+                        out_dir / "model.int8.onnx",
+                        weight_type=QuantType.QInt8,
+                    )
+                    model["onnx_int8"] = "model.int8.onnx"
+                except Exception as qexc:  # pragma: no cover - optional quantization
+                    logging.warning("ONNX quantization failed: %s", qexc)
             except Exception as exc:  # pragma: no cover - optional export
                 logging.warning("ONNX export failed: %s", exc)
         except Exception:  # pragma: no cover - torch errors

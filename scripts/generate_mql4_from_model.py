@@ -23,6 +23,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Iterable, List, Union, Optional
 
+try:
+    import onnxruntime as ort
+except Exception:  # pragma: no cover - onnxruntime optional
+    ort = None
+
 
 MANDATORY_FEATURES = {
     "book_bid_vol",
@@ -776,10 +781,14 @@ def generate(
     output = output.replace('__ENCODER_WINDOW__', str(enc_window))
     output = output.replace('__ENCODER_DIM__', str(enc_dim))
     output = output.replace('__ENCODER_ONNX__', base.get('encoder_onnx', 'encoder.onnx'))
-    onnx_file = base.get('onnx_file')
+    onnx_file = base.get('onnx_int8') or base.get('onnx_file')
     if not onnx_file and base.get('rl_algo') == 'decision_transformer':
         onnx_file = 'decision_transformer.onnx'
     output = output.replace('__MODEL_ONNX__', onnx_file or '')
+    use_gpu = bool(
+        ort and 'CUDAExecutionProvider' in getattr(ort, 'get_available_providers', lambda: [])()
+    )
+    output = output.replace('__USE_ONNX_GPU__', 'true' if use_gpu else 'false')
 
     centers = base.get('encoder_centers', [])
     center_flat = ', '.join(_fmt(v) for row in centers for v in row)

@@ -33,6 +33,15 @@ extracted from the Observer EA.
 This metadata is persisted in ``model.json`` so that models trained on one
 machine can be safely deployed on another with different capabilities.
 
+## ONNX Runtime GPU Fallback
+
+Training exports an INT8‑quantized ``model.int8.onnx`` alongside the JSON
+metadata.  During strategy generation the tool inspects
+``onnxruntime.get_available_providers()`` and embeds a ``UseOnnxGPU`` flag in the
+Expert Advisor.  At runtime the EA loads the quantized model and runs inference
+on the GPU whenever the ``CUDAExecutionProvider`` is available, otherwise it
+automatically falls back to the CPU.
+
 ## Risk-Parity Allocation
 
 Training also estimates a covariance matrix across traded symbols and derives
