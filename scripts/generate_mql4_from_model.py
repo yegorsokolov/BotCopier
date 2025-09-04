@@ -14,6 +14,8 @@ behaviour of :mod:`scripts.replay_decisions` directly inside MetaTrader.
 import argparse
 import json
 import gzip
+import hashlib
+import io
 import logging
 import numpy as np
 from sklearn.feature_extraction import FeatureHasher
@@ -72,6 +74,42 @@ def _prune_model_features(model: dict) -> dict:
 template_path = (
     Path(__file__).resolve().parent.parent / 'experts' / 'StrategyTemplate.mq4'
 )
+
+
+def _save_quantized_bin(
+    path: Path,
+    coeff: np.ndarray,
+    sym_emb: np.ndarray,
+    graph_emb: np.ndarray,
+    thr: np.ndarray,
+    reg_thr: np.ndarray,
+    sym_thr: np.ndarray,
+):
+    """Persist quantized model parameters to ``path``.
+
+    Arrays are written in a simple binary format with little-endian int32
+    dimensions followed by float32 data. The entire payload is gzip
+    compressed to minimise disk usage.
+    """
+    with gzip.open(path, 'wb') as f:
+        f.write(np.array([coeff.shape[0], coeff.shape[1]], dtype=np.int32).tobytes())
+        if coeff.size:
+            f.write(coeff.astype(np.float32).tobytes())
+        f.write(np.array([sym_emb.shape[0], sym_emb.shape[1]], dtype=np.int32).tobytes())
+        if sym_emb.size:
+            f.write(sym_emb.astype(np.float32).tobytes())
+        f.write(np.array([graph_emb.shape[0], graph_emb.shape[1]], dtype=np.int32).tobytes())
+        if graph_emb.size:
+            f.write(graph_emb.astype(np.float32).tobytes())
+        f.write(np.array([thr.size], dtype=np.int32).tobytes())
+        if thr.size:
+            f.write(thr.astype(np.float32).tobytes())
+        f.write(np.array([reg_thr.size], dtype=np.int32).tobytes())
+        if reg_thr.size:
+            f.write(reg_thr.astype(np.float32).tobytes())
+        f.write(np.array([sym_thr.size], dtype=np.int32).tobytes())
+        if sym_thr.size:
+            f.write(sym_thr.astype(np.float32).tobytes())
 
 
 def _build_feature_cases(
@@ -391,9 +429,11 @@ def generate(
     """
     if isinstance(model_jsons, (str, Path)):
         model_jsons = [model_jsons]
+    hash_obj = hashlib.sha256()
     models: List[dict] = []
     gating_data = None
     for mj in model_jsons:
+        hash_obj.update(Path(mj).read_bytes())
         open_func = gzip.open if str(mj).endswith('.gz') else open
         with open_func(mj, 'rt') as f:
             data = json.load(f)
@@ -419,6 +459,7 @@ def generate(
                     models.append(_prune_model_features(m))
             else:
                 models.append(data)
+    checksum = hash_obj.hexdigest()
     base = models[0]
     if lite_mode is None:
         mode = base.get('mode') or base.get('training_mode')
@@ -502,6 +543,7 @@ def generate(
     intercepts = []
     var_rows = []
     noise_vars = []
+    coeff_matrix: List[List[float]] = []
     for m in models:
         coeffs = (
             m.get('student_coefficients')
@@ -516,10 +558,13 @@ def generate(
                 except Exception:
                     coeffs = []
         if hash_size:
-            vec = [_fmt(c) for c in coeffs]
+            numeric_row = [float(c) for c in coeffs]
+            vec = [_fmt(c) for c in numeric_row]
         else:
             fmap = {f: c for f, c in zip(m.get('feature_names', []), coeffs)}
-            vec = [_fmt(fmap.get(f, 0.0)) for f in feature_names]
+            numeric_row = [float(fmap.get(f, 0.0)) for f in feature_names]
+            vec = [_fmt(v) for v in numeric_row]
+        coeff_matrix.append(numeric_row)
         coeff_rows.append('{' + ', '.join(vec) + '}')
         intercept = m.get('student_intercept')
         if intercept is None:
@@ -795,11 +840,13 @@ def generate(
         output = output.replace('__SYM_EMB_COUNT__', str(len(emb_symbols)))
         output = output.replace('__SYM_EMB_SYMBOLS__', sym_list)
         output = output.replace('__SYM_EMB_VALUES__', emb_rows)
+        symbol_emb_matrix = np.array([emb_data[s] for s in emb_symbols], dtype=np.float32)
     else:
         output = output.replace('__SYM_EMB_DIM__', '0')
         output = output.replace('__SYM_EMB_COUNT__', '0')
         output = output.replace('__SYM_EMB_SYMBOLS__', '')
         output = output.replace('__SYM_EMB_VALUES__', '')
+        symbol_emb_matrix = np.empty((0, 0), dtype=np.float32)
 
     graph_data = base.get('graph', {})
     if (not graph_data or not graph_data.get('symbols')) and symbol_graph:
@@ -827,16 +874,20 @@ def generate(
     emb_dim = int(graph_data.get('embedding_dim') or 0)
     if emb_map and emb_dim > 0 and g_symbols:
         emb_rows = []
+        mat: List[List[float]] = []
         for s in g_symbols:
             vec = emb_map.get(s, [0.0] * emb_dim)
+            mat.append([float(v) for v in vec])
             emb_rows.append('{' + ', '.join(_fmt(float(v)) for v in vec) + '}')
         output = output.replace('__GRAPH_EMB_DIM__', str(emb_dim))
         output = output.replace('__GRAPH_EMB_COUNT__', str(len(g_symbols)))
         output = output.replace('__GRAPH_EMB__', ', '.join(emb_rows))
+        graph_emb_matrix = np.array(mat, dtype=np.float32)
     else:
         output = output.replace('__GRAPH_EMB_DIM__', '0')
         output = output.replace('__GRAPH_EMB_COUNT__', '0')
         output = output.replace('__GRAPH_EMB__', '')
+        graph_emb_matrix = np.empty((0, 0), dtype=np.float32)
 
     coint = graph_data.get('cointegration') or {}
     if coint:
@@ -955,6 +1006,26 @@ def generate(
     with open(out_file, 'w') as f:
         f.write(output)
     print(f"Strategy written to {out_file}")
+    # Quantize and persist large parameter arrays
+    coeff_arr = np.array(coeff_matrix, dtype=np.float32)
+    thr_arr = np.array(hourly_thr, dtype=np.float32)
+    reg_thr_arr = np.array(reg_thr, dtype=np.float32)
+    sym_thr_arr = np.array(list(sym_thr.values()), dtype=np.float32)
+    bin_path = out_dir / 'model.bin'
+    chk_path = out_dir / 'model.bin.sha256'
+    if bin_path.exists() and chk_path.exists() and chk_path.read_text() == checksum:
+        print('model.json unchanged; skipping quantization')
+    else:
+        _save_quantized_bin(
+            bin_path,
+            coeff_arr,
+            symbol_emb_matrix,
+            graph_emb_matrix,
+            thr_arr,
+            reg_thr_arr,
+            sym_thr_arr,
+        )
+        chk_path.write_text(checksum)
     if missing_feats:
         raise ValueError(
             "Unknown feature mapping(s): " + ", ".join(sorted(missing_feats))
