@@ -1322,6 +1322,7 @@ void OnTick()
 
 void OnTimer()
 {
+   uint timer_start = GetTickCount();
    ProcessAnomalyQueue();
    if(!FlightConnected)
       FlightConnected = FlightClientInit(FlightServerHost, FlightServerPort);
@@ -1336,12 +1337,19 @@ void OnTimer()
    }
 
    if(now - last_export < LearningExportIntervalMinutes*60)
+   {
+      uint early_elapsed = GetTickCount() - timer_start;
+      UpdateCpuLoad(early_elapsed);
       return;
+   }
 
    ExportLogs(now);
    WriteMetrics(now);
    ManageMetrics(now);
    last_export = now;
+
+   uint elapsed = GetTickCount() - timer_start;
+   UpdateCpuLoad(elapsed);
 }
 
 string EscapeJson(string s)
@@ -1846,12 +1854,13 @@ void WriteMetrics(datetime ts)
       int anomaly_timeouts = AnomalyTimeoutCount;
       int anomaly_retries = AnomalyRetryCount;
       int anomaly_replays = AnomalyReplayCount;
+      int effective_refresh = CachedBookRefreshSeconds;
       // emit file/socket errors, queue depth, retry counts and latencies for monitoring
       string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
                                  TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
                                  trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
                                  FlightErrors, CpuLoad, FlushLatencyMs, NetworkLatencyMs,
-                                 CachedBookRefreshSeconds, var_breach_count,
+                                 effective_refresh, var_breach_count,
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
                                  anomaly_late, anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, TraceId, span_id);
@@ -1862,7 +1871,7 @@ void WriteMetrics(datetime ts)
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
          trades, max_dd, sharpe, FileWriteErrors, FlightErrors, CpuLoad,
-         FlushLatencyMs, NetworkLatencyMs, CachedBookRefreshSeconds, var_breach_count,
+         FlushLatencyMs, NetworkLatencyMs, effective_refresh, var_breach_count,
          trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size,
          trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,
          anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, payload);
