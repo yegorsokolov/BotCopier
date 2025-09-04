@@ -56,7 +56,6 @@ extern string ModelVersion                 = "";
 extern string ModelFileName                = "model.json";
 extern string TraceId                      = "";
 extern int    BookRefreshSeconds           = 5;
-extern string AnomalyServiceUrl            = "http://127.0.0.1:8000/anomaly";
 extern double AnomalyThreshold             = 0.1;
 extern int    AnomalyTimeoutSeconds       = 5;
 extern string OtelEndpoint                = "";
@@ -1437,6 +1436,10 @@ string EscapeJson(string s)
 void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
 {
    int cal_id = CalendarEventIdAt(t.time_event);
+   string comment = t.comment_with_span +
+      StringFormat(";local=%.5f;remote=%.5f", t.anomaly_local, t.anomaly_remote);
+   if(StringLen(t.anomaly_status) > 0)
+      comment = comment + ";" + t.anomaly_status;
    string line = StringFormat(
       "%d;%s;%s;%s;%s;%d;%d;%s;%s;%d;%.2f;%.5f;%.5f;%.5f;%.2f;%.2f;%.5f;%s;%s;%s;%.2f;%.5f;%d;%s;%.2f;%.2f;%.5f;%.5f;%.5f;%d;%d;%d;%.2f;%.2f;%.2f;%.2f;%.2f;%.5f;%.5f;%s;%d;%d;%.5f;%.5f",
       t.id,
@@ -1445,7 +1448,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
       t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread,
-      TraceId, t.span_id, t.comment_with_span, t.remaining, t.slippage,
+      TraceId, t.span_id, comment, t.remaining, t.slippage,
       (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol,
       t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.executed_model_idx, t.decision_id, is_anom,
       t.equity, t.margin_level, t.commission, t.swap, t.risk_weight,
@@ -1459,7 +1462,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS),
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
-      t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, t.comment_with_span, t.remaining,
+      t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, comment, t.remaining,
       t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.risk_weight, t.executed_model_idx, t.decision_id, t.exit_reason, t.duration_sec, payload);
    if(len>0)
    {
@@ -1505,7 +1508,6 @@ void ProcessAnomalyQueue()
       bool is_anom = HasAe ? (t.anomaly_local > AnomalyThreshold) : (err > AnomalyThreshold);
       if(now - t.anomaly_sent_time > AnomalyTimeoutSeconds)
          AnomalyLateResponses++;
-      t.comment_with_span = t.comment_with_span + StringFormat(";local=%.5f;remote=%.5f", t.anomaly_local, t.anomaly_remote);
       FinalizeTradeEntry(t, is_anom);
       RemoveAnomaly(0);
       AnomalyRetryCount = 0;
@@ -1515,7 +1517,6 @@ void ProcessAnomalyQueue()
    {
       t.anomaly_status = "timeout";
       t.anomaly_remote = -1.0;
-      t.comment_with_span = t.comment_with_span + ";anom_timeout" + StringFormat(";local=%.5f;remote=%.5f", t.anomaly_local, t.anomaly_remote);
       FinalizeTradeEntry(t, HasAe ? (t.anomaly_local > AnomalyThreshold) : false);
       RemoveAnomaly(0);
       AnomalyTimeoutCount++;
