@@ -68,6 +68,8 @@ double ConformalLower = __CONFORMAL_LOWER__;
 double ConformalUpper = __CONFORMAL_UPPER__;
 string ThresholdSymbols[];
 double ThresholdTable[][24];
+string SymbolThresholdSymbols[] = {__SYMBOL_THRESHOLD_SYMBOLS__};
+double SymbolThresholdValues[] = {__SYMBOL_THRESHOLD_VALUES__};
 double SLModelCoefficients[] = {__SL_COEFFICIENTS__};
 double SLModelIntercept = __SL_INTERCEPT__;
 double TPModelCoefficients[] = {__TP_COEFFICIENTS__};
@@ -297,6 +299,50 @@ void ExtractJsonStringArray(string json, string key, string &arr[])
    }
 }
 
+void ExtractJsonDict(string json, string key, string &keys[], double &vals[])
+{
+   ArrayResize(keys, 0);
+   ArrayResize(vals, 0);
+   int pos = StringFind(json, key);
+   if(pos < 0) return;
+   pos = StringFind(json, "{", pos);
+   if(pos < 0) return;
+   int end = pos;
+   int depth = 0;
+   while(end < StringLen(json))
+   {
+      string ch = StringMid(json, end, 1);
+      if(ch == "{") depth++;
+      else if(ch == "}")
+      {
+         depth--;
+         if(depth == 0) break;
+      }
+      end++;
+   }
+   string body = StringSubstr(json, pos+1, end-pos-1);
+   string trimmed = StringTrimLeft(StringTrimRight(body));
+   if(StringLen(trimmed) == 0) return;
+   string parts[];
+   int cnt = StringSplit(body, ',', parts);
+   ArrayResize(keys, cnt);
+   ArrayResize(vals, cnt);
+   for(int i=0; i<cnt; i++)
+   {
+      string pair = StringTrimLeft(StringTrimRight(parts[i]));
+      int colon = StringFind(pair, ":");
+      if(colon < 0) continue;
+      string k = StringSubstr(pair, 0, colon);
+      string v = StringSubstr(pair, colon+1);
+      k = StringTrimLeft(StringTrimRight(k));
+      v = StringTrimLeft(StringTrimRight(v));
+      if(StringLen(k) >= 2 && StringMid(k,0,1)=="\"" && StringMid(k,StringLen(k)-1,1)=="\"")
+         k = StringSubstr(k,1,StringLen(k)-2);
+      keys[i] = k;
+      vals[i] = StrToDouble(v);
+   }
+}
+
 bool GetSymbolEmbedding(string sym, double &vec[])
 {
    for(int i=0; i<SymbolEmbCount; i++)
@@ -344,6 +390,7 @@ bool ParseModelJson(string json)
       for(int i=0;i<tcnt;i++)
          ThresholdTable[i/24][i%24] = th_tmp[i];
    }
+   ExtractJsonDict(json, "\"symbol_thresholds\"", SymbolThresholdSymbols, SymbolThresholdValues);
    ExtractJsonArray(json, "\"sl_coefficients\"", SLModelCoefficients);
    ExtractJsonArray(json, "\"tp_coefficients\"", TPModelCoefficients);
    ExtractJsonArray(json, "\"lot_coefficients\"", LotModelCoefficients);
@@ -552,7 +599,7 @@ int OnInit()
          if(DecisionLogHandle != INVALID_HANDLE)
          {
             if(FileSize(DecisionLogHandle) == 0)
-               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;sl_dist;tp_dist;model_idx;regime;chosen;risk_weight;variance;lots_predicted;executed_model_idx;features;trace_id;span_id");
+               FileWrite(DecisionLogHandle, "event_id;timestamp;model_version;action;probability;threshold;sl_dist;tp_dist;model_idx;regime;chosen;risk_weight;variance;lots_predicted;executed_model_idx;features;trace_id;span_id");
             FileSeek(DecisionLogHandle, 0, SEEK_END);
          }
          else
@@ -1505,6 +1552,11 @@ double GetTradeThreshold()
       if(ThresholdSymbols[i] == SymbolToTrade && ArrayRange(ThresholdTable,0) > i)
          return(ThresholdTable[i][hr]);
    }
+   for(int j=0;j<ArraySize(SymbolThresholdSymbols);j++)
+   {
+      if(SymbolThresholdSymbols[j] == SymbolToTrade)
+         return(SymbolThresholdValues[j]);
+   }
    if(ArraySize(ModelThreshold) == 24)
       return(ModelThreshold[hr]);
    return(DefaultThreshold);
@@ -1554,7 +1606,7 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    bool uncertain = MathAbs(prob - thr) < UncertaintyMargin;
    if(EnableDecisionLogging && DecisionLogHandle != INVALID_HANDLE)
    {
-      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
+      FileWrite(DecisionLogHandle, NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       FileFlush(DecisionLogHandle);
    }
    if(uncertain && UncertainLogHandle != INVALID_HANDLE)
@@ -1566,8 +1618,8 @@ void LogDecision(double &feats[], double prob, string action, int modelIdx, int 
    }
    if(EnableDecisionLogging && DecisionSocket != INVALID_HANDLE)
    {
-      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"chosen\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"executed_model_idx\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
-                                NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
+      string json = StringFormat("{\"event_id\":%d,\"timestamp\":\"%s\",\"model_version\":\"%s\",\"action\":\"%s\",\"probability\":%.6f,\"threshold\":%.6f,\"sl_dist\":%.5f,\"tp_dist\":%.5f,\"model_idx\":%d,\"regime\":%d,\"chosen\":%d,\"risk_weight\":%.6f,\"variance\":%.6f,\"lots\":%.2f,\"executed_model_idx\":%d,\"features\":[%s],\"trace_id\":\"%s\",\"span_id\":\"%s\"}",
+                                NextDecisionId, TimeToString(now, TIME_DATE|TIME_SECONDS), ModelVersion, action, prob, thr, sl_dist, tp_dist, modelIdx, regime, chosen, riskWeight, variance, lots, ExecutedModelIdx, feat_vals, trace_id, span_id);
       uchar bytes[];
       StringToCharArray(json+"\n", bytes, 0, WHOLE_ARRAY, CP_UTF8);
       if(SocketSend(DecisionSocket, bytes, ArraySize(bytes)-1) <= 0)
@@ -1854,7 +1906,7 @@ void OnTick()
    double tradeLots = CalcLots();
    tradeLots *= risk_weight;
    int ticket;
-   double thr = EntryThreshold;
+   double thr = GetTradeThreshold();
    string action = (prob > thr) ? "buy" : "sell";
    int decision_id = NextDecisionId;
    LogDecision(feats, prob, action, modelIdx, reg, applied_weight, pv, 1);

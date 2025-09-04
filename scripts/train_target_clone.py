@@ -14,7 +14,7 @@ from datetime import datetime
 import math
 import time
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Dict
 import numbers
 from itertools import combinations_with_replacement
 import sqlite3
@@ -1886,6 +1886,16 @@ def train(
                 t = threshold
             hourly_thresholds.append(float(t))
 
+        symbol_thresholds: dict[str, float] = {}
+        if len(y_val) > 0 and symbols_val_arr.size:
+            for sym in np.unique(symbols_val_arr):
+                mask = symbols_val_arr == sym
+                if len(np.unique(y_val[mask])) > 1:
+                    t, _ = _best_threshold(y_val[mask], proba_val[mask])
+                else:
+                    t = threshold
+                symbol_thresholds[str(sym)] = float(t)
+
         if len(y_val) > 0:
             scores = np.abs(y_val - proba_val)
             lower_bounds = np.clip(proba_val - scores, 0.0, 1.0)
@@ -1932,6 +1942,7 @@ def train(
             "feature_mean": feature_mean.astype(np.float32).tolist(),
             "feature_std": feature_std.astype(np.float32).tolist(),
             "hourly_thresholds": hourly_thresholds,
+            "symbol_thresholds": symbol_thresholds,
             "conformal_lower": conformal_lower,
             "conformal_upper": conformal_upper,
             "labeled_uncertainties": int(feedback_count),
@@ -2493,6 +2504,7 @@ def train(
                     "decision_id": int(i),
                     "prediction": int(train_preds[i]),
                     "prob": float(train_proba[i]),
+                    "threshold": float(threshold),
                 },
                 extra={"trace_id": dctx.trace_id, "span_id": dctx.span_id},
             )
@@ -2506,6 +2518,16 @@ def train(
         else:
             t = threshold
         hourly_thresholds.append(float(t))
+
+    symbol_thresholds: dict[str, float] = {}
+    if len(y_val) > 0 and symbols_val_arr.size:
+        for sym in np.unique(symbols_val_arr):
+            mask = symbols_val_arr == sym
+            if len(np.unique(y_val[mask])) > 1:
+                t, _ = _best_threshold(y_val[mask], val_proba[mask])
+            else:
+                t = threshold
+            symbol_thresholds[str(sym)] = float(t)
 
     threshold_map: dict[str, List[float]] = {}
     if len(y_val) > 0 and symbols_val_arr.size:
@@ -2751,6 +2773,7 @@ def train(
             "nodes": graph_params.get("nodes", {}),
         }
     model["hourly_thresholds"] = hourly_thresholds
+    model["symbol_thresholds"] = symbol_thresholds
     if threshold_map:
         thr_syms = sorted(threshold_map.keys())
         model["threshold_symbols"] = thr_syms

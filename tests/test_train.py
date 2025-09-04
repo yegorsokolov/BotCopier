@@ -823,6 +823,80 @@ def test_hourly_thresholds(tmp_path: Path):
     assert len(ht) == 24
 
 
+def test_symbol_thresholds(tmp_path: Path):
+    data_dir = tmp_path / "logs"
+    out_dir = tmp_path / "out"
+    data_dir.mkdir()
+    log_file = data_dir / "trades_multi.csv"
+    fields = [
+        "schema_version",
+        "event_id",
+        "event_time",
+        "broker_time",
+        "local_time",
+        "action",
+        "ticket",
+        "magic",
+        "source",
+        "symbol",
+        "order_type",
+        "lots",
+        "price",
+        "sl",
+        "tp",
+        "profit",
+        "spread",
+        "comment",
+        "remaining_lots",
+        "slippage",
+        "volume",
+        "sl_hit_dist",
+        "tp_hit_dist",
+    ]
+    rows = []
+    for i in range(20):
+        hour = i % 24
+        order_type = "0" if i % 2 == 0 else "1"
+        sym = "EURUSD" if i % 2 == 0 else "GBPUSD"
+        rows.append([
+            "1",
+            str(i + 1),
+            f"2024.01.01 {hour:02d}:00:00",
+            "",
+            "",
+            "OPEN",
+            str(i + 1),
+            "",
+            "",
+            sym,
+            order_type,
+            "0.1",
+            "1.1000",
+            "1.0000",
+            "1.2000",
+            str(100 + i),
+            "2",
+            "",
+            "0.1",
+            "0.0001",
+            str(100 + i),
+            "0",
+            "0",
+        ])
+    with open(log_file, "w", newline="") as f:
+        writer = csv.writer(f, delimiter=";")
+        writer.writerow(fields)
+        writer.writerows(rows)
+
+    train(data_dir, out_dir)
+
+    with open(out_dir / "model.json") as f:
+        data = json.load(f)
+    st = data.get("symbol_thresholds")
+    assert isinstance(st, dict)
+    assert "EURUSD" in st and "GBPUSD" in st
+
+
 def test_corr_features(tmp_path: Path):
     data_dir = tmp_path / "logs"
     out_dir = tmp_path / "out"
