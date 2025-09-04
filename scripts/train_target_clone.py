@@ -3020,6 +3020,9 @@ def train(
                         model["risk_parity_weights"] = [float(rp[s]) for s in syms]
                         model["risk_covariance_symbols"] = syms
                         model["risk_covariance_matrix"] = cov.astype(float).tolist()
+                        sidecar = out_dir / "risk_weights.json"
+                        with open(sidecar, "w") as f:
+                            json.dump({"symbols": syms, "weights": [float(rp[s]) for s in syms]}, f)
             except Exception as exc:  # pragma: no cover - optional
                 logging.warning("risk parity computation failed: %s", exc)
     except Exception as exc:
