@@ -3,8 +3,8 @@
 #include <Containers/LongLongMap.mqh>
 
 #import "observer_flight.dll"
-int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, int anomaly_timeout_count, int anomaly_retry_count, int anomaly_backlog_bytes, int anomaly_replay_count, uchar &out[]);
+int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, double risk_weight, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, int anomaly_timeout_count, int anomaly_retry_count, int anomaly_backlog_bytes, int anomaly_replay_count, double risk_weight, uchar &out[]);
 bool FlightClientInit(string host, int port);
 bool FlightSendTrade(uchar &payload[], int len);
 bool FlightSendMetrics(uchar &payload[], int len);
@@ -1145,13 +1145,13 @@ int OnInit()
    MetricQueueDepth = pending_metric_count;
    FlightConnected = FlightClientInit(FlightServerHost, FlightServerPort);
    LoadModelState();
+   ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    int max_id = GetMaxEventIdFromLogs(log_dir);
    if(max_id >= NextEventId)
       NextEventId = max_id + 1;
    LoadRiskWeights();
-   RiskWeightTimestamp = FileGetInteger(ModelFileName, FILE_MODIFY_DATE);
+   RiskWeightTimestamp = ModelTimestamp;
    LoadAutoencoder();
-   ModelTimestamp = FileGetInteger(ModelStateFile, FILE_MODIFY_DATE);
    string symbols_json = "[";
    for(int k=0; k<ArraySize(track_symbols); k++)
    {
@@ -1329,11 +1329,10 @@ void OnTimer()
    datetime now = UseBrokerTime ? TimeCurrent() : TimeLocal();
    FlushPending(now);
 
-   datetime ts = FileGetInteger(ModelFileName, FILE_MODIFY_DATE);
-   if(ts != RiskWeightTimestamp)
+   if(ModelTimestamp != RiskWeightTimestamp)
    {
       LoadRiskWeights();
-      RiskWeightTimestamp = ts;
+      RiskWeightTimestamp = ModelTimestamp;
    }
 
    if(now - last_export < LearningExportIntervalMinutes*60)
@@ -1387,7 +1386,7 @@ void FinalizeTradeEntry(PendingTrade &t, bool is_anom)
       TimeToString(TimeLocal(), TIME_DATE|TIME_SECONDS),
       t.action, t.ticket, t.magic, t.source, t.symbol, t.order_type,
       t.lots, t.price, t.sl, t.tp, t.profit, t.profit_after, t.spread, t.comment_with_span, t.remaining,
-      t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.executed_model_idx, t.decision_id, t.exit_reason, t.duration_sec, payload);
+      t.slippage, (int)t.volume, t.open_time_str, t.book_bid_vol, t.book_ask_vol, t.book_imbalance, t.sl_hit_dist, t.tp_hit_dist, t.equity, t.margin_level, t.commission, t.swap, t.risk_weight, t.executed_model_idx, t.decision_id, t.exit_reason, t.duration_sec, payload);
    if(len>0)
    {
       EnqueuePending(pending_trades, pending_trade_sizes, pending_trade_lines, pending_trade_head,
@@ -1848,6 +1847,7 @@ void WriteMetrics(datetime ts)
          if(profits[vb] < var95) var_breach_count++;
 
       string span_id = GenId(8);
+      double risk_weight = GetRiskWeight(Symbol());
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
       int anomaly_pending = AnomalyQueueDepth;
       int anomaly_late = AnomalyLateResponses;
@@ -1856,14 +1856,14 @@ void WriteMetrics(datetime ts)
       int anomaly_replays = AnomalyReplayCount;
       int effective_refresh = CachedBookRefreshSeconds;
       // emit file/socket errors, queue depth, retry counts and latencies for monitoring
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%s;%s",
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%.5f;%s;%s",
                                  TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
                                  trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
                                  FlightErrors, CpuLoad, FlushLatencyMs, NetworkLatencyMs,
                                  effective_refresh, var_breach_count,
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
                                  wal_size, trade_retry_count, metric_retry_count, anomaly_pending,
-                                 anomaly_late, anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, TraceId, span_id);
+                                 anomaly_late, anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, risk_weight, TraceId, span_id);
 
 
       uchar payload[];
@@ -1874,7 +1874,7 @@ void WriteMetrics(datetime ts)
          FlushLatencyMs, NetworkLatencyMs, effective_refresh, var_breach_count,
          trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size,
          trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,
-         anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, payload);
+         anomaly_timeouts, anomaly_retries, anomaly_backlog, anomaly_replays, risk_weight, payload);
       if(len>0)
       {
          EnqueuePending(pending_metrics, pending_metric_sizes, pending_metric_lines, pending_metric_head,
@@ -1992,4 +1992,3 @@ void ManageMetrics(datetime ts)
   }
   FileClose(out_h);
 }
-
