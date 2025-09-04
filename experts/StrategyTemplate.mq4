@@ -66,6 +66,8 @@ double DefaultThreshold = __THRESHOLD__;
 double ProbabilityLookup[__MODEL_COUNT__][24] = {__PROBABILITY_TABLE__};
 double ConformalLower = __CONFORMAL_LOWER__;
 double ConformalUpper = __CONFORMAL_UPPER__;
+int ConformalTotal = 0;
+int ConformalCovered = 0;
 string ThresholdSymbols[];
 double ThresholdTable[][24];
 string SymbolThresholdSymbols[] = {__SYMBOL_THRESHOLD_SYMBOLS__};
@@ -1848,12 +1850,31 @@ void OnTick()
    double pv = pvs[modelIdx];
    double risk_weight = risk_weights[modelIdx];
    double applied_weight = risk_weight * rp_weight;
-
-   if(prob < ConformalLower || prob > ConformalUpper)
+   ConformalTotal++;
+   bool in_range = (prob >= ConformalLower && prob <= ConformalUpper);
+   if(in_range)
+      ConformalCovered++;
+   else
+   {
       Print("Probability outside conformal bounds: " +
             DoubleToString(prob,4) + " not in [" +
             DoubleToString(ConformalLower,4) + "," +
             DoubleToString(ConformalUpper,4) + "]");
+      int decision_id = NextDecisionId;
+      LogDecision(feats, prob, "skip", modelIdx, reg, applied_weight, pv, 1);
+      if(UncertainLogHandle != INVALID_HANDLE)
+      {
+         double sl_dist, tp_dist;
+         CalcStops(sl_dist, tp_dist);
+         FileWrite(UncertainLogHandle, decision_id, TimeToString(TimeCurrent(), TIME_DATE|TIME_SECONDS), ModelVersion, prob, sl_dist, tp_dist);
+         FileFlush(UncertainLogHandle);
+      }
+      if((ConformalTotal % 100) == 0)
+         Print("Conformal coverage: " + DoubleToString((double)ConformalCovered/ConformalTotal, 4));
+      return;
+   }
+   if((ConformalTotal % 100) == 0)
+      Print("Conformal coverage: " + DoubleToString((double)ConformalCovered/ConformalTotal, 4));
 
    if(EnableDebugLogging)
    {
