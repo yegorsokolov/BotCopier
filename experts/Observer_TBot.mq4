@@ -4,7 +4,7 @@
 
 #import "observer_flight.dll"
 int SerializeTradeEvent(int schema_version, int event_id, string trace_id, string event_time, string broker_time, string local_time, string action, int ticket, int magic, string source, string symbol, int order_type, double lots, double price, double sl, double tp, double profit, double profit_after_trade, double spread, string comment, double remaining_lots, double slippage, int volume, string open_time, double book_bid_vol, double book_ask_vol, double book_imbalance, double sl_hit_dist, double tp_hit_dist, double equity, double margin_level, double commission, double swap, double risk_weight, int executed_model_idx, int decision_id, string exit_reason, int duration_sec, uchar &out[]);
-int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, int anomaly_timeout_count, int anomaly_retry_count, int anomaly_backlog_bytes, int anomaly_replay_count, double risk_weight, uchar &out[]);
+int SerializeMetrics(int schema_version, string time, int magic, double win_rate, double avg_profit, int trade_count, double drawdown, double sharpe, double cvar, int file_write_errors, int socket_errors, double cpu_load, double flush_latency_ms, double network_latency_ms, int book_refresh_seconds, int var_breach_count, int trade_queue_depth, int metric_queue_depth, int fallback_events, int fallback_logging, int wal_size, int trade_retry_count, int metric_retry_count, int anomaly_pending, int anomaly_late_count, int anomaly_timeout_count, int anomaly_retry_count, int anomaly_backlog_bytes, int anomaly_replay_count, double risk_weight, uchar &out[]);
 bool FlightClientInit(string host, int port);
 bool FlightSendTrade(uchar &payload[], int len);
 bool FlightSendMetrics(uchar &payload[], int len);
@@ -1908,6 +1908,13 @@ void WriteMetrics(datetime ts)
       for(int vb=0; vb<ArraySize(profits); vb++)
          if(profits[vb] < var95) var_breach_count++;
 
+      int cvar_count = (int)MathFloor(0.05 * ArraySize(profits));
+      if(cvar_count < 1) cvar_count = 1;
+      double cvar_sum = 0.0;
+      for(int cv=0; cv<cvar_count; cv++)
+         cvar_sum += profits[cv];
+      double cvar = cvar_sum / cvar_count;
+
       string span_id = GenId(8);
       double risk_weight = GetRiskWeight(Symbol());
       int fallback_flag = (trade_retry_count >= FallbackRetryThreshold || metric_retry_count >= FallbackRetryThreshold) ? 1 : 0;
@@ -1918,9 +1925,9 @@ void WriteMetrics(datetime ts)
       int anomaly_replays = AnomalyReplayCount;
       int effective_refresh = CachedBookRefreshSeconds;
       // emit file/socket errors, queue depth, retry counts and latencies for monitoring
-      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%.5f;%s;%s",
+      string line = StringFormat("%s;%d;%.3f;%.2f;%d;%.2f;%.3f;%.3f;%.2f;%.2f;%d;%d;%.2f;%.2f;%.2f;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%d;%.5f;%s;%s",
                                  TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-                                 trades, max_dd, sharpe, sortino, expectancy, FileWriteErrors,
+                                 trades, max_dd, sharpe, sortino, expectancy, cvar, FileWriteErrors,
                                  FlightErrors, CpuLoad, FlushLatencyMs, NetworkLatencyMs,
                                  effective_refresh, var_breach_count,
                                  trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag,
@@ -1932,7 +1939,7 @@ void WriteMetrics(datetime ts)
       int len = SerializeMetrics(
          SCHEMA_VERSION,
          TimeToString(ts, TIME_DATE|TIME_MINUTES), magic, win_rate, avg_profit,
-         trades, max_dd, sharpe, FileWriteErrors, FlightErrors, CpuLoad,
+         trades, max_dd, sharpe, cvar, FileWriteErrors, FlightErrors, CpuLoad,
          FlushLatencyMs, NetworkLatencyMs, effective_refresh, var_breach_count,
          trade_q_depth, metric_q_depth, FallbackEvents, fallback_flag, wal_size,
          trade_retry_count, metric_retry_count, anomaly_pending, anomaly_late,

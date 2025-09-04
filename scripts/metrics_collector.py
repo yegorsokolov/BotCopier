@@ -74,6 +74,7 @@ FIELDS = [
     "sharpe",
     "sortino",
     "expectancy",
+    "cvar",
     "file_write_errors",
     "socket_errors",
     "cpu_load",
@@ -276,11 +277,12 @@ def serve(
             await prom_runner.setup()
             prom_site = web.TCPSite(prom_runner, http_host, prom_port)
             await prom_site.start()
-            win_rate_g = Gauge("bot_win_rate", "Win rate")
-            drawdown_g = Gauge("bot_drawdown", "Drawdown")
-            socket_err_c = Counter(
-                "bot_socket_errors_total", "Socket error count"
-            )
+              win_rate_g = Gauge("bot_win_rate", "Win rate")
+              drawdown_g = Gauge("bot_drawdown", "Drawdown")
+              cvar_g = Gauge("bot_cvar", "Conditional Value at Risk")
+              socket_err_c = Counter(
+                  "bot_socket_errors_total", "Socket error count"
+              )
             file_err_c = Counter(
                 "bot_file_write_errors_total", "File write error count"
             )
@@ -367,6 +369,11 @@ def serve(
                 if (v := row.get("drawdown")) is not None:
                     try:
                         drawdown_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
+                if (v := row.get("cvar")) is not None:
+                    try:
+                        cvar_g.set(float(v))
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("socket_errors")) is not None:
