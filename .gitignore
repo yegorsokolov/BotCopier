@@ -20,6 +20,7 @@ models/best/
 
 # Legacy MQL4 sources
 *.mq4
+!StrategyTemplate.mq4
 
 # Virtual environments
 .venv/
