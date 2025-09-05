@@ -22,6 +22,28 @@
     "spread",
     "hour"
   ],
+  "session_models": {
+    "asian": {
+      "coefficients": [0.0],
+      "intercept": 0.0,
+      "threshold": 0.5
+    },
+    "london": {
+      "coefficients": [0.0],
+      "intercept": 0.0,
+      "threshold": 0.5
+    },
+    "newyork": {
+      "coefficients": [0.0],
+      "intercept": 0.0,
+      "threshold": 0.5
+    }
+  },
+  "session_hours": {
+    "asian": [0, 8],
+    "london": [8, 16],
+    "newyork": [16, 24]
+  },
   "drift_metric": 0.0,
   "drift_metrics": {
     "psi": 0.0,
