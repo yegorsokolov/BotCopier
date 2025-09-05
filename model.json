@@ -18,6 +18,10 @@
   },
   "training_mode": "lite",
   "mode": "lite",
+  "feature_names": [
+    "spread",
+    "hour"
+  ],
   "drift_metric": 0.0,
   "drift_metrics": {
     "psi": 0.0,
