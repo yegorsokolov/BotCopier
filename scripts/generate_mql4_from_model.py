@@ -45,6 +45,12 @@ def _build_session_models(data: dict) -> str:
         lines.append(
             f"double g_threshold_{name} = {params.get('threshold', 0.5)};"
         )
+        mean = params.get("feature_mean", [])
+        std = params.get("feature_std", [])
+        mean_str = ", ".join(f"{m}" for m in mean)
+        std_str = ", ".join(f"{s}" for s in std)
+        lines.append(f"double g_feature_mean_{name}[] = {{{mean_str}}};")
+        lines.append(f"double g_feature_std_{name}[] = {{{std_str}}};")
     return "\n".join(lines)
 
 
