@@ -16,6 +16,27 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
+# Optional model libraries and hyperparameter search
+try:  # pragma: no cover - optional dependency
+    import optuna
+except Exception:  # pragma: no cover - optional dependency
+    optuna = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import xgboost as xgb
+except Exception:  # pragma: no cover - optional dependency
+    xgb = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import lightgbm as lgb
+except Exception:  # pragma: no cover - optional dependency
+    lgb = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import catboost as cb
+except Exception:  # pragma: no cover - optional dependency
+    cb = None  # type: ignore
+
 try:  # pragma: no cover - optional dependency
     import pyarrow as pa
     import pyarrow.flight as flight
@@ -522,14 +543,33 @@ def train_model(
     *,
     half_life_days: float = 0.0,
     C: float = 1.0,
+    model_types: Iterable[str] | None = None,
+    n_trials: int = 20,
 ) -> dict:
-    """Train logistic regression with time-decayed sample weights.
+    """Train a classifier with time-decayed sample weights.
 
-    A chronological ``TimeSeriesSplit`` is used to obtain a validation set from
-    the most recent data to prevent leakage.  When ``half_life_days`` is
-    positive, sample weights are decayed exponentially based on the age of each
-    trade.
+    Data is split chronologically using ``TimeSeriesSplit`` so the validation
+    set contains the most recent samples to avoid leakage.  When
+    ``half_life_days`` is positive, sample weights are decayed exponentially
+    based on the age of each trade.  When multiple ``model_types`` are provided
+    and :mod:`optuna` is available, a hyperparameter search is conducted to pick
+    the best performing model on the validation set.
     """
+
+    if model_types is None:
+        model_types = ["logistic"]
+    model_types = list(model_types)
+
+    # Filter out models whose libraries are unavailable
+    available: dict[str, bool] = {
+        "logistic": True,
+        "xgboost": xgb is not None,
+        "lgbm": lgb is not None,
+        "catboost": cb is not None,
+    }
+    model_types = [m for m in model_types if available.get(m, False)]
+    if not model_types:
+        raise ValueError("No valid model types available")
 
     n_splits = max(1, min(5, len(y) - 1))
     tscv = TimeSeriesSplit(n_splits=n_splits)
@@ -542,28 +582,143 @@ def train_model(
         _, decay = _compute_decay_weights(event_times[train_idx], half_life_days)
         sw = decay
 
-    clf = fit_logistic_regression(X_train, y_train, sample_weight=sw, C=C)
+    def _fit_single(model_type: str, trial: "optuna.Trial | None" = None):
+        params: dict[str, float | int] = {}
+        if model_type == "logistic":
+            if trial is not None:
+                C_val = trial.suggest_float("C", 1e-3, 10.0, log=True)
+            else:
+                C_val = C
+            params["C"] = C_val
+            clf = fit_logistic_regression(
+                X_train, y_train, sample_weight=sw, C=C_val
+            )
+        elif model_type == "xgboost":  # pragma: no cover - optional dependency
+            learning_rate = 0.1
+            max_depth = 6
+            n_estimators = 100
+            subsample = 1.0
+            colsample_bytree = 1.0
+            if trial is not None:
+                learning_rate = trial.suggest_float(
+                    "learning_rate", 0.01, 0.3, log=True
+                )
+                max_depth = trial.suggest_int("max_depth", 2, 8)
+                n_estimators = trial.suggest_int("n_estimators", 50, 200)
+                subsample = trial.suggest_float("subsample", 0.5, 1.0)
+                colsample_bytree = trial.suggest_float(
+                    "colsample_bytree", 0.5, 1.0
+                )
+            params.update(
+                {
+                    "learning_rate": learning_rate,
+                    "max_depth": max_depth,
+                    "n_estimators": n_estimators,
+                    "subsample": subsample,
+                    "colsample_bytree": colsample_bytree,
+                }
+            )
+            clf = xgb.XGBClassifier(
+                objective="binary:logistic",
+                eval_metric="logloss",
+                use_label_encoder=False,
+                verbosity=0,
+                **params,
+            )
+            clf.fit(X_train, y_train, sample_weight=sw)
+        elif model_type == "lgbm":  # pragma: no cover - optional dependency
+            learning_rate = 0.1
+            max_depth = -1
+            n_estimators = 100
+            if trial is not None:
+                learning_rate = trial.suggest_float(
+                    "learning_rate", 0.01, 0.3, log=True
+                )
+                max_depth = trial.suggest_int("max_depth", -1, 8)
+                n_estimators = trial.suggest_int("n_estimators", 50, 200)
+            params.update(
+                {
+                    "learning_rate": learning_rate,
+                    "max_depth": max_depth,
+                    "n_estimators": n_estimators,
+                }
+            )
+            clf = lgb.LGBMClassifier(**params)
+            clf.fit(X_train, y_train, sample_weight=sw)
+        elif model_type == "catboost":  # pragma: no cover - optional dependency
+            depth = 6
+            learning_rate = 0.1
+            iterations = 100
+            if trial is not None:
+                depth = trial.suggest_int("depth", 2, 8)
+                learning_rate = trial.suggest_float(
+                    "learning_rate", 0.01, 0.3, log=True
+                )
+                iterations = trial.suggest_int("iterations", 50, 200)
+            params.update(
+                {
+                    "depth": depth,
+                    "learning_rate": learning_rate,
+                    "iterations": iterations,
+                }
+            )
+            clf = cb.CatBoostClassifier(verbose=False, **params)
+            clf.fit(X_train, y_train, sample_weight=sw)
+        else:  # pragma: no cover - defensive
+            raise ValueError(f"Unsupported model type: {model_type}")
+        preds = clf.predict(X_val)
+        probas = (
+            clf.predict_proba(X_val)[:, 1]
+            if hasattr(clf, "predict_proba")
+            else preds.astype(float)
+        )
+        acc = accuracy_score(y_val, preds)
+        f1 = f1_score(y_val, preds)
+        if len(np.unique(y_val)) > 1:
+            roc = roc_auc_score(y_val, probas)
+        else:  # pragma: no cover - single-class validation set
+            roc = float("nan")
+        metrics = {"accuracy": float(acc), "f1": float(f1), "roc_auc": float(roc)}
+        return clf, params, metrics
 
-    preds = clf.predict(X_val)
-    probas = clf.predict_proba(X_val)[:, 1]
-    val_acc = accuracy_score(y_val, preds)
-    val_f1 = f1_score(y_val, preds)
-    if len(np.unique(y_val)) > 1:
-        val_roc = roc_auc_score(y_val, probas)
-    else:  # pragma: no cover - single-class validation set
-        val_roc = float("nan")
+    if optuna is not None and len(model_types) > 1:
+        def objective(trial: "optuna.Trial") -> float:
+            m_type = trial.suggest_categorical("model_type", model_types)
+            clf, params, metrics = _fit_single(m_type, trial)
+            trial.set_user_attr("model", clf)
+            trial.set_user_attr("params", {**params, "model_type": m_type})
+            trial.set_user_attr("metrics", metrics)
+            return metrics["f1"]
 
-    model = {
-        "coefficients": clf.coef_[0].astype(float).tolist(),
-        "intercept": float(clf.intercept_[0]),
-        "classes": [int(c) for c in clf.classes_],
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective, n_trials=n_trials)
+        trial = study.best_trial
+        clf = trial.user_attrs["model"]
+        params = trial.user_attrs["params"]
+        metrics = trial.user_attrs["metrics"]
+        best_type = params.pop("model_type")
+        hyperparams = params
+    else:
+        # Fallback to first available model without search
+        best_type = model_types[0]
+        clf, params, metrics = _fit_single(best_type, None)
+        hyperparams = params
+
+    model: dict[str, object] = {
+        "model_type": best_type,
+        "hyperparameters": {k: float(v) if isinstance(v, (int, float)) else v for k, v in hyperparams.items()},
         "half_life_days": float(half_life_days),
-        "validation_metrics": {
-            "accuracy": float(val_acc),
-            "f1": float(val_f1),
-            "roc_auc": float(val_roc),
-        },
+        "validation_metrics": metrics,
     }
+
+    if best_type == "logistic":
+        model.update(
+            {
+                "coefficients": clf.coef_[0].astype(float).tolist(),
+                "intercept": float(clf.intercept_[0]),
+                "classes": [int(c) for c in clf.classes_],
+            }
+        )
 
     if half_life_days > 0:
         model["weight_decay"] = {
@@ -589,7 +744,7 @@ def main() -> None:
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Fit logistic regression")
+    parser = argparse.ArgumentParser(description="Fit classification model")
     parser.add_argument("dataset", help="NPZ file with X, y and event_times arrays")
     parser.add_argument("out_dir", help="Directory to write model.json")
     parser.add_argument(
@@ -598,7 +753,21 @@ def main() -> None:
         default=0.0,
         help="half-life in days for sample weight decay",
     )
-    parser.add_argument("--C", type=float, default=1.0, help="inverse regularization strength")
+    parser.add_argument(
+        "--C", type=float, default=1.0, help="inverse regularization strength"
+    )
+    parser.add_argument(
+        "--model-types",
+        nargs="+",
+        default=["logistic"],
+        help="candidate models: logistic, xgboost, lgbm, catboost",
+    )
+    parser.add_argument(
+        "--n-trials",
+        type=int,
+        default=20,
+        help="number of Optuna trials when searching models",
+    )
     args = parser.parse_args()
 
     data = np.load(args.dataset)
@@ -610,6 +779,8 @@ def main() -> None:
         out_dir,
         half_life_days=args.half_life_days,
         C=args.C,
+        model_types=args.model_types,
+        n_trials=args.n_trials,
     )
 
 
