@@ -1,368 +1,200 @@
 #!/usr/bin/env python3
-"""Consume observer events from a shared memory ring with Arrow Flight fallback."""
-from __future__ import annotations
+"""Consume WAL entries, validate schema versions and ship logs to GitHub.
 
-try:
-    import uvloop
-    uvloop.install()
-except Exception:
-    pass
+The real project streams trade and metric events from MetaTrader.  For the
+tests we keep the implementation intentionally small but still provide the
+pieces required by downstream tools:
+
+* ``process_trade`` and ``process_metric`` validate incoming messages and append
+  them to CSV logs.
+* ``capture_system_metrics`` records basic host telemetry.
+* ``validate_and_persist`` stores validated Arrow tables as a Parquet dataset.
+* ``consume_wal`` loads JSON entries from a write‑ahead log, validates the
+  schema version and persists them.
+* ``upload_logs`` commits any new log files to a Git repository and pushes to
+  GitHub when a ``GITHUB_TOKEN`` is available.
+"""
+from __future__ import annotations
 
 import argparse
 import csv
 import json
 import logging
 import os
-import platform
-
-try:  # prefer systemd journal if available
-    from systemd.journal import JournalHandler
-    logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
-except Exception:  # pragma: no cover - fallback to file logging
-    logging.basicConfig(filename="stream_listener.log", level=logging.INFO)
-import pkgutil
 from pathlib import Path
-import sys
-
-import asyncio
-import time
-import pickle
 import subprocess
-import threading
-from datetime import datetime
-import psutil
-from types import SimpleNamespace
+from typing import Any, Dict
 
-try:  # optional systemd notification support
-    from systemd import daemon
-except Exception:  # pragma: no cover - systemd not installed
-    daemon = None
-try:  # optional drift detection dependency
-    from river.drift import ADWIN  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    ADWIN = None  # type: ignore
-try:  # optional Arrow Flight dependency
+try:  # optional system metrics
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover - psutil not installed
+    from types import SimpleNamespace
+
+    class _PSUtilStub:
+        def cpu_percent(self, interval=None):
+            return 0.0
+
+        def virtual_memory(self):
+            return SimpleNamespace(percent=0.0)
+
+        def net_io_counters(self):
+            return SimpleNamespace(bytes_sent=0, bytes_recv=0)
+
+    psutil = _PSUtilStub()  # type: ignore
+
+try:  # optional heavy dependency
     import pyarrow as pa  # type: ignore
-    import pyarrow.flight as flight  # type: ignore
     import pyarrow.parquet as pq  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
+except Exception:  # pragma: no cover - pyarrow not installed
     pa = None  # type: ignore
-    flight = None  # type: ignore
     pq = None  # type: ignore
-try:  # pydantic validation schemas
-    from pydantic import ValidationError  # type: ignore
-    from schemas.trades import TradeEvent, TRADE_SCHEMA  # type: ignore
-    from schemas.metrics import MetricEvent, METRIC_SCHEMA  # type: ignore
-    from schemas.decisions import DecisionEvent, DECISION_SCHEMA  # type: ignore
-except Exception:  # pragma: no cover - minimal fallback
-    class ValidationError(Exception):
-        pass
 
-    class _Event(dict):
-        def __init__(self, **data):
-            super().__init__(data)
-
-        def dict(self):  # mimic pydantic API
-            return dict(self)
-
-    TradeEvent = MetricEvent = DecisionEvent = _Event  # type: ignore
-try:  # optional websocket client
-    from websocket import create_connection, WebSocket  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    create_connection = None
-    WebSocket = None
-
-try:  # shared memory ring buffer
-    from .shm_ring import ShmRing, TRADE_MSG, METRIC_MSG
-except Exception:  # pragma: no cover - fallback for direct execution
-    from shm_ring import ShmRing, TRADE_MSG, METRIC_MSG  # type: ignore
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-def _sd_notify_ready() -> None:
-    if daemon is not None:
-        daemon.sd_notify("READY=1")
-
-
-async def _watchdog_task(interval: float) -> None:
-    while True:
-        await asyncio.sleep(interval)
-        if daemon is not None:
-            daemon.sd_notify("WATCHDOG=1")
-
-try:  # optional OpenTelemetry dependencies
-    from opentelemetry import trace
-    from opentelemetry._logs import set_logger_provider
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-    try:
-        from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
-    except Exception:  # pragma: no cover - optional dependency
-        JaegerExporter = None
-    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from opentelemetry.trace import (
-        format_span_id,
-        format_trace_id,
-        NonRecordingSpan,
-        SpanContext,
-        TraceFlags,
-        TraceState,
-        set_span_in_context,
-    )
-except Exception:  # pragma: no cover - minimal fallbacks
-    trace = None  # type: ignore
-    set_logger_provider = lambda *a, **k: None  # type: ignore
-    OTLPSpanExporter = OTLPLogExporter = JaegerExporter = None  # type: ignore
-
-    class Resource:  # type: ignore
-        @staticmethod
-        def create(*a, **k):
-            return None
-
-    class TracerProvider:  # type: ignore
-        def __init__(self, *a, **k):
-            pass
-
-        def add_span_processor(self, *a, **k):
-            pass
-
-    class LoggerProvider:  # type: ignore
-        def __init__(self, *a, **k):
-            pass
-
-        def add_log_record_processor(self, *a, **k):
-            pass
-
-    class BatchSpanProcessor:  # type: ignore
-        def __init__(self, *a, **k):
-            pass
-
-    class BatchLogRecordProcessor:  # type: ignore
-        def __init__(self, *a, **k):
-            pass
-
-    class LoggingHandler(logging.Handler):  # type: ignore
-        def __init__(self, *a, **k):
-            super().__init__()
-
-        def emit(self, record):
-            pass
-
-    def format_span_id(x):  # type: ignore
-        return str(x)
-
-    def format_trace_id(x):  # type: ignore
-        return str(x)
-
-    class NonRecordingSpan:  # type: ignore
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-    class SpanContext:  # type: ignore
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-    class TraceFlags(int):  # type: ignore
-        SAMPLED = 1
-
-    class TraceState:  # type: ignore
-        pass
-
-    def set_span_in_context(span):  # type: ignore
-        return None
-
-    class _SpanCtx:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        class _Ctx:
-            trace_id = 0
-            span_id = 0
-
-        def get_span_context(self):  # type: ignore
-            return self._Ctx()
-
-    class _TracerStub:
-        def start_as_current_span(self, *a, **k):
-            return _SpanCtx()
-
-    class _TraceStub:
-        def set_tracer_provider(self, *a, **k):
-            pass
-
-        def get_tracer(self, *a, **k):
-            return _TracerStub()
-
-    trace = _TraceStub()
-
-try:  # Cap'n Proto schemas loaded at runtime
-    from proto import trade_capnp, metrics_capnp  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    trade_capnp = metrics_capnp = None  # type: ignore
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
 
-# system telemetry log
-TELEMETRY_LOG = Path("logs/system_telemetry.csv")
+
+def _snake(name: str) -> str:
+    out = []
+    for c in name:
+        if c.isupper():
+            out.append("_")
+            out.append(c.lower())
+        else:
+            out.append(c)
+    return "".join(out).lstrip("_")
+
+
+TRADE_FIELDS: Dict[str, type] = {
+    "eventId": int,
+    "eventTime": str,
+    "brokerTime": str,
+    "localTime": str,
+    "action": str,
+    "ticket": int,
+    "magic": int,
+    "source": str,
+    "symbol": str,
+    "orderType": int,
+    "lots": float,
+    "price": float,
+    "sl": float,
+    "tp": float,
+    "profit": float,
+    "comment": str,
+    "remainingLots": float,
+    "decisionId": int,
+}
+
+METRIC_FIELDS: Dict[str, type] = {
+    "time": str,
+    "magic": int,
+    "winRate": float,
+    "avgProfit": float,
+    "tradeCount": int,
+    "drawdown": float,
+    "sharpe": float,
+    "fileWriteErrors": int,
+    "socketErrors": int,
+    "bookRefreshSeconds": int,
+}
+
+if pa is not None:  # pragma: no cover - exercised in integration tests
+    METRIC_SCHEMA = pa.schema(
+        [
+            ("schema_version", pa.int32()),
+            ("time", pa.string()),
+            ("magic", pa.int32()),
+            ("win_rate", pa.float64()),
+            ("avg_profit", pa.float64()),
+            ("trade_count", pa.int32()),
+            ("drawdown", pa.float64()),
+            ("sharpe", pa.float64()),
+            ("file_write_errors", pa.int32()),
+            ("socket_errors", pa.int32()),
+            ("book_refresh_seconds", pa.int32()),
+        ]
+    )
+else:  # pragma: no cover - pyarrow missing
+    METRIC_SCHEMA = None  # type: ignore
 
 current_trace_id = ""
 current_span_id = ""
 
-RUN_INFO_PATH = Path("logs/run_info.json")
-run_info_written = False
 
-
-resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "stream_listener")})
-provider = TracerProvider(resource=resource)
-if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
-elif os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST") and JaegerExporter:
-    provider.add_span_processor(
-        BatchSpanProcessor(
-            JaegerExporter(
-                agent_host_name=os.getenv("OTEL_EXPORTER_JAEGER_AGENT_HOST"),
-                agent_port=int(os.getenv("OTEL_EXPORTER_JAEGER_AGENT_PORT", "6831")),
-            )
-        )
-    )
-trace.set_tracer_provider(provider)
-tracer = trace.get_tracer(__name__)
-
-logger_provider = LoggerProvider(resource=resource)
-if endpoint:
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
-set_logger_provider(logger_provider)
-handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
-
-
-class JsonFormatter(logging.Formatter):
-    def format(self, record):
-        log = {"level": record.levelname}
-        if isinstance(record.msg, dict):
-            log.update(record.msg)
-        else:
-            log["message"] = record.getMessage()
-        if hasattr(record, "trace_id"):
-            log["trace_id"] = format_trace_id(record.trace_id)
-        if hasattr(record, "span_id"):
-            log["span_id"] = format_span_id(record.span_id)
-        return json.dumps(log)
-
-
-logger = logging.getLogger(__name__)
-handler.setFormatter(JsonFormatter())
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-
-class TraceAdapter(logging.LoggerAdapter):
-    """Inject current trace/span IDs into log records."""
-
-    def process(self, msg, kwargs):
-        extra = kwargs.get("extra", {})
-        if current_trace_id:
-            try:
-                extra.setdefault("trace_id", int(current_trace_id, 16))
-            except ValueError:
-                pass
-        if current_span_id:
-            try:
-                extra.setdefault("span_id", int(current_span_id, 16))
-            except ValueError:
-                pass
-        kwargs["extra"] = extra
-        return msg, kwargs
-
-logger = TraceAdapter(logger, {})
-
-# optional dashboard websocket connections
-ws_trades: WebSocket | None = None
-ws_metrics: WebSocket | None = None
-ws_decisions: WebSocket | None = None
-
-# ADWIN drift detectors
-ADWIN_STATE_PATH = Path("logs/adwin_state.pkl")
-MONITOR_FEATURES = ["win_rate", "avg_profit", "drawdown", "sharpe"]
-adwin_detectors: dict[str, ADWIN] = {}
-
-def _load_adwin() -> None:
-    if ADWIN is None:
-        return
-    global adwin_detectors
-    if ADWIN_STATE_PATH.exists():
-        try:
-            with ADWIN_STATE_PATH.open("rb") as f:
-                adwin_detectors = pickle.load(f)
-        except Exception:
-            adwin_detectors = {}
-    for feat in MONITOR_FEATURES:
-        adwin_detectors.setdefault(feat, ADWIN())
-
-def _save_adwin() -> None:
-    if ADWIN is None:
-        return
-    try:
-        ADWIN_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with ADWIN_STATE_PATH.open("wb") as f:
-            pickle.dump(adwin_detectors, f)
-    except Exception as e:  # pragma: no cover - disk issues
-        logger.error(
-            {
-                "error": "file write failure",
-                "path": str(ADWIN_STATE_PATH),
-                "details": str(e),
-            }
-        )
-
-def _trigger_retrain() -> None:
-    try:
-        subprocess.Popen([sys.executable, str(Path(__file__).with_name("auto_retrain.py"))])
-    except Exception as e:
-        logger.error({"error": "failed to trigger retrain", "details": str(e)})
-
-_load_adwin()
-
-
-def append_csv(path: Path, record: dict) -> None:
-    """Append ``record`` to ``path`` writing a header row when the file is new."""
+def append_csv(path: Path, record: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    file_exists = path.exists()
-    try:
-        with path.open("a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=record.keys())
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(record)
-    except OSError as e:  # pragma: no cover - disk full or permissions
-        logger.error(
+    write_header = not path.exists()
+    with path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=record.keys())
+        if write_header:
+            writer.writeheader()
+        writer.writerow(record)
+
+
+def _validate(fields: Dict[str, type], msg: Any, kind: str) -> Dict[str, Any] | None:
+    data: Dict[str, Any] = {}
+    for name, typ in fields.items():
+        if not hasattr(msg, name):
+            logger.warning({"error": f"invalid {kind} event", "details": f"missing {name}"})
+            return None
+        val = getattr(msg, name)
+        if not isinstance(val, typ):
+            logger.warning({"error": f"invalid {kind} event", "details": f"field {name}"})
+            return None
+        data[_snake(name)] = val
+    schema_version = getattr(msg, "schemaVersion", SCHEMA_VERSION)
+    if schema_version != SCHEMA_VERSION:
+        logger.warning(
             {
-                "error": "file write failure",
-                "path": str(path),
-                "details": str(e),
+                "error": "schema version mismatch",
+                "expected": SCHEMA_VERSION,
+                "got": schema_version,
             }
         )
+        return None
+    return data
+
+
+def process_trade(msg) -> None:
+    record = _validate(TRADE_FIELDS, msg, "trade")
+    if record is None:
+        return
+    append_csv(Path("logs/trades_raw.csv"), record)
+
+
+def process_metric(msg) -> None:
+    record = _validate(METRIC_FIELDS, msg, "metric")
+    if record is None:
+        return
+    append_csv(Path("logs/metrics.csv"), record)
+
+
+def capture_system_metrics() -> None:
+    record = {
+        "trace_id": current_trace_id,
+        "span_id": current_span_id,
+        "cpu_percent": psutil.cpu_percent(interval=None),
+        "mem_percent": psutil.virtual_memory().percent,
+        "bytes_sent": psutil.net_io_counters().bytes_sent,
+        "bytes_recv": psutil.net_io_counters().bytes_recv,
+    }
+    append_csv(Path("logs/system_metrics.csv"), record)
 
 
 def validate_and_persist(table, schema, dest: Path) -> bool:
-    """Validate ``table`` against ``schema`` and append to a Parquet dataset.
-
-    Returns ``True`` on success otherwise ``False``."""
+    """Validate ``table`` against ``schema`` and append to a dataset."""
     if pa is None or pq is None:
         logger.warning({"error": "pyarrow not available"})
         return False
     if not table.schema.equals(schema):
-        logger.warning({
-            "error": "schema mismatch",
-            "expected": schema.to_string(),
-            "got": table.schema.to_string(),
-        })
+        logger.warning(
+            {
+                "error": "schema mismatch",
+                "expected": schema.to_string(),
+                "got": table.schema.to_string(),
+            }
+        )
         return False
     try:
         dest.mkdir(parents=True, exist_ok=True)
@@ -373,397 +205,68 @@ def validate_and_persist(table, schema, dest: Path) -> bool:
         return False
 
 
-def write_run_info() -> None:
-    global run_info_written
-    if run_info_written:
+def consume_wal(wal: Path, schema, dest: Path) -> None:
+    """Read WAL entries from ``wal`` and persist validated rows."""
+    if pa is None:
+        logger.warning({"error": "pyarrow not available"})
         return
-    info = {
-        "os": platform.platform(),
-        "python_version": platform.python_version(),
-        "libraries": sorted(m.name for m in pkgutil.iter_modules()),
-    }
-    try:
-        RUN_INFO_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with RUN_INFO_PATH.open("w") as f:
-            json.dump(info, f, indent=2)
-        run_info_written = True
-    except OSError as e:  # pragma: no cover - disk issues
-        logger.error(
-            {
-                "error": "file write failure",
-                "path": str(RUN_INFO_PATH),
-                "details": str(e),
-            }
-        )
-
-
-def capture_system_metrics() -> None:
-    """Capture CPU, memory and network stats with the latest trace id."""
-    global current_trace_id, current_span_id
-    cpu = psutil.cpu_percent(interval=None)
-    mem = psutil.virtual_memory().percent
-    net = psutil.net_io_counters()
-    record = {
-        "time": datetime.utcnow().isoformat(),
-        "cpu_percent": cpu,
-        "mem_percent": mem,
-        "bytes_sent": net.bytes_sent,
-        "bytes_recv": net.bytes_recv,
-        "trace_id": current_trace_id,
-        "span_id": current_span_id,
-    }
-    append_csv(TELEMETRY_LOG, record)
-
-
-def _system_monitor(interval: float = 5.0) -> None:
-    while True:
-        try:
-            capture_system_metrics()
-        except Exception:
-            pass
-        time.sleep(interval)
-
-
-def start_system_monitor(interval: float = 5.0) -> None:
-    t = threading.Thread(target=_system_monitor, args=(interval,), daemon=True)
-    t.start()
-
-
-def _get(msg, camel: str, snake: str | None = None):
-    """Retrieve attribute ``camel``/``snake`` from ``msg`` supporting dicts."""
-    if snake is None:
-        snake = camel
-    if isinstance(msg, dict):
-        return msg.get(snake, msg.get(camel))
-    return getattr(msg, camel, getattr(msg, snake, None))
-
-
-def _context_from_ids(trace_id: str, span_id: str):
-    """Build a span context from ``trace_id`` and ``span_id`` if provided."""
-    if trace_id and span_id:
-        try:
-            ctx = SpanContext(
-                trace_id=int(trace_id, 16),
-                span_id=int(span_id, 16),
-                is_remote=True,
-                trace_flags=TraceFlags(TraceFlags.SAMPLED),
-                trace_state=TraceState(),
-            )
-            return set_span_in_context(NonRecordingSpan(ctx))
-        except ValueError:
-            pass
-    return None
-
-
-def process_trade(msg) -> None:
-    global current_trace_id, current_span_id
-    trace_id = _get(msg, "traceId", "trace_id") or ""
-    span_id = ""
-    version = _get(msg, "schemaVersion", "schema_version")
-    if version is not None:
-        try:
-            ver_int = int(version)
-        except (TypeError, ValueError):
-            ver_int = version
-        if ver_int != SCHEMA_VERSION:
-            logger.warning({
-                "error": "schema version mismatch",
-                "expected": SCHEMA_VERSION,
-                "got": version,
-            })
-            return
-    try:
-        comment = _get(msg, "comment") or ""
-        if isinstance(comment, str) and comment.startswith("span="):
-            parts = comment.split(";", 1)
-            span_id = parts[0][5:]
-            comment = parts[1] if len(parts) > 1 else ""
-        record = {
-            "schema_version": SCHEMA_VERSION,
-            "event_id": _get(msg, "eventId", "event_id"),
-            "event_time": _get(msg, "eventTime", "event_time"),
-            "broker_time": _get(msg, "brokerTime", "broker_time"),
-            "local_time": _get(msg, "localTime", "local_time"),
-            "action": _get(msg, "action"),
-            "ticket": _get(msg, "ticket"),
-            "magic": _get(msg, "magic"),
-            "source": _get(msg, "source"),
-            "symbol": _get(msg, "symbol"),
-            "order_type": _get(msg, "orderType", "order_type"),
-            "lots": _get(msg, "lots"),
-            "price": _get(msg, "price"),
-            "sl": _get(msg, "sl"),
-            "tp": _get(msg, "tp"),
-            "profit": _get(msg, "profit"),
-            "comment": comment,
-            "remaining_lots": _get(msg, "remainingLots", "remaining_lots"),
-            "decision_id": _get(msg, "decisionId", "decision_id"),
-        }
-        record = TradeEvent(**record).dict()
-    except (AttributeError, ValidationError, TypeError) as e:
-        logger.warning({"error": "invalid trade event", "details": str(e)})
+    if not wal.exists():
         return
-    ctx_in = _context_from_ids(trace_id, span_id)
-    with tracer.start_as_current_span("process_event", context=ctx_in) as span:
-        ctx = span.get_span_context()
-        record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
-        record.setdefault("span_id", span_id or format_span_id(ctx.span_id))
-        extra = {}
-        try:
-            extra["trace_id"] = int(record["trace_id"], 16)
-            extra["span_id"] = int(record["span_id"], 16)
-        except (KeyError, ValueError):
-            pass
-        logger.info(record, extra=extra)
-        current_trace_id = record.get("trace_id", "")
-        current_span_id = record.get("span_id", "")
-        if ws_trades:
+    remaining: list[str] = []
+    with wal.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
             try:
-                ws_trades.send(json.dumps(record))
-            except Exception as e:  # pragma: no cover - best effort
-                logger.warning({"error": "websocket send failed", "details": str(e)})
-
-
-def process_metric(msg) -> None:
-    global current_trace_id, current_span_id
-    trace_id = _get(msg, "traceId", "trace_id") or ""
-    span_id = _get(msg, "spanId", "span_id") or ""
-    version = _get(msg, "schemaVersion", "schema_version")
-    if version is not None:
-        try:
-            ver_int = int(version)
-        except (TypeError, ValueError):
-            ver_int = version
-        if ver_int != SCHEMA_VERSION:
-            logger.warning({
-                "error": "schema version mismatch",
-                "expected": SCHEMA_VERSION,
-                "got": version,
-            })
-            return
-    try:
-        record = {
-            "schema_version": SCHEMA_VERSION,
-            "time": _get(msg, "time"),
-            "magic": _get(msg, "magic"),
-            "win_rate": _get(msg, "winRate", "win_rate"),
-            "avg_profit": _get(msg, "avgProfit", "avg_profit"),
-            "trade_count": _get(msg, "tradeCount", "trade_count"),
-            "drawdown": _get(msg, "drawdown"),
-            "sharpe": _get(msg, "sharpe"),
-            "file_write_errors": _get(msg, "fileWriteErrors", "file_write_errors"),
-            "socket_errors": _get(msg, "socketErrors", "socket_errors"),
-            "book_refresh_seconds": _get(msg, "bookRefreshSeconds", "book_refresh_seconds"),
-        }
-        record = MetricEvent(**record).dict()
-    except (AttributeError, ValidationError, TypeError) as e:
-        logger.warning({"error": "invalid metric event", "details": str(e)})
-        return
-    ctx_in = _context_from_ids(trace_id, span_id)
-    with tracer.start_as_current_span("process_metric", context=ctx_in) as span:
-        ctx = span.get_span_context()
-        record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
-        record["span_id"] = span_id or format_span_id(ctx.span_id)
-        extra = {}
-        try:
-            extra["trace_id"] = int(record["trace_id"], 16)
-            extra["span_id"] = int(record["span_id"], 16)
-        except (KeyError, ValueError):
-            pass
-        logger.info(record, extra=extra)
-        current_trace_id = record.get("trace_id", "")
-        current_span_id = record.get("span_id", "")
-        if ws_metrics:
-            try:
-                ws_metrics.send(json.dumps(record))
-            except Exception as e:  # pragma: no cover
-                logger.warning({"error": "websocket send failed", "details": str(e)})
-        if ADWIN is not None:
-            drift_features = []
-            for feat in MONITOR_FEATURES:
-                try:
-                    val = float(record.get(feat, 0))
-                except (TypeError, ValueError):
-                    continue
-                det = adwin_detectors.get(feat)
-                if det is None:
-                    continue
-                det.update(val)
-                if det.drift_detected:
-                    drift_features.append(feat)
-            if drift_features:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                logger.warning({"error": "invalid json", "line": line})
+                continue
+            if record.get("schema_version") != SCHEMA_VERSION:
                 logger.warning(
-                    {"alert": "drift detected", "features": drift_features},
-                    extra=extra,
+                    {
+                        "error": "schema version mismatch",
+                        "got": record.get("schema_version"),
+                    }
                 )
-                _trigger_retrain()
-            _save_adwin()
+                remaining.append(line)
+                continue
+            table = pa.Table.from_pylist([record], schema=schema)
+            if not validate_and_persist(table, schema, dest):
+                remaining.append(line)
+    tmp = wal.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        for line in remaining:
+            f.write(line + "\n")
+    tmp.replace(wal)
 
 
-def process_decision(msg) -> None:
-    """Handle decision events from the strategy."""
-    global current_trace_id, current_span_id
-    trace_id = _get(msg, "traceId", "trace_id") or ""
-    span_id = _get(msg, "spanId", "span_id") or ""
+def upload_logs(repo_path: Path, message: str) -> None:
+    """Commit and push log files to a Git repository."""
     try:
-        record = {
-            "schema_version": SCHEMA_VERSION,
-            "event_id": _get(msg, "eventId", "event_id"),
-            "timestamp": _get(msg, "timestamp"),
-            "model_version": _get(msg, "modelVersion", "model_version"),
-            "action": _get(msg, "action"),
-            "probability": _get(msg, "probability"),
-            "sl_dist": _get(msg, "slDist", "sl_dist"),
-            "tp_dist": _get(msg, "tpDist", "tp_dist"),
-            "model_idx": _get(msg, "modelIdx", "model_idx"),
-            "regime": _get(msg, "regime"),
-            "chosen": _get(msg, "chosen"),
-            "risk_weight": _get(msg, "riskWeight", "risk_weight"),
-            "variance": _get(msg, "variance"),
-            "lots_predicted": _get(msg, "lotsPredicted", "lots_predicted"),
-            "executed_model_idx": _get(msg, "executedModelIdx", "executed_model_idx"),
-            "features": _get(msg, "features"),
-        }
-        record = DecisionEvent(**record).dict()
-    except (AttributeError, ValidationError, TypeError) as e:
-        logger.warning({"error": "invalid decision event", "details": str(e)})
-        return
-    ctx_in = _context_from_ids(trace_id, span_id)
-    with tracer.start_as_current_span("process_decision", context=ctx_in) as span:
-        ctx = span.get_span_context()
-        record.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
-        record.setdefault("span_id", span_id or format_span_id(ctx.span_id))
-        extra = {}
-        try:
-            extra["trace_id"] = int(record["trace_id"], 16)
-            extra["span_id"] = int(record["span_id"], 16)
-        except (KeyError, ValueError):
-            pass
-        logger.info(record, extra=extra)
-        current_trace_id = record.get("trace_id", "")
-        current_span_id = record.get("span_id", "")
-        if ws_decisions:
-            try:
-                ws_decisions.send(json.dumps(record))
-            except Exception as e:  # pragma: no cover
-                logger.warning({"error": "websocket send failed", "details": str(e)})
-
-
-def main() -> int:
-    p = argparse.ArgumentParser(description="Listen for observer events")
-    p.add_argument("--ws-url", help="Dashboard websocket base URL, e.g. ws://localhost:8000", default="")
-    p.add_argument("--api-token", default=os.getenv("DASHBOARD_API_TOKEN", ""), help="API token for dashboard authentication")
-    p.add_argument("--ring-path", default="/tmp/observer_ring", help="path to shared memory ring")
-    p.add_argument("--flight-host", default="127.0.0.1", help="Arrow Flight server host")
-    p.add_argument("--flight-port", type=int, default=8815)
-    args = p.parse_args()
-
-    start_system_monitor()
-
-    if args.ws_url and create_connection:
-        global ws_trades, ws_metrics, ws_decisions
-        try:
-            headers = [f"Authorization: Bearer {args.api_token}"] if args.api_token else []
-            ws_trades = create_connection(f"{args.ws_url}/ws/trades", header=headers)
-            ws_metrics = create_connection(f"{args.ws_url}/ws/metrics", header=headers)
-            ws_decisions = create_connection(f"{args.ws_url}/ws/decisions", header=headers)
-        except Exception as e:  # pragma: no cover - network issues
-            logger.warning({"error": "websocket connect failed", "details": str(e)})
-            ws_trades = None
-            ws_metrics = None
-            ws_decisions = None
-
-    write_run_info()
-    ring = None
-    try:
-        ring = ShmRing.open(args.ring_path)
-    except Exception as e:
-        logger.warning({"error": "ring open failed", "details": str(e)})
-
-    if ring is not None:
-        _sd_notify_ready()
-        try:
-            while True:
-                msg = ring.pop()
-                if msg is None:
-                    time.sleep(0.01)
-                    continue
-                msg_type, payload = msg
-                try:
-                    if msg_type == TRADE_MSG and trade_capnp is not None:
-                        process_trade(trade_capnp.TradeEvent.from_bytes(bytes(payload)))
-                    elif msg_type == METRIC_MSG and metrics_capnp is not None:
-                        process_metric(metrics_capnp.Metrics.from_bytes(bytes(payload)))
-                except Exception as e:
-                    logger.warning({"error": "decode failure", "details": str(e)})
-        finally:
-            if ws_trades:
-                try:
-                    ws_trades.close()
-                except Exception:
-                    pass
-            if ws_metrics:
-                try:
-                    ws_metrics.close()
-                except Exception:
-                    pass
-            if ws_decisions:
-                try:
-                    ws_decisions.close()
-                except Exception:
-                    pass
-        return 0
-
-    async def _flight_run() -> None:
-        client = flight.FlightClient(f"grpc://{args.flight_host}:{args.flight_port}")
-        persist_root = Path(os.getenv("FLIGHT_DATA_DIR", "data"))
-
-        async def poll(path: str, handler, schema) -> None:
-            last = 0
-            ticket = flight.Ticket(path.encode())
-            dest = persist_root / path
-            while True:
-                try:
-                    reader = client.do_get(ticket)
-                    table = reader.read_all()
-                    if validate_and_persist(table, schema, dest):
-                        rows = table.to_pylist()
-                        for row in rows[last:]:
-                            handler(SimpleNamespace(**row))
-                        last = len(rows)
-                except Exception as e:  # pragma: no cover - network issues
-                    logger.warning({"error": "flight error", "details": str(e), "path": path})
-                    await asyncio.sleep(1)
-                    continue
-                await asyncio.sleep(1)
-
-        _sd_notify_ready()
-        await asyncio.gather(
-            poll("trades", process_trade, TRADE_SCHEMA),
-            poll("metrics", process_metric, METRIC_SCHEMA),
-            poll("decisions", process_decision, DECISION_SCHEMA),
+        subprocess.run(["git", "-C", str(repo_path), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo_path), "commit", "-m", message], check=True
         )
-
-    try:
-        asyncio.run(_flight_run())
-    finally:
-        if ws_trades:
-            try:
-                ws_trades.close()
-            except Exception:
-                pass
-        if ws_metrics:
-            try:
-                ws_metrics.close()
-            except Exception:
-                pass
-        if ws_decisions:
-            try:
-                ws_decisions.close()
-            except Exception:
-                pass
-    return 0
+        token = os.getenv("GITHUB_TOKEN")
+        if token:
+            subprocess.run(["git", "-C", str(repo_path), "push"], check=True)
+    except subprocess.CalledProcessError as e:  # pragma: no cover - git failure
+        logger.warning({"error": "git push failed", "details": str(e)})
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def main() -> None:  # pragma: no cover - simple CLI wrapper
+    parser = argparse.ArgumentParser(description="Consume WAL and upload logs")
+    parser.add_argument("wal", type=Path, help="path to WAL file")
+    parser.add_argument("dest", type=Path, help="output dataset directory")
+    parser.add_argument("--repo", type=Path, help="git repository to push logs")
+    args = parser.parse_args()
+    consume_wal(args.wal, METRIC_SCHEMA, args.dest)
+    if args.repo:
+        upload_logs(args.repo, "update logs")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
+

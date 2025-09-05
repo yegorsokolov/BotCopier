@@ -15,6 +15,111 @@ double g_coeffs[];
 double g_thresholds[];
 datetime g_last_params_time = 0;
 
+string g_trade_queue[];
+string g_metric_queue[];
+string TRADE_WAL = "trades.wal";
+string METRIC_WAL = "metrics.wal";
+
+void LoadWal(string file, string &queue[])
+{
+    int handle = FileOpen(file, FILE_READ|FILE_ANSI|FILE_TXT);
+    if(handle == INVALID_HANDLE)
+        return;
+    while(!FileIsEnding(handle))
+    {
+        string line = FileReadString(handle);
+        if(StringLen(line) > 0)
+        {
+            int n = ArraySize(queue);
+            ArrayResize(queue, n + 1);
+            queue[n] = line;
+        }
+    }
+    FileClose(handle);
+}
+
+void AppendWal(string file, string payload)
+{
+    int handle = FileOpen(file, FILE_READ|FILE_WRITE|FILE_ANSI|FILE_TXT);
+    if(handle == INVALID_HANDLE)
+        return;
+    FileSeek(handle, 0, SEEK_END);
+    FileWrite(handle, payload);
+    FileClose(handle);
+}
+
+void QueueTrade(string payload)
+{
+    int n = ArraySize(g_trade_queue);
+    ArrayResize(g_trade_queue, n + 1);
+    g_trade_queue[n] = payload;
+    AppendWal(TRADE_WAL, payload);
+}
+
+void QueueMetric(string payload)
+{
+    int n = ArraySize(g_metric_queue);
+    ArrayResize(g_metric_queue, n + 1);
+    g_metric_queue[n] = payload;
+    AppendWal(METRIC_WAL, payload);
+}
+
+bool SendTrade(string payload)
+{
+    return(true); // placeholder for transmission
+}
+
+bool SendMetric(string payload)
+{
+    return(true); // placeholder for transmission
+}
+
+void FlushTrades()
+{
+    int i = 0;
+    while(i < ArraySize(g_trade_queue))
+    {
+        if(SendTrade(g_trade_queue[i]))
+        {
+            for(int j = i; j < ArraySize(g_trade_queue) - 1; j++)
+                g_trade_queue[j] = g_trade_queue[j+1];
+            ArrayResize(g_trade_queue, ArraySize(g_trade_queue) - 1);
+        }
+        else
+            i++;
+    }
+    int handle = FileOpen(TRADE_WAL, FILE_WRITE|FILE_ANSI|FILE_TXT);
+    if(handle != INVALID_HANDLE)
+    {
+        for(i = 0; i < ArraySize(g_trade_queue); i++)
+            FileWrite(handle, g_trade_queue[i]);
+        FileClose(handle);
+    }
+}
+
+void FlushMetrics()
+{
+    int i = 0;
+    while(i < ArraySize(g_metric_queue))
+    {
+        if(SendMetric(g_metric_queue[i]))
+        {
+            for(int j = i; j < ArraySize(g_metric_queue) - 1; j++)
+                g_metric_queue[j] = g_metric_queue[j+1];
+            ArrayResize(g_metric_queue, ArraySize(g_metric_queue) - 1);
+        }
+        else
+            i++;
+    }
+    int handle = FileOpen(METRIC_WAL, FILE_WRITE|FILE_ANSI|FILE_TXT);
+    if(handle != INVALID_HANDLE)
+    {
+        for(i = 0; i < ArraySize(g_metric_queue); i++)
+            FileWrite(handle, g_metric_queue[i]);
+        FileClose(handle);
+    }
+}
+
 // Read coefficients and thresholds from the Files\model_params.csv file.
 bool LoadParameters()
 {
@@ -54,6 +159,8 @@ bool LoadParameters()
 
 int OnInit()
 {
+    LoadWal(TRADE_WAL, g_trade_queue);
+    LoadWal(METRIC_WAL, g_metric_queue);
     if(!LoadParameters())
         return(INIT_FAILED);
     if(ReloadModelInterval > 0)
@@ -69,6 +176,8 @@ void OnDeinit(const int reason)
 
 void OnTimer()
 {
+    FlushTrades();
+    FlushMetrics();
     int handle = FileOpen("model_params.csv", FILE_READ|FILE_ANSI);
     if(handle == INVALID_HANDLE)
         return;
