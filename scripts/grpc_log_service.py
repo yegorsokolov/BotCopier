@@ -46,6 +46,8 @@ TRADE_FIELDS = [
     "sl_hit_dist",
     "tp_hit_dist",
     "decision_id",
+    "equity",
+    "margin_level",
 ]
 
 METRIC_FIELDS = [

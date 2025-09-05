@@ -70,12 +70,15 @@ def _load_logs(
             continue
         df[col] = pd.to_numeric(df[col], errors="ignore")
 
+    optional_cols = ["spread", "slippage", "equity", "margin_level"]
+    feature_cols = [c for c in optional_cols if c in df.columns]
+
     if lite_mode:
         def _iter():
             for start in range(0, len(df), chunk_size):
                 yield df.iloc[start:start+chunk_size]
-        return _iter(), [], []
-    return df, [], []
+        return _iter(), feature_cols, []
+    return df, feature_cols, []
 
 
 # ---------------------------------------------------------------------------

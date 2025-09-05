@@ -32,4 +32,6 @@ message TradeEvent {
   int32 decision_id = 28;
   string trace_id = 29;
   string span_id = 30;
+  double equity = 31;
+  double margin_level = 32;
 }
