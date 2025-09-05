@@ -105,28 +105,83 @@ def _train_lite_mode(
         if hash_size <= 0
         else FeatureHasher(n_features=hash_size, input_type="dict")
     )
-    scaler = StandardScaler()
-    clf = SGDClassifier(loss="log_loss")
+
+    sessions = {
+        "asian": {
+            "scaler": StandardScaler(),
+            "clf": SGDClassifier(loss="log_loss"),
+            "first": True,
+        },
+        "london": {
+            "scaler": StandardScaler(),
+            "clf": SGDClassifier(loss="log_loss"),
+            "first": True,
+        },
+        "newyork": {
+            "scaler": StandardScaler(),
+            "clf": SGDClassifier(loss="log_loss"),
+            "first": True,
+        },
+    }
+
     feature_names: list[str] = []
-    first = True
+    vec_fitted = False
+
+    def _session_from_hour(hour: int) -> str:
+        if 0 <= hour < 8:
+            return "asian"
+        if 8 <= hour < 16:
+            return "london"
+        return "newyork"
+
     for chunk in rows_iter:
         if "label" not in chunk.columns:
             continue
         feat_cols = [c for c in chunk.columns if c not in {"label"}]
         feature_names = feat_cols
-        f_chunk = chunk[feat_cols].to_dict("records")
-        l_chunk = chunk["label"].astype(int).tolist()
-        X = (
-            vec.fit_transform(f_chunk)
-            if first and hash_size <= 0
-            else vec.transform(f_chunk)
+        hours = chunk["hour"] if "hour" in chunk.columns else pd.Series([0] * len(chunk))
+        chunk["session"] = hours.astype(int).apply(_session_from_hour)
+
+        f_chunk_all = chunk[feat_cols].to_dict("records")
+        X_all = (
+            vec.fit_transform(f_chunk_all)
+            if not vec_fitted and hash_size <= 0
+            else vec.transform(f_chunk_all)
         )
-        if first and hash_size > 0:
-            X = vec.transform(f_chunk)
-        X = scaler.partial_fit(X).transform(X) if hasattr(scaler, "partial_fit") else scaler.fit_transform(X)
-        clf.partial_fit(X, l_chunk, classes=np.array([0, 1]) if first else None)
-        first = False
-    if first:
+        if not vec_fitted and hash_size > 0:
+            X_all = vec.transform(f_chunk_all)
+        vec_fitted = True
+        y_all = chunk["label"].astype(int).to_numpy()
+
+        for name, params in sessions.items():
+            mask = chunk["session"] == name
+            if not mask.any():
+                continue
+            X = X_all[mask.values]
+            y = y_all[mask.values]
+            scaler = params["scaler"]
+            clf = params["clf"]
+            first = params["first"]
+            X = (
+                scaler.partial_fit(X).transform(X)
+                if hasattr(scaler, "partial_fit")
+                else scaler.fit_transform(X)
+            )
+            clf.partial_fit(X, y, classes=np.array([0, 1]) if first else None)
+            params["first"] = False
+
+    session_models: dict[str, dict[str, object]] = {}
+    for name, params in sessions.items():
+        if params["first"]:
+            continue
+        clf = params["clf"]
+        session_models[name] = {
+            "coefficients": clf.coef_[0].astype(float).tolist(),
+            "intercept": float(clf.intercept_[0]),
+            "threshold": 0.5,
+        }
+
+    if not session_models:
         raise ValueError(f"No training data found in {data_dir}")
 
     model = {
@@ -134,10 +189,12 @@ def _train_lite_mode(
         "trained_at": datetime.utcnow().isoformat(),
         "feature_names": feature_names,
         "model_type": "logreg",
-        "coefficients": clf.coef_[0].astype(float).tolist(),
-        "intercept": float(clf.intercept_[0]),
-        "threshold": 0.5,
-        "classes": [int(c) for c in clf.classes_],
+        "session_models": session_models,
+        "session_hours": {
+            "asian": [0, 8],
+            "london": [8, 16],
+            "newyork": [16, 24],
+        },
         "training_mode": "lite",
         "mode": mode,
     }

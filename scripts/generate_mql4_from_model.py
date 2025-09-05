@@ -35,12 +35,28 @@ def build_switch(names: Sequence[str]) -> str:
     return GET_FEATURE_TEMPLATE.format(cases="\n".join(cases))
 
 
+def _build_session_models(data: dict) -> str:
+    sessions = data.get("session_models", {})
+    lines: list[str] = []
+    for name, params in sessions.items():
+        coeffs = [params.get("intercept", 0.0)] + params.get("coefficients", [])
+        coeff_str = ", ".join(f"{c}" for c in coeffs)
+        lines.append(f"double g_coeffs_{name}[] = {{{coeff_str}}};")
+        lines.append(
+            f"double g_threshold_{name} = {params.get('threshold', 0.5)};"
+        )
+    return "\n".join(lines)
+
+
 def insert_get_feature(model: Path, template: Path) -> None:
-    """Insert generated GetFeature into ``template`` in place."""
-    feature_names = json.loads(model.read_text()).get("feature_names", [])
+    """Insert generated GetFeature and session models into ``template``."""
+    data = json.loads(model.read_text())
+    feature_names = data.get("feature_names", [])
     get_feature = build_switch(feature_names)
+    session_models = _build_session_models(data)
     content = template.read_text()
     output = content.replace("// __GET_FEATURE__", get_feature)
+    output = output.replace("// __SESSION_MODELS__", session_models)
     template.write_text(output)
 
 

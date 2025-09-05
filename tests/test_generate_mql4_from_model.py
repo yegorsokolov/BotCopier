@@ -22,3 +22,40 @@ def test_generated_features(tmp_path):
 
     data = json.loads(model.read_text())
     assert data["feature_names"] == ["spread", "hour"]
+
+
+def test_session_models_inserted(tmp_path):
+    model = tmp_path / "model.json"
+    model.write_text(
+        json.dumps(
+            {
+                "feature_names": [],
+                "session_models": {
+                    "asian": {
+                        "coefficients": [1.0],
+                        "intercept": 0.1,
+                        "threshold": 0.5,
+                    }
+                },
+            }
+        )
+    )
+
+    template = tmp_path / "StrategyTemplate.mq4"
+    template.write_text("#property strict\n\n// __SESSION_MODELS__\n")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            model,
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+
+    content = template.read_text()
+    assert "g_coeffs_asian" in content
+    assert "g_threshold_asian" in content
