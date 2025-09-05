@@ -7,6 +7,8 @@ extern int ReloadModelInterval = 60;
 
 double g_coeffs[];
 double g_threshold;
+double g_feature_mean[];
+double g_feature_std[];
 
 // __SESSION_MODELS__
 
@@ -17,16 +19,22 @@ void SelectSessionModel()
     {
         ArrayCopy(g_coeffs, g_coeffs_asian);
         g_threshold = g_threshold_asian;
+        ArrayCopy(g_feature_mean, g_feature_mean_asian);
+        ArrayCopy(g_feature_std, g_feature_std_asian);
     }
     else if(h < 16)
     {
         ArrayCopy(g_coeffs, g_coeffs_london);
         g_threshold = g_threshold_london;
+        ArrayCopy(g_feature_mean, g_feature_mean_london);
+        ArrayCopy(g_feature_std, g_feature_std_london);
     }
     else
     {
         ArrayCopy(g_coeffs, g_coeffs_newyork);
         g_threshold = g_threshold_newyork;
+        ArrayCopy(g_feature_mean, g_feature_mean_newyork);
+        ArrayCopy(g_feature_std, g_feature_std_newyork);
     }
 }
 
@@ -166,4 +174,16 @@ double GetFeature(int idx)
     case 1: return TimeHour(TimeCurrent()); // hour
     }
     return 0.0;
+}
+
+double ScoreModel()
+{
+    double z = g_coeffs[0];
+    for(int i = 1; i < ArraySize(g_coeffs); i++)
+    {
+        double val = GetFeature(i - 1);
+        double norm = (val - g_feature_mean[i - 1]) / g_feature_std[i - 1];
+        z += g_coeffs[i] * norm;
+    }
+    return 1.0 / (1.0 + MathExp(-z));
 }

@@ -175,10 +175,13 @@ def _train_lite_mode(
         if params["first"]:
             continue
         clf = params["clf"]
+        scaler = params["scaler"]
         session_models[name] = {
             "coefficients": clf.coef_[0].astype(float).tolist(),
             "intercept": float(clf.intercept_[0]),
             "threshold": 0.5,
+            "feature_mean": scaler.mean_.astype(float).tolist(),
+            "feature_std": scaler.scale_.astype(float).tolist(),
         }
 
     if not session_models:

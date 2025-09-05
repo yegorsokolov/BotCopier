@@ -35,6 +35,8 @@ def test_session_models_inserted(tmp_path):
                         "coefficients": [1.0],
                         "intercept": 0.1,
                         "threshold": 0.5,
+                        "feature_mean": [0.0],
+                        "feature_std": [1.0],
                     }
                 },
             }
@@ -59,3 +61,9 @@ def test_session_models_inserted(tmp_path):
     content = template.read_text()
     assert "g_coeffs_asian" in content
     assert "g_threshold_asian" in content
+    assert "g_feature_mean_asian" in content
+    assert "g_feature_std_asian" in content
+
+    data = json.loads(model.read_text())
+    assert "feature_mean" in data["session_models"]["asian"]
+    assert "feature_std" in data["session_models"]["asian"]
