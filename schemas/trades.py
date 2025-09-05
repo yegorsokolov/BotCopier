@@ -32,6 +32,10 @@ class TradeEvent(BaseModel):
     decision_id: Optional[int] = None
     exit_reason: str = ""
     duration_sec: int = 0
+    spread: float = 0.0
+    slippage: float = 0.0
+    equity: float = 0.0
+    margin_level: float = 0.0
 
     class Config:
         extra = "ignore"
@@ -71,6 +75,8 @@ TRADE_SCHEMA = pa.schema([
     ("decision_id", pa.int32()),
     ("exit_reason", pa.string()),
     ("duration_sec", pa.int32()),
+    ("equity", pa.float64()),
+    ("margin_level", pa.float64()),
 ])
 
 __all__ = ["TradeEvent", "TRADE_SCHEMA"]

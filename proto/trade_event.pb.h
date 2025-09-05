@@ -207,6 +207,8 @@ class TradeEvent final :
     kBookImbalanceFieldNumber = 25,
     kSlHitDistFieldNumber = 26,
     kTpHitDistFieldNumber = 27,
+    kEquityFieldNumber = 31,
+    kMarginLevelFieldNumber = 32,
   };
   // string event_time = 2;
   void clear_event_time();
@@ -528,6 +530,24 @@ class TradeEvent final :
   void _internal_set_tp_hit_dist(double value);
   public:
 
+  // double equity = 31;
+  void clear_equity();
+  double equity() const;
+  void set_equity(double value);
+  private:
+  double _internal_equity() const;
+  void _internal_set_equity(double value);
+  public:
+
+  // double margin_level = 32;
+  void clear_margin_level();
+  double margin_level() const;
+  void set_margin_level(double value);
+  private:
+  double _internal_margin_level() const;
+  void _internal_set_margin_level(double value);
+  public:
+
   // @@protoc_insertion_point(class_scope:tbot.TradeEvent)
  private:
   class _Internal;
@@ -566,6 +586,8 @@ class TradeEvent final :
     double book_imbalance_;
     double sl_hit_dist_;
     double tp_hit_dist_;
+    double equity_;
+    double margin_level_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -1480,6 +1502,46 @@ inline void TradeEvent::set_allocated_span_id(std::string* span_id) {
   }
 #endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
   // @@protoc_insertion_point(field_set_allocated:tbot.TradeEvent.span_id)
+}
+
+// double equity = 31;
+inline void TradeEvent::clear_equity() {
+  _impl_.equity_ = 0;
+}
+inline double TradeEvent::_internal_equity() const {
+  return _impl_.equity_;
+}
+inline double TradeEvent::equity() const {
+  // @@protoc_insertion_point(field_get:tbot.TradeEvent.equity)
+  return _internal_equity();
+}
+inline void TradeEvent::_internal_set_equity(double value) {
+  
+  _impl_.equity_ = value;
+}
+inline void TradeEvent::set_equity(double value) {
+  _internal_set_equity(value);
+  // @@protoc_insertion_point(field_set:tbot.TradeEvent.equity)
+}
+
+// double margin_level = 32;
+inline void TradeEvent::clear_margin_level() {
+  _impl_.margin_level_ = 0;
+}
+inline double TradeEvent::_internal_margin_level() const {
+  return _impl_.margin_level_;
+}
+inline double TradeEvent::margin_level() const {
+  // @@protoc_insertion_point(field_get:tbot.TradeEvent.margin_level)
+  return _internal_margin_level();
+}
+inline void TradeEvent::_internal_set_margin_level(double value) {
+  
+  _impl_.margin_level_ = value;
+}
+inline void TradeEvent::set_margin_level(double value) {
+  _internal_set_margin_level(value);
+  // @@protoc_insertion_point(field_set:tbot.TradeEvent.margin_level)
 }
 
 #ifdef __GNUC__

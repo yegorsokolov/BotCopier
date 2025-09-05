@@ -35,6 +35,8 @@
     {"name": "executed_model_idx", "type": "int", "default": -1},
     {"name": "decision_id", "type": ["int", "null"], "default": null},
     {"name": "exit_reason", "type": "string"},
-    {"name": "duration_sec", "type": "int"}
+    {"name": "duration_sec", "type": "int"},
+    {"name": "equity", "type": "double"},
+    {"name": "margin_level", "type": "double"}
   ]
 }
