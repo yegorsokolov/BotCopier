@@ -13,7 +13,10 @@ import json
 import os
 import sqlite3
 import logging
+import subprocess
+import sys
 from pathlib import Path
+from datetime import datetime
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
@@ -23,6 +26,8 @@ except Exception:  # pragma: no cover - fallback to file logging
 from typing import Callable, Optional
 from asyncio import Queue
 from aiohttp import web
+
+from river.drift import ADWIN
 
 import psutil
 
@@ -199,10 +204,39 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 
+def _update_model(model_json: Path, metric: float, retrained: bool) -> None:
+    """Record drift metrics and retrain timestamps in ``model.json``."""
+    ts = datetime.utcnow().isoformat()
+    data: dict[str, object] = {}
+    if model_json.exists():
+        try:
+            data = json.loads(model_json.read_text())
+        except Exception:
+            data = {}
+    data["drift_metric"] = float(metric)
+    data["drift_metrics"] = {"adwin": float(metric)}
+    history = data.setdefault("drift_history", [])
+    if isinstance(history, list):
+        history.append({"time": ts, "adwin": float(metric)})
+    if retrained:
+        retrain_hist = data.setdefault("retrain_history", [])
+        if isinstance(retrain_hist, list):
+            retrain_hist.append({"time": ts, "adwin": float(metric)})
+    model_json.write_text(json.dumps(data, indent=2))
+
+
 async def _writer_task(
     db_file: Path,
     queue: Queue,
     prom_updater: Callable[[dict], None] | None = None,
+    *,
+    drift_metric: str | None = None,
+    drift_threshold: float = 0.0,
+    model_json: Path | None = None,
+    log_dir: Path | None = None,
+    out_dir: Path | None = None,
+    files_dir: Path | None = None,
+    detector: ADWIN | None = None,
 ) -> None:
     db_file.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_file)
@@ -212,6 +246,7 @@ async def _writer_task(
         f"CREATE TABLE IF NOT EXISTS metrics ({','.join([f'{c} TEXT' for c in FIELDS])})"
     )
     insert_sql = f"INSERT INTO metrics ({cols}) VALUES ({placeholders})"
+    prev_est: float | None = None
     try:
         while True:
             row = await queue.get()
@@ -230,6 +265,52 @@ async def _writer_task(
                 else:
                     if prom_updater is not None:
                         prom_updater(row)
+                    if (
+                        detector is not None
+                        and drift_metric
+                        and model_json is not None
+                        and (val := row.get(drift_metric)) is not None
+                    ):
+                        try:
+                            val_f = float(val)
+                        except (TypeError, ValueError):
+                            pass
+                        else:
+                            changed = detector.update(val_f)
+                            if prev_est is None:
+                                prev_est = detector.estimation
+                            if changed:
+                                diff = abs((prev_est or 0.0) - detector.estimation)
+                                retrain = diff > drift_threshold
+                                _update_model(model_json, diff, retrain)
+                                if retrain and log_dir and out_dir and files_dir:
+                                    base = Path(__file__).resolve().parent
+                                    try:
+                                        await asyncio.to_thread(
+                                            subprocess.run,
+                                            [
+                                                sys.executable,
+                                                str(base / "train_target_clone.py"),
+                                                str(log_dir),
+                                                str(out_dir),
+                                            ],
+                                            check=True,
+                                        )
+                                        await asyncio.to_thread(
+                                            subprocess.run,
+                                            [
+                                                sys.executable,
+                                                str(base / "generate_mql4_from_model.py"),
+                                                "--model",
+                                                str(model_json),
+                                                "--template",
+                                                str(base.parent / "StrategyTemplate.mq4"),
+                                            ],
+                                            check=True,
+                                        )
+                                    except Exception:
+                                        logger.exception("retrain failed")
+                            prev_est = detector.estimation
             queue.task_done()
     finally:
         conn.close()
@@ -244,10 +325,18 @@ def serve(
     prom_port: Optional[int] = None,
     flight_host: str = "127.0.0.1",
     flight_port: int = 8815,
+    *,
+    drift_metric: str | None = None,
+    drift_threshold: float = 0.05,
+    model_json: Path = Path("model.json"),
+    log_dir: Path | None = None,
+    out_dir: Path | None = None,
+    files_dir: Path | None = None,
 ) -> None:
     async def _run() -> None:
         queue: Queue = Queue()
         prom_updater: Callable[[dict], None]
+        detector = ADWIN() if drift_metric else None
         watchdog_interval = None
         if daemon is not None:
             try:
@@ -277,12 +366,12 @@ def serve(
             await prom_runner.setup()
             prom_site = web.TCPSite(prom_runner, http_host, prom_port)
             await prom_site.start()
-              win_rate_g = Gauge("bot_win_rate", "Win rate")
-              drawdown_g = Gauge("bot_drawdown", "Drawdown")
-              cvar_g = Gauge("bot_cvar", "Conditional Value at Risk")
-              socket_err_c = Counter(
-                  "bot_socket_errors_total", "Socket error count"
-              )
+            win_rate_g = Gauge("bot_win_rate", "Win rate")
+            drawdown_g = Gauge("bot_drawdown", "Drawdown")
+            cvar_g = Gauge("bot_cvar", "Conditional Value at Risk")
+            socket_err_c = Counter(
+                "bot_socket_errors_total", "Socket error count"
+            )
             file_err_c = Counter(
                 "bot_file_write_errors_total", "File write error count"
             )
@@ -448,7 +537,20 @@ def serve(
         else:
             prom_updater = lambda _row: None
 
-        writer_task = asyncio.create_task(_writer_task(db_file, queue, prom_updater))
+        writer_task = asyncio.create_task(
+            _writer_task(
+                db_file,
+                queue,
+                prom_updater,
+                drift_metric=drift_metric,
+                drift_threshold=drift_threshold,
+                model_json=model_json,
+                log_dir=log_dir,
+                out_dir=out_dir,
+                files_dir=files_dir,
+                detector=detector,
+            )
+        )
         _sd_notify_ready()
 
         if flight is None:
@@ -563,6 +665,22 @@ def main() -> None:
         type=int,
         help="expose Prometheus metrics on this port",
     )
+    p.add_argument("--drift-metric", help="metric field to monitor with ADWIN")
+    p.add_argument(
+        "--drift-threshold",
+        type=float,
+        default=0.05,
+        help="minimum mean shift to trigger retrain",
+    )
+    p.add_argument(
+        "--model-json",
+        type=Path,
+        default=Path("model.json"),
+        help="path to model.json for audit updates",
+    )
+    p.add_argument("--log-dir", type=Path, help="directory with training logs")
+    p.add_argument("--out-dir", type=Path, help="output directory for model artifacts")
+    p.add_argument("--files-dir", type=Path, help="MT4 Files directory")
     args = p.parse_args()
 
     serve(
@@ -572,6 +690,12 @@ def main() -> None:
         args.prom_port,
         args.flight_host,
         args.flight_port,
+        drift_metric=args.drift_metric,
+        drift_threshold=args.drift_threshold,
+        model_json=args.model_json,
+        log_dir=args.log_dir,
+        out_dir=args.out_dir,
+        files_dir=args.files_dir,
     )
 
 
