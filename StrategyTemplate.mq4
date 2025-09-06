@@ -331,9 +331,12 @@ double GetFeature(int idx)
     switch(idx)
     {
     case 0: return MarketInfo(Symbol(), MODE_SPREAD); // spread
-    case 1: return MathSin(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_sin
-    case 2: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos
-    case 3: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume
+    case 1: return OrderSlippage(); // slippage
+    case 2: return AccountEquity(); // equity
+    case 3: return AccountMarginLevel(); // margin_level
+    case 4: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume
+    case 5: return MathSin(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_sin
+    case 6: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos
     }
     return 0.0;
 }
