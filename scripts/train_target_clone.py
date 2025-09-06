@@ -28,7 +28,7 @@ import pandas as pd
 import psutil
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import SGDClassifier
-from sklearn.feature_extraction import DictVectorizer, FeatureHasher
+from sklearn.metrics import accuracy_score, recall_score
 
 try:  # Optional dependency
     import torch
@@ -102,38 +102,14 @@ def _train_lite_mode(
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
-    rows_iter, _, _ = _load_logs(
-        data_dir, chunk_size=chunk_size, flight_uri=flight_uri
-    )
-    if isinstance(rows_iter, pd.DataFrame):
-        rows_iter = [rows_iter]
+    df, _, _ = _load_logs(data_dir, chunk_size=chunk_size, flight_uri=flight_uri)
+    if not isinstance(df, pd.DataFrame):
+        df = pd.concat(list(df), ignore_index=True)
 
-    vec = (
-        DictVectorizer(sparse=False)
-        if hash_size <= 0
-        else FeatureHasher(n_features=hash_size, input_type="dict")
-    )
+    if "label" not in df.columns:
+        raise ValueError("label column missing from data")
 
-    sessions = {
-        "asian": {
-            "scaler": StandardScaler(),
-            "clf": SGDClassifier(loss="log_loss"),
-            "first": True,
-        },
-        "london": {
-            "scaler": StandardScaler(),
-            "clf": SGDClassifier(loss="log_loss"),
-            "first": True,
-        },
-        "newyork": {
-            "scaler": StandardScaler(),
-            "clf": SGDClassifier(loss="log_loss"),
-            "first": True,
-        },
-    }
-
-    feature_names: list[str] = []
-    vec_fitted = False
+    feature_names = [c for c in df.columns if c != "label"]
 
     def _session_from_hour(hour: int) -> str:
         if 0 <= hour < 8:
@@ -142,54 +118,46 @@ def _train_lite_mode(
             return "london"
         return "newyork"
 
-    for chunk in rows_iter:
-        if "label" not in chunk.columns:
-            continue
-        feat_cols = [c for c in chunk.columns if c not in {"label"}]
-        feature_names = feat_cols
-        hours = chunk["hour"] if "hour" in chunk.columns else pd.Series([0] * len(chunk))
-        chunk["session"] = hours.astype(int).apply(_session_from_hour)
-
-        f_chunk_all = chunk[feat_cols].to_dict("records")
-        X_all = (
-            vec.fit_transform(f_chunk_all)
-            if not vec_fitted and hash_size <= 0
-            else vec.transform(f_chunk_all)
-        )
-        if not vec_fitted and hash_size > 0:
-            X_all = vec.transform(f_chunk_all)
-        vec_fitted = True
-        y_all = chunk["label"].astype(int).to_numpy()
-
-        for name, params in sessions.items():
-            mask = chunk["session"] == name
-            if not mask.any():
-                continue
-            X = X_all[mask.values]
-            y = y_all[mask.values]
-            scaler = params["scaler"]
-            clf = params["clf"]
-            first = params["first"]
-            X = (
-                scaler.partial_fit(X).transform(X)
-                if hasattr(scaler, "partial_fit")
-                else scaler.fit_transform(X)
-            )
-            clf.partial_fit(X, y, classes=np.array([0, 1]) if first else None)
-            params["first"] = False
+    hours = df["hour"] if "hour" in df.columns else pd.Series([0] * len(df))
+    df["session"] = hours.astype(int).apply(_session_from_hour)
 
     session_models: dict[str, dict[str, object]] = {}
-    for name, params in sessions.items():
-        if params["first"]:
+    for name, group in df.groupby("session"):
+        if len(group) < 2:
             continue
-        clf = params["clf"]
-        scaler = params["scaler"]
+        feat_cols = [c for c in feature_names if c != "session"]
+        X_all = group[feat_cols].to_numpy()
+        y_all = group["label"].astype(int).to_numpy()
+        split_idx = max(1, int(len(group) * 0.8))
+        X_train, X_val = X_all[:split_idx], X_all[split_idx:]
+        y_train, y_val = y_all[:split_idx], y_all[split_idx:]
+        if len(X_val) == 0:
+            continue
+        scaler = StandardScaler().fit(X_train)
+        X_train_scaled = scaler.transform(X_train)
+        X_val_scaled = scaler.transform(X_val)
+        clf = SGDClassifier(loss="log_loss")
+        clf.partial_fit(X_train_scaled, y_train, classes=np.array([0, 1]))
+        probs = clf.predict_proba(X_val_scaled)[:, 1]
+        thresholds = np.unique(np.concatenate(([0.0], probs, [1.0])))
+        best_thresh = 0.5
+        best_acc = -1.0
+        best_rec = 0.0
+        for t in thresholds:
+            preds = (probs >= t).astype(int)
+            acc = accuracy_score(y_val, preds)
+            rec = recall_score(y_val, preds, zero_division=0)
+            if acc > best_acc:
+                best_acc = acc
+                best_rec = rec
+                best_thresh = float(t)
         session_models[name] = {
             "coefficients": clf.coef_[0].astype(float).tolist(),
             "intercept": float(clf.intercept_[0]),
-            "threshold": 0.5,
+            "threshold": best_thresh,
             "feature_mean": scaler.mean_.astype(float).tolist(),
             "feature_std": scaler.scale_.astype(float).tolist(),
+            "metrics": {"accuracy": float(best_acc), "recall": float(best_rec)},
         }
 
     if not session_models:
