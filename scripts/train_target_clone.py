@@ -221,6 +221,9 @@ def _train_lite_mode(
             splits = list(tscv.split(X_all))
         fold_metrics: list[dict[str, float]] = []
         fold_thresholds: list[float] = []
+        # Store probabilities and labels from validation folds for conformal bounds
+        all_probs: list[np.ndarray] = []
+        all_labels: list[np.ndarray] = []
         profit_col = "profit" if "profit" in group.columns else (
             "net_profit" if "net_profit" in group.columns else None
         )
@@ -237,6 +240,9 @@ def _train_lite_mode(
                 sample_weight=w_train,
             )
             probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
+            # collect probabilities and labels for conformal interval computation
+            all_probs.append(probs)
+            all_labels.append(y_val)
             thresholds = np.unique(np.concatenate(([0.0], probs, [1.0])))
             best_thresh = 0.5
             best_acc = -1.0
@@ -268,6 +274,14 @@ def _train_lite_mode(
         mean_rec = float(np.mean([fm["recall"] for fm in fold_metrics]))
         mean_profit = float(np.mean([fm["profit"] for fm in fold_metrics]))
         avg_thresh = float(np.mean(fold_thresholds))
+        # Compute conformal bounds using validation probabilities
+        probs_flat = np.concatenate(all_probs) if all_probs else np.array([])
+        labels_flat = np.concatenate(all_labels) if all_labels else np.array([])
+        pos_probs = probs_flat[labels_flat == 1]
+        neg_probs = probs_flat[labels_flat == 0]
+        alpha = 0.05
+        conf_lower = float(np.quantile(neg_probs, 1 - alpha)) if len(neg_probs) else 0.0
+        conf_upper = float(np.quantile(pos_probs, alpha)) if len(pos_probs) else 1.0
         scaler_full = StandardScaler().fit(X_all)
         clf_full = SGDClassifier(loss="log_loss")
         X_scaled_full = scaler_full.transform(X_all)
@@ -309,6 +323,8 @@ def _train_lite_mode(
             "feature_std": scaler_full.scale_.astype(float).tolist(),
             "metrics": {"accuracy": mean_acc, "recall": mean_rec, "profit": mean_profit},
             "cv_metrics": fold_metrics,
+            "conformal_lower": conf_lower,
+            "conformal_upper": conf_upper,
         }
         if lot_model:
             params["lot_model"] = lot_model
@@ -323,6 +339,9 @@ def _train_lite_mode(
     if not session_models:
         raise ValueError(f"No training data found in {data_dir}")
 
+    # Aggregate conformal bounds across sessions for convenience
+    conf_lowers = [p["conformal_lower"] for p in session_models.values()]
+    conf_uppers = [p["conformal_upper"] for p in session_models.values()]
     model = {
         "model_id": "target_clone",
         "trained_at": datetime.utcnow().isoformat(),
@@ -338,6 +357,8 @@ def _train_lite_mode(
         "mode": mode,
         "cv_accuracy": float(np.mean(cv_acc_all)) if cv_acc_all else 0.0,
         "cv_profit": float(np.mean(cv_profit_all)) if cv_profit_all else 0.0,
+        "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
+        "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:

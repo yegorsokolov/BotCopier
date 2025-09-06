@@ -12,6 +12,8 @@ double g_feature_std[];
 double g_lot_coeffs[];
 double g_sl_coeffs[];
 double g_tp_coeffs[];
+double g_conformal_lower;
+double g_conformal_upper;
 
 double g_coeffs_asian[] = {0.0, 0.0};
 double g_threshold_asian = 0.5;
@@ -20,6 +22,8 @@ double g_feature_std_asian[] = {};
 double g_lot_coeffs_asian[] = {0.0, 0.0};
 double g_sl_coeffs_asian[] = {0.0, 0.0};
 double g_tp_coeffs_asian[] = {0.0, 0.0};
+double g_conformal_lower_asian = 0.0;
+double g_conformal_upper_asian = 1.0;
 double g_coeffs_london[] = {0.0, 0.0};
 double g_threshold_london = 0.5;
 double g_feature_mean_london[] = {};
@@ -27,6 +31,8 @@ double g_feature_std_london[] = {};
 double g_lot_coeffs_london[] = {0.0, 0.0};
 double g_sl_coeffs_london[] = {0.0, 0.0};
 double g_tp_coeffs_london[] = {0.0, 0.0};
+double g_conformal_lower_london = 0.0;
+double g_conformal_upper_london = 1.0;
 double g_coeffs_newyork[] = {0.0, 0.0};
 double g_threshold_newyork = 0.5;
 double g_feature_mean_newyork[] = {};
@@ -34,6 +40,8 @@ double g_feature_std_newyork[] = {};
 double g_lot_coeffs_newyork[] = {0.0, 0.0};
 double g_sl_coeffs_newyork[] = {0.0, 0.0};
 double g_tp_coeffs_newyork[] = {0.0, 0.0};
+double g_conformal_lower_newyork = 0.0;
+double g_conformal_upper_newyork = 1.0;
 
 datetime g_last_model_reload = 0;
 
@@ -49,6 +57,8 @@ void SelectSessionModel()
         g_threshold = g_threshold_asian;
         ArrayCopy(g_feature_mean, g_feature_mean_asian);
         ArrayCopy(g_feature_std, g_feature_std_asian);
+        g_conformal_lower = g_conformal_lower_asian;
+        g_conformal_upper = g_conformal_upper_asian;
     }
     else if(h < 16)
     {
@@ -59,6 +69,8 @@ void SelectSessionModel()
         g_threshold = g_threshold_london;
         ArrayCopy(g_feature_mean, g_feature_mean_london);
         ArrayCopy(g_feature_std, g_feature_std_london);
+        g_conformal_lower = g_conformal_lower_london;
+        g_conformal_upper = g_conformal_upper_london;
     }
     else
     {
@@ -69,6 +81,8 @@ void SelectSessionModel()
         g_threshold = g_threshold_newyork;
         ArrayCopy(g_feature_mean, g_feature_mean_newyork);
         ArrayCopy(g_feature_std, g_feature_std_newyork);
+        g_conformal_lower = g_conformal_lower_newyork;
+        g_conformal_upper = g_conformal_upper_newyork;
     }
 }
 
@@ -376,7 +390,12 @@ void OnTick()
     double sl = PredictSLDistance();
     double tp = PredictTPDistance();
     string decision = "hold";
-    if(prob > g_threshold)
+    bool uncertain = (prob >= g_conformal_lower && prob <= g_conformal_upper);
+    if(uncertain)
+    {
+        decision = "skip";
+    }
+    else if(prob > g_threshold)
     {
         double sl_price = Ask - sl * Point;
         double tp_price = Ask + tp * Point;

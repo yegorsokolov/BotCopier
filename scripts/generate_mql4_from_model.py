@@ -94,6 +94,12 @@ def _build_session_models(data: dict) -> str:
         _coeff_line("lot_coeffs", params.get("lot_model"))
         _coeff_line("sl_coeffs", params.get("sl_model"))
         _coeff_line("tp_coeffs", params.get("tp_model"))
+        lines.append(
+            f"double g_conformal_lower_{name} = {params.get('conformal_lower', 0.0)};"
+        )
+        lines.append(
+            f"double g_conformal_upper_{name} = {params.get('conformal_upper', 1.0)};"
+        )
     return "\n".join(lines)
 
 
