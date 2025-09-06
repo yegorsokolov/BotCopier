@@ -20,7 +20,8 @@
   "mode": "lite",
   "feature_names": [
     "spread",
-    "hour"
+    "hour",
+    "volume"
   ],
   "session_models": {
     "asian": {

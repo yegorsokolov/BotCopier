@@ -10,7 +10,18 @@ double g_threshold;
 double g_feature_mean[];
 double g_feature_std[];
 
-// __SESSION_MODELS__
+double g_coeffs_asian[] = {0.0, 0.0};
+double g_threshold_asian = 0.5;
+double g_feature_mean_asian[] = {};
+double g_feature_std_asian[] = {};
+double g_coeffs_london[] = {0.0, 0.0};
+double g_threshold_london = 0.5;
+double g_feature_mean_london[] = {};
+double g_feature_std_london[] = {};
+double g_coeffs_newyork[] = {0.0, 0.0};
+double g_threshold_newyork = 0.5;
+double g_feature_mean_newyork[] = {};
+double g_feature_std_newyork[] = {};
 
 void SelectSessionModel()
 {
@@ -202,9 +213,11 @@ double GetFeature(int idx)
     {
     case 0: return MarketInfo(Symbol(), MODE_SPREAD); // spread
     case 1: return TimeHour(TimeCurrent()); // hour
+    case 2: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume
     }
     return 0.0;
 }
+
 
 double ScoreModel()
 {
