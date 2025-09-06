@@ -22,6 +22,9 @@ FEATURE_MAP: dict[str, str] = {
     "bid": "MarketInfo(Symbol(), MODE_BID)",
     "hour": "TimeHour(TimeCurrent())",
     "volume": "iVolume(Symbol(), PERIOD_CURRENT, 0)",
+    "slippage": "OrderSlippage()",
+    "equity": "AccountEquity()",
+    "margin_level": "AccountMarginLevel()",
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
