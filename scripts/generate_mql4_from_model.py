@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Sequence
 
@@ -127,6 +128,86 @@ def _build_symbol_embeddings(emb_map: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_transformer_params(data: dict) -> str:
+    block_start = "// __TRANSFORMER_PARAMS_START__"
+    block_end = "// __TRANSFORMER_PARAMS_END__"
+    if data.get("model_type") != "transformer":
+        return (
+            f"{block_start}\n"
+            "int g_transformer_window = 0;\n"
+            "int g_transformer_dim = 0;\n"
+            "double g_embed_weight[1] = {0.0};\n"
+            "double g_embed_bias[1] = {0.0};\n"
+            "double g_q_weight[1] = {0.0};\n"
+            "double g_q_bias[1] = {0.0};\n"
+            "double g_k_weight[1] = {0.0};\n"
+            "double g_k_bias[1] = {0.0};\n"
+            "double g_v_weight[1] = {0.0};\n"
+            "double g_v_bias[1] = {0.0};\n"
+            "double g_out_weight[1] = {0.0};\n"
+            "double g_out_bias = 0.0;\n"
+            "double g_price_mean = 0.0;\n"
+            "double g_price_std = 1.0;\n"
+            f"{block_end}"
+        )
+
+    w = data.get("weights", {})
+
+    def _flt(val: float) -> str:
+        return f"{val}"
+
+    def _flat(mat):
+        return [v for row in mat for v in row]
+
+    lines = [block_start]
+    lines.append(f"int g_transformer_window = {data.get('window_size', 0)};")
+    dim = len(w.get("embed_weight", []))
+    lines.append(f"int g_transformer_dim = {dim};")
+    lines.append(
+        "double g_embed_weight[] = {" + ", ".join(_flt(x) for x in w.get("embed_weight", [])) + "};"
+    )
+    lines.append(
+        "double g_embed_bias[] = {" + ", ".join(_flt(x) for x in w.get("embed_bias", [])) + "};"
+    )
+    lines.append(
+        "double g_q_weight[] = {"
+        + ", ".join(_flt(x) for x in _flat(w.get("q_weight", [])))
+        + "};"
+    )
+    lines.append(
+        "double g_q_bias[] = {" + ", ".join(_flt(x) for x in w.get("q_bias", [])) + "};"
+    )
+    lines.append(
+        "double g_k_weight[] = {"
+        + ", ".join(_flt(x) for x in _flat(w.get("k_weight", [])))
+        + "};"
+    )
+    lines.append(
+        "double g_k_bias[] = {" + ", ".join(_flt(x) for x in w.get("k_bias", [])) + "};"
+    )
+    lines.append(
+        "double g_v_weight[] = {"
+        + ", ".join(_flt(x) for x in _flat(w.get("v_weight", [])))
+        + "};"
+    )
+    lines.append(
+        "double g_v_bias[] = {" + ", ".join(_flt(x) for x in w.get("v_bias", [])) + "};"
+    )
+    lines.append(
+        "double g_out_weight[] = {"
+        + ", ".join(_flt(x) for x in w.get("out_weight", []))
+        + "};"
+    )
+    out_bias = w.get("out_bias", [0.0])
+    if isinstance(out_bias, list):
+        out_bias = out_bias[0]
+    lines.append(f"double g_out_bias = {out_bias};")
+    lines.append(f"double g_price_mean = {data.get('price_mean', 0.0)};")
+    lines.append(f"double g_price_std = {data.get('price_std', 1.0)};")
+    lines.append(block_end)
+    return "\n".join(lines)
+
+
 def insert_get_feature(model: Path, template: Path) -> None:
     """Insert generated GetFeature and session models into ``template``."""
     data = json.loads(model.read_text())
@@ -134,10 +215,18 @@ def insert_get_feature(model: Path, template: Path) -> None:
     get_feature = build_switch(feature_names)
     session_models = _build_session_models(data)
     symbol_emb = _build_symbol_embeddings(data.get("symbol_embeddings", {}))
+    transformer_block = _build_transformer_params(data)
     content = template.read_text()
     output = content.replace("// __GET_FEATURE__", get_feature)
     output = output.replace("// __SESSION_MODELS__", session_models)
     output = output.replace("// __SYMBOL_EMBEDDINGS__", symbol_emb)
+    pattern = re.compile(
+        r"// __TRANSFORMER_PARAMS_START__.*// __TRANSFORMER_PARAMS_END__",
+        re.DOTALL,
+    )
+    output = re.sub(pattern, transformer_block, output)
+    if data.get("model_type") == "transformer":
+        output = output.replace("bool g_use_transformer = false;", "bool g_use_transformer = true;")
     template.write_text(output)
 
 

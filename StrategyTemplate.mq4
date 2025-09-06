@@ -43,6 +43,24 @@ double g_tp_coeffs_newyork[] = {0.0, 0.0};
 double g_conformal_lower_newyork = 0.0;
 double g_conformal_upper_newyork = 1.0;
 
+bool g_use_transformer = false;
+// __TRANSFORMER_PARAMS_START__
+int g_transformer_window = 0;
+int g_transformer_dim = 0;
+double g_embed_weight[1] = {0.0};
+double g_embed_bias[1] = {0.0};
+double g_q_weight[1] = {0.0};
+double g_q_bias[1] = {0.0};
+double g_k_weight[1] = {0.0};
+double g_k_bias[1] = {0.0};
+double g_v_weight[1] = {0.0};
+double g_v_bias[1] = {0.0};
+double g_out_weight[1] = {0.0};
+double g_out_bias = 0.0;
+double g_price_mean = 0.0;
+double g_price_std = 1.0;
+// __TRANSFORMER_PARAMS_END__
+
 // __SYMBOL_EMBEDDINGS__
 
 datetime g_last_model_reload = 0;
@@ -358,8 +376,92 @@ double ApplyModel(double &coeffs[])
     return z;
 }
 
+double TransformerScore()
+{
+    int W = g_transformer_window;
+    int D = g_transformer_dim;
+    if(W <= 0 || D <= 0)
+        return 0.0;
+    double prices[];
+    ArrayResize(prices, W);
+    for(int i = 0; i < W; i++)
+        prices[i] = (iClose(Symbol(), PERIOD_CURRENT, i) - g_price_mean) / g_price_std;
+
+    double embed[]; ArrayResize(embed, W * D);
+    for(int t = 0; t < W; t++)
+        for(int d = 0; d < D; d++)
+            embed[t * D + d] = prices[t] * g_embed_weight[d] + g_embed_bias[d];
+
+    double Q[]; ArrayResize(Q, W * D);
+    double K[]; ArrayResize(K, W * D);
+    double V[]; ArrayResize(V, W * D);
+    for(int t = 0; t < W; t++)
+    {
+        for(int d = 0; d < D; d++)
+        {
+            double sumq = 0, sumk = 0, sumv = 0;
+            for(int j = 0; j < D; j++)
+            {
+                int idx = d * D + j;
+                double val = embed[t * D + j];
+                sumq += g_q_weight[idx] * val;
+                sumk += g_k_weight[idx] * val;
+                sumv += g_v_weight[idx] * val;
+            }
+            sumq += g_q_bias[d];
+            sumk += g_k_bias[d];
+            sumv += g_v_bias[d];
+            Q[t * D + d] = sumq;
+            K[t * D + d] = sumk;
+            V[t * D + d] = sumv;
+        }
+    }
+
+    double context[]; ArrayResize(context, W * D);
+    for(int t = 0; t < W; t++)
+    {
+        double scores[]; ArrayResize(scores, W);
+        double maxv = -1e10;
+        for(int s = 0; s < W; s++)
+        {
+            double score = 0;
+            for(int d = 0; d < D; d++)
+                score += Q[t * D + d] * K[s * D + d];
+            score /= MathSqrt(D);
+            scores[s] = score;
+            if(score > maxv) maxv = score;
+        }
+        double sumexp = 0;
+        for(int s = 0; s < W; s++)
+            sumexp += MathExp(scores[s] - maxv);
+        for(int d = 0; d < D; d++)
+            context[t * D + d] = 0.0;
+        for(int s = 0; s < W; s++)
+        {
+            double w = MathExp(scores[s] - maxv) / sumexp;
+            for(int d = 0; d < D; d++)
+                context[t * D + d] += w * V[s * D + d];
+        }
+    }
+
+    double pooled[]; ArrayResize(pooled, D);
+    for(int d = 0; d < D; d++)
+    {
+        double sum = 0;
+        for(int t = 0; t < W; t++)
+            sum += context[t * D + d];
+        pooled[d] = sum / W;
+    }
+    double z = g_out_bias;
+    for(int d = 0; d < D; d++)
+        z += g_out_weight[d] * pooled[d];
+    return 1.0 / (1.0 + MathExp(-z));
+}
+
 double ScoreModel()
 {
+    if(g_use_transformer)
+        return TransformerScore();
     return 1.0 / (1.0 + MathExp(-ApplyModel(g_coeffs)));
 }
 

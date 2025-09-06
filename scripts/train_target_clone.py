@@ -398,9 +398,119 @@ def _train_lite_mode(
         json.dump(model, f)
 
 
-def train(data_dir: Path, out_dir: Path, **kwargs) -> None:
+def _train_transformer(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    window: int = 16,
+    epochs: int = 5,
+    lr: float = 1e-3,
+) -> None:
+    """Train a simple attention encoder on rolling price windows."""
+    if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
+        raise ImportError("PyTorch is required for transformer model")
+
+    df, _, _ = _load_logs(data_dir)
+    if not isinstance(df, pd.DataFrame):
+        df = pd.concat(list(df), ignore_index=True)
+    price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
+    if price_col is None:
+        raise ValueError("price column missing from data")
+    if "label" not in df.columns:
+        raise ValueError("label column missing from data")
+
+    prices = pd.to_numeric(df[price_col], errors="coerce").to_numpy(dtype=float)
+    labels = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
+    price_mean = float(prices.mean())
+    price_std = float(prices.std() or 1.0)
+    norm_prices = (prices - price_mean) / price_std
+
+    seqs: list[list[float]] = []
+    ys: list[float] = []
+    for i in range(window, len(norm_prices)):
+        seqs.append(norm_prices[i - window : i].tolist())
+        ys.append(labels[i])
+    X = torch.tensor(seqs, dtype=torch.float32).unsqueeze(-1)
+    y = torch.tensor(ys, dtype=torch.float32).unsqueeze(-1)
+    ds = torch.utils.data.TensorDataset(X, y)
+    dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
+
+    class TinyTransformer(torch.nn.Module):
+        def __init__(self, dim: int = 16):
+            super().__init__()
+            self.embed = torch.nn.Linear(1, dim)
+            self.q = torch.nn.Linear(dim, dim)
+            self.k = torch.nn.Linear(dim, dim)
+            self.v = torch.nn.Linear(dim, dim)
+            self.out = torch.nn.Linear(dim, 1)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            # x: (B, T, 1)
+            emb = self.embed(x)
+            q = self.q(emb)
+            k = self.k(emb)
+            v = self.v(emb)
+            attn = torch.softmax(
+                torch.matmul(q, k.transpose(-2, -1)) / (q.shape[-1] ** 0.5), dim=-1
+            )
+            ctx = torch.matmul(attn, v).mean(dim=1)
+            return self.out(ctx)
+
+    dim = 16
+    model = TinyTransformer(dim)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = torch.nn.BCEWithLogitsLoss()
+    model.train()
+    for _ in range(epochs):  # pragma: no cover - simple training loop
+        for batch_x, batch_y in dl:
+            opt.zero_grad()
+            logits = model(batch_x)
+            loss = loss_fn(logits, batch_y)
+            loss.backward()
+            opt.step()
+
+    def _tensor_list(t: torch.Tensor) -> list:
+        return t.detach().cpu().numpy().tolist()
+
+    weights = {
+        "embed_weight": _tensor_list(model.embed.weight.squeeze(0)),
+        "embed_bias": _tensor_list(model.embed.bias),
+        "q_weight": _tensor_list(model.q.weight),
+        "q_bias": _tensor_list(model.q.bias),
+        "k_weight": _tensor_list(model.k.weight),
+        "k_bias": _tensor_list(model.k.bias),
+        "v_weight": _tensor_list(model.v.weight),
+        "v_bias": _tensor_list(model.v.bias),
+        "out_weight": _tensor_list(model.out.weight.squeeze(0)),
+        "out_bias": _tensor_list(model.out.bias),
+    }
+
+    model_json = {
+        "model_id": "target_clone",
+        "trained_at": datetime.utcnow().isoformat(),
+        "model_type": "transformer",
+        "window_size": window,
+        "price_mean": price_mean,
+        "price_std": price_std,
+        "weights": weights,
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model_json, f)
+
+
+def train(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    model_type: str = "logreg",
+    **kwargs,
+) -> None:
     """Public training entry point."""
-    _train_lite_mode(data_dir, out_dir, **kwargs)
+    if model_type == "transformer":
+        _train_transformer(data_dir, out_dir, **kwargs)
+    else:
+        _train_lite_mode(data_dir, out_dir, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -570,10 +680,17 @@ def main() -> None:
         default=1.0,
         help="sample weight for replay decisions",
     )
+    p.add_argument(
+        "--model-type",
+        choices=["logreg", "transformer"],
+        default="logreg",
+        help="which model architecture to train",
+    )
     args = p.parse_args()
     train(
         args.data_dir,
         args.out_dir,
+        model_type=args.model_type,
         min_accuracy=args.min_accuracy,
         min_profit=args.min_profit,
         replay_file=args.replay_file,
