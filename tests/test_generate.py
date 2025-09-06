@@ -120,27 +120,28 @@ def test_session_models_inserted(tmp_path):
     assert "feature_std" in data["session_models"]["asian"]
 
 
-def test_generation_handles_unmapped_feature(tmp_path):
+def test_generation_fails_on_unmapped_feature(tmp_path):
     model = tmp_path / "model.json"
     model.write_text(json.dumps({"feature_names": ["unknown"]}))
 
     template = tmp_path / "StrategyTemplate.mq4"
     template.write_text("#property strict\n\n// __GET_FEATURE__\n")
 
-    subprocess.run(
-        [
-            sys.executable,
-            "scripts/generate_mql4_from_model.py",
-            "--model",
-            model,
-            "--template",
-            template,
-        ],
-        check=True,
-    )
-
-    content = template.read_text()
-    assert "case 0: return 0.0; // unknown" in content
+    with pytest.raises(subprocess.CalledProcessError) as exc:
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts/generate_mql4_from_model.py",
+                "--model",
+                model,
+                "--template",
+                template,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    assert "Update StrategyTemplate.mq4" in exc.value.stderr
 
 
 def test_scaler_stats_present(tmp_path):
