@@ -28,8 +28,16 @@ import pandas as pd
 import psutil
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import SGDClassifier, LinearRegression
+from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, recall_score
 from sklearn.model_selection import TimeSeriesSplit
+
+try:  # Optional dependency
+    import optuna
+    _HAS_OPTUNA = True
+except Exception:  # pragma: no cover
+    optuna = None  # type: ignore
+    _HAS_OPTUNA = False
 
 try:  # Optional dependency
     import torch
@@ -138,6 +146,7 @@ def _train_lite_mode(
     replay_file: Path | None = None,
     replay_weight: float = 1.0,
     symbol_graph: dict | str | Path | None = None,
+    optuna_trials: int = 0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -217,6 +226,53 @@ def _train_lite_mode(
             if c
             not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
         ]
+    optuna_info: dict[str, object] | None = None
+    if optuna_trials > 0 and _HAS_OPTUNA:
+        X_all = df[feature_names].to_numpy()
+        y_all = df["label"].astype(int).to_numpy()
+
+        def objective(trial: "optuna.Trial") -> float:
+            model_type = trial.suggest_categorical("model_type", ["sgd", "gboost"])
+            threshold = trial.suggest_float("threshold", 0.1, 0.9)
+            if model_type == "sgd":
+                lr = trial.suggest_float("learning_rate", 1e-4, 1e-1, log=True)
+            else:
+                lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
+                depth = trial.suggest_int("max_depth", 2, 8)
+            tscv = TimeSeriesSplit(n_splits=min(3, len(X_all) - 1))
+            scores: list[float] = []
+            for train_idx, val_idx in tscv.split(X_all):
+                X_train, X_val = X_all[train_idx], X_all[val_idx]
+                y_train, y_val = y_all[train_idx], y_all[val_idx]
+                if model_type == "sgd":
+                    scaler = StandardScaler().fit(X_train)
+                    clf = SGDClassifier(
+                        loss="log_loss",
+                        learning_rate="constant",
+                        eta0=lr,
+                    )
+                    clf.partial_fit(
+                        scaler.transform(X_train),
+                        y_train,
+                        classes=np.array([0, 1]),
+                    )
+                    probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
+                else:
+                    clf = GradientBoostingClassifier(
+                        learning_rate=lr, max_depth=depth
+                    )
+                    clf.fit(X_train, y_train)
+                    probs = clf.predict_proba(X_val)[:, 1]
+                preds = (probs >= threshold).astype(int)
+                scores.append(accuracy_score(y_val, preds))
+            return float(np.mean(scores))
+
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective, n_trials=optuna_trials)
+        optuna_info = {
+            "params": study.best_params,
+            "score": float(study.best_value),
+        }
 
     def _session_from_hour(hour: int) -> str:
         if 0 <= hour < 8:
@@ -393,6 +449,9 @@ def _train_lite_mode(
     }
     if embeddings:
         model["symbol_embeddings"] = embeddings
+    if optuna_info:
+        model["optuna_best_params"] = optuna_info.get("params", {})
+        model["optuna_best_score"] = optuna_info.get("score", 0.0)
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
@@ -501,16 +560,17 @@ def _train_transformer(
 
 def train(
     data_dir: Path,
-    out_dir: Path,
-    *,
+   out_dir: Path,
+   *,
     model_type: str = "logreg",
+    optuna_trials: int = 0,
     **kwargs,
 ) -> None:
     """Public training entry point."""
     if model_type == "transformer":
         _train_transformer(data_dir, out_dir, **kwargs)
     else:
-        _train_lite_mode(data_dir, out_dir, **kwargs)
+        _train_lite_mode(data_dir, out_dir, optuna_trials=optuna_trials, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -686,11 +746,18 @@ def main() -> None:
         default="logreg",
         help="which model architecture to train",
     )
+    p.add_argument(
+        "--optuna-trials",
+        type=int,
+        default=0,
+        help="number of Optuna trials for hyperparameter search",
+    )
     args = p.parse_args()
     train(
         args.data_dir,
         args.out_dir,
         model_type=args.model_type,
+        optuna_trials=args.optuna_trials,
         min_accuracy=args.min_accuracy,
         min_profit=args.min_profit,
         replay_file=args.replay_file,
