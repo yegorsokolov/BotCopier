@@ -21,7 +21,7 @@ FEATURE_MAP: dict[str, str] = {
     "ask": "MarketInfo(Symbol(), MODE_ASK)",
     "bid": "MarketInfo(Symbol(), MODE_BID)",
     "hour": "TimeHour(TimeCurrent())",
-    # "volume": "iVolume(Symbol(), PERIOD_CURRENT, 0)",  # Example placeholder
+    "volume": "iVolume(Symbol(), PERIOD_CURRENT, 0)",
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""

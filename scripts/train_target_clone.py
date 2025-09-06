@@ -70,7 +70,7 @@ def _load_logs(
             continue
         df[col] = pd.to_numeric(df[col], errors="ignore")
 
-    optional_cols = ["spread", "slippage", "equity", "margin_level"]
+    optional_cols = ["spread", "slippage", "equity", "margin_level", "volume"]
     feature_cols = [c for c in optional_cols if c in df.columns]
 
     # When ``chunk_size`` is provided (or lite_mode explicitly enabled), yield
