@@ -21,6 +21,7 @@ import csv
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import subprocess
 from typing import Any, Dict
@@ -83,7 +84,6 @@ TRADE_FIELDS: Dict[str, type] = {
     "profit": float,
     "comment": str,
     "remainingLots": float,
-    "decisionId": int,
 }
 
 METRIC_FIELDS: Dict[str, type] = {
@@ -160,6 +160,12 @@ def process_trade(msg) -> None:
     record = _validate(TRADE_FIELDS, msg, "trade")
     if record is None:
         return
+    decision_id = getattr(msg, "decisionId", None)
+    if decision_id in (None, 0):
+        match = re.search(r"decision_id=(\d+)", record.get("comment", ""))
+        if match:
+            decision_id = int(match.group(1))
+    record["decision_id"] = decision_id
     append_csv(Path("logs/trades_raw.csv"), record)
 
 
