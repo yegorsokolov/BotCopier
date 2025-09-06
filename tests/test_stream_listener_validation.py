@@ -144,6 +144,37 @@ def test_trade_schema_version_mismatch(monkeypatch, caplog):
     assert "schema version mismatch" in caplog.text
 
 
+def test_extract_decision_id_from_comment(monkeypatch):
+    records = []
+
+    def fake_append(path, record):
+        records.append(record)
+
+    monkeypatch.setattr(sl, "append_csv", fake_append)
+
+    msg = SimpleNamespace(
+        eventId=1,
+        eventTime="t",
+        brokerTime="b",
+        localTime="l",
+        action="OPEN",
+        ticket=1,
+        magic=0,
+        source="src",
+        symbol="X",
+        orderType=0,
+        lots=0.1,
+        price=1.0,
+        sl=0.0,
+        tp=0.0,
+        profit=0.0,
+        comment="note decision_id=42",
+        remainingLots=0.0,
+    )
+    sl.process_trade(msg)
+    assert records and records[0]["decision_id"] == 42
+
+
 def test_metric_schema_version_mismatch(monkeypatch, caplog):
     records = []
 

@@ -129,11 +129,20 @@ def _recompute(df: pd.DataFrame, model: Dict, threshold: float) -> Dict:
         mask_skip = (old_pred == 1) & (new_pred == 0)
         profit_delta = float(-profits[mask_skip].sum())
 
+    tp = int(((new_pred == 1) & (actual == 1)).sum())
+    fp = int(((new_pred == 1) & (actual == 0)).sum())
+    tn = int(((new_pred == 0) & (actual == 0)).sum())
+    fn = int(((new_pred == 0) & (actual == 1)).sum())
+
     return {
         "divergences": divergences,
         "accuracy_old": accuracy_old,
         "accuracy_new": accuracy_new,
         "profit_delta": profit_delta,
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
     }
 
 
@@ -186,6 +195,9 @@ def main() -> int:
     print(f"Old accuracy: {stats['accuracy_old']:.3f}")
     print(f"New accuracy: {stats['accuracy_new']:.3f}")
     print(f"Profit delta: {stats['profit_delta']:.2f}")
+    print(
+        f"Confusion matrix: TP={stats['tp']} FP={stats['fp']} TN={stats['tn']} FN={stats['fn']}"
+    )
     if stats["divergences"]:
         print("Divergent decisions:")
         for d in stats["divergences"][: args.max_divergences]:

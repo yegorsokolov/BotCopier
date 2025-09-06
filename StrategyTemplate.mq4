@@ -391,6 +391,8 @@ void OnTick()
     double lot = PredictLot();
     double sl = PredictSLDistance();
     double tp = PredictTPDistance();
+    g_decision_id++;
+    int decision_id = g_decision_id;
     string decision = "hold";
     bool uncertain = (prob >= g_conformal_lower && prob <= g_conformal_upper);
     if(uncertain)
@@ -401,15 +403,21 @@ void OnTick()
     {
         double sl_price = Ask - sl * Point;
         double tp_price = Ask + tp * Point;
-        OrderSend(Symbol(), OP_BUY, lot, Ask, 3, sl_price, tp_price);
-        decision = "buy";
+        if(OrderSend(Symbol(), OP_BUY, lot, Ask, 3, sl_price, tp_price,
+            "decision_id=" + IntegerToString(decision_id)) > 0)
+        {
+            decision = "buy";
+        }
     }
     else if((1.0 - prob) > g_threshold)
     {
         double sl_price = Bid + sl * Point;
         double tp_price = Bid - tp * Point;
-        OrderSend(Symbol(), OP_SELL, lot, Bid, 3, sl_price, tp_price);
-        decision = "sell";
+        if(OrderSend(Symbol(), OP_SELL, lot, Bid, 3, sl_price, tp_price,
+            "decision_id=" + IntegerToString(decision_id)) > 0)
+        {
+            decision = "sell";
+        }
     }
     string features = "";
     int feat_count = ArraySize(g_feature_mean);
@@ -419,9 +427,8 @@ void OnTick()
             features += ":";
         features += DoubleToString(GetFeature(i), 8);
     }
-    g_decision_id++;
     QueueTrade(
-        "decision_id=" + IntegerToString(g_decision_id) +
+        "decision_id=" + IntegerToString(decision_id) +
         ",decision=" + decision +
         ",prob=" + DoubleToString(prob, 8) +
         ",lot=" + DoubleToString(lot, 2) +
