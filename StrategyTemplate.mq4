@@ -90,6 +90,7 @@ int    METRIC_PORT = 50053;
 // Counters for observability of send failures
 int g_trade_send_failures = 0;
 int g_metric_send_failures = 0;
+int g_decision_id = 0;
 
 string WalEncode(string payload)
 {
@@ -423,11 +424,22 @@ void OnTick()
         OrderSend(Symbol(), OP_SELL, lot, Bid, 3, sl_price, tp_price);
         decision = "sell";
     }
+    string features = "";
+    int feat_count = ArraySize(g_feature_mean);
+    for(int i = 0; i < feat_count; i++)
+    {
+        if(i > 0)
+            features += ":";
+        features += DoubleToString(GetFeature(i), 8);
+    }
+    g_decision_id++;
     QueueTrade(
-        "decision=" + decision +
+        "decision_id=" + IntegerToString(g_decision_id) +
+        ",decision=" + decision +
         ",prob=" + DoubleToString(prob, 8) +
         ",lot=" + DoubleToString(lot, 2) +
         ",sl=" + DoubleToString(sl, 2) +
-        ",tp=" + DoubleToString(tp, 2)
+        ",tp=" + DoubleToString(tp, 2) +
+        ",features=" + features
     );
 }

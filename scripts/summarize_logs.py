@@ -71,50 +71,55 @@ def _compute_summary(
     else:
         summary["prediction_accuracy"] = 0.0
 
-    if not trades.empty and not decisions.empty and {
-        "event_id",
-        "action",
-        "model_idx",
-        "executed_model_idx",
-        "probability",
-    }.issubset(decisions.columns):
-        dec = decisions.rename(columns={"event_id": "decision_id"})
-        exec_dec = dec[dec["action"].isin(["buy", "sell"])]
-        merged = exec_dec.merge(
-            trades[["decision_id", "profit"]], on="decision_id", how="left"
-        )
-        if not merged.empty:
-            merged["actual"] = (merged["profit"].astype(float) > 0).astype(int)
-            merged["pred"] = (
-                (merged["probability"].astype(float) > 0.5).astype(int)
+    if not trades.empty and not decisions.empty:
+        if "decision_id" not in decisions.columns and "event_id" in decisions.columns:
+            decisions = decisions.rename(columns={"event_id": "decision_id"})
+        if {
+            "decision_id",
+            "action",
+            "model_idx",
+            "executed_model_idx",
+            "probability",
+        }.issubset(decisions.columns):
+            exec_dec = decisions[decisions["action"].isin(["buy", "sell"])]
+            merged = exec_dec.merge(
+                trades[["decision_id", "profit"]], on="decision_id", how="left"
             )
-            summary["live_prediction_accuracy"] = float(
-                (merged["actual"] == merged["pred"]).mean()
-            )
-            dec_sorted = dec.sort_values("decision_id")
-            shadow_acc: list[int] = []
-            for _, row in exec_dec.iterrows():
-                exec_id = row["event_id"]
-                exec_model = row["model_idx"]
-                profit_row = trades.loc[trades["decision_id"] == exec_id, "profit"]
-                if profit_row.empty:
-                    continue
-                actual = 1 if float(profit_row.iloc[0]) > 0 else 0
-                idx = dec_sorted.index.get_loc(row.name)
-                j = idx - 1
-                while j >= 0:
-                    sh = dec_sorted.iloc[j]
-                    if (
-                        sh["action"] != "shadow"
-                        or sh["executed_model_idx"] != exec_model
-                    ):
-                        break
-                    pred = 1 if float(sh["probability"]) > 0.5 else 0
-                    shadow_acc.append(1 if pred == actual else 0)
-                    j -= 1
-            summary["shadow_prediction_accuracy"] = float(
-                sum(shadow_acc) / len(shadow_acc)
-            ) if shadow_acc else 0.0
+            if not merged.empty:
+                merged["actual"] = (merged["profit"].astype(float) > 0).astype(int)
+                merged["pred"] = (
+                    (merged["probability"].astype(float) > 0.5).astype(int)
+                )
+                summary["live_prediction_accuracy"] = float(
+                    (merged["actual"] == merged["pred"]).mean()
+                )
+                dec_sorted = decisions.sort_values("decision_id")
+                shadow_acc: list[int] = []
+                for _, row in exec_dec.iterrows():
+                    exec_id = row["decision_id"]
+                    exec_model = row["model_idx"]
+                    profit_row = trades.loc[trades["decision_id"] == exec_id, "profit"]
+                    if profit_row.empty:
+                        continue
+                    actual = 1 if float(profit_row.iloc[0]) > 0 else 0
+                    idx = dec_sorted.index.get_loc(row.name)
+                    j = idx - 1
+                    while j >= 0:
+                        sh = dec_sorted.iloc[j]
+                        if (
+                            sh["action"] != "shadow"
+                            or sh["executed_model_idx"] != exec_model
+                        ):
+                            break
+                        pred = 1 if float(sh["probability"]) > 0.5 else 0
+                        shadow_acc.append(1 if pred == actual else 0)
+                        j -= 1
+                summary["shadow_prediction_accuracy"] = float(
+                    sum(shadow_acc) / len(shadow_acc)
+                ) if shadow_acc else 0.0
+            else:
+                summary["live_prediction_accuracy"] = 0.0
+                summary["shadow_prediction_accuracy"] = 0.0
         else:
             summary["live_prediction_accuracy"] = 0.0
             summary["shadow_prediction_accuracy"] = 0.0

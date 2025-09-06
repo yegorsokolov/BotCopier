@@ -80,6 +80,8 @@ def _load_logs(log_file: Path) -> pd.DataFrame:
     """Load decision logs from ``log_file``."""
     df = pd.read_csv(log_file, sep=";")
     df.columns = [c.lower() for c in df.columns]
+    if "event_id" in df.columns and "decision_id" not in df.columns:
+        df.rename(columns={"event_id": "decision_id"}, inplace=True)
     return df
 
 
@@ -107,7 +109,7 @@ def _recompute(df: pd.DataFrame, model: Dict, threshold: float) -> Dict:
             if (old_p >= threshold) != (prob >= threshold):
                 divergences.append(
                     {
-                        "event_id": row.get("event_id"),
+                        "decision_id": row.get("decision_id"),
                         "old_prob": old_p,
                         "new_prob": prob,
                         "profit": row.get("profit", 0.0),
@@ -188,7 +190,7 @@ def main() -> int:
         print("Divergent decisions:")
         for d in stats["divergences"][: args.max_divergences]:
             print(
-                f"event {d['event_id']}: old={d['old_prob']:.3f} new={d['new_prob']:.3f} profit={d['profit']}"
+                f"decision {d['decision_id']}: old={d['old_prob']:.3f} new={d['new_prob']:.3f} profit={d['profit']}"
             )
     return 0
 
