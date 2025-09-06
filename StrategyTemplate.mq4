@@ -23,6 +23,8 @@ double g_threshold_newyork = 0.5;
 double g_feature_mean_newyork[] = {};
 double g_feature_std_newyork[] = {};
 
+datetime g_last_model_reload = 0;
+
 void SelectSessionModel()
 {
     int h = TimeHour(TimeCurrent());
@@ -233,6 +235,7 @@ int OnInit()
     g_metric_head = 0;
     g_metric_tail = ArraySize(g_metric_queue);
     SelectSessionModel();
+    g_last_model_reload = TimeCurrent();
     if(ReloadModelInterval > 0)
         EventSetTimer(ReloadModelInterval);
     return(INIT_SUCCEEDED);
@@ -250,6 +253,7 @@ void OnTimer()
     FlushMetrics();
     ReportWalSizes();
     SelectSessionModel();
+    g_last_model_reload = TimeCurrent();
 }
 
 double GetFeature(int idx)
@@ -274,4 +278,28 @@ double ScoreModel()
         z += g_coeffs[i] * norm;
     }
     return 1.0 / (1.0 + MathExp(-z));
+}
+
+void OnTick()
+{
+    datetime now = TimeCurrent();
+    if(ReloadModelInterval > 0 && now - g_last_model_reload >= ReloadModelInterval)
+    {
+        SelectSessionModel();
+        g_last_model_reload = now;
+    }
+
+    double prob = ScoreModel();
+    string decision = "hold";
+    if(prob > g_threshold)
+    {
+        OrderSend(Symbol(), OP_BUY, 0.1, Ask, 3, 0, 0);
+        decision = "buy";
+    }
+    else if((1.0 - prob) > g_threshold)
+    {
+        OrderSend(Symbol(), OP_SELL, 0.1, Bid, 3, 0, 0);
+        decision = "sell";
+    }
+    QueueTrade("decision=" + decision + ",prob=" + DoubleToString(prob, 8));
 }
