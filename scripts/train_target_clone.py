@@ -29,6 +29,7 @@ import psutil
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import SGDClassifier
 from sklearn.metrics import accuracy_score, recall_score
+from sklearn.model_selection import TimeSeriesSplit
 
 try:  # Optional dependency
     import torch
@@ -99,6 +100,8 @@ def _train_lite_mode(
     hash_size: int = 0,
     flight_uri: str | None = None,
     mode: str = "lite",
+    min_accuracy: float = 0.0,
+    min_profit: float = 0.0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -109,7 +112,7 @@ def _train_lite_mode(
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
 
-    feature_names = [c for c in df.columns if c != "label"]
+    feature_names = [c for c in df.columns if c not in {"label", "profit", "net_profit"}]
 
     def _session_from_hour(hour: int) -> str:
         if 0 <= hour < 8:
@@ -122,43 +125,90 @@ def _train_lite_mode(
     df["session"] = hours.astype(int).apply(_session_from_hour)
 
     session_models: dict[str, dict[str, object]] = {}
+    cv_acc_all: list[float] = []
+    cv_profit_all: list[float] = []
     for name, group in df.groupby("session"):
         if len(group) < 2:
             continue
         feat_cols = [c for c in feature_names if c != "session"]
         X_all = group[feat_cols].to_numpy()
         y_all = group["label"].astype(int).to_numpy()
-        split_idx = max(1, int(len(group) * 0.8))
-        X_train, X_val = X_all[:split_idx], X_all[split_idx:]
-        y_train, y_val = y_all[:split_idx], y_all[split_idx:]
-        if len(X_val) == 0:
+        n_splits = min(5, len(group) - 1)
+        if n_splits < 1:
             continue
-        scaler = StandardScaler().fit(X_train)
-        X_train_scaled = scaler.transform(X_train)
-        X_val_scaled = scaler.transform(X_val)
-        clf = SGDClassifier(loss="log_loss")
-        clf.partial_fit(X_train_scaled, y_train, classes=np.array([0, 1]))
-        probs = clf.predict_proba(X_val_scaled)[:, 1]
-        thresholds = np.unique(np.concatenate(([0.0], probs, [1.0])))
-        best_thresh = 0.5
-        best_acc = -1.0
-        best_rec = 0.0
-        for t in thresholds:
-            preds = (probs >= t).astype(int)
-            acc = accuracy_score(y_val, preds)
-            rec = recall_score(y_val, preds, zero_division=0)
-            if acc > best_acc:
-                best_acc = acc
-                best_rec = rec
-                best_thresh = float(t)
+        if n_splits < 2:
+            splits = [(
+                np.arange(len(group) - 1),
+                np.arange(len(group) - 1, len(group)),
+            )]
+        else:
+            tscv = TimeSeriesSplit(n_splits=n_splits)
+            splits = list(tscv.split(X_all))
+        fold_metrics: list[dict[str, float]] = []
+        fold_thresholds: list[float] = []
+        profit_col = "profit" if "profit" in group.columns else (
+            "net_profit" if "net_profit" in group.columns else None
+        )
+        for train_idx, val_idx in splits:
+            X_train, X_val = X_all[train_idx], X_all[val_idx]
+            y_train, y_val = y_all[train_idx], y_all[val_idx]
+            scaler = StandardScaler().fit(X_train)
+            clf = SGDClassifier(loss="log_loss")
+            clf.partial_fit(
+                scaler.transform(X_train),
+                y_train,
+                classes=np.array([0, 1]),
+            )
+            probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
+            thresholds = np.unique(np.concatenate(([0.0], probs, [1.0])))
+            best_thresh = 0.5
+            best_acc = -1.0
+            best_rec = 0.0
+            best_profit = 0.0
+            profits_val = (
+                group.iloc[val_idx][profit_col].to_numpy() if profit_col else np.zeros_like(y_val, dtype=float)
+            )
+            for t in thresholds:
+                preds = (probs >= t).astype(int)
+                acc = accuracy_score(y_val, preds)
+                rec = recall_score(y_val, preds, zero_division=0)
+                profit = float((profits_val * preds).mean()) if len(profits_val) else 0.0
+                if acc > best_acc:
+                    best_acc = float(acc)
+                    best_rec = float(rec)
+                    best_thresh = float(t)
+                    best_profit = profit
+            fold_metrics.append({"accuracy": best_acc, "recall": best_rec, "profit": best_profit})
+            fold_thresholds.append(best_thresh)
+        if not any(
+            fm["accuracy"] >= min_accuracy or fm["profit"] >= min_profit
+            for fm in fold_metrics
+        ):
+            raise ValueError(
+                f"Session {name} failed to meet min accuracy {min_accuracy} or profit {min_profit}"
+            )
+        mean_acc = float(np.mean([fm["accuracy"] for fm in fold_metrics]))
+        mean_rec = float(np.mean([fm["recall"] for fm in fold_metrics]))
+        mean_profit = float(np.mean([fm["profit"] for fm in fold_metrics]))
+        avg_thresh = float(np.mean(fold_thresholds))
+        scaler_full = StandardScaler().fit(X_all)
+        clf_full = SGDClassifier(loss="log_loss")
+        clf_full.partial_fit(
+            scaler_full.transform(X_all),
+            y_all,
+            classes=np.array([0, 1]),
+        )
         session_models[name] = {
-            "coefficients": clf.coef_[0].astype(float).tolist(),
-            "intercept": float(clf.intercept_[0]),
-            "threshold": best_thresh,
-            "feature_mean": scaler.mean_.astype(float).tolist(),
-            "feature_std": scaler.scale_.astype(float).tolist(),
-            "metrics": {"accuracy": float(best_acc), "recall": float(best_rec)},
+            "coefficients": clf_full.coef_[0].astype(float).tolist(),
+            "intercept": float(clf_full.intercept_[0]),
+            "threshold": avg_thresh,
+            "feature_mean": scaler_full.mean_.astype(float).tolist(),
+            "feature_std": scaler_full.scale_.astype(float).tolist(),
+            "metrics": {"accuracy": mean_acc, "recall": mean_rec, "profit": mean_profit},
+            "cv_metrics": fold_metrics,
         }
+        cv_acc_all.append(mean_acc)
+        cv_profit_all.append(mean_profit)
 
     if not session_models:
         raise ValueError(f"No training data found in {data_dir}")
@@ -176,6 +226,8 @@ def _train_lite_mode(
         },
         "training_mode": "lite",
         "mode": mode,
+        "cv_accuracy": float(np.mean(cv_acc_all)) if cv_acc_all else 0.0,
+        "cv_profit": float(np.mean(cv_profit_all)) if cv_profit_all else 0.0,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
@@ -335,8 +387,25 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Train target clone model")
     p.add_argument("data_dir", type=Path, help="Directory containing trades_raw.csv")
     p.add_argument("out_dir", type=Path, help="Where to write model.json")
+    p.add_argument(
+        "--min-accuracy",
+        type=float,
+        default=0.0,
+        help="minimum accuracy required for at least one fold",
+    )
+    p.add_argument(
+        "--min-profit",
+        type=float,
+        default=0.0,
+        help="minimum profit required for at least one fold",
+    )
     args = p.parse_args()
-    train(args.data_dir, args.out_dir)
+    train(
+        args.data_dir,
+        args.out_dir,
+        min_accuracy=args.min_accuracy,
+        min_profit=args.min_profit,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
