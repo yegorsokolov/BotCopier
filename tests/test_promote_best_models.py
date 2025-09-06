@@ -95,3 +95,18 @@ def test_promote_requires_models(tmp_path: Path):
     best_dir = tmp_path / "best"
     with pytest.raises(ValueError):
         promote(tmp_path, best_dir, max_models=1, metric="sharpe_ratio")
+
+
+def test_promote_skips_high_drift(tmp_path: Path):
+    m1 = _create_model(tmp_path, "model_a", 1.0)
+    (tmp_path / "model_a" / "evaluation.json").write_text(
+        json.dumps({"sharpe_ratio": 2.0, "drift_psi": 0.3, "drift_ks": 0.1})
+    )
+    m2 = _create_model(tmp_path, "model_b", 1.0)
+    (tmp_path / "model_b" / "evaluation.json").write_text(
+        json.dumps({"sharpe_ratio": 1.0, "drift_psi": 0.1, "drift_ks": 0.1})
+    )
+    best_dir = tmp_path / "best"
+    promote(tmp_path, best_dir, max_models=1, metric="sharpe_ratio", max_drift=0.2)
+    assert (best_dir / m2.name).exists()
+    assert not (best_dir / m1.name).exists()

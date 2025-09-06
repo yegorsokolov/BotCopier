@@ -101,6 +101,18 @@ def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) 
     model_json.write_text(json.dumps(data, indent=2))
 
 
+def _update_evaluation(eval_file: Path, metrics: dict[str, float]) -> None:
+    """Write ``metrics`` to ``evaluation.json`` using ``drift_`` prefixes."""
+    data: dict[str, object] = {}
+    if eval_file.exists():
+        try:
+            data = json.loads(eval_file.read_text())
+        except Exception:
+            data = {}
+    data.update({f"drift_{k}": float(v) for k, v in metrics.items()})
+    eval_file.write_text(json.dumps(data, indent=2))
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Monitor drift and trigger retraining")
     p.add_argument("--baseline-file", type=Path, required=True)
@@ -110,6 +122,11 @@ def main() -> int:
     p.add_argument("--log-dir", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--files-dir", type=Path, required=True)
+    p.add_argument(
+        "--flag-file",
+        type=Path,
+        help="optional file to touch when drift exceeds threshold",
+    )
     args = p.parse_args()
 
     metrics = _compute_metrics(args.baseline_file, args.recent_file)
@@ -118,7 +135,14 @@ def main() -> int:
     metric_val = metrics[method]
     retrain = metric_val > args.drift_threshold
     _update_model(args.model_json, metrics, retrain)
+    _update_evaluation(args.model_json.parent / "evaluation.json", metrics)
     if retrain:
+        if args.flag_file is not None:
+            try:
+                args.flag_file.parent.mkdir(parents=True, exist_ok=True)
+                args.flag_file.write_text(datetime.utcnow().isoformat())
+            except Exception:
+                logger.exception("failed to write flag file")
         base = Path(__file__).resolve().parent
         subprocess.run(
             [

@@ -86,6 +86,7 @@ def promote(
     max_models: int,
     metric: str,
     files_dir: Optional[Path] = None,
+    max_drift: float = 0.2,
 ) -> None:
     """Copy the top ``max_models`` from ``models_dir`` to ``best_dir``.
 
@@ -99,6 +100,12 @@ def promote(
 
     candidates = []
     for m in models_dir.rglob("model_*.json"):
+        metrics = _load_metrics(m)
+        if (
+            metrics.get("drift_psi", 0.0) > max_drift
+            or metrics.get("drift_ks", 0.0) > max_drift
+        ):
+            continue
         score = _score_for_model(m, metric)
         candidates.append((score, m))
 
@@ -126,6 +133,12 @@ def main():
         help="backtest metric key to sort by",
     )
     p.add_argument("--files-dir", help="MT4 Files directory to publish model")
+    p.add_argument(
+        "--max-drift",
+        type=float,
+        default=0.2,
+        help="maximum allowed drift metric before skipping model",
+    )
     args = p.parse_args()
     promote(
         Path(args.models_dir),
@@ -133,6 +146,7 @@ def main():
         args.max_models,
         args.metric,
         Path(args.files_dir) if args.files_dir else None,
+        args.max_drift,
     )
 
 
