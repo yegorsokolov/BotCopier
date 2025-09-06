@@ -2,6 +2,8 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 
 def test_generated_features(tmp_path):
     model = tmp_path / "model.json"
@@ -67,3 +69,24 @@ def test_session_models_inserted(tmp_path):
     data = json.loads(model.read_text())
     assert "feature_mean" in data["session_models"]["asian"]
     assert "feature_std" in data["session_models"]["asian"]
+
+
+def test_generation_fails_for_unmapped_feature(tmp_path):
+    model = tmp_path / "model.json"
+    model.write_text(json.dumps({"feature_names": ["unknown"]}))
+
+    template = tmp_path / "StrategyTemplate.mq4"
+    template.write_text("#property strict\n\n// __GET_FEATURE__\n")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        subprocess.run(
+            [
+                sys.executable,
+                "scripts/generate_mql4_from_model.py",
+                "--model",
+                model,
+                "--template",
+                template,
+            ],
+            check=True,
+        )
