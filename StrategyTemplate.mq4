@@ -58,6 +58,33 @@ int g_metric_tail = 0;
 string TRADE_WAL = "trades.wal";
 string METRIC_WAL = "metrics.wal";
 
+string WalEncode(string payload)
+{
+    uchar src[], dst[];
+    StringToCharArray(payload, src);
+    CryptEncode(CRYPT_ARCHIVE_GZIP, src, dst);
+    return(CharArrayToString(dst));
+}
+
+string WalDecode(string payload)
+{
+    uchar src[], dst[];
+    StringToCharArray(payload, src);
+    if(CryptDecode(CRYPT_ARCHIVE_GZIP, src, dst))
+        return(CharArrayToString(dst));
+    return(payload);
+}
+
+int GetWalSize(string file)
+{
+    int handle = FileOpen(file, FILE_READ|FILE_ANSI|FILE_TXT);
+    if(handle == INVALID_HANDLE)
+        return(0);
+    int size = FileSize(handle);
+    FileClose(handle);
+    return(size);
+}
+
 void LoadWal(string file, string &queue[])
 {
     int handle = FileOpen(file, FILE_READ|FILE_ANSI|FILE_TXT);
@@ -68,9 +95,10 @@ void LoadWal(string file, string &queue[])
         string line = FileReadString(handle);
         if(StringLen(line) > 0)
         {
+            string decoded = WalDecode(line);
             int n = ArraySize(queue);
             ArrayResize(queue, n + 1);
-            queue[n] = line;
+            queue[n] = decoded;
         }
     }
     FileClose(handle);
@@ -82,7 +110,7 @@ void AppendWal(string file, string payload)
     if(handle == INVALID_HANDLE)
         return;
     FileSeek(handle, 0, SEEK_END);
-    FileWrite(handle, payload);
+    FileWrite(handle, WalEncode(payload));
     FileClose(handle);
 }
 
@@ -104,6 +132,12 @@ void QueueMetric(string payload)
     AppendWal(METRIC_WAL, payload);
 }
 
+void ReportWalSizes()
+{
+    QueueMetric("trade_wal_size=" + IntegerToString(GetWalSize(TRADE_WAL)));
+    QueueMetric("metric_wal_size=" + IntegerToString(GetWalSize(METRIC_WAL)));
+}
+
 bool SendTrade(string payload)
 {
     return(true); // placeholder for transmission
@@ -116,14 +150,19 @@ bool SendMetric(string payload)
 
 void FlushTrades()
 {
-    while(g_trade_head < g_trade_tail && SendTrade(g_trade_queue[g_trade_head]))
+    while(g_trade_head < g_trade_tail)
+    {
+        string payload = WalDecode(g_trade_queue[g_trade_head]);
+        if(!SendTrade(payload))
+            break;
         g_trade_head++;
+    }
 
     int handle = FileOpen(TRADE_WAL, FILE_WRITE|FILE_ANSI|FILE_TXT);
     if(handle != INVALID_HANDLE)
     {
         for(int i = g_trade_head; i < g_trade_tail; i++)
-            FileWrite(handle, g_trade_queue[i]);
+            FileWrite(handle, WalEncode(g_trade_queue[i]));
         FileClose(handle);
     }
 
@@ -149,14 +188,19 @@ void FlushTrades()
 
 void FlushMetrics()
 {
-    while(g_metric_head < g_metric_tail && SendMetric(g_metric_queue[g_metric_head]))
+    while(g_metric_head < g_metric_tail)
+    {
+        string payload = WalDecode(g_metric_queue[g_metric_head]);
+        if(!SendMetric(payload))
+            break;
         g_metric_head++;
+    }
 
     int handle = FileOpen(METRIC_WAL, FILE_WRITE|FILE_ANSI|FILE_TXT);
     if(handle != INVALID_HANDLE)
     {
         for(int i = g_metric_head; i < g_metric_tail; i++)
-            FileWrite(handle, g_metric_queue[i]);
+            FileWrite(handle, WalEncode(g_metric_queue[i]));
         FileClose(handle);
     }
 
@@ -204,6 +248,7 @@ void OnTimer()
 {
     FlushTrades();
     FlushMetrics();
+    ReportWalSizes();
     SelectSessionModel();
 }
 
