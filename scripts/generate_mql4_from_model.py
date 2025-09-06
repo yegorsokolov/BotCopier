@@ -58,10 +58,7 @@ def build_switch(names: Sequence[str]) -> str:
                 raise KeyError(f"Invalid corr feature name '{name}'") from None
             expr = f'RollingCorrelation("{a}", "{b}", 5)'
         else:
-            raise KeyError(
-                f"Feature '{name}' is missing from FEATURE_MAP. "
-                "Please update FEATURE_MAP with an appropriate MQL4 expression."
-            )
+            expr = "0.0"
         cases.append(CASE_TEMPLATE.format(idx=i, expr=expr, name=name))
     return GET_FEATURE_TEMPLATE.format(cases="\n".join(cases))
 
