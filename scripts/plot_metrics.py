@@ -37,6 +37,7 @@ def _load_metrics(path: Path):
                     "sharpe": float(r.get("sharpe", 0) or 0),
                     "sortino": float(r.get("sortino", 0) or 0),
                     "expectancy": float(r.get("expectancy", 0) or 0),
+                    "cvar": float(r.get("cvar", 0) or 0),
                     "file_write_errors": int(
                         float(r.get("file_write_errors") or r.get("write_errors") or 0)
                     ),
@@ -65,6 +66,7 @@ def _plot(rows, magic=None):
     socket_err = [r["socket_errors"] for r in rows]
     var_breach = [r.get("var_breach_count", 0) for r in rows]
     risk_w = [r.get("risk_weight", 0) for r in rows]
+    cvar = [r.get("cvar", 0) for r in rows]
 
     fig, (ax1, ax3, ax4) = plt.subplots(3, 1, sharex=True)
     ax1.plot(times, win_rate, label="Win Rate")
@@ -92,6 +94,11 @@ def _plot(rows, magic=None):
 
     ax4.plot(times, risk_w, label="Risk Weight", color="black")
     ax4.set_ylabel("Risk Weight")
+    if any(cvar):
+        ax4b = ax4.twinx()
+        ax4b.plot(times, cvar, label="CVaR", color="red")
+        ax4b.set_ylabel("CVaR")
+        ax4b.legend(loc="upper right")
     ax4.legend(loc="upper left")
     ax4.set_xlabel("Time")
     plt.tight_layout()

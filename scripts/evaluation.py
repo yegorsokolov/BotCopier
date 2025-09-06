@@ -188,6 +188,12 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
     downside = [p for p in profits if p < 0]
     downside_risk = -sum(downside) / len(downside) if downside else 0.0
     risk_reward = expected_return - downside_risk
+    cvar = 0.0
+    if profits:
+        sorted_profits = sorted(profits)
+        n_tail = max(1, int(math.ceil(len(sorted_profits) * 0.05)))
+        tail = sorted_profits[:n_tail]
+        cvar = sum(tail) / len(tail)
     sharpe = 0.0
     sortino = 0.0
     if len(profits) > 1:
@@ -215,6 +221,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
         "expectancy": expectancy,
         "expected_return": expected_return,
         "downside_risk": downside_risk,
+        "cvar": cvar,
         "sharpe_ratio": sharpe,
         "sortino_ratio": sortino,
         "risk_reward": risk_reward,

@@ -368,7 +368,9 @@ def serve(
             await prom_site.start()
             win_rate_g = Gauge("bot_win_rate", "Win rate")
             drawdown_g = Gauge("bot_drawdown", "Drawdown")
-            cvar_g = Gauge("bot_cvar", "Conditional Value at Risk")
+            cvar_g = Gauge(
+                "bot_cvar", "Conditional Value at Risk (worst 5%)"
+            )
             socket_err_c = Counter(
                 "bot_socket_errors_total", "Socket error count"
             )
