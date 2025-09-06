@@ -40,6 +40,10 @@ void SelectSessionModel()
 
 string g_trade_queue[];
 string g_metric_queue[];
+int g_trade_head = 0;
+int g_trade_tail = 0;
+int g_metric_head = 0;
+int g_metric_tail = 0;
 string TRADE_WAL = "trades.wal";
 string METRIC_WAL = "metrics.wal";
 
@@ -73,17 +77,19 @@ void AppendWal(string file, string payload)
 
 void QueueTrade(string payload)
 {
-    int n = ArraySize(g_trade_queue);
-    ArrayResize(g_trade_queue, n + 1);
-    g_trade_queue[n] = payload;
+    if(g_trade_tail >= ArraySize(g_trade_queue))
+        ArrayResize(g_trade_queue, g_trade_tail + 1);
+    g_trade_queue[g_trade_tail] = payload;
+    g_trade_tail++;
     AppendWal(TRADE_WAL, payload);
 }
 
 void QueueMetric(string payload)
 {
-    int n = ArraySize(g_metric_queue);
-    ArrayResize(g_metric_queue, n + 1);
-    g_metric_queue[n] = payload;
+    if(g_metric_tail >= ArraySize(g_metric_queue))
+        ArrayResize(g_metric_queue, g_metric_tail + 1);
+    g_metric_queue[g_metric_tail] = payload;
+    g_metric_tail++;
     AppendWal(METRIC_WAL, payload);
 }
 
@@ -99,54 +105,78 @@ bool SendMetric(string payload)
 
 void FlushTrades()
 {
-    int i = 0;
-    while(i < ArraySize(g_trade_queue))
-    {
-        if(SendTrade(g_trade_queue[i]))
-        {
-            for(int j = i; j < ArraySize(g_trade_queue) - 1; j++)
-                g_trade_queue[j] = g_trade_queue[j+1];
-            ArrayResize(g_trade_queue, ArraySize(g_trade_queue) - 1);
-        }
-        else
-            i++;
-    }
+    while(g_trade_head < g_trade_tail && SendTrade(g_trade_queue[g_trade_head]))
+        g_trade_head++;
+
     int handle = FileOpen(TRADE_WAL, FILE_WRITE|FILE_ANSI|FILE_TXT);
     if(handle != INVALID_HANDLE)
     {
-        for(i = 0; i < ArraySize(g_trade_queue); i++)
+        for(int i = g_trade_head; i < g_trade_tail; i++)
             FileWrite(handle, g_trade_queue[i]);
         FileClose(handle);
+    }
+
+    if(g_trade_head > 0)
+    {
+        if(g_trade_head == g_trade_tail)
+        {
+            ArrayResize(g_trade_queue, 0);
+            g_trade_head = 0;
+            g_trade_tail = 0;
+        }
+        else
+        {
+            int remaining = g_trade_tail - g_trade_head;
+            for(int i = 0; i < remaining; i++)
+                g_trade_queue[i] = g_trade_queue[g_trade_head + i];
+            ArrayResize(g_trade_queue, remaining);
+            g_trade_head = 0;
+            g_trade_tail = remaining;
+        }
     }
 }
 
 void FlushMetrics()
 {
-    int i = 0;
-    while(i < ArraySize(g_metric_queue))
-    {
-        if(SendMetric(g_metric_queue[i]))
-        {
-            for(int j = i; j < ArraySize(g_metric_queue) - 1; j++)
-                g_metric_queue[j] = g_metric_queue[j+1];
-            ArrayResize(g_metric_queue, ArraySize(g_metric_queue) - 1);
-        }
-        else
-            i++;
-    }
+    while(g_metric_head < g_metric_tail && SendMetric(g_metric_queue[g_metric_head]))
+        g_metric_head++;
+
     int handle = FileOpen(METRIC_WAL, FILE_WRITE|FILE_ANSI|FILE_TXT);
     if(handle != INVALID_HANDLE)
     {
-        for(i = 0; i < ArraySize(g_metric_queue); i++)
+        for(int i = g_metric_head; i < g_metric_tail; i++)
             FileWrite(handle, g_metric_queue[i]);
         FileClose(handle);
+    }
+
+    if(g_metric_head > 0)
+    {
+        if(g_metric_head == g_metric_tail)
+        {
+            ArrayResize(g_metric_queue, 0);
+            g_metric_head = 0;
+            g_metric_tail = 0;
+        }
+        else
+        {
+            int remaining = g_metric_tail - g_metric_head;
+            for(int i = 0; i < remaining; i++)
+                g_metric_queue[i] = g_metric_queue[g_metric_head + i];
+            ArrayResize(g_metric_queue, remaining);
+            g_metric_head = 0;
+            g_metric_tail = remaining;
+        }
     }
 }
 
 int OnInit()
 {
     LoadWal(TRADE_WAL, g_trade_queue);
+    g_trade_head = 0;
+    g_trade_tail = ArraySize(g_trade_queue);
     LoadWal(METRIC_WAL, g_metric_queue);
+    g_metric_head = 0;
+    g_metric_tail = ArraySize(g_metric_queue);
     SelectSessionModel();
     if(ReloadModelInterval > 0)
         EventSetTimer(ReloadModelInterval);
