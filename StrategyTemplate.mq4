@@ -60,6 +60,16 @@ int g_metric_tail = 0;
 string TRADE_WAL = "trades.wal";
 string METRIC_WAL = "metrics.wal";
 
+// Remote endpoints for low-latency transport
+string TRADE_HOST = "127.0.0.1";
+int    TRADE_PORT = 50052;
+string METRIC_HOST = "127.0.0.1";
+int    METRIC_PORT = 50053;
+
+// Counters for observability of send failures
+int g_trade_send_failures = 0;
+int g_metric_send_failures = 0;
+
 string WalEncode(string payload)
 {
     uchar src[], dst[];
@@ -142,12 +152,52 @@ void ReportWalSizes()
 
 bool SendTrade(string payload)
 {
-    return(true); // placeholder for transmission
+    uchar data[];
+    int len = StringToCharArray(payload, data);
+    int sock = SocketCreate();
+    if(sock == INVALID_HANDLE || !SocketConnect(sock, TRADE_HOST, TRADE_PORT))
+    {
+        if(sock != INVALID_HANDLE)
+            SocketClose(sock);
+        g_trade_send_failures++;
+        QueueMetric("trade_send_failures=" + IntegerToString(g_trade_send_failures));
+        return(false);
+    }
+
+    int sent = SocketSend(sock, data, len);
+    SocketClose(sock);
+    if(sent != len)
+    {
+        g_trade_send_failures++;
+        QueueMetric("trade_send_failures=" + IntegerToString(g_trade_send_failures));
+        return(false);
+    }
+    return(true);
 }
 
 bool SendMetric(string payload)
 {
-    return(true); // placeholder for transmission
+    uchar data[];
+    int len = StringToCharArray(payload, data);
+    int sock = SocketCreate();
+    if(sock == INVALID_HANDLE || !SocketConnect(sock, METRIC_HOST, METRIC_PORT))
+    {
+        if(sock != INVALID_HANDLE)
+            SocketClose(sock);
+        g_metric_send_failures++;
+        QueueMetric("metric_send_failures=" + IntegerToString(g_metric_send_failures));
+        return(false);
+    }
+
+    int sent = SocketSend(sock, data, len);
+    SocketClose(sock);
+    if(sent != len)
+    {
+        g_metric_send_failures++;
+        QueueMetric("metric_send_failures=" + IntegerToString(g_metric_send_failures));
+        return(false);
+    }
+    return(true);
 }
 
 void FlushTrades()
