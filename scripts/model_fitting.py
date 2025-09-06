@@ -216,7 +216,7 @@ def load_logs(
     data_dir: Path,
     *,
     lite_mode: bool = False,
-    chunk_size: int = 50000,
+    chunk_size: int | None = None,
     flight_uri: str | None = None,
     kafka_brokers: str | None = None,
 ) -> tuple[pd.DataFrame | Iterable[pd.DataFrame], List[str], List[str]]:
@@ -238,7 +238,7 @@ def load_logs(
         desc = flight.FlightDescriptor.for_path("trades")
         info = client.get_flight_info(desc)
         reader = client.do_get(info.endpoints[0].ticket)
-        if lite_mode:
+        if lite_mode or chunk_size:
             def _iter_batches():
                 for batch in reader:
                     yield pa.Table.from_batches([batch]).to_pandas()
@@ -335,6 +335,8 @@ def load_logs(
 
     invalid_file = data_dir / "invalid_rows.csv"
 
+    cs = chunk_size or (50000 if lite_mode else None)
+
     def iter_chunks():
         seen_ids: set[str] = set()
         invalid_rows: List[pd.DataFrame] = []
@@ -344,9 +346,11 @@ def load_logs(
                 sep=";",
                 header=0,
                 dtype=str,
-                chunksize=chunk_size,
+                chunksize=cs,
                 engine="python",
             )
+            if isinstance(reader, pd.DataFrame):
+                reader = [reader]
             manifest_file = log_file.with_suffix(".manifest.json")
             if manifest_file.exists():
                 try:
@@ -519,7 +523,7 @@ def load_logs(
             except Exception:  # pragma: no cover - disk issues
                 pass
 
-    if lite_mode:
+    if lite_mode or chunk_size:
         return iter_chunks(), data_commits, data_checksums
     dfs = list(iter_chunks())
     if dfs:
