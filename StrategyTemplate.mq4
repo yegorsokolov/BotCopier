@@ -61,7 +61,12 @@ double g_price_mean = 0.0;
 double g_price_std = 1.0;
 // __TRANSFORMER_PARAMS_END__
 
-// __SYMBOL_EMBEDDINGS__
+// __SYMBOL_EMBEDDINGS_START__
+double GraphEmbedding(int idx)
+{
+    return 0.0;
+}
+// __SYMBOL_EMBEDDINGS_END__
 
 datetime g_last_model_reload = 0;
 
