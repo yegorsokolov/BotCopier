@@ -9,6 +9,7 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <atomic>
 
 namespace {
 class GrpcClient {
@@ -38,6 +39,19 @@ class GrpcClient {
     FlushMetrics();
   }
 
+  int TradeQueueDepth() {
+    std::lock_guard<std::mutex> lock(mu_);
+    return trade_queue_.size();
+  }
+
+  int MetricQueueDepth() {
+    std::lock_guard<std::mutex> lock(mu_);
+    return metric_queue_.size();
+  }
+
+  int TradeRetryCount() { return trade_retry_count_.load(); }
+  int MetricRetryCount() { return metric_retry_count_.load(); }
+
  private:
   void FlushTrades() {
     std::lock_guard<std::mutex> lock(mu_);
@@ -50,6 +64,7 @@ class GrpcClient {
       grpc::ClientContext ctx;
       grpc::Status status = trade_stub_->LogTrade(&ctx, req, &resp);
       if (!status.ok()) {
+        trade_retry_count_++;
         std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
         backoff_ms = std::min(backoff_ms * 2, 1000);
         continue;
@@ -70,6 +85,7 @@ class GrpcClient {
       grpc::ClientContext ctx;
       grpc::Status status = metric_stub_->LogMetrics(&ctx, req, &resp);
       if (!status.ok()) {
+        metric_retry_count_++;
         std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
         backoff_ms = std::min(backoff_ms * 2, 1000);
         continue;
@@ -84,6 +100,8 @@ class GrpcClient {
   std::queue<std::string> trade_queue_;
   std::queue<std::string> metric_queue_;
   std::mutex mu_;
+  std::atomic<int> trade_retry_count_{0};
+  std::atomic<int> metric_retry_count_{0};
 };
 
 GrpcClient g_client;
@@ -109,6 +127,22 @@ __attribute__((visibility("default"))) void grpc_enqueue_metric(const char* payl
 
 __attribute__((visibility("default"))) void grpc_flush() {
   g_client.Flush();
+}
+
+__attribute__((visibility("default"))) int grpc_trade_queue_depth() {
+  return g_client.TradeQueueDepth();
+}
+
+__attribute__((visibility("default"))) int grpc_metric_queue_depth() {
+  return g_client.MetricQueueDepth();
+}
+
+__attribute__((visibility("default"))) int grpc_trade_retry_count() {
+  return g_client.TradeRetryCount();
+}
+
+__attribute__((visibility("default"))) int grpc_metric_retry_count() {
+  return g_client.MetricRetryCount();
 }
 
 }
