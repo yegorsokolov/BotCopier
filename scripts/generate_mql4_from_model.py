@@ -15,11 +15,13 @@ from pathlib import Path
 from typing import Sequence
 
 # Mapping from feature name to MQL4 runtime expression.
+# Add new feature mappings here as additional model features appear.
 FEATURE_MAP: dict[str, str] = {
     "spread": "MarketInfo(Symbol(), MODE_SPREAD)",
     "ask": "MarketInfo(Symbol(), MODE_ASK)",
     "bid": "MarketInfo(Symbol(), MODE_BID)",
     "hour": "TimeHour(TimeCurrent())",
+    # "volume": "iVolume(Symbol(), PERIOD_CURRENT, 0)",  # Example placeholder
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
@@ -27,10 +29,21 @@ CASE_TEMPLATE = "    case {idx}: return {expr}; // {name}"
 
 
 def build_switch(names: Sequence[str]) -> str:
-    """Render switch cases for each feature name."""
+    """Render switch cases for each feature name.
+
+    Raises:
+        KeyError: If a feature name is missing from ``FEATURE_MAP``.
+    """
+
     cases = []
     for i, name in enumerate(names):
-        expr = FEATURE_MAP.get(name, "0.0")
+        try:
+            expr = FEATURE_MAP[name]
+        except KeyError as exc:
+            raise KeyError(
+                f"Feature '{name}' is missing from FEATURE_MAP. "
+                "Please update FEATURE_MAP with an appropriate MQL4 expression."
+            ) from None
         cases.append(CASE_TEMPLATE.format(idx=i, expr=expr, name=name))
     return GET_FEATURE_TEMPLATE.format(cases="\n".join(cases))
 
