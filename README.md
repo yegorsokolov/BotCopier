@@ -36,6 +36,13 @@ Run the unit tests:
 pytest
 ```
 
+## Memory usage
+
+The log loading helpers in `scripts/train_target_clone.py` and
+`scripts/model_fitting.py` accept a `chunk_size` argument. Providing a positive
+value streams DataFrame chunks instead of materialising the entire log in
+memory, enabling training on machines with limited RAM.
+
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

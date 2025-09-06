@@ -46,7 +46,7 @@ def _load_logs(
     data_dir: Path,
     *,
     lite_mode: bool | None = None,
-    chunk_size: int = 50000,
+    chunk_size: int | None = None,
     flight_uri: str | None = None,
     kafka_brokers: str | None = None,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], list[str]]:
@@ -73,11 +73,17 @@ def _load_logs(
     optional_cols = ["spread", "slippage", "equity", "margin_level"]
     feature_cols = [c for c in optional_cols if c in df.columns]
 
-    if lite_mode:
+    # When ``chunk_size`` is provided (or lite_mode explicitly enabled), yield
+    # DataFrame chunks instead of a single concatenated frame so callers can
+    # control memory usage.  ``lite_mode`` keeps backwards compatibility where
+    # chunked iteration was previously the default behaviour.
+    cs = chunk_size or (50000 if lite_mode else None)
+    if cs:
         def _iter():
-            for start in range(0, len(df), chunk_size):
-                yield df.iloc[start:start+chunk_size]
+            for start in range(0, len(df), cs):
+                yield df.iloc[start:start + cs]
         return _iter(), feature_cols, []
+
     return df, feature_cols, []
 
 
@@ -89,7 +95,7 @@ def _train_lite_mode(
     data_dir: Path,
     out_dir: Path,
     *,
-    chunk_size: int = 50000,
+    chunk_size: int | None = None,
     hash_size: int = 0,
     flight_uri: str | None = None,
     mode: str = "lite",
@@ -97,8 +103,10 @@ def _train_lite_mode(
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
     rows_iter, _, _ = _load_logs(
-        data_dir, lite_mode=True, chunk_size=chunk_size, flight_uri=flight_uri
+        data_dir, chunk_size=chunk_size, flight_uri=flight_uri
     )
+    if isinstance(rows_iter, pd.DataFrame):
+        rows_iter = [rows_iter]
 
     vec = (
         DictVectorizer(sparse=False)
