@@ -9,19 +9,31 @@ double g_coeffs[];
 double g_threshold;
 double g_feature_mean[];
 double g_feature_std[];
+double g_lot_coeffs[];
+double g_sl_coeffs[];
+double g_tp_coeffs[];
 
 double g_coeffs_asian[] = {0.0, 0.0};
 double g_threshold_asian = 0.5;
 double g_feature_mean_asian[] = {};
 double g_feature_std_asian[] = {};
+double g_lot_coeffs_asian[] = {0.0, 0.0};
+double g_sl_coeffs_asian[] = {0.0, 0.0};
+double g_tp_coeffs_asian[] = {0.0, 0.0};
 double g_coeffs_london[] = {0.0, 0.0};
 double g_threshold_london = 0.5;
 double g_feature_mean_london[] = {};
 double g_feature_std_london[] = {};
+double g_lot_coeffs_london[] = {0.0, 0.0};
+double g_sl_coeffs_london[] = {0.0, 0.0};
+double g_tp_coeffs_london[] = {0.0, 0.0};
 double g_coeffs_newyork[] = {0.0, 0.0};
 double g_threshold_newyork = 0.5;
 double g_feature_mean_newyork[] = {};
 double g_feature_std_newyork[] = {};
+double g_lot_coeffs_newyork[] = {0.0, 0.0};
+double g_sl_coeffs_newyork[] = {0.0, 0.0};
+double g_tp_coeffs_newyork[] = {0.0, 0.0};
 
 datetime g_last_model_reload = 0;
 
@@ -31,6 +43,9 @@ void SelectSessionModel()
     if(h < 8)
     {
         ArrayCopy(g_coeffs, g_coeffs_asian);
+        ArrayCopy(g_lot_coeffs, g_lot_coeffs_asian);
+        ArrayCopy(g_sl_coeffs, g_sl_coeffs_asian);
+        ArrayCopy(g_tp_coeffs, g_tp_coeffs_asian);
         g_threshold = g_threshold_asian;
         ArrayCopy(g_feature_mean, g_feature_mean_asian);
         ArrayCopy(g_feature_std, g_feature_std_asian);
@@ -38,6 +53,9 @@ void SelectSessionModel()
     else if(h < 16)
     {
         ArrayCopy(g_coeffs, g_coeffs_london);
+        ArrayCopy(g_lot_coeffs, g_lot_coeffs_london);
+        ArrayCopy(g_sl_coeffs, g_sl_coeffs_london);
+        ArrayCopy(g_tp_coeffs, g_tp_coeffs_london);
         g_threshold = g_threshold_london;
         ArrayCopy(g_feature_mean, g_feature_mean_london);
         ArrayCopy(g_feature_std, g_feature_std_london);
@@ -45,6 +63,9 @@ void SelectSessionModel()
     else
     {
         ArrayCopy(g_coeffs, g_coeffs_newyork);
+        ArrayCopy(g_lot_coeffs, g_lot_coeffs_newyork);
+        ArrayCopy(g_sl_coeffs, g_sl_coeffs_newyork);
+        ArrayCopy(g_tp_coeffs, g_tp_coeffs_newyork);
         g_threshold = g_threshold_newyork;
         ArrayCopy(g_feature_mean, g_feature_mean_newyork);
         ArrayCopy(g_feature_std, g_feature_std_newyork);
@@ -342,16 +363,36 @@ double GetFeature(int idx)
 }
 
 
-double ScoreModel()
+double ApplyModel(double &coeffs[])
 {
-    double z = g_coeffs[0];
-    for(int i = 1; i < ArraySize(g_coeffs); i++)
+    double z = coeffs[0];
+    for(int i = 1; i < ArraySize(coeffs); i++)
     {
         double val = GetFeature(i - 1);
         double norm = (val - g_feature_mean[i - 1]) / g_feature_std[i - 1];
-        z += g_coeffs[i] * norm;
+        z += coeffs[i] * norm;
     }
-    return 1.0 / (1.0 + MathExp(-z));
+    return z;
+}
+
+double ScoreModel()
+{
+    return 1.0 / (1.0 + MathExp(-ApplyModel(g_coeffs)));
+}
+
+double PredictLot()
+{
+    return MathMax(0.01, ApplyModel(g_lot_coeffs));
+}
+
+double PredictSLDistance()
+{
+    return MathAbs(ApplyModel(g_sl_coeffs));
+}
+
+double PredictTPDistance()
+{
+    return MathAbs(ApplyModel(g_tp_coeffs));
 }
 
 void OnTick()
@@ -364,16 +405,29 @@ void OnTick()
     }
 
     double prob = ScoreModel();
+    double lot = PredictLot();
+    double sl = PredictSLDistance();
+    double tp = PredictTPDistance();
     string decision = "hold";
     if(prob > g_threshold)
     {
-        OrderSend(Symbol(), OP_BUY, 0.1, Ask, 3, 0, 0);
+        double sl_price = Ask - sl * Point;
+        double tp_price = Ask + tp * Point;
+        OrderSend(Symbol(), OP_BUY, lot, Ask, 3, sl_price, tp_price);
         decision = "buy";
     }
     else if((1.0 - prob) > g_threshold)
     {
-        OrderSend(Symbol(), OP_SELL, 0.1, Bid, 3, 0, 0);
+        double sl_price = Bid + sl * Point;
+        double tp_price = Bid - tp * Point;
+        OrderSend(Symbol(), OP_SELL, lot, Bid, 3, sl_price, tp_price);
         decision = "sell";
     }
-    QueueTrade("decision=" + decision + ",prob=" + DoubleToString(prob, 8));
+    QueueTrade(
+        "decision=" + decision +
+        ",prob=" + DoubleToString(prob, 8) +
+        ",lot=" + DoubleToString(lot, 2) +
+        ",sl=" + DoubleToString(sl, 2) +
+        ",tp=" + DoubleToString(tp, 2)
+    );
 }

@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import psutil
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import SGDClassifier
+from sklearn.linear_model import SGDClassifier, LinearRegression
 from sklearn.metrics import accuracy_score, recall_score
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -256,12 +256,37 @@ def _train_lite_mode(
         avg_thresh = float(np.mean(fold_thresholds))
         scaler_full = StandardScaler().fit(X_all)
         clf_full = SGDClassifier(loss="log_loss")
+        X_scaled_full = scaler_full.transform(X_all)
         clf_full.partial_fit(
-            scaler_full.transform(X_all),
+            X_scaled_full,
             y_all,
             classes=np.array([0, 1]),
         )
-        session_models[name] = {
+
+        def _fit_regression(target_names: list[str]) -> dict | None:
+            for col in target_names:
+                if col in group.columns:
+                    y = pd.to_numeric(group[col], errors="coerce").to_numpy(dtype=float)
+                    reg = LinearRegression().fit(X_scaled_full, y)
+                    return {
+                        "coefficients": reg.coef_.astype(float).tolist(),
+                        "intercept": float(reg.intercept_),
+                    }
+            return None
+
+        lot_model = _fit_regression(["lot", "lot_size", "lots"])
+        sl_model = _fit_regression([
+            "sl_distance",
+            "stop_loss_distance",
+            "stop_loss",
+        ])
+        tp_model = _fit_regression([
+            "tp_distance",
+            "take_profit_distance",
+            "take_profit",
+        ])
+
+        params: dict[str, object] = {
             "coefficients": clf_full.coef_[0].astype(float).tolist(),
             "intercept": float(clf_full.intercept_[0]),
             "threshold": avg_thresh,
@@ -270,6 +295,13 @@ def _train_lite_mode(
             "metrics": {"accuracy": mean_acc, "recall": mean_rec, "profit": mean_profit},
             "cv_metrics": fold_metrics,
         }
+        if lot_model:
+            params["lot_model"] = lot_model
+        if sl_model:
+            params["sl_model"] = sl_model
+        if tp_model:
+            params["tp_model"] = tp_model
+        session_models[name] = params
         cv_acc_all.append(mean_acc)
         cv_profit_all.append(mean_profit)
 

@@ -28,17 +28,26 @@
     "asian": {
       "coefficients": [0.0],
       "intercept": 0.0,
-      "threshold": 0.5
+      "threshold": 0.5,
+      "lot_model": {"coefficients": [0.0], "intercept": 0.0},
+      "sl_model": {"coefficients": [0.0], "intercept": 0.0},
+      "tp_model": {"coefficients": [0.0], "intercept": 0.0}
     },
     "london": {
       "coefficients": [0.0],
       "intercept": 0.0,
-      "threshold": 0.5
+      "threshold": 0.5,
+      "lot_model": {"coefficients": [0.0], "intercept": 0.0},
+      "sl_model": {"coefficients": [0.0], "intercept": 0.0},
+      "tp_model": {"coefficients": [0.0], "intercept": 0.0}
     },
     "newyork": {
       "coefficients": [0.0],
       "intercept": 0.0,
-      "threshold": 0.5
+      "threshold": 0.5,
+      "lot_model": {"coefficients": [0.0], "intercept": 0.0},
+      "sl_model": {"coefficients": [0.0], "intercept": 0.0},
+      "tp_model": {"coefficients": [0.0], "intercept": 0.0}
     }
   },
   "session_hours": {
