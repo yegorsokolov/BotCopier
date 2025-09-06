@@ -90,9 +90,9 @@ def test_train_rl_agent_sb3(tmp_path: Path, algo: str) -> None:
     start_model = out_dir / "start.json"
     start = {
         "model_id": "sup_model",
-        "coefficients": [0.1],
+        "coefficients": [0.1, 0.1],
         "intercept": 0.0,
-        "feature_names": ["hour"],
+        "feature_names": ["hour_sin", "hour_cos"],
     }
     with open(start_model, "w") as f:
         json.dump(start, f)

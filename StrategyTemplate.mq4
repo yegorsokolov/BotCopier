@@ -306,13 +306,34 @@ void OnTimer()
     g_last_model_reload = TimeCurrent();
 }
 
+double RollingCorrelation(string sym1, string sym2, int window)
+{
+    double sumx = 0, sumy = 0, sumxy = 0, sumx2 = 0, sumy2 = 0;
+    for(int i = 0; i < window; i++)
+    {
+        double x = iClose(sym1, PERIOD_CURRENT, i);
+        double y = iClose(sym2, PERIOD_CURRENT, i);
+        sumx += x;
+        sumy += y;
+        sumxy += x * y;
+        sumx2 += x * x;
+        sumy2 += y * y;
+    }
+    double num = window * sumxy - sumx * sumy;
+    double den = MathSqrt(window * sumx2 - sumx * sumx) * MathSqrt(window * sumy2 - sumy * sumy);
+    if(den == 0)
+        return(0);
+    return(num / den);
+}
+
 double GetFeature(int idx)
 {
     switch(idx)
     {
     case 0: return MarketInfo(Symbol(), MODE_SPREAD); // spread
-    case 1: return TimeHour(TimeCurrent()); // hour
-    case 2: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume
+    case 1: return MathSin(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_sin
+    case 2: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos
+    case 3: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume
     }
     return 0.0;
 }

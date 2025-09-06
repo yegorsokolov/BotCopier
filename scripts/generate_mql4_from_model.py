@@ -20,7 +20,10 @@ FEATURE_MAP: dict[str, str] = {
     "spread": "MarketInfo(Symbol(), MODE_SPREAD)",
     "ask": "MarketInfo(Symbol(), MODE_ASK)",
     "bid": "MarketInfo(Symbol(), MODE_BID)",
-    "hour": "TimeHour(TimeCurrent())",
+    "hour_sin": "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)",
+    "hour_cos": "MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)",
+    "dow_sin": "MathSin(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)",
+    "dow_cos": "MathCos(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)",
     "volume": "iVolume(Symbol(), PERIOD_CURRENT, 0)",
     "slippage": "OrderSlippage()",
     "equity": "AccountEquity()",
@@ -40,13 +43,25 @@ def build_switch(names: Sequence[str]) -> str:
 
     cases = []
     for i, name in enumerate(names):
-        try:
+        if name in FEATURE_MAP:
             expr = FEATURE_MAP[name]
-        except KeyError as exc:
+        elif name.startswith("ratio_"):
+            try:
+                _, a, b = name.split("_", 2)
+            except ValueError:
+                raise KeyError(f"Invalid ratio feature name '{name}'") from None
+            expr = f'iClose("{a}", PERIOD_CURRENT, 0) / iClose("{b}", PERIOD_CURRENT, 0)'
+        elif name.startswith("corr_"):
+            try:
+                _, a, b = name.split("_", 2)
+            except ValueError:
+                raise KeyError(f"Invalid corr feature name '{name}'") from None
+            expr = f'RollingCorrelation("{a}", "{b}", 5)'
+        else:
             raise KeyError(
                 f"Feature '{name}' is missing from FEATURE_MAP. "
                 "Please update FEATURE_MAP with an appropriate MQL4 expression."
-            ) from None
+            )
         cases.append(CASE_TEMPLATE.format(idx=i, expr=expr, name=name))
     return GET_FEATURE_TEMPLATE.format(cases="\n".join(cases))
 

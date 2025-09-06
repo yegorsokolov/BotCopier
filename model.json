@@ -20,7 +20,8 @@
   "mode": "lite",
   "feature_names": [
     "spread",
-    "hour",
+    "hour_sin",
+    "hour_cos",
     "volume"
   ],
   "session_models": {
