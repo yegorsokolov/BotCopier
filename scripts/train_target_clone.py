@@ -135,12 +135,22 @@ def _train_lite_mode(
     min_accuracy: float = 0.0,
     min_profit: float = 0.0,
     extra_prices: dict[str, Iterable[float]] | None = None,
+    replay_file: Path | None = None,
+    replay_weight: float = 1.0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
     df, _, _ = _load_logs(data_dir, chunk_size=chunk_size, flight_uri=flight_uri)
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
+    if replay_file:
+        rdf = pd.read_csv(replay_file)
+        rdf.columns = [c.lower() for c in rdf.columns]
+        df = pd.concat([df, rdf], ignore_index=True)
+        weights = np.ones(len(df))
+        weights[-len(rdf):] = replay_weight
+    else:
+        weights = np.ones(len(df))
 
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
@@ -186,6 +196,7 @@ def _train_lite_mode(
 
     hours = df["hour"] if "hour" in df.columns else pd.Series([0] * len(df))
     df["session"] = hours.astype(int).apply(_session_from_hour)
+    df["sample_weight"] = weights
 
     session_models: dict[str, dict[str, object]] = {}
     cv_acc_all: list[float] = []
@@ -196,6 +207,7 @@ def _train_lite_mode(
         feat_cols = [c for c in feature_names if c != "session"]
         X_all = group[feat_cols].to_numpy()
         y_all = group["label"].astype(int).to_numpy()
+        w_all = group["sample_weight"].to_numpy()
         n_splits = min(5, len(group) - 1)
         if n_splits < 1:
             continue
@@ -215,12 +227,14 @@ def _train_lite_mode(
         for train_idx, val_idx in splits:
             X_train, X_val = X_all[train_idx], X_all[val_idx]
             y_train, y_val = y_all[train_idx], y_all[val_idx]
+            w_train = w_all[train_idx]
             scaler = StandardScaler().fit(X_train)
             clf = SGDClassifier(loss="log_loss")
             clf.partial_fit(
                 scaler.transform(X_train),
                 y_train,
                 classes=np.array([0, 1]),
+                sample_weight=w_train,
             )
             probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
             thresholds = np.unique(np.concatenate(([0.0], probs, [1.0])))
@@ -261,6 +275,7 @@ def _train_lite_mode(
             X_scaled_full,
             y_all,
             classes=np.array([0, 1]),
+            sample_weight=w_all,
         )
 
         def _fit_regression(target_names: list[str]) -> dict | None:
@@ -494,12 +509,21 @@ def main() -> None:
         default=0.0,
         help="minimum profit required for at least one fold",
     )
+    p.add_argument("--replay-file", type=Path, help="CSV file with labeled decisions")
+    p.add_argument(
+        "--replay-weight",
+        type=float,
+        default=1.0,
+        help="sample weight for replay decisions",
+    )
     args = p.parse_args()
     train(
         args.data_dir,
         args.out_dir,
         min_accuracy=args.min_accuracy,
         min_profit=args.min_profit,
+        replay_file=args.replay_file,
+        replay_weight=args.replay_weight,
     )
 
 
