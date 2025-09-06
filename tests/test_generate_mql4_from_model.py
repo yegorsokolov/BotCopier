@@ -72,18 +72,20 @@ def test_session_models_inserted(tmp_path):
         json.dumps(
             {
                 "feature_names": [],
-                "session_models": {
-                    "asian": {
-                        "coefficients": [1.0],
-                        "intercept": 0.1,
-                        "threshold": 0.5,
-                        "feature_mean": [0.0],
-                        "feature_std": [1.0],
-                    }
-                },
-            }
+                    "session_models": {
+                        "asian": {
+                            "coefficients": [1.0],
+                            "intercept": 0.1,
+                            "threshold": 0.5,
+                            "feature_mean": [0.0],
+                            "feature_std": [1.0],
+                            "conformal_lower": 0.2,
+                            "conformal_upper": 0.8,
+                        }
+                    },
+                }
+            )
         )
-    )
 
     template = tmp_path / "StrategyTemplate.mq4"
     template.write_text("#property strict\n\n// __SESSION_MODELS__\n")
@@ -105,10 +107,14 @@ def test_session_models_inserted(tmp_path):
     assert "g_threshold_asian" in content
     assert "g_feature_mean_asian" in content
     assert "g_feature_std_asian" in content
+    assert "g_conformal_lower_asian" in content
+    assert "g_conformal_upper_asian" in content
 
     data = json.loads(model.read_text())
     assert "feature_mean" in data["session_models"]["asian"]
     assert "feature_std" in data["session_models"]["asian"]
+    assert "conformal_lower" in data["session_models"]["asian"]
+    assert "conformal_upper" in data["session_models"]["asian"]
 
 
 def test_generation_fails_on_unmapped_feature(tmp_path):
