@@ -117,18 +117,21 @@ def _build_session_models(data: dict) -> str:
 def _build_symbol_embeddings(emb_map: dict) -> str:
     """Generate MQL4 arrays and lookup function for symbol embeddings."""
 
-    if not emb_map:
-        return ""
     lines: list[str] = []
-    for sym, vec in emb_map.items():
-        arr = ", ".join(str(v) for v in vec)
-        lines.append(f'double g_emb_{sym}[] = {{{arr}}};')
-    lines.append("double GraphEmbedding(int idx)\n{")
-    lines.append("    string s = Symbol();")
-    for sym in emb_map.keys():
-        lines.append(f'    if(s == "{sym}") return g_emb_{sym}[idx];')
-    lines.append("    return 0.0;")
-    lines.append("}")
+    if emb_map:
+        for sym, vec in emb_map.items():
+            arr = ", ".join(str(v) for v in vec)
+            lines.append(f'double g_emb_{sym}[] = {{{arr}}};')
+        lines.append("double GraphEmbedding(int idx)\n{")
+        lines.append("    string s = Symbol();")
+        for sym in emb_map.keys():
+            lines.append(f'    if(s == "{sym}") return g_emb_{sym}[idx];')
+        lines.append("    return 0.0;")
+        lines.append("}")
+    else:
+        lines.append(
+            "double GraphEmbedding(int idx)\n{\n    return 0.0;\n}"
+        )
     return "\n".join(lines)
 
 
@@ -223,7 +226,11 @@ def insert_get_feature(model: Path, template: Path) -> None:
     content = template.read_text()
     output = content.replace("// __GET_FEATURE__", get_feature)
     output = output.replace("// __SESSION_MODELS__", session_models)
-    output = output.replace("// __SYMBOL_EMBEDDINGS__", symbol_emb)
+    pattern_emb = re.compile(
+        r"// __SYMBOL_EMBEDDINGS_START__.*// __SYMBOL_EMBEDDINGS_END__",
+        re.DOTALL,
+    )
+    output = re.sub(pattern_emb, symbol_emb, output)
     pattern = re.compile(
         r"// __TRANSFORMER_PARAMS_START__.*// __TRANSFORMER_PARAMS_END__",
         re.DOTALL,

@@ -141,45 +141,18 @@ def _load_logs(
 
 
 # ---------------------------------------------------------------------------
-# Training
+# Feature extraction helpers
 # ---------------------------------------------------------------------------
 
-def _train_lite_mode(
-    data_dir: Path,
-    out_dir: Path,
+def _extract_features(
+    df: pd.DataFrame,
+    feature_names: list[str],
     *,
-    chunk_size: int | None = None,
-    hash_size: int = 0,
-    flight_uri: str | None = None,
-    mode: str = "lite",
-    min_accuracy: float = 0.0,
-    min_profit: float = 0.0,
-    extra_prices: dict[str, Iterable[float]] | None = None,
-    replay_file: Path | None = None,
-    replay_weight: float = 1.0,
     symbol_graph: dict | str | Path | None = None,
-    optuna_trials: int = 0,
-    **_: object,
-) -> None:
-    """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
-    df, _, _ = _load_logs(data_dir, chunk_size=chunk_size, flight_uri=flight_uri)
-    if not isinstance(df, pd.DataFrame):
-        df = pd.concat(list(df), ignore_index=True)
-    if replay_file:
-        rdf = pd.read_csv(replay_file)
-        rdf.columns = [c.lower() for c in rdf.columns]
-        df = pd.concat([df, rdf], ignore_index=True)
-        weights = np.ones(len(df))
-        weights[-len(rdf):] = replay_weight
-    else:
-        weights = np.ones(len(df))
+) -> tuple[pd.DataFrame, list[str], dict[str, list[float]]]:
+    """Attach graph embedding columns and update ``feature_names``."""
 
-    if "label" not in df.columns:
-        raise ValueError("label column missing from data")
-
-    # Attach embedding components for each trade if a symbol graph is provided.
     embeddings: dict[str, list[float]] = {}
-    emb_dim = 0
     if symbol_graph is not None:
         if not isinstance(symbol_graph, dict):
             with open(symbol_graph) as f_sg:
@@ -206,10 +179,56 @@ def _train_lite_mode(
                     if isinstance(s, str)
                     else 0.0
                 )
+            feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
+    return df, feature_names, embeddings
 
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
+def _train_lite_mode(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    chunk_size: int | None = None,
+    hash_size: int = 0,
+    flight_uri: str | None = None,
+    mode: str = "lite",
+    min_accuracy: float = 0.0,
+    min_profit: float = 0.0,
+    extra_prices: dict[str, Iterable[float]] | None = None,
+    replay_file: Path | None = None,
+    replay_weight: float = 1.0,
+    symbol_graph: dict | str | Path | None = None,
+    optuna_trials: int = 0,
+    **_: object,
+) -> None:
+    """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
+    df, feature_names, _ = _load_logs(
+        data_dir, chunk_size=chunk_size, flight_uri=flight_uri
+    )
+    if not isinstance(df, pd.DataFrame):
+        df = pd.concat(list(df), ignore_index=True)
+    feature_names = list(feature_names)
+    if replay_file:
+        rdf = pd.read_csv(replay_file)
+        rdf.columns = [c.lower() for c in rdf.columns]
+        df = pd.concat([df, rdf], ignore_index=True)
+        weights = np.ones(len(df))
+        weights[-len(rdf):] = replay_weight
+    else:
+        weights = np.ones(len(df))
+
+    if "label" not in df.columns:
+        raise ValueError("label column missing from data")
+
+    df, feature_names, embeddings = _extract_features(
+        df, feature_names, symbol_graph=symbol_graph
+    )
     feature_names = [
         c
-        for c in df.columns
+        for c in feature_names
         if c not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
     ]
 
