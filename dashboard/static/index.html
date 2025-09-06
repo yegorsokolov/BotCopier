@@ -24,13 +24,15 @@
                 datasets: [
                     { label: 'Win Rate', data: [], yAxisID: 'y' },
                     { label: 'Flush Latency (ms)', data: [], yAxisID: 'y1' },
-                    { label: 'Network Latency (ms)', data: [], yAxisID: 'y1' }
+                    { label: 'Network Latency (ms)', data: [], yAxisID: 'y1' },
+                    { label: 'CVaR', data: [], yAxisID: 'y2' }
                 ]
             },
             options: {
                 scales: {
                     y: { type: 'linear', position: 'left' },
-                    y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } }
+                    y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } },
+                    y2: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } }
                 }
             }
         });
@@ -40,6 +42,7 @@
             metricsChart.data.datasets[0].data.push(metric.win_rate);
             metricsChart.data.datasets[1].data.push(metric.flush_latency_ms);
             metricsChart.data.datasets[2].data.push(metric.network_latency_ms);
+            metricsChart.data.datasets[3].data.push(metric.cvar);
             metricsChart.update();
         }
 

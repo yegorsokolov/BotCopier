@@ -89,7 +89,7 @@
     },
     {
       "type": "timeseries",
-      "title": "CVaR",
+      "title": "CVaR (worst 5%)",
       "id": 11,
       "targets": [
         {"expr": "bot_cvar"}
