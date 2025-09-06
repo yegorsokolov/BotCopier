@@ -137,6 +137,7 @@ def _train_lite_mode(
     extra_prices: dict[str, Iterable[float]] | None = None,
     replay_file: Path | None = None,
     replay_weight: float = 1.0,
+    symbol_graph: dict | str | Path | None = None,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -154,6 +155,36 @@ def _train_lite_mode(
 
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
+
+    # Attach embedding components for each trade if a symbol graph is provided.
+    embeddings: dict[str, list[float]] = {}
+    emb_dim = 0
+    if symbol_graph is not None:
+        if not isinstance(symbol_graph, dict):
+            with open(symbol_graph) as f_sg:
+                graph_data = json.load(f_sg)
+        else:
+            graph_data = symbol_graph
+        nodes = graph_data.get("nodes") or {}
+        if nodes:
+            for sym, vals in nodes.items():
+                emb = vals.get("embedding")
+                if isinstance(emb, list):
+                    embeddings[sym] = [float(v) for v in emb]
+        elif graph_data.get("embeddings"):
+            embeddings = {
+                sym: [float(v) for v in emb]
+                for sym, emb in graph_data.get("embeddings", {}).items()
+            }
+        if embeddings:
+            emb_dim = len(next(iter(embeddings.values())))
+            for i in range(emb_dim):
+                col = f"graph_emb{i}"
+                df[col] = df.get("symbol").map(
+                    lambda s: embeddings.get(str(s), [0.0] * emb_dim)[i]
+                    if isinstance(s, str)
+                    else 0.0
+                )
 
     feature_names = [
         c
@@ -360,6 +391,8 @@ def _train_lite_mode(
         "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
         "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
     }
+    if embeddings:
+        model["symbol_embeddings"] = embeddings
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)

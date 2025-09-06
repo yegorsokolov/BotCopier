@@ -75,6 +75,52 @@ def _compute_pagerank(adj: np.ndarray, alpha: float = 0.85, tol: float = 1e-6) -
     return pr
 
 
+def _train_node2vec(
+    edge_index: list[list[int]],
+    dim: int = 8,
+    adj: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """Train Node2Vec embeddings from an edge index.
+
+    Falls back to a simple spectral embedding using ``adj`` when PyG is not
+    available.
+    """
+
+    if not edge_index:
+        return None
+    emb = None
+    if _HAS_PYG:
+        try:  # pragma: no cover - heavy optional dependency
+            ei = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+            node2vec = Node2Vec(
+                ei,
+                embedding_dim=dim,
+                walk_length=5,
+                context_size=3,
+                walks_per_node=10,
+            )
+            optim = torch.optim.Adam(node2vec.parameters(), lr=0.01)
+            loader = node2vec.loader(batch_size=32, shuffle=True)
+            for _ in range(10):
+                for pos_rw, neg_rw in loader:
+                    optim.zero_grad()
+                    loss = node2vec.loss(pos_rw, neg_rw)
+                    loss.backward()
+                    optim.step()
+            emb = node2vec.embedding.weight.detach().cpu().numpy()
+        except Exception:
+            emb = None
+    if emb is None and adj is not None and adj.size:
+        try:
+            # Spectral embedding using SVD as a lightweight fallback.
+            u, s, _vt = np.linalg.svd(adj, full_matrices=False)
+            dim = min(dim, len(s))
+            emb = (u[:, :dim] * s[:dim]).astype(float)
+        except Exception:
+            emb = None
+    return emb
+
+
 def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
     """Aggregate correlation features into a weighted graph and compute metrics.
 
@@ -216,40 +262,10 @@ def build_graph(feat_path: Path, out_path: Path, corr_window: int = 20) -> dict:
         graph["cointegration"] = coint_map
 
     # Optional Node2Vec embeddings.  When ``torch_geometric`` is not available
-    # fall back to a simple spectral embedding based on the adjacency matrix so
-    # downstream pipelines can still leverage graph-derived features during
-    # testing.
+    # ``_train_node2vec`` falls back to a basic spectral embedding so downstream
+    # components can still use graph-derived features.
     if edge_index:
-        emb = None
-        if _HAS_PYG:
-            try:  # pragma: no cover - heavy optional dependency
-                ei = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
-                node2vec = Node2Vec(
-                    ei,
-                    embedding_dim=8,
-                    walk_length=5,
-                    context_size=3,
-                    walks_per_node=10,
-                )
-                optim = torch.optim.Adam(node2vec.parameters(), lr=0.01)
-                loader = node2vec.loader(batch_size=32, shuffle=True)
-                for _ in range(10):
-                    for pos_rw, neg_rw in loader:
-                        optim.zero_grad()
-                        loss = node2vec.loss(pos_rw, neg_rw)
-                        loss.backward()
-                        optim.step()
-                emb = node2vec.embedding.weight.detach().cpu().numpy()
-            except Exception:
-                emb = None
-        if emb is None:
-            try:
-                # Spectral embedding using SVD as a lightweight fallback.
-                u, s, _vt = np.linalg.svd(adj, full_matrices=False)
-                dim = min(8, len(s))
-                emb = (u[:, :dim] * s[:dim]).astype(float)
-            except Exception:
-                emb = None
+        emb = _train_node2vec(edge_index, adj=adj)
         if emb is not None:
             graph["embedding_dim"] = int(emb.shape[1])
             graph["embeddings"] = {

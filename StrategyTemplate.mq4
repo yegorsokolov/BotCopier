@@ -43,6 +43,8 @@ double g_tp_coeffs_newyork[] = {0.0, 0.0};
 double g_conformal_lower_newyork = 0.0;
 double g_conformal_upper_newyork = 1.0;
 
+// __SYMBOL_EMBEDDINGS__
+
 datetime g_last_model_reload = 0;
 
 void SelectSessionModel()
