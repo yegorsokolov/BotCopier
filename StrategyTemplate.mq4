@@ -367,6 +367,10 @@ double GetFeature(int idx)
     case 4: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume
     case 5: return MathSin(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_sin
     case 6: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos
+    case 7: return MathSin((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_sin
+    case 8: return MathCos((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_cos
+    case 9: return MathSin((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_sin
+    case 10: return MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_cos
     }
     return 0.0;
 }

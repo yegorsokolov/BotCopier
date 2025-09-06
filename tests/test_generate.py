@@ -28,6 +28,10 @@ def test_generated_features(tmp_path):
                     "volume",
                     "hour_sin",
                     "hour_cos",
+                    "month_sin",
+                    "month_cos",
+                    "dom_sin",
+                    "dom_cos",
                 ]
             }
         )
@@ -62,6 +66,22 @@ def test_generated_features(tmp_path):
         "case 6: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos"
         in content
     )
+    assert (
+        "case 7: return MathSin((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_sin"
+        in content
+    )
+    assert (
+        "case 8: return MathCos((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_cos"
+        in content
+    )
+    assert (
+        "case 9: return MathSin((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_sin"
+        in content
+    )
+    assert (
+        "case 10: return MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_cos"
+        in content
+    )
 
     data = json.loads(model.read_text())
     assert data["feature_names"] == [
@@ -72,6 +92,10 @@ def test_generated_features(tmp_path):
         "volume",
         "hour_sin",
         "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
     ]
 
 
@@ -237,8 +261,8 @@ def test_log_trade_captures_extra_fields(tmp_path):
 def test_load_logs_optional_features(tmp_path):
     csv = tmp_path / "trades_raw.csv"
     csv.write_text(
-        "label,spread,slippage,equity,margin_level,volume,hour\n"
-        "0,1.0,0.5,1000,200,100,12\n"
+        "label,spread,slippage,equity,margin_level,volume,event_time\n"
+        "0,1.0,0.5,1000,200,100,2024-05-15T12:00:00\n",
     )
 
     df, feature_cols, _ = _load_logs(tmp_path)
@@ -250,7 +274,18 @@ def test_load_logs_optional_features(tmp_path):
         "volume",
         "hour_sin",
         "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
     }
-    for col in ["slippage", "equity", "margin_level"]:
+    for col in [
+        "slippage",
+        "equity",
+        "margin_level",
+        "month_sin",
+        "dom_cos",
+    ]:
         assert col in df.columns
-

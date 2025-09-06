@@ -101,6 +101,14 @@ def _load_logs(
         df["dow_sin"] = np.sin(2 * np.pi * dows / 7.0)
         df["dow_cos"] = np.cos(2 * np.pi * dows / 7.0)
 
+    if "event_time" in df.columns:
+        months = df["event_time"].dt.month.fillna(1).astype(int)
+        df["month_sin"] = np.sin(2 * np.pi * (months - 1) / 12.0)
+        df["month_cos"] = np.cos(2 * np.pi * (months - 1) / 12.0)
+        doms = df["event_time"].dt.day.fillna(1).astype(int)
+        df["dom_sin"] = np.sin(2 * np.pi * (doms - 1) / 31.0)
+        df["dom_cos"] = np.cos(2 * np.pi * (doms - 1) / 31.0)
+
     optional_cols = [
         "spread",
         "slippage",
@@ -109,6 +117,10 @@ def _load_logs(
         "volume",
         "hour_sin",
         "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
     ]
     if dows is not None:
         optional_cols.extend(["dow_sin", "dow_cos"])
