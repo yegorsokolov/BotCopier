@@ -87,10 +87,14 @@ int    TRADE_PORT = 50052;
 string METRIC_HOST = "127.0.0.1";
 int    METRIC_PORT = 50053;
 
-// Counters for observability of send failures
-int g_trade_send_failures = 0;
-int g_metric_send_failures = 0;
 int g_decision_id = 0;
+
+#import "grpc_client.dll"
+void   grpc_client_init(string trade_host, int trade_port, string metric_host, int metric_port);
+void   grpc_enqueue_trade(string payload);
+void   grpc_enqueue_metric(string payload);
+void   grpc_flush();
+#import
 
 string WalEncode(string payload)
 {
@@ -174,51 +178,13 @@ void ReportWalSizes()
 
 bool SendTrade(string payload)
 {
-    uchar data[];
-    int len = StringToCharArray(payload, data);
-    int sock = SocketCreate();
-    if(sock == INVALID_HANDLE || !SocketConnect(sock, TRADE_HOST, TRADE_PORT))
-    {
-        if(sock != INVALID_HANDLE)
-            SocketClose(sock);
-        g_trade_send_failures++;
-        QueueMetric("trade_send_failures=" + IntegerToString(g_trade_send_failures));
-        return(false);
-    }
-
-    int sent = SocketSend(sock, data, len);
-    SocketClose(sock);
-    if(sent != len)
-    {
-        g_trade_send_failures++;
-        QueueMetric("trade_send_failures=" + IntegerToString(g_trade_send_failures));
-        return(false);
-    }
+    grpc_enqueue_trade(payload);
     return(true);
 }
 
 bool SendMetric(string payload)
 {
-    uchar data[];
-    int len = StringToCharArray(payload, data);
-    int sock = SocketCreate();
-    if(sock == INVALID_HANDLE || !SocketConnect(sock, METRIC_HOST, METRIC_PORT))
-    {
-        if(sock != INVALID_HANDLE)
-            SocketClose(sock);
-        g_metric_send_failures++;
-        QueueMetric("metric_send_failures=" + IntegerToString(g_metric_send_failures));
-        return(false);
-    }
-
-    int sent = SocketSend(sock, data, len);
-    SocketClose(sock);
-    if(sent != len)
-    {
-        g_metric_send_failures++;
-        QueueMetric("metric_send_failures=" + IntegerToString(g_metric_send_failures));
-        return(false);
-    }
+    grpc_enqueue_metric(payload);
     return(true);
 }
 
@@ -227,8 +193,7 @@ void FlushTrades()
     while(g_trade_head < g_trade_tail)
     {
         string payload = WalDecode(g_trade_queue[g_trade_head]);
-        if(!SendTrade(payload))
-            break;
+        SendTrade(payload);
         g_trade_head++;
     }
 
@@ -265,8 +230,7 @@ void FlushMetrics()
     while(g_metric_head < g_metric_tail)
     {
         string payload = WalDecode(g_metric_queue[g_metric_head]);
-        if(!SendMetric(payload))
-            break;
+        SendMetric(payload);
         g_metric_head++;
     }
 
@@ -310,6 +274,7 @@ int OnInit()
     g_last_model_reload = TimeCurrent();
     if(ReloadModelInterval > 0)
         EventSetTimer(ReloadModelInterval);
+    grpc_client_init(TRADE_HOST, TRADE_PORT, METRIC_HOST, METRIC_PORT);
     return(INIT_SUCCEEDED);
 }
 
@@ -323,6 +288,7 @@ void OnTimer()
 {
     FlushTrades();
     FlushMetrics();
+    grpc_flush();
     ReportWalSizes();
     SelectSessionModel();
     g_last_model_reload = TimeCurrent();
