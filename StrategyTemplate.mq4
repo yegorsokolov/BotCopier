@@ -128,6 +128,10 @@ void   grpc_client_init(string trade_host, int trade_port, string metric_host, i
 void   grpc_enqueue_trade(string payload);
 void   grpc_enqueue_metric(string payload);
 void   grpc_flush();
+int    grpc_trade_queue_depth();
+int    grpc_metric_queue_depth();
+int    grpc_trade_retry_count();
+int    grpc_metric_retry_count();
 #import
 
 string WalEncode(string payload)
@@ -208,6 +212,10 @@ void ReportWalSizes()
 {
     QueueMetric("trade_wal_size=" + IntegerToString(GetWalSize(TRADE_WAL)));
     QueueMetric("metric_wal_size=" + IntegerToString(GetWalSize(METRIC_WAL)));
+    QueueMetric("trade_queue_depth=" + IntegerToString(grpc_trade_queue_depth()));
+    QueueMetric("metric_queue_depth=" + IntegerToString(grpc_metric_queue_depth()));
+    QueueMetric("trade_retry_count=" + IntegerToString(grpc_trade_retry_count()));
+    QueueMetric("metric_retry_count=" + IntegerToString(grpc_metric_retry_count()));
 }
 
 bool SendTrade(string payload)
