@@ -79,6 +79,18 @@ def _build_session_models(data: dict) -> str:
         std_str = ", ".join(f"{s}" for s in std)
         lines.append(f"double g_feature_mean_{name}[] = {{{mean_str}}};")
         lines.append(f"double g_feature_std_{name}[] = {{{std_str}}};")
+
+        def _coeff_line(prefix: str, model: dict | None) -> None:
+            if model:
+                arr = [model.get("intercept", 0.0)] + model.get("coefficients", [])
+            else:
+                arr = [0.0]
+            arr_str = ", ".join(f"{c}" for c in arr)
+            lines.append(f"double g_{prefix}_{name}[] = {{{arr_str}}};")
+
+        _coeff_line("lot_coeffs", params.get("lot_model"))
+        _coeff_line("sl_coeffs", params.get("sl_model"))
+        _coeff_line("tp_coeffs", params.get("tp_model"))
     return "\n".join(lines)
 
 
