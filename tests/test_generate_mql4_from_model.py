@@ -18,6 +18,10 @@ def test_generated_features(tmp_path):
                     "volume",
                     "hour_sin",
                     "hour_cos",
+                    "month_sin",
+                    "month_cos",
+                    "dom_sin",
+                    "dom_cos",
                 ]
             }
         )
@@ -53,6 +57,22 @@ def test_generated_features(tmp_path):
         "case 6: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos"
         in content
     )
+    assert (
+        "case 7: return MathSin((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_sin"
+        in content
+    )
+    assert (
+        "case 8: return MathCos((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_cos"
+        in content
+    )
+    assert (
+        "case 9: return MathSin((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_sin"
+        in content
+    )
+    assert (
+        "case 10: return MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_cos"
+        in content
+    )
 
     data = json.loads(model.read_text())
     assert data["feature_names"] == [
@@ -63,6 +83,10 @@ def test_generated_features(tmp_path):
         "volume",
         "hour_sin",
         "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
     ]
 
 
