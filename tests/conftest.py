@@ -1,6 +1,10 @@
 import pathlib
 
-ALLOWED = {"test_generate.py"}
+ALLOWED = {
+    "test_generate.py",
+    "test_extra_price_features.py",
+    "test_generate_mql4_from_model.py",
+}
 
 
 def pytest_ignore_collect(path, config):

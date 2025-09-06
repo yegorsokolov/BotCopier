@@ -7,7 +7,7 @@ import pytest
 
 def test_generated_features(tmp_path):
     model = tmp_path / "model.json"
-    model.write_text(json.dumps({"feature_names": ["spread", "hour"]}))
+    model.write_text(json.dumps({"feature_names": ["spread", "hour_sin", "hour_cos"]}))
 
     template = tmp_path / "StrategyTemplate.mq4"
     # minimal template containing placeholder for insertion
@@ -20,10 +20,17 @@ def test_generated_features(tmp_path):
 
     content = template.read_text()
     assert "case 0: return MarketInfo(Symbol(), MODE_SPREAD); // spread" in content
-    assert "case 1: return TimeHour(TimeCurrent()); // hour" in content
+    assert (
+        "case 1: return MathSin(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_sin"
+        in content
+    )
+    assert (
+        "case 2: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos"
+        in content
+    )
 
     data = json.loads(model.read_text())
-    assert data["feature_names"] == ["spread", "hour"]
+    assert data["feature_names"] == ["spread", "hour_sin", "hour_cos"]
 
 
 def test_session_models_inserted(tmp_path):

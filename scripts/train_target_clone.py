@@ -71,7 +71,39 @@ def _load_logs(
             continue
         df[col] = pd.to_numeric(df[col], errors="ignore")
 
-    optional_cols = ["spread", "slippage", "equity", "margin_level", "volume"]
+    hours: pd.Series
+    if "hour" in df.columns:
+        hours = pd.to_numeric(df["hour"], errors="coerce").fillna(0).astype(int)
+    elif "event_time" in df.columns:
+        hours = df["event_time"].dt.hour.fillna(0).astype(int)
+        df["hour"] = hours
+    else:
+        hours = pd.Series(0, index=df.index, dtype=int)
+    df["hour_sin"] = np.sin(2 * np.pi * hours / 24.0)
+    df["hour_cos"] = np.cos(2 * np.pi * hours / 24.0)
+
+    if "day_of_week" in df.columns:
+        dows = pd.to_numeric(df["day_of_week"], errors="coerce").fillna(0).astype(int)
+        df.drop(columns=["day_of_week"], inplace=True)
+    elif "event_time" in df.columns:
+        dows = df["event_time"].dt.dayofweek.fillna(0).astype(int)
+    else:
+        dows = None
+    if dows is not None:
+        df["dow_sin"] = np.sin(2 * np.pi * dows / 7.0)
+        df["dow_cos"] = np.cos(2 * np.pi * dows / 7.0)
+
+    optional_cols = [
+        "spread",
+        "slippage",
+        "equity",
+        "margin_level",
+        "volume",
+        "hour_sin",
+        "hour_cos",
+    ]
+    if dows is not None:
+        optional_cols.extend(["dow_sin", "dow_cos"])
     feature_cols = [c for c in optional_cols if c in df.columns]
 
     # When ``chunk_size`` is provided (or lite_mode explicitly enabled), yield
@@ -102,6 +134,7 @@ def _train_lite_mode(
     mode: str = "lite",
     min_accuracy: float = 0.0,
     min_profit: float = 0.0,
+    extra_prices: dict[str, Iterable[float]] | None = None,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -112,7 +145,37 @@ def _train_lite_mode(
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
 
-    feature_names = [c for c in df.columns if c not in {"label", "profit", "net_profit"}]
+    feature_names = [
+        c
+        for c in df.columns
+        if c not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
+    ]
+
+    if extra_prices:
+        price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
+        if price_col:
+            base_series = pd.to_numeric(df[price_col], errors="coerce")
+            base_symbol = (
+                str(df.get("symbol", pd.Series(["base"])).iloc[0])
+                if len(df.get("symbol", pd.Series(["base"])).unique()) == 1
+                else "base"
+            )
+            for sym, series in extra_prices.items():
+                peer = pd.Series(list(series), index=df.index, dtype=float)
+                corr = base_series.rolling(window=5, min_periods=1).corr(peer)
+                ratio = base_series / peer.replace(0, np.nan)
+                corr_name = f"corr_{base_symbol}_{sym}"
+                ratio_name = f"ratio_{base_symbol}_{sym}"
+                df[corr_name] = corr.fillna(0.0)
+                df[ratio_name] = (
+                    ratio.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+                )
+        feature_names = [
+            c
+            for c in df.columns
+            if c
+            not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
+        ]
 
     def _session_from_hour(hour: int) -> str:
         if 0 <= hour < 8:
