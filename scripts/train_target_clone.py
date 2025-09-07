@@ -547,46 +547,44 @@ def _train_transformer(
     epochs: int = 5,
     lr: float = 1e-3,
 ) -> None:
-    """Train a simple attention encoder on rolling price windows."""
+    """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
         raise ImportError("PyTorch is required for transformer model")
 
-    df, _, _ = _load_logs(data_dir)
+    df, feature_names, _ = _load_logs(data_dir)
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
-    price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
-    if price_col is None:
-        raise ValueError("price column missing from data")
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
 
-    prices = pd.to_numeric(df[price_col], errors="coerce").to_numpy(dtype=float)
-    labels = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
-    price_mean = float(prices.mean())
-    price_std = float(prices.std() or 1.0)
-    norm_prices = (prices - price_mean) / price_std
+    X_all = df[feature_names].to_numpy(dtype=float)
+    y_all = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
+    feat_mean = X_all.mean(axis=0)
+    feat_std = X_all.std(axis=0)
+    feat_std[feat_std == 0] = 1.0
+    norm_X = (X_all - feat_mean) / feat_std
 
-    seqs: list[list[float]] = []
+    seqs: list[list[list[float]]] = []
     ys: list[float] = []
-    for i in range(window, len(norm_prices)):
-        seqs.append(norm_prices[i - window : i].tolist())
-        ys.append(labels[i])
-    X = torch.tensor(seqs, dtype=torch.float32).unsqueeze(-1)
+    for i in range(window, len(norm_X)):
+        seqs.append(norm_X[i - window : i].tolist())
+        ys.append(y_all[i])
+    X = torch.tensor(seqs, dtype=torch.float32)
     y = torch.tensor(ys, dtype=torch.float32).unsqueeze(-1)
     ds = torch.utils.data.TensorDataset(X, y)
     dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
 
     class TinyTransformer(torch.nn.Module):
-        def __init__(self, dim: int = 16):
+        def __init__(self, in_dim: int, dim: int = 16):
             super().__init__()
-            self.embed = torch.nn.Linear(1, dim)
+            self.embed = torch.nn.Linear(in_dim, dim)
             self.q = torch.nn.Linear(dim, dim)
             self.k = torch.nn.Linear(dim, dim)
             self.v = torch.nn.Linear(dim, dim)
             self.out = torch.nn.Linear(dim, 1)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            # x: (B, T, 1)
+            # x: (B, T, F)
             emb = self.embed(x)
             q = self.q(emb)
             k = self.k(emb)
@@ -598,7 +596,7 @@ def _train_transformer(
             return self.out(ctx)
 
     dim = 16
-    model = TinyTransformer(dim)
+    model = TinyTransformer(len(feature_names), dim)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.BCEWithLogitsLoss()
     model.train()
@@ -614,7 +612,7 @@ def _train_transformer(
         return t.detach().cpu().numpy().tolist()
 
     weights = {
-        "embed_weight": _tensor_list(model.embed.weight.squeeze(0)),
+        "embed_weight": _tensor_list(model.embed.weight),
         "embed_bias": _tensor_list(model.embed.bias),
         "q_weight": _tensor_list(model.q.weight),
         "q_bias": _tensor_list(model.q.bias),
@@ -631,8 +629,9 @@ def _train_transformer(
         "trained_at": datetime.utcnow().isoformat(),
         "model_type": "transformer",
         "window_size": window,
-        "price_mean": price_mean,
-        "price_std": price_std,
+        "feature_names": feature_names,
+        "feature_mean": feat_mean.tolist(),
+        "feature_std": feat_std.tolist(),
         "weights": weights,
     }
     out_dir.mkdir(parents=True, exist_ok=True)
