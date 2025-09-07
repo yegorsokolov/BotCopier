@@ -155,7 +155,9 @@ def _build_symbol_embeddings(emb_map: dict) -> str:
         lines.append("double GraphEmbedding(int idx)\n{")
         lines.append("    string s = Symbol();")
         for sym in emb_map.keys():
-            lines.append(f'    if(s == "{sym}") return g_emb_{sym}[idx];')
+            lines.append(
+                f'    if(s == "{sym}" && idx < ArraySize(g_emb_{sym})) return g_emb_{sym}[idx];'
+            )
         lines.append("    return 0.0;")
         lines.append("}")
     else:
