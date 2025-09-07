@@ -309,6 +309,12 @@ def _extract_features(
         feature_names = feature_names + ["news_sentiment"]
     price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
     if price_col is not None:
+        price_series = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
+        # Compute rolling standard deviation as a simple volatility estimate
+        df["price_volatility"] = (
+            price_series.rolling(window=30, min_periods=1).std().fillna(0.0)
+        )
+
         prices: list[float] = []
         macd_state: dict[str, float] = {}
         sma_vals: list[float] = []
@@ -319,7 +325,7 @@ def _extract_features(
         boll_m: list[float] = []
         boll_l: list[float] = []
         atr_vals: list[float] = []
-        for val in pd.to_numeric(df[price_col], errors="coerce").fillna(0.0):
+        for val in price_series:
             prices.append(float(val))
             sma_vals.append(_sma(prices, 5))
             rsi_vals.append(_rsi(prices, 14))
@@ -456,6 +462,7 @@ def _train_lite_mode(
     ensemble: str | None = None,
     mi_threshold: float = 0.0,
     neighbor_corr_windows: Iterable[int] | None = None,
+    use_volatility_weight: bool = False,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -506,6 +513,11 @@ def _train_lite_mode(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
     )
+    if use_volatility_weight and "price_volatility" in df.columns:
+        vol = pd.to_numeric(df["price_volatility"], errors="coerce").fillna(0.0)
+        mean_vol = float(vol.mean())
+        if mean_vol > 0:
+            df["sample_weight"] = df["sample_weight"] * (vol / mean_vol)
     feature_names = [
         c
         for c in feature_names
@@ -1385,6 +1397,7 @@ def _train_tree_model(
     calendar_file: Path | None = None,
     news_sentiment: pd.DataFrame | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
+    use_volatility_weight: bool = False,
     **_: object,
 ) -> None:
     """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
@@ -1424,6 +1437,11 @@ def _train_tree_model(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
     )
+    if use_volatility_weight and "price_volatility" in df.columns:
+        vol = pd.to_numeric(df["price_volatility"], errors="coerce").fillna(0.0)
+        mean_vol = float(vol.mean())
+        if mean_vol > 0:
+            df["sample_weight"] = df["sample_weight"] * (vol / mean_vol)
     feature_names = [
         c
         for c in feature_names

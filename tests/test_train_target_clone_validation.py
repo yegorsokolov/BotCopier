@@ -60,3 +60,44 @@ def test_threshold_selected_by_profit(tmp_path: Path) -> None:
     params = model["session_models"]["asian"]
     assert params["threshold"] == pytest.approx(0.0)
     assert params["metrics"]["profit"] == pytest.approx(1.5)
+
+
+def test_volatility_weighting_changes_coefficients(tmp_path):
+    X, y = make_classification(
+        n_samples=200,
+        n_features=12,
+        n_informative=5,
+        n_redundant=0,
+        random_state=0,
+    )
+    cols = [
+        "price",
+        "spread",
+        "slippage",
+        "equity",
+        "margin_level",
+        "volume",
+        "hour_sin",
+        "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
+    ]
+    df = pd.DataFrame(X, columns=cols)
+    df["price"] = 100 + df["price"].cumsum()
+    df["label"] = y
+    data_file = tmp_path / "trades_raw.csv"
+    df.to_csv(data_file, index=False)
+
+    out_dir1 = tmp_path / "out1"
+    train(data_file, out_dir1)
+    model1 = json.loads((out_dir1 / "model.json").read_text())
+    coeffs1 = model1["session_models"]["asian"]["coefficients"]
+
+    out_dir2 = tmp_path / "out2"
+    train(data_file, out_dir2, use_volatility_weight=True)
+    model2 = json.loads((out_dir2 / "model.json").read_text())
+    coeffs2 = model2["session_models"]["asian"]["coefficients"]
+
+    assert any(abs(a - b) > 1e-6 for a, b in zip(coeffs1, coeffs2))
