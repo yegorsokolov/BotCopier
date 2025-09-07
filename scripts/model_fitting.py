@@ -78,6 +78,8 @@ def fit_xgb_classifier(
     *,
     sample_weight=None,
     existing_model: "xgb.XGBClassifier | None" = None,
+    eval_set: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    early_stopping_rounds: int | None = None,
     **params: float | int,
 ) -> "xgb.XGBClassifier":  # pragma: no cover - optional dependency
     """Fit an ``xgboost.XGBClassifier`` and return the fitted model."""
@@ -90,10 +92,18 @@ def fit_xgb_classifier(
         "verbosity": 0,
     }
     default_params.update(params)
+    if early_stopping_rounds is not None:
+        default_params["early_stopping_rounds"] = early_stopping_rounds
     clf = xgb.XGBClassifier(**default_params)
     if existing_model is not None:
         clf.load_model(existing_model)  # type: ignore[arg-type]
-    clf.fit(X, y, sample_weight=sample_weight)
+    fit_params: dict = {"sample_weight": sample_weight}
+    if eval_set is not None:
+        fit_params.update({"eval_set": eval_set, "verbose": False})
+    clf.fit(X, y, **fit_params)
+    best_iter = getattr(clf, "best_iteration", None)
+    if best_iter is not None:
+        logging.info("best_iteration=%s", best_iter)
     return clf
 
 
@@ -103,6 +113,8 @@ def fit_lgbm_classifier(
     *,
     sample_weight=None,
     existing_model: "lgb.LGBMClassifier | None" = None,
+    eval_set: list[tuple[np.ndarray, np.ndarray]] | None = None,
+    early_stopping_rounds: int | None = None,
     **params: float | int,
 ) -> "lgb.LGBMClassifier":  # pragma: no cover - optional dependency
     """Fit a ``lightgbm.LGBMClassifier`` and return the fitted model."""
@@ -111,7 +123,19 @@ def fit_lgbm_classifier(
     clf = lgb.LGBMClassifier(**params)
     if existing_model is not None:
         clf = existing_model
-    clf.fit(X, y, sample_weight=sample_weight)
+    fit_params: dict = {"sample_weight": sample_weight}
+    if eval_set is not None and early_stopping_rounds is not None:
+        fit_params.update(
+            {
+                "eval_set": eval_set,
+                "early_stopping_rounds": early_stopping_rounds,
+                "verbose": False,
+            }
+        )
+    clf.fit(X, y, **fit_params)
+    best_iter = getattr(clf, "best_iteration_", None)
+    if best_iter is not None:
+        logging.info("best_iteration=%s", best_iter)
     return clf
 
 
@@ -121,6 +145,8 @@ def fit_catboost_classifier(
     *,
     sample_weight=None,
     existing_model: "cb.CatBoostClassifier | None" = None,
+    eval_set: tuple[np.ndarray, np.ndarray] | None = None,
+    early_stopping_rounds: int | None = None,
     **params: float | int,
 ) -> "cb.CatBoostClassifier":  # pragma: no cover - optional dependency
     """Fit a ``catboost.CatBoostClassifier`` and return the fitted model."""
@@ -131,7 +157,21 @@ def fit_catboost_classifier(
     clf = cb.CatBoostClassifier(**default_params)
     if existing_model is not None:
         clf = existing_model
-    clf.fit(X, y, sample_weight=sample_weight)
+    fit_params: dict = {"sample_weight": sample_weight}
+    if eval_set is not None and early_stopping_rounds is not None:
+        fit_params.update(
+            {
+                "eval_set": eval_set,
+                "early_stopping_rounds": early_stopping_rounds,
+                "verbose": False,
+            }
+        )
+    clf.fit(X, y, **fit_params)
+    best_iter = getattr(clf, "best_iteration_", None)
+    if best_iter is None and hasattr(clf, "get_best_iteration"):
+        best_iter = clf.get_best_iteration()
+    if best_iter is not None:
+        logging.info("best_iteration=%s", best_iter)
     return clf
 
 

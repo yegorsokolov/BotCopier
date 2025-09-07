@@ -37,6 +37,7 @@ FEATURE_MAP: dict[str, str] = {
     "event_flag": "CalendarFlag()",
     "event_impact": "CalendarImpact()",
     "news_sentiment": "NewsSentiment()",
+    "spread_lag_1": "MarketInfo(Symbol(), MODE_SPREAD)",
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
@@ -72,6 +73,8 @@ def build_switch(names: Sequence[str]) -> str:
             except ValueError:
                 raise KeyError(f"Invalid graph embedding feature name '{name}'") from None
             expr = f"GraphEmbedding({idx})"
+        elif name.startswith("spread_"):
+            expr = FEATURE_MAP.get("spread", "0")
         else:
             raise KeyError(
                 "No runtime expression for feature "
