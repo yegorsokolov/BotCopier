@@ -28,9 +28,10 @@ import numpy as np
 import pandas as pd
 import psutil
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import SGDClassifier, LinearRegression
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegression
+from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
 from sklearn.metrics import accuracy_score, recall_score
+from sklearn.pipeline import make_pipeline
 from .splitters import PurgedWalkForward
 from sklearn.calibration import CalibratedClassifierCV
 from .model_fitting import (
@@ -365,6 +366,7 @@ def _train_lite_mode(
     gboost_subsample_high: float = 1.0,
     purge_gap: int = 1,
     news_sentiment: pd.DataFrame | None = None,
+    ensemble: str | None = None,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -862,11 +864,53 @@ def _train_lite_mode(
     )
     router = {
         "intercept": router_clf.intercept_.astype(float).tolist(),
-        "coefficients": router_clf.coef_.astype(float).tolist(),
-        "feature_mean": r_mean.astype(float).tolist(),
-        "feature_std": r_std.astype(float).tolist(),
+       "coefficients": router_clf.coef_.astype(float).tolist(),
+       "feature_mean": r_mean.astype(float).tolist(),
+       "feature_std": r_std.astype(float).tolist(),
     }
     model["ensemble_router"] = router
+
+    if ensemble in {"voting", "stacking"}:
+        base_estimators = [
+            (
+                "logreg",
+                make_pipeline(
+                    StandardScaler(), LogisticRegression(max_iter=1000, random_state=0)
+                ),
+            ),
+            (
+                "gboost",
+                GradientBoostingClassifier(random_state=0, n_estimators=5, max_depth=1),
+            ),
+        ]
+        if ensemble == "voting":
+            ensemble_clf = VotingClassifier(estimators=base_estimators, voting="soft")
+        else:
+            ensemble_clf = StackingClassifier(
+                estimators=base_estimators,
+                final_estimator=LogisticRegression(max_iter=1000, random_state=0),
+            )
+        ensemble_clf.fit(X_all, y_all)
+        base_acc = {
+            name: float(accuracy_score(y_all, est.predict(X_all)))
+            for name, est in ensemble_clf.named_estimators_.items()
+        }
+        ensemble_acc = float(accuracy_score(y_all, ensemble_clf.predict(X_all)))
+        if ensemble == "voting":
+            weights_out = (
+                list(ensemble_clf.weights)
+                if ensemble_clf.weights is not None
+                else [1.0] * len(base_estimators)
+            )
+        else:
+            weights_out = ensemble_clf.final_estimator_.coef_.ravel().tolist()
+        model["ensemble"] = {
+            "type": ensemble,
+            "estimators": [name for name, _ in base_estimators],
+            "weights": [float(w) for w in weights_out],
+            "accuracy": ensemble_acc,
+            "base_accuracies": base_acc,
+        }
     if embeddings:
         model["symbol_embeddings"] = embeddings
     if optuna_info:
@@ -1205,6 +1249,7 @@ def train(
     calendar_file: Path | None = None,
     symbol_graph: Path | dict | None = None,
     news_sentiment: Path | pd.DataFrame | None = None,
+    ensemble: str | None = None,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -1256,6 +1301,7 @@ def train(
             calendar_file=calendar_file,
             symbol_graph=graph_path,
             news_sentiment=ns_df,
+            ensemble=ensemble,
             **kwargs,
         )
 
@@ -1448,6 +1494,12 @@ def main() -> None:
         help="which model architecture to train",
     )
     p.add_argument(
+        "--ensemble",
+        choices=["none", "voting", "stacking"],
+        default="none",
+        help="optional ensemble method to combine base models",
+    )
+    p.add_argument(
         "--optuna-trials",
         type=int,
         default=0,
@@ -1537,6 +1589,7 @@ def main() -> None:
         calendar_file=args.calendar_file,
         symbol_graph=args.symbol_graph,
         news_sentiment=args.news_sentiment,
+        ensemble=None if args.ensemble == "none" else args.ensemble,
     )
 
 
