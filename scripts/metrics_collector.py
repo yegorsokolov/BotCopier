@@ -560,14 +560,14 @@ def serve(
         client = flight.FlightClient(f"grpc://{flight_host}:{flight_port}")
 
         async def poll() -> None:
-            last = 0
+            offset = 0
             ticket = flight.Ticket(b"metrics")
             while True:
                 try:
                     reader = client.do_get(ticket)
                     table = reader.read_all()
                     rows = table.to_pylist()
-                    for row in rows[last:]:
+                    for row in rows[offset:]:
                         trace_id = row.get("trace_id", "")
                         span_id = row.get("span_id", "")
                         ctx_in = _context_from_ids(trace_id, span_id)
@@ -586,7 +586,7 @@ def serve(
                                 pass
                             logger.info(row, extra=extra)
                             await queue.put(row)
-                    last = len(rows)
+                    offset = len(rows)
                 except Exception as e:  # pragma: no cover - network issues
                     logger.warning({"error": "flight error", "details": str(e)})
                     await asyncio.sleep(1)
