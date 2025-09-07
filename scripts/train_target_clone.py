@@ -63,6 +63,8 @@ except Exception:  # pragma: no cover
     shap = None  # type: ignore
     _HAS_SHAP = False
 
+from .features import _sma, _rsi, _bollinger, _macd_update, _atr
+
 
 def _mean_abs_shap_linear(
     clf: SGDClassifier, scaler: StandardScaler, X: np.ndarray
@@ -285,6 +287,48 @@ def _extract_features(
         merged.drop(columns=["timestamp", "score"], inplace=True)
         df = merged.set_index(df_idx).sort_index()
         feature_names = feature_names + ["news_sentiment"]
+    price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
+    if price_col is not None:
+        prices: list[float] = []
+        macd_state: dict[str, float] = {}
+        sma_vals: list[float] = []
+        rsi_vals: list[float] = []
+        macd_vals: list[float] = []
+        macd_sig_vals: list[float] = []
+        boll_u: list[float] = []
+        boll_m: list[float] = []
+        boll_l: list[float] = []
+        atr_vals: list[float] = []
+        for val in pd.to_numeric(df[price_col], errors="coerce").fillna(0.0):
+            prices.append(float(val))
+            sma_vals.append(_sma(prices, 5))
+            rsi_vals.append(_rsi(prices, 14))
+            macd, sig = _macd_update(macd_state, prices[-1])
+            macd_vals.append(macd)
+            macd_sig_vals.append(sig)
+            u, m, l = _bollinger(prices, 20)
+            boll_u.append(u)
+            boll_m.append(m)
+            boll_l.append(l)
+            atr_vals.append(_atr(prices, 14))
+        df["sma"] = sma_vals
+        df["rsi"] = rsi_vals
+        df["macd"] = macd_vals
+        df["macd_signal"] = macd_sig_vals
+        df["bollinger_upper"] = boll_u
+        df["bollinger_middle"] = boll_m
+        df["bollinger_lower"] = boll_l
+        df["atr"] = atr_vals
+        feature_names = feature_names + [
+            "sma",
+            "rsi",
+            "macd",
+            "macd_signal",
+            "bollinger_upper",
+            "bollinger_middle",
+            "bollinger_lower",
+            "atr",
+        ]
     return df, feature_names, embeddings
 
 
