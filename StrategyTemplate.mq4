@@ -2,9 +2,6 @@
 
 // Strategy template for generated expert advisor.
 
-// Seconds between model reload checks for session switching.  A value of 0 disables the timer.
-extern int ReloadModelInterval = 60;
-
 double g_coeffs[];
 double g_threshold;
 double g_feature_mean[];
@@ -14,34 +11,7 @@ double g_sl_coeffs[];
 double g_tp_coeffs[];
 double g_conformal_lower;
 double g_conformal_upper;
-
-double g_coeffs_asian[] = {0.0, 0.0};
-double g_threshold_asian = 0.5;
-double g_feature_mean_asian[] = {};
-double g_feature_std_asian[] = {};
-double g_lot_coeffs_asian[] = {0.0, 0.0};
-double g_sl_coeffs_asian[] = {0.0, 0.0};
-double g_tp_coeffs_asian[] = {0.0, 0.0};
-double g_conformal_lower_asian = 0.0;
-double g_conformal_upper_asian = 1.0;
-double g_coeffs_london[] = {0.0, 0.0};
-double g_threshold_london = 0.5;
-double g_feature_mean_london[] = {};
-double g_feature_std_london[] = {};
-double g_lot_coeffs_london[] = {0.0, 0.0};
-double g_sl_coeffs_london[] = {0.0, 0.0};
-double g_tp_coeffs_london[] = {0.0, 0.0};
-double g_conformal_lower_london = 0.0;
-double g_conformal_upper_london = 1.0;
-double g_coeffs_newyork[] = {0.0, 0.0};
-double g_threshold_newyork = 0.5;
-double g_feature_mean_newyork[] = {};
-double g_feature_std_newyork[] = {};
-double g_lot_coeffs_newyork[] = {0.0, 0.0};
-double g_sl_coeffs_newyork[] = {0.0, 0.0};
-double g_tp_coeffs_newyork[] = {0.0, 0.0};
-double g_conformal_lower_newyork = 0.0;
-double g_conformal_upper_newyork = 1.0;
+// __SESSION_MODELS__
 
 bool g_use_transformer = false;
 // __TRANSFORMER_PARAMS_START__
@@ -68,46 +38,64 @@ double GraphEmbedding(int idx)
 }
 // __SYMBOL_EMBEDDINGS_END__
 
-datetime g_last_model_reload = 0;
-
-void SelectSessionModel()
+int RouteModel()
 {
-    int h = TimeHour(TimeCurrent());
-    if(h < 8)
+    double vol = iStdDev(Symbol(), PERIOD_CURRENT, 14, 0, MODE_SMA, PRICE_CLOSE, 0);
+    double hour = TimeHour(TimeCurrent());
+    int count = ArraySize(g_router_intercept);
+    double best = -1e10;
+    int best_idx = 0;
+    for(int i = 0; i < count; i++)
     {
-        ArrayCopy(g_coeffs, g_coeffs_asian);
-        ArrayCopy(g_lot_coeffs, g_lot_coeffs_asian);
-        ArrayCopy(g_sl_coeffs, g_sl_coeffs_asian);
-        ArrayCopy(g_tp_coeffs, g_tp_coeffs_asian);
-        g_threshold = g_threshold_asian;
-        ArrayCopy(g_feature_mean, g_feature_mean_asian);
-        ArrayCopy(g_feature_std, g_feature_std_asian);
-        g_conformal_lower = g_conformal_lower_asian;
-        g_conformal_upper = g_conformal_upper_asian;
+        double z = g_router_intercept[i];
+        z += (vol - g_router_feature_mean[0]) / g_router_feature_std[0] * g_router_coeffs[i*2];
+        z += (hour - g_router_feature_mean[1]) / g_router_feature_std[1] * g_router_coeffs[i*2 + 1];
+        if(z > best)
+        {
+            best = z;
+            best_idx = i;
+        }
     }
-    else if(h < 16)
+    return best_idx;
+}
+
+void SelectModel(int idx)
+{
+    if(idx == 0)
     {
-        ArrayCopy(g_coeffs, g_coeffs_london);
-        ArrayCopy(g_lot_coeffs, g_lot_coeffs_london);
-        ArrayCopy(g_sl_coeffs, g_sl_coeffs_london);
-        ArrayCopy(g_tp_coeffs, g_tp_coeffs_london);
-        g_threshold = g_threshold_london;
-        ArrayCopy(g_feature_mean, g_feature_mean_london);
-        ArrayCopy(g_feature_std, g_feature_std_london);
-        g_conformal_lower = g_conformal_lower_london;
-        g_conformal_upper = g_conformal_upper_london;
+        ArrayCopy(g_coeffs, g_coeffs_logreg);
+        ArrayCopy(g_lot_coeffs, g_lot_coeffs_logreg);
+        ArrayCopy(g_sl_coeffs, g_sl_coeffs_logreg);
+        ArrayCopy(g_tp_coeffs, g_tp_coeffs_logreg);
+        g_threshold = g_threshold_logreg;
+        ArrayCopy(g_feature_mean, g_feature_mean_logreg);
+        ArrayCopy(g_feature_std, g_feature_std_logreg);
+        g_conformal_lower = g_conformal_lower_logreg;
+        g_conformal_upper = g_conformal_upper_logreg;
+    }
+    else if(idx == 1)
+    {
+        ArrayCopy(g_coeffs, g_coeffs_xgboost);
+        ArrayCopy(g_lot_coeffs, g_lot_coeffs_xgboost);
+        ArrayCopy(g_sl_coeffs, g_sl_coeffs_xgboost);
+        ArrayCopy(g_tp_coeffs, g_tp_coeffs_xgboost);
+        g_threshold = g_threshold_xgboost;
+        ArrayCopy(g_feature_mean, g_feature_mean_xgboost);
+        ArrayCopy(g_feature_std, g_feature_std_xgboost);
+        g_conformal_lower = g_conformal_lower_xgboost;
+        g_conformal_upper = g_conformal_upper_xgboost;
     }
     else
     {
-        ArrayCopy(g_coeffs, g_coeffs_newyork);
-        ArrayCopy(g_lot_coeffs, g_lot_coeffs_newyork);
-        ArrayCopy(g_sl_coeffs, g_sl_coeffs_newyork);
-        ArrayCopy(g_tp_coeffs, g_tp_coeffs_newyork);
-        g_threshold = g_threshold_newyork;
-        ArrayCopy(g_feature_mean, g_feature_mean_newyork);
-        ArrayCopy(g_feature_std, g_feature_std_newyork);
-        g_conformal_lower = g_conformal_lower_newyork;
-        g_conformal_upper = g_conformal_upper_newyork;
+        ArrayCopy(g_coeffs, g_coeffs_lstm);
+        ArrayCopy(g_lot_coeffs, g_lot_coeffs_lstm);
+        ArrayCopy(g_sl_coeffs, g_sl_coeffs_lstm);
+        ArrayCopy(g_tp_coeffs, g_tp_coeffs_lstm);
+        g_threshold = g_threshold_lstm;
+        ArrayCopy(g_feature_mean, g_feature_mean_lstm);
+        ArrayCopy(g_feature_std, g_feature_std_lstm);
+        g_conformal_lower = g_conformal_lower_lstm;
+        g_conformal_upper = g_conformal_upper_lstm;
     }
 }
 
@@ -317,18 +305,14 @@ int OnInit()
     LoadWal(METRIC_WAL, g_metric_queue);
     g_metric_head = 0;
     g_metric_tail = ArraySize(g_metric_queue);
-    SelectSessionModel();
-    g_last_model_reload = TimeCurrent();
-    if(ReloadModelInterval > 0)
-        EventSetTimer(ReloadModelInterval);
+    int idx = RouteModel();
+    SelectModel(idx);
     grpc_client_init(TRADE_HOST, TRADE_PORT, METRIC_HOST, METRIC_PORT);
     return(INIT_SUCCEEDED);
 }
 
 void OnDeinit(const int reason)
 {
-    if(ReloadModelInterval > 0)
-        EventKillTimer();
 }
 
 void OnTimer()
@@ -337,8 +321,6 @@ void OnTimer()
     FlushMetrics();
     grpc_flush();
     ReportWalSizes();
-    SelectSessionModel();
-    g_last_model_reload = TimeCurrent();
 }
 
 double RollingCorrelation(string sym1, string sym2, int window)
@@ -499,12 +481,8 @@ double PredictTPDistance()
 
 void OnTick()
 {
-    datetime now = TimeCurrent();
-    if(ReloadModelInterval > 0 && now - g_last_model_reload >= ReloadModelInterval)
-    {
-        SelectSessionModel();
-        g_last_model_reload = now;
-    }
+    int model_idx = RouteModel();
+    SelectModel(model_idx);
 
     double prob = ScoreModel();
     double lot = PredictLot();

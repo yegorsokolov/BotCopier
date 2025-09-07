@@ -478,6 +478,35 @@ def _train_lite_mode(
         "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
         "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
     }
+
+    # Expose per-algorithm models and a simple ensemble router so downstream
+    # consumers can select between alternative algorithms.  For now each model
+    # reuses the logistic regression parameters trained above, but the structure
+    # allows heavier algorithms to be plugged in by external callers.
+    if session_models:
+        any_name = next(iter(session_models))
+        base_params = session_models[any_name]
+        models = {
+            "logreg": base_params,
+            "xgboost": base_params,
+            "lstm": base_params,
+        }
+        model["models"] = models
+
+    # Router uses hour of day and a simple volatility proxy (spread) as
+    # features.  The weights are placeholders but give generate_mql4_from_model
+    # concrete numbers to embed into the strategy template.
+    router = {
+        "intercept": [0.0, 0.0, 0.0],
+        "coefficients": [
+            [1.0, -0.5],
+            [-0.5, 1.0],
+            [0.5, 0.5],
+        ],
+        "feature_mean": [0.0, 12.0],
+        "feature_std": [1.0, 6.0],
+    }
+    model["ensemble_router"] = router
     if embeddings:
         model["symbol_embeddings"] = embeddings
     if optuna_info:

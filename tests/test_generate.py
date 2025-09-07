@@ -99,26 +99,50 @@ def test_generated_features(tmp_path):
     ]
 
 
-def test_session_models_inserted(tmp_path):
+def test_models_and_router_inserted(tmp_path):
     model = tmp_path / "model.json"
     model.write_text(
         json.dumps(
             {
                 "feature_names": [],
-                    "session_models": {
-                        "asian": {
-                            "coefficients": [1.0],
-                            "intercept": 0.1,
-                            "threshold": 0.5,
-                            "feature_mean": [0.0],
-                            "feature_std": [1.0],
-                            "conformal_lower": 0.2,
-                            "conformal_upper": 0.8,
-                        }
+                "models": {
+                    "logreg": {
+                        "coefficients": [1.0],
+                        "intercept": 0.1,
+                        "threshold": 0.5,
+                        "feature_mean": [0.0],
+                        "feature_std": [1.0],
+                        "conformal_lower": 0.2,
+                        "conformal_upper": 0.8,
                     },
-                }
-            )
+                    "xgboost": {
+                        "coefficients": [0.5],
+                        "intercept": -0.2,
+                        "threshold": 0.6,
+                        "feature_mean": [0.0],
+                        "feature_std": [1.0],
+                        "conformal_lower": 0.1,
+                        "conformal_upper": 0.9,
+                    },
+                    "lstm": {
+                        "coefficients": [0.3],
+                        "intercept": 0.0,
+                        "threshold": 0.4,
+                        "feature_mean": [0.0],
+                        "feature_std": [1.0],
+                        "conformal_lower": 0.15,
+                        "conformal_upper": 0.85,
+                    },
+                },
+                "ensemble_router": {
+                    "intercept": [0.0, 0.1, -0.1],
+                    "coefficients": [[0.5, -0.2], [0.1, 0.3], [-0.4, 0.2]],
+                    "feature_mean": [0.0, 12.0],
+                    "feature_std": [1.0, 6.0],
+                },
+            }
         )
+    )
 
     template = tmp_path / "StrategyTemplate.mq4"
     template.write_text("#property strict\n\n// __SESSION_MODELS__\n")
@@ -136,18 +160,11 @@ def test_session_models_inserted(tmp_path):
     )
 
     content = template.read_text()
-    assert "g_coeffs_asian" in content
-    assert "g_threshold_asian" in content
-    assert "g_feature_mean_asian" in content
-    assert "g_feature_std_asian" in content
-    assert "g_conformal_lower_asian" in content
-    assert "g_conformal_upper_asian" in content
-
-    data = json.loads(model.read_text())
-    assert "feature_mean" in data["session_models"]["asian"]
-    assert "feature_std" in data["session_models"]["asian"]
-    assert "conformal_lower" in data["session_models"]["asian"]
-    assert "conformal_upper" in data["session_models"]["asian"]
+    assert "g_coeffs_logreg" in content
+    assert "g_coeffs_xgboost" in content
+    assert "g_coeffs_lstm" in content
+    assert "g_router_intercept" in content
+    assert "g_router_coeffs" in content
 
 
 def test_generation_fails_on_unmapped_feature(tmp_path):

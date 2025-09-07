@@ -78,9 +78,12 @@ def build_switch(names: Sequence[str]) -> str:
 
 
 def _build_session_models(data: dict) -> str:
-    sessions = data.get("session_models", {})
+    """Generate arrays for individual models and the ensemble router."""
+
     lines: list[str] = []
-    for name, params in sessions.items():
+
+    models = data.get("models") or {}
+    for name, params in models.items():
         coeffs = [params.get("intercept", 0.0)] + params.get("coefficients", [])
         coeff_str = ", ".join(f"{c}" for c in coeffs)
         lines.append(f"double g_coeffs_{name}[] = {{{coeff_str}}};")
@@ -111,6 +114,20 @@ def _build_session_models(data: dict) -> str:
         lines.append(
             f"double g_conformal_upper_{name} = {params.get('conformal_upper', 1.0)};"
         )
+
+    router = data.get("ensemble_router") or {}
+    if router:
+        intercept = ", ".join(str(v) for v in router.get("intercept", []))
+        coeffs = ", ".join(
+            str(v) for row in router.get("coefficients", []) for v in row
+        )
+        mean = ", ".join(str(v) for v in router.get("feature_mean", []))
+        std = ", ".join(str(v) for v in router.get("feature_std", []))
+        lines.append(f"double g_router_intercept[] = {{{intercept}}};")
+        lines.append(f"double g_router_coeffs[] = {{{coeffs}}};")
+        lines.append(f"double g_router_feature_mean[] = {{{mean}}};")
+        lines.append(f"double g_router_feature_std[] = {{{std}}};")
+
     return "\n".join(lines)
 
 
