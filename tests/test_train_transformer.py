@@ -27,6 +27,8 @@ def test_transformer_weights_and_generation(tmp_path):
     weights = model["weights"]
     for key in ["q_weight", "k_weight", "v_weight", "out_weight"]:
         assert key in weights and weights[key]
+    assert "teacher_metrics" in model
+    assert "distilled" in model and model["distilled"]["coefficients"]
 
     template = tmp_path / "Strategy.mq4"
     template.write_text(Path("StrategyTemplate.mq4").read_text())
@@ -34,3 +36,4 @@ def test_transformer_weights_and_generation(tmp_path):
     content = template.read_text()
     assert "g_q_weight" in content
     assert "seq_len=" in content
+    assert "g_coeffs_logreg" in content
