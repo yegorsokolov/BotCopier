@@ -420,6 +420,8 @@ def _train_lite_mode(
         alpha = 0.05
         conf_lower = float(np.quantile(neg_probs, 1 - alpha)) if len(neg_probs) else 0.0
         conf_upper = float(np.quantile(pos_probs, alpha)) if len(pos_probs) else 1.0
+        if conf_lower > conf_upper:
+            conf_lower, conf_upper = conf_upper, conf_lower
         scaler_full = StandardScaler().fit(X_all)
         clf_full = SGDClassifier(loss="log_loss")
         X_scaled_full = scaler_full.transform(X_all)
