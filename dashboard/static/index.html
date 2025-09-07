@@ -25,7 +25,10 @@
                     { label: 'Win Rate', data: [], yAxisID: 'y' },
                     { label: 'Flush Latency (ms)', data: [], yAxisID: 'y1' },
                     { label: 'Network Latency (ms)', data: [], yAxisID: 'y1' },
-                    { label: 'CVaR', data: [], yAxisID: 'y2' }
+                    { label: 'CVaR', data: [], yAxisID: 'y2' },
+                    { label: 'ROC-AUC', data: [], yAxisID: 'y' },
+                    { label: 'PR-AUC', data: [], yAxisID: 'y' },
+                    { label: 'Brier Score', data: [], yAxisID: 'y' }
                 ]
             },
             options: {
@@ -43,6 +46,9 @@
             metricsChart.data.datasets[1].data.push(metric.flush_latency_ms);
             metricsChart.data.datasets[2].data.push(metric.network_latency_ms);
             metricsChart.data.datasets[3].data.push(metric.cvar);
+            metricsChart.data.datasets[4].data.push(metric.roc_auc);
+            metricsChart.data.datasets[5].data.push(metric.pr_auc);
+            metricsChart.data.datasets[6].data.push(metric.brier_score);
             metricsChart.update();
         }
 
