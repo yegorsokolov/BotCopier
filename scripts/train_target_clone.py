@@ -32,6 +32,7 @@ from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegres
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
 from sklearn.metrics import accuracy_score, recall_score
 from sklearn.pipeline import make_pipeline
+from sklearn.feature_selection import mutual_info_classif
 from .splitters import PurgedWalkForward
 from sklearn.calibration import CalibratedClassifierCV
 from .model_fitting import (
@@ -381,6 +382,7 @@ def _train_lite_mode(
     purge_gap: int = 1,
     news_sentiment: pd.DataFrame | None = None,
     ensemble: str | None = None,
+    mi_threshold: float = 0.0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -459,6 +461,25 @@ def _train_lite_mode(
             if c
             not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
         ]
+    # Compute mutual information for each feature and drop low-score features
+    X_mi = df[feature_names].to_numpy(dtype=float)
+    y_mi = df["label"].astype(int).to_numpy()
+    scaler_mi = StandardScaler().fit(X_mi)
+    mi_scores = mutual_info_classif(scaler_mi.transform(X_mi), y_mi)
+    retained_features = [
+        name for name, score in zip(feature_names, mi_scores) if score >= mi_threshold
+    ]
+    if len(retained_features) < len(feature_names):
+        dropped = [f for f in feature_names if f not in retained_features]
+        logging.info(
+            "Dropping %d features below MI threshold %.3f: %s",
+            len(dropped),
+            mi_threshold,
+            dropped,
+        )
+    feature_names = retained_features
+    logging.info("Retained features after MI filtering: %s", feature_names)
+
     optuna_info: dict[str, object] | None = None
     if optuna_trials > 0 and _HAS_OPTUNA:
         X_all = df[feature_names].to_numpy()
