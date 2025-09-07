@@ -46,9 +46,11 @@ except Exception:  # pragma: no cover - psutil not installed
 try:  # optional heavy dependency
     import pyarrow as pa  # type: ignore
     import pyarrow.parquet as pq  # type: ignore
+    import pyarrow.flight as flight  # type: ignore
 except Exception:  # pragma: no cover - pyarrow not installed
     pa = None  # type: ignore
     pq = None  # type: ignore
+    flight = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +250,21 @@ def consume_wal(wal: Path, schema, dest: Path) -> None:
     tmp.replace(wal)
 
 
+def consume_flight(path: str, schema, dest: Path, host: str, port: int) -> None:
+    """Retrieve a record batch stream from an Arrow Flight server."""
+    if pa is None or flight is None:
+        logger.warning({"error": "pyarrow.flight not available"})
+        return
+    client = flight.FlightClient(f"grpc://{host}:{port}")
+    ticket = flight.Ticket(path.encode())
+    try:
+        table = client.do_get(ticket).read_all()
+    except Exception as e:  # pragma: no cover - network issues
+        logger.warning({"error": "flight error", "details": str(e)})
+        return
+    validate_and_persist(table, schema, dest)
+
+
 def upload_logs(repo_path: Path, message: str) -> None:
     """Commit and push log files to a Git repository."""
     try:
@@ -263,12 +280,13 @@ def upload_logs(repo_path: Path, message: str) -> None:
 
 
 def main() -> None:  # pragma: no cover - simple CLI wrapper
-    parser = argparse.ArgumentParser(description="Consume WAL and upload logs")
-    parser.add_argument("wal", type=Path, help="path to WAL file")
+    parser = argparse.ArgumentParser(description="Consume a Flight stream")
     parser.add_argument("dest", type=Path, help="output dataset directory")
+    parser.add_argument("--flight-host", default="127.0.0.1")
+    parser.add_argument("--flight-port", type=int, default=8815)
     parser.add_argument("--repo", type=Path, help="git repository to push logs")
     args = parser.parse_args()
-    consume_wal(args.wal, METRIC_SCHEMA, args.dest)
+    consume_flight("metrics", METRIC_SCHEMA, args.dest, args.flight_host, args.flight_port)
     if args.repo:
         upload_logs(args.repo, "update logs")
 
