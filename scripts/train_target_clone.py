@@ -202,6 +202,7 @@ def _train_lite_mode(
     replay_weight: float = 1.0,
     symbol_graph: dict | str | Path | None = None,
     optuna_trials: int = 0,
+    half_life_days: float = 0.0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -219,6 +220,22 @@ def _train_lite_mode(
         weights[-len(rdf):] = replay_weight
     else:
         weights = np.ones(len(df))
+
+    # Compute sample age relative to the most recent trade
+    if "event_time" in df.columns:
+        ref_time = df["event_time"].max()
+        age_days = (
+            (ref_time - df["event_time"]).dt.total_seconds() / (24 * 3600)
+        )
+    else:
+        age_days = (df.index.max() - df.index).astype(float)
+    df["age_days"] = age_days
+
+    if half_life_days > 0:
+        decay = 0.5 ** (age_days / half_life_days)
+        weights = weights * decay
+
+    df["sample_weight"] = weights
 
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
@@ -261,6 +278,7 @@ def _train_lite_mode(
     if optuna_trials > 0 and _HAS_OPTUNA:
         X_all = df[feature_names].to_numpy()
         y_all = df["label"].astype(int).to_numpy()
+        sw_all = df["sample_weight"].to_numpy()
 
         def objective(trial: "optuna.Trial") -> float:
             model_type = trial.suggest_categorical("model_type", ["sgd", "gboost"])
@@ -275,6 +293,7 @@ def _train_lite_mode(
             for train_idx, val_idx in tscv.split(X_all):
                 X_train, X_val = X_all[train_idx], X_all[val_idx]
                 y_train, y_val = y_all[train_idx], y_all[val_idx]
+                w_train = sw_all[train_idx]
                 if model_type == "sgd":
                     scaler = StandardScaler().fit(X_train)
                     clf = SGDClassifier(
@@ -286,13 +305,14 @@ def _train_lite_mode(
                         scaler.transform(X_train),
                         y_train,
                         classes=np.array([0, 1]),
+                        sample_weight=w_train,
                     )
                     probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
                 else:
                     clf = GradientBoostingClassifier(
                         learning_rate=lr, max_depth=depth
                     )
-                    clf.fit(X_train, y_train)
+                    clf.fit(X_train, y_train, sample_weight=w_train)
                     probs = clf.predict_proba(X_val)[:, 1]
                 preds = (probs >= threshold).astype(int)
                 scores.append(accuracy_score(y_val, preds))
@@ -314,7 +334,6 @@ def _train_lite_mode(
 
     hours = df["hour"] if "hour" in df.columns else pd.Series([0] * len(df))
     df["session"] = hours.astype(int).apply(_session_from_hour)
-    df["sample_weight"] = weights
 
     session_models: dict[str, dict[str, object]] = {}
     cv_acc_all: list[float] = []
@@ -414,7 +433,9 @@ def _train_lite_mode(
             for col in target_names:
                 if col in group.columns:
                     y = pd.to_numeric(group[col], errors="coerce").to_numpy(dtype=float)
-                    reg = LinearRegression().fit(X_scaled_full, y)
+                    reg = LinearRegression().fit(
+                        X_scaled_full, y, sample_weight=w_all
+                    )
                     return {
                         "coefficients": reg.coef_.astype(float).tolist(),
                         "intercept": float(reg.intercept_),
@@ -465,6 +486,7 @@ def _train_lite_mode(
         "trained_at": datetime.utcnow().isoformat(),
         "feature_names": feature_names,
         "model_type": "logreg",
+        "half_life_days": float(half_life_days),
         "session_models": session_models,
         "session_hours": {
             "asian": [0, 8],
@@ -620,17 +642,24 @@ def _train_transformer(
 
 def train(
     data_dir: Path,
-   out_dir: Path,
-   *,
+    out_dir: Path,
+    *,
     model_type: str = "logreg",
     optuna_trials: int = 0,
+    half_life_days: float = 0.0,
     **kwargs,
 ) -> None:
     """Public training entry point."""
     if model_type == "transformer":
         _train_transformer(data_dir, out_dir, **kwargs)
     else:
-        _train_lite_mode(data_dir, out_dir, optuna_trials=optuna_trials, **kwargs)
+        _train_lite_mode(
+            data_dir,
+            out_dir,
+            optuna_trials=optuna_trials,
+            half_life_days=half_life_days,
+            **kwargs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +830,12 @@ def main() -> None:
         help="sample weight for replay decisions",
     )
     p.add_argument(
+        "--half-life-days",
+        type=float,
+        default=0.0,
+        help="half-life in days for exponential sample weight decay",
+    )
+    p.add_argument(
         "--model-type",
         choices=["logreg", "transformer"],
         default="logreg",
@@ -818,6 +853,7 @@ def main() -> None:
         args.out_dir,
         model_type=args.model_type,
         optuna_trials=args.optuna_trials,
+        half_life_days=args.half_life_days,
         min_accuracy=args.min_accuracy,
         min_profit=args.min_profit,
         replay_file=args.replay_file,

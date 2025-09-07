@@ -40,3 +40,11 @@ def test_shorter_half_life_emphasizes_recent_trades():
     proba_long = clf_long.predict_proba([[3]])[0, 1]
     proba_short = clf_short.predict_proba([[3]])[0, 1]
     assert proba_short > proba_long
+
+
+def test_weights_decrease_with_age():
+    times = np.array(
+        ["2024-01-01", "2024-01-02", "2024-01-03"], dtype="datetime64[s]"
+    )
+    weights = _compute_decay_weights(times, half_life_days=1.0)
+    assert weights[0] < weights[1] < weights[2]
