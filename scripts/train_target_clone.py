@@ -39,6 +39,7 @@ from .model_fitting import (
     fit_xgb_classifier,
     fit_lgbm_classifier,
     fit_catboost_classifier,
+    _compute_decay_weights,
 )
 
 try:  # Optional dependency
@@ -488,17 +489,29 @@ def _train_lite_mode(
     if replay_file:
         weights[-len(rdf) :] *= replay_weight
 
-    # Compute sample age relative to the most recent trade
+    # Compute sample age and optional exponential decay weights
     if "event_time" in df.columns:
-        ref_time = df["event_time"].max()
-        age_days = (ref_time - df["event_time"]).dt.total_seconds() / (24 * 3600)
+        event_times = df["event_time"].to_numpy(dtype="datetime64[s]")
+        if half_life_days > 0:
+            age_days, decay = _compute_decay_weights(event_times, half_life_days)
+            weights = weights * decay
+        else:
+            ref_time = event_times.max()
+            age_days = (
+                (ref_time - event_times).astype("timedelta64[s]").astype(float)
+                / (24 * 3600)
+            )
     else:
         age_days = (df.index.max() - df.index).astype(float)
+        if half_life_days > 0:
+            decay = 0.5 ** (age_days / half_life_days)
+            weights = weights * decay
     df["age_days"] = age_days
 
-    if half_life_days > 0:
-        decay = 0.5 ** (age_days / half_life_days)
-        weights = weights * decay
+    # Normalise weights to mean 1 for stable training
+    mean_w = float(np.mean(weights))
+    if mean_w > 0:
+        weights = weights / mean_w
 
     df["sample_weight"] = weights
 
@@ -518,6 +531,11 @@ def _train_lite_mode(
         mean_vol = float(vol.mean())
         if mean_vol > 0:
             df["sample_weight"] = df["sample_weight"] * (vol / mean_vol)
+    # Re-normalise weights after all adjustments
+    sw = df["sample_weight"].to_numpy(dtype=float)
+    mean_sw = float(np.mean(sw))
+    if mean_sw > 0:
+        df["sample_weight"] = sw / mean_sw
     feature_names = [
         c
         for c in feature_names
@@ -1436,12 +1454,27 @@ def _train_tree_model(
     if replay_file:
         weights[-len(rdf) :] *= replay_weight
     if "event_time" in df.columns:
-        ref_time = df["event_time"].max()
-        age_days = (ref_time - df["event_time"]).dt.total_seconds() / (24 * 3600)
+        event_times = df["event_time"].to_numpy(dtype="datetime64[s]")
+        if half_life_days > 0:
+            age_days, decay = _compute_decay_weights(event_times, half_life_days)
+            weights = weights * decay
+        else:
+            ref_time = event_times.max()
+            age_days = (
+                (ref_time - event_times).astype("timedelta64[s]").astype(float)
+                / (24 * 3600)
+            )
     else:
         age_days = pd.Series(0.0, index=df.index)
-    if half_life_days > 0:
-        weights = weights * (0.5 ** (age_days / half_life_days))
+        if half_life_days > 0:
+            decay = 0.5 ** (age_days / half_life_days)
+            weights = weights * decay
+    df["age_days"] = age_days
+
+    # Normalise weights before fitting
+    mean_w = float(np.mean(weights))
+    if mean_w > 0:
+        weights = weights / mean_w
     df["sample_weight"] = weights
 
     if "label" not in df.columns:
@@ -1460,6 +1493,11 @@ def _train_tree_model(
         mean_vol = float(vol.mean())
         if mean_vol > 0:
             df["sample_weight"] = df["sample_weight"] * (vol / mean_vol)
+    # Re-normalise after volatility adjustment
+    sw = df["sample_weight"].to_numpy(dtype=float)
+    mean_sw = float(np.mean(sw))
+    if mean_sw > 0:
+        df["sample_weight"] = sw / mean_sw
     feature_names = [
         c
         for c in feature_names
