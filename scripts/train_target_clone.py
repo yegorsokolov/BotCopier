@@ -41,6 +41,7 @@ from .model_fitting import (
     fit_catboost_classifier,
     _compute_decay_weights,
 )
+from .meta_strategy import train_meta_model
 
 try:  # Optional dependency
     import optuna
@@ -224,6 +225,7 @@ def _extract_features(
     event_window: float = 60.0,
     news_sentiment: pd.DataFrame | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
+    regime_model: dict | str | Path | None = None,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]]]:
     """Attach graph embeddings, calendar flags and correlation features."""
 
@@ -424,6 +426,41 @@ def _extract_features(
                 df[col] = df[col].fillna(0.0)
             feature_names.extend(base_map.keys())
 
+    if regime_model is not None:
+        try:
+            if not isinstance(regime_model, dict):
+                with open(regime_model) as f_rm:
+                    rm = json.load(f_rm)
+            else:
+                rm = regime_model
+            r_feats = rm.get("feature_names", [])
+            centers = np.asarray(rm.get("centers", []), dtype=float)
+            mean = np.asarray(rm.get("mean", []), dtype=float)
+            std = np.asarray(rm.get("std", []), dtype=float)
+            std[std == 0] = 1.0
+            if (
+                len(r_feats)
+                and centers.size
+                and all(col in df.columns for col in r_feats)
+            ):
+                X = df[r_feats].astype(float).to_numpy()
+                X_scaled = (X - mean) / std
+                dists = np.linalg.norm(
+                    X_scaled[:, None, :] - centers[None, :, :], axis=2
+                )
+                labels = np.argmin(dists, axis=1).astype(int)
+                df["regime"] = labels
+                one_hot_cols = []
+                for i in range(centers.shape[0]):
+                    col = f"regime_{i}"
+                    df[col] = (labels == i).astype(float)
+                    one_hot_cols.append(col)
+                for col in one_hot_cols:
+                    if col not in feature_names:
+                        feature_names.append(col)
+        except Exception:
+            pass
+
     return df, feature_names, embeddings
 
 
@@ -464,6 +501,8 @@ def _train_lite_mode(
     mi_threshold: float = 0.0,
     neighbor_corr_windows: Iterable[int] | None = None,
     use_volatility_weight: bool = False,
+    regime_model: dict | str | Path | None = None,
+    per_regime: bool = False,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -525,6 +564,7 @@ def _train_lite_mode(
         calendar_file=calendar_file,
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
+        regime_model=regime_model,
     )
     if use_volatility_weight and "price_volatility" in df.columns:
         vol = pd.to_numeric(df["price_volatility"], errors="coerce").fillna(0.0)
@@ -681,16 +721,23 @@ def _train_lite_mode(
             return "london"
         return "newyork"
 
-    hours = df["hour"] if "hour" in df.columns else pd.Series([0] * len(df))
-    df["session"] = hours.astype(int).apply(_session_from_hour)
+    if per_regime and "regime" in df.columns:
+        group_field = "regime"
+        group_iter = df.groupby("regime")
+    else:
+        hours = df["hour"] if "hour" in df.columns else pd.Series([0] * len(df))
+        df["session"] = hours.astype(int).apply(_session_from_hour)
+        group_field = "session"
+        group_iter = df.groupby("session")
 
     session_models: dict[str, dict[str, object]] = {}
     cv_acc_all: list[float] = []
     cv_profit_all: list[float] = []
-    for name, group in df.groupby("session"):
+    for name, group in group_iter:
+        model_name = f"regime_{int(name)}" if group_field == "regime" else name
         if len(group) < 2:
             continue
-        feat_cols = [c for c in feature_names if c != "session"]
+        feat_cols = [c for c in feature_names if c != group_field]
         X_all = group[feat_cols].to_numpy()
         y_all = group["label"].astype(int).to_numpy()
         w_all = group["sample_weight"].to_numpy()
@@ -883,7 +930,8 @@ def _train_lite_mode(
             params["sl_model"] = sl_model
         if tp_model:
             params["tp_model"] = tp_model
-        session_models[name] = params
+        params["n_samples"] = int(len(group))
+        session_models[model_name] = params
         cv_acc_all.append(mean_acc)
         cv_profit_all.append(mean_profit)
 
@@ -955,6 +1003,11 @@ def _train_lite_mode(
     # Aggregate conformal bounds across sessions for convenience
     conf_lowers = [p["conformal_lower"] for p in session_models.values()]
     conf_uppers = [p["conformal_upper"] for p in session_models.values()]
+    gating_params = None
+    if per_regime and "regime" in df.columns:
+        regime_cols = [c for c in df.columns if c.startswith("regime_")]
+        if regime_cols:
+            gating_params = train_meta_model(df, regime_cols, label_col="regime")
     model = {
         "model_id": "target_clone",
         "trained_at": datetime.utcnow().isoformat(),
@@ -962,11 +1015,6 @@ def _train_lite_mode(
         "model_type": "logreg",
         "half_life_days": float(half_life_days),
         "session_models": session_models,
-        "session_hours": {
-            "asian": [0, 8],
-            "london": [8, 16],
-            "newyork": [16, 24],
-        },
         "training_mode": "lite",
         "mode": mode,
         "cv_accuracy": float(np.mean(cv_acc_all)) if cv_acc_all else 0.0,
@@ -974,8 +1022,16 @@ def _train_lite_mode(
         "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
         "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
     }
+    if not per_regime:
+        model["session_hours"] = {
+            "asian": [0, 8],
+            "london": [8, 16],
+            "newyork": [16, 24],
+        }
     if symbol_thresholds:
         model["symbol_thresholds"] = symbol_thresholds
+    if gating_params:
+        model["regime_gating"] = gating_params
 
     # ------------------------------------------------------------------
     # Train alternative base models and a simple gating network
@@ -1572,6 +1628,8 @@ def train(
     news_sentiment: Path | pd.DataFrame | None = None,
     ensemble: str | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
+    regime_model: Path | dict | None = None,
+    per_regime: bool = False,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -1627,6 +1685,8 @@ def train(
             news_sentiment=ns_df,
             ensemble=ensemble,
             neighbor_corr_windows=neighbor_corr_windows,
+            regime_model=regime_model,
+            per_regime=per_regime,
             **kwargs,
         )
 
