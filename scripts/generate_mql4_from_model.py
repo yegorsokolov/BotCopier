@@ -82,7 +82,11 @@ def _build_session_models(data: dict) -> str:
 
     lines: list[str] = []
 
-    models = data.get("models") or {}
+    # ``model.json`` produced by training historically stored per-algorithm
+    # parameters under ``models``.  Newer pipelines may instead emit
+    # ``session_models`` keyed by trading session.  Accept either key so the
+    # generator remains backward compatible.
+    models = data.get("models") or data.get("session_models") or {}
     for name, params in models.items():
         coeffs = [params.get("intercept", 0.0)] + params.get("coefficients", [])
         coeff_str = ", ".join(f"{c}" for c in coeffs)

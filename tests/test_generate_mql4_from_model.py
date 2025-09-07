@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -157,6 +158,48 @@ def test_models_and_router_inserted(tmp_path):
     assert "g_router_intercept" in content
     assert "g_router_coeffs" in content
 
+
+def test_on_tick_logs_uncertain_reason(tmp_path):
+    model = tmp_path / "model.json"
+    model.write_text(
+        json.dumps(
+            {
+                "feature_names": [],
+                "models": {
+                    "logreg": {
+                        "coefficients": [1.0],
+                        "intercept": 0.0,
+                        "threshold": 0.5,
+                        "feature_mean": [0.0],
+                        "feature_std": [1.0],
+                        "conformal_lower": 0.4,
+                        "conformal_upper": 0.6,
+                    }
+                },
+            }
+        )
+    )
+
+    template_src = Path(__file__).resolve().parents[1] / "StrategyTemplate.mq4"
+    template = tmp_path / "StrategyTemplate.mq4"
+    template.write_text(template_src.read_text())
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            model,
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+
+    content = template.read_text()
+    assert "prob >= g_conformal_lower && prob <= g_conformal_upper" in content
+    assert 'decision = "skip"' in content
+    assert ",reason=" in content
 
 def test_generation_fails_on_unmapped_feature(tmp_path):
     model = tmp_path / "model.json"
