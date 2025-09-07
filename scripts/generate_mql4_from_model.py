@@ -131,6 +131,13 @@ def _build_session_models(data: dict) -> str:
         lines.append(f"double g_router_coeffs[] = {{{coeffs}}};")
         lines.append(f"double g_router_feature_mean[] = {{{mean}}};")
         lines.append(f"double g_router_feature_std[] = {{{std}}};")
+    else:
+        # Provide default zeroed router arrays so the template compiles even
+        # without trained gating weights.
+        lines.append("double g_router_intercept[1] = {0.0};")
+        lines.append("double g_router_coeffs[2] = {0.0, 0.0};")
+        lines.append("double g_router_feature_mean[2] = {0.0, 0.0};")
+        lines.append("double g_router_feature_std[2] = {1.0, 1.0};")
 
     return "\n".join(lines)
 
