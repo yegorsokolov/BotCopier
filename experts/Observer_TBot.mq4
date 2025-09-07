@@ -21,6 +21,9 @@ public:
 
 CFlightClient g_flight;
 bool g_connected = false;
+int g_fileWriteErrors = 0;
+int g_socketErrors   = 0;
+int g_queueBacklog   = 0;
 
 int OnInit()
   {
@@ -31,18 +34,25 @@ int OnInit()
 void LogFallback(string file,string line)
   {
    int handle = FileOpen(file,FILE_CSV|FILE_READ|FILE_WRITE|FILE_SHARE_WRITE|FILE_SHARE_READ|FILE_APPEND);
-   if(handle!=INVALID_HANDLE)
+   if(handle==INVALID_HANDLE)
      {
-      FileSeek(handle,0,SEEK_END);
-      FileWrite(handle,line);
-      FileClose(handle);
+      g_fileWriteErrors++;
+      return;
      }
+   FileSeek(handle,0,SEEK_END);
+   if(FileWrite(handle,line)<=0)
+      g_fileWriteErrors++;
+   FileClose(handle);
   }
 
 bool SendFlight(string path,string payload)
   {
    if(g_connected && g_flight.Send(path,payload))
+     {
       return(true);
+     }
+   g_socketErrors++;
+   g_queueBacklog++;
    return(false);
   }
 
@@ -58,11 +68,22 @@ void PublishMetric(string csvLine)
       LogFallback(MetricFallback,csvLine);
   }
 
+void WriteMetrics()
+  {
+   string line =
+      TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+","+
+      IntegerToString(g_fileWriteErrors)+","+
+      IntegerToString(g_socketErrors)+","+
+      IntegerToString(g_queueBacklog);
+   PublishMetric(line);
+  }
+
 int OnTick()
   {
    // Example usage: replace with actual payload generation
    string tradeLine = "1,EURUSD";
    PublishTrade(tradeLine);
+   WriteMetrics();
    return(0);
   }
 
