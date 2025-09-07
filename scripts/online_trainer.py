@@ -21,6 +21,8 @@ import logging
 import time
 import os
 import threading
+import subprocess
+import sys
 from pathlib import Path
 from typing import Iterable, List, Dict, Any
 
@@ -41,6 +43,14 @@ try:  # detect resources to adapt behaviour on weaker hardware
         from train_target_clone import detect_resources  # type: ignore
 except Exception:  # pragma: no cover - detection optional
     detect_resources = None  # type: ignore
+
+try:  # drift metrics utilities
+    if __package__:
+        from .drift_monitor import _compute_metrics, _update_model
+    else:  # pragma: no cover - script executed directly
+        from drift_monitor import _compute_metrics, _update_model  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    _compute_metrics = _update_model = None  # type: ignore
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -200,7 +210,12 @@ class OnlineTrainer:
             payload["half_life_days"] = self.half_life_days
         if self.weight_decay:
             payload["weight_decay"] = self.weight_decay
-        self.model_path.write_text(json.dumps(payload))
+        try:
+            existing = json.loads(self.model_path.read_text())
+        except Exception:
+            existing = {}
+        existing.update(payload)
+        self.model_path.write_text(json.dumps(existing))
     # ------------------------------------------------------------------
     # Incremental training
     # ------------------------------------------------------------------
@@ -256,6 +271,61 @@ class OnlineTrainer:
                 extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
             )
             return changed
+
+    # ------------------------------------------------------------------
+    # Drift monitoring
+    # ------------------------------------------------------------------
+    def start_drift_monitor(
+        self,
+        baseline_file: Path,
+        recent_file: Path,
+        *,
+        log_dir: Path,
+        out_dir: Path,
+        files_dir: Path,
+        threshold: float = 0.2,
+        interval: float = 300.0,
+    ) -> None:
+        """Periodically compute drift metrics and retrain if necessary."""
+        if _compute_metrics is None or _update_model is None:
+            logger.warning("drift_monitor unavailable")
+            return
+
+        def _loop() -> None:
+            while True:
+                try:
+                    metrics = _compute_metrics(baseline_file, recent_file)
+                    retrain = max(metrics.values()) > threshold
+                    _update_model(self.model_path, metrics, retrain)
+                    if retrain:
+                        method = max(metrics, key=metrics.get)
+                        base = Path(__file__).resolve().parent
+                        subprocess.run(
+                            [
+                                sys.executable,
+                                str(base / "auto_retrain.py"),
+                                "--log-dir",
+                                str(log_dir),
+                                "--out-dir",
+                                str(out_dir),
+                                "--files-dir",
+                                str(files_dir),
+                                "--baseline-file",
+                                str(baseline_file),
+                                "--recent-file",
+                                str(recent_file),
+                                "--drift-method",
+                                method,
+                                "--drift-threshold",
+                                str(threshold),
+                            ],
+                            check=True,
+                        )
+                except Exception:
+                    logger.exception("drift monitoring failed")
+                time.sleep(interval)
+
+        threading.Thread(target=_loop, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Data sources
@@ -347,11 +417,44 @@ def main(argv: List[str] | None = None) -> None:
     p.add_argument("--model", type=Path, default=Path("model.json"))
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--flight-path", default="trades", help="Flight path name")
+    p.add_argument("--baseline-file", type=Path, help="Baseline CSV for drift monitoring")
+    p.add_argument("--recent-file", type=Path, help="Recent CSV for drift monitoring")
+    p.add_argument("--log-dir", type=Path, help="Log directory for retrain")
+    p.add_argument("--out-dir", type=Path, help="Output directory for retrain")
+    p.add_argument("--files-dir", type=Path, help="Files directory for retrain")
+    p.add_argument(
+        "--drift-threshold",
+        type=float,
+        default=float(os.getenv("DRIFT_THRESHOLD", "0.2")),
+        help="Drift threshold triggering retrain",
+    )
+    p.add_argument(
+        "--drift-interval",
+        type=float,
+        default=float(os.getenv("DRIFT_INTERVAL", "300")),
+        help="Seconds between drift checks",
+    )
     args = p.parse_args(argv)
 
     trainer = OnlineTrainer(args.model, args.batch_size)
     _sd_notify_ready()
     _start_watchdog_thread()
+    if (
+        args.baseline_file
+        and args.recent_file
+        and args.log_dir
+        and args.out_dir
+        and args.files_dir
+    ):
+        trainer.start_drift_monitor(
+            args.baseline_file,
+            args.recent_file,
+            log_dir=args.log_dir,
+            out_dir=args.out_dir,
+            files_dir=args.files_dir,
+            threshold=args.drift_threshold,
+            interval=args.drift_interval,
+        )
     if args.csv:
         trainer.tail_csv(args.csv)
     else:
