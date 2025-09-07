@@ -136,6 +136,15 @@ Feed this back into training to emphasise corrections and scale them further::
     python scripts/train_target_clone.py --replay-file divergences.csv --replay-weight 3
 
 
+## Time-decay Weighting
+
+Older trades can be down‑weighted so that recent market behaviour has more
+influence.  ``scripts/train_target_clone.py`` accepts ``--half-life-days`` which
+applies an exponential decay of ``0.5 ** (age_days / half_life_days)`` to each
+sample where ``age_days`` is the number of days since the most recent trade.
+The selected ``half_life_days`` value is stored in ``model.json`` for reference.
+
+
 ## Symbol Graph Embeddings
 
 Correlation structure between symbols can be captured with
