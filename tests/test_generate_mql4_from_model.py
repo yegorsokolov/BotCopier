@@ -91,6 +91,37 @@ def test_generated_features(tmp_path):
     ]
 
 
+def test_pruned_features_not_emitted(tmp_path):
+    model = tmp_path / "model.json"
+    model.write_text(
+        json.dumps(
+            {
+                "feature_names": ["spread", "slippage"],
+                "retained_features": ["slippage"],
+            }
+        )
+    )
+
+    template = tmp_path / "StrategyTemplate.mq4"
+    template.write_text("#property strict\n\n// __GET_FEATURE__\n")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            model,
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+
+    content = template.read_text()
+    assert "OrderSlippage()" in content
+    assert "MODE_SPREAD" not in content
+
+
 def test_models_and_router_inserted(tmp_path):
     model = tmp_path / "model.json"
     model.write_text(

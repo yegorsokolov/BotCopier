@@ -271,7 +271,7 @@ def _build_transformer_params(data: dict) -> str:
 def insert_get_feature(model: Path, template: Path) -> None:
     """Insert generated GetFeature and session models into ``template``."""
     data = json.loads(model.read_text())
-    feature_names = data.get("feature_names", [])
+    feature_names = data.get("retained_features") or data.get("feature_names", [])
     get_feature = build_switch(feature_names)
     session_models = _build_session_models(data)
     symbol_emb = _build_symbol_embeddings(data.get("symbol_embeddings", {}))
