@@ -306,10 +306,38 @@ def train(
     federated_server: str | None = None,
     sync_interval: int = 50,
     metrics_url: str | None = None,
+    intrinsic_reward: bool = False,
+    intrinsic_reward_weight: float = 0.0,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
-    states, actions, rewards, next_states, vec = _build_dataset(data_dir, flight_uri, kafka_brokers)
+    states, actions, rewards_ext, next_states, vec = _build_dataset(
+        data_dir, flight_uri, kafka_brokers
+    )
     n_features = states.shape[1]
+
+    rewards = rewards_ext.copy()
+    if intrinsic_reward:
+        if not HAS_SB3_CONTRIB:
+            raise ImportError("sb3_contrib is required for intrinsic rewards")
+
+        class _SimpleRND:
+            def __init__(self, input_dim: int, lr: float = 1e-3, hidden: int = 32):
+                self.target = np.random.randn(input_dim, hidden).astype(np.float32)
+                self.predictor = np.random.randn(input_dim, hidden).astype(np.float32)
+                self.lr = lr
+
+            def bonus(self, obs: np.ndarray) -> float:
+                obs = obs.astype(np.float32)
+                t = obs @ self.target
+                p = obs @ self.predictor
+                err = t - p
+                # simple SGD update
+                self.predictor += self.lr * np.outer(obs, err)
+                return float(np.mean(err ** 2))
+
+        rnd = _SimpleRND(n_features)
+        bonuses = [rnd.bonus(s) for s in states[: len(rewards)]]
+        rewards = rewards + intrinsic_reward_weight * np.asarray(bonuses)
 
     init_model_data = None
     if start_model is not None and start_model.exists():
@@ -473,7 +501,7 @@ def train(
 
         vec_cls = SubprocVecEnv if num_envs > 1 else None
         env = make_vec_env(make_trade_env, n_envs=num_envs, vec_env_cls=vec_cls)
-        eval_env = TradeEnv(states, rewards)
+        eval_env = TradeEnv(states, rewards_ext)
         algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN}
         if HAS_SB3:
             algo_map.update({"a2c": sb3.A2C, "ddpg": sb3.DDPG})
@@ -638,10 +666,13 @@ def train(
             "accuracy": float("nan"),
             "num_samples": len(actions),
             "weights_file": weights_path.with_suffix(".zip").name,
+            "intrinsic_reward": intrinsic_reward,
         }
         model_info["replay_alpha"] = replay_alpha
         model_info["replay_beta"] = replay_beta
         model_info["n_step"] = n_step
+        if intrinsic_reward:
+            model_info["intrinsic_reward_weight"] = intrinsic_reward_weight
         if not np.isnan(expected_return):
             model_info["expected_return"] = expected_return
         if not np.isnan(downside_risk):
@@ -900,6 +931,17 @@ def main() -> None:
             help="training iterations between federated buffer syncs",
         )
         p.add_argument("--metrics-url", help="endpoint to POST live metrics for feedback")
+        p.add_argument(
+            "--intrinsic-reward",
+            action="store_true",
+            help="enable intrinsic reward bonus (requires sb3-contrib)",
+        )
+        p.add_argument(
+            "--intrinsic-weight",
+            type=float,
+            default=0.0,
+            help="weight for intrinsic reward bonus",
+        )
         args = p.parse_args()
         train(
             Path(args.data_dir),
@@ -924,6 +966,8 @@ def main() -> None:
             federated_server=args.federated_server,
             sync_interval=args.sync_interval,
             metrics_url=args.metrics_url,
+            intrinsic_reward=args.intrinsic_reward,
+            intrinsic_reward_weight=args.intrinsic_weight,
         )
         logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
 
