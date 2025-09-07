@@ -23,6 +23,7 @@ def test_generated_features(tmp_path):
                     "month_cos",
                     "dom_sin",
                     "dom_cos",
+                    "atr",
                 ]
             }
         )
@@ -74,6 +75,9 @@ def test_generated_features(tmp_path):
         "case 10: return MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_cos"
         in content
     )
+    assert (
+        "case 11: return iATR(Symbol(), PERIOD_CURRENT, 14, 0); // atr" in content
+    )
 
     data = json.loads(model.read_text())
     assert data["feature_names"] == [
@@ -88,6 +92,7 @@ def test_generated_features(tmp_path):
         "month_cos",
         "dom_sin",
         "dom_cos",
+        "atr",
     ]
 
 
