@@ -6,10 +6,13 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tests import HAS_SB3
+from tests import HAS_SB3, HAS_SB3_CONTRIB
 
 if HAS_SB3:
     from scripts.train_rl_agent import train
+    from scripts.train_rl_agent import _build_dataset
+    import stable_baselines3 as sb3
+    import torch
 
 pytestmark = pytest.mark.skipif(not HAS_SB3, reason="stable-baselines3 not installed")
 
@@ -121,3 +124,57 @@ def test_train_rl_agent_sb3(tmp_path: Path, algo: str) -> None:
     assert "avg_reward" in data
     if algo == "dqn":
         assert data.get("init_model_id") == "sup_model"
+
+
+@pytest.mark.skipif(
+    not (HAS_SB3 and HAS_SB3_CONTRIB),
+    reason="stable-baselines3 or sb3-contrib not installed",
+)
+def test_intrinsic_reward_increases_entropy(tmp_path: Path) -> None:
+    data_dir = tmp_path / "logs"
+    base_out = tmp_path / "base"
+    intr_out = tmp_path / "intr"
+    for p in [data_dir, base_out, intr_out]:
+        p.mkdir()
+    _write_log(data_dir / "trades_0.csv")
+
+    start_model = base_out / "start.json"
+    start = {
+        "model_id": "sup_model",
+        "coefficients": [0.1, 0.1],
+        "intercept": 0.0,
+        "feature_names": ["hour_sin", "hour_cos"],
+    }
+    with open(start_model, "w") as f:
+        json.dump(start, f)
+
+    train(
+        data_dir,
+        base_out,
+        start_model=start_model,
+        algo="a2c",
+        training_steps=20,
+        learning_rate=0.2,
+        gamma=0.95,
+    )
+
+    train(
+        data_dir,
+        intr_out,
+        start_model=start_model,
+        algo="a2c",
+        training_steps=20,
+        learning_rate=0.2,
+        gamma=0.95,
+        intrinsic_reward=True,
+        intrinsic_reward_weight=1.0,
+    )
+
+    states, _, _, _, _ = _build_dataset(data_dir, None, None)
+    obs = torch.tensor(states, dtype=torch.float32)
+    base_model = sb3.A2C.load(str(base_out / "model_weights.zip"))
+    intr_model = sb3.A2C.load(str(intr_out / "model_weights.zip"))
+    with torch.no_grad():
+        base_ent = base_model.policy.get_distribution(obs).entropy().mean().item()
+        intr_ent = intr_model.policy.get_distribution(obs).entropy().mean().item()
+    assert intr_ent >= base_ent
