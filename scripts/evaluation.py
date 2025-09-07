@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
-from sklearn.metrics import accuracy_score
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    brier_score_loss,
+    roc_auc_score,
+)
 
 
 def _parse_time(value: str) -> datetime:
@@ -132,6 +138,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
     trade_by_decision: Dict[int, Dict] = {}
     bound_in = 0
     bound_total = 0
+    y_true: List[int] = []
+    y_score: List[float] = []
     for idx, trade in enumerate(actual_trades):
         did = trade.get("decision_id")
         if did is not None and did not in trade_by_decision:
@@ -139,7 +147,9 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
     for pred in predictions:
         model_idx = pred.get("executed_model_idx")
         if model_idx is not None:
-            predictions_per_model[model_idx] = predictions_per_model.get(model_idx, 0) + 1
+            predictions_per_model[model_idx] = (
+                predictions_per_model.get(model_idx, 0) + 1
+            )
         match_idx = None
         if pred.get("decision_id") is not None:
             entry = trade_by_decision.get(pred["decision_id"])
@@ -157,6 +167,17 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
                 if 0 <= delta <= window:
                     match_idx = idx
                     break
+
+        label = 1 if match_idx is not None else 0
+        prob = pred.get("probability")
+        if prob is not None:
+            y_true.append(label)
+            y_score.append(prob)
+            if conformal_lower is not None and conformal_upper is not None:
+                bound_total += 1
+                if conformal_lower <= prob <= conformal_upper:
+                    bound_in += 1
+
         if match_idx is not None:
             used.add(match_idx)
             matches += 1
@@ -168,13 +189,14 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
             else:
                 gross_loss += -p
             if model_idx is not None:
-                matches_per_model[model_idx] = matches_per_model.get(model_idx, 0) + 1
-            if conformal_lower is not None and conformal_upper is not None:
-                prob = pred.get("probability")
-                if prob is not None:
-                    bound_total += 1
-                    if conformal_lower <= prob <= conformal_upper:
-                        bound_in += 1
+                matches_per_model[model_idx] = (
+                matches_per_model.get(model_idx, 0) + 1
+            )
+
+    for idx, trade in enumerate(actual_trades):
+        if idx not in used:
+            y_true.append(1)
+            y_score.append(0.0)
     tp = matches
     fp = len(predictions) - matches
     fn = len(actual_trades) - matches
@@ -207,6 +229,23 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
             downside_dev = math.sqrt(sum((p) ** 2 for p in downside) / len(downside))
         if downside_dev > 0:
             sortino = mean / downside_dev
+    roc_auc = None
+    pr_auc = None
+    brier = None
+    reliability = {"prob_true": [], "prob_pred": []}
+    if y_score:
+        brier = brier_score_loss(y_true, y_score)
+        try:
+            prob_true, prob_pred = calibration_curve(y_true, y_score, n_bins=10)
+            reliability = {
+                "prob_true": prob_true.tolist(),
+                "prob_pred": prob_pred.tolist(),
+            }
+        except Exception:
+            pass
+        if len(set(y_true)) > 1:
+            roc_auc = roc_auc_score(y_true, y_score)
+            pr_auc = average_precision_score(y_true, y_score)
     conformal = bound_in / bound_total if bound_total else None
     stats: Dict[str, object] = {
         "matched_events": matches,
@@ -228,6 +267,10 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
         "conformal_coverage": conformal,
         "predictions_per_model": predictions_per_model,
         "matches_per_model": matches_per_model,
+        "roc_auc": roc_auc,
+        "pr_auc": pr_auc,
+        "brier_score": brier,
+        "reliability_curve": reliability,
     }
     if model_value_mean is not None:
         stats["model_value_mean"] = model_value_mean

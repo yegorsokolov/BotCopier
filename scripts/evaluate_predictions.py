@@ -1,5 +1,6 @@
 """CLI wrapper for evaluating predictions against actual trades."""
 import argparse
+import csv
 import json
 from pathlib import Path
 
@@ -43,6 +44,15 @@ def main() -> None:
         json.dump(stats, f, indent=2)
     print(f"Wrote report to {out_path}")
 
+    rc = stats.get("reliability_curve")
+    if rc and rc.get("prob_true"):
+        rc_path = out_path.with_name("reliability_curve.csv")
+        with open(rc_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["prob_true", "prob_pred"])
+            writer.writerows(zip(rc["prob_true"], rc["prob_pred"]))
+        print(f"Wrote reliability curve to {rc_path}")
+
     print("--- Evaluation Summary ---")
     print(f"Predicted events : {stats['predicted_events']}")
     print(
@@ -54,6 +64,12 @@ def main() -> None:
         f"Profit Factor    : {stats['profit_factor']:.2f}"
         f" (gross P/L: {stats['gross_profit']-stats['gross_loss']:.2f})"
     )
+    if stats.get("roc_auc") is not None:
+        print(f"ROC-AUC         : {stats['roc_auc']:.3f}")
+    if stats.get("pr_auc") is not None:
+        print(f"PR-AUC          : {stats['pr_auc']:.3f}")
+    if stats.get("brier_score") is not None:
+        print(f"Brier Score     : {stats['brier_score']:.3f}")
     print(f"Sharpe Ratio     : {stats['sharpe_ratio']:.2f}")
     print(f"Sortino Ratio    : {stats['sortino_ratio']:.2f}")
     print(f"Expectancy       : {stats['expectancy']:.2f}")
