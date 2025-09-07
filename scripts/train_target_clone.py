@@ -803,6 +803,30 @@ def _train_transformer(
         "out_bias": _tensor_list(model.out.bias),
     }
 
+    # Distil transformer into a logistic regression student
+    model.eval()
+    with torch.no_grad():
+        teacher_logits = model(X).squeeze(-1)
+        teacher_probs = torch.sigmoid(teacher_logits).cpu().numpy()
+    pred_labels = (teacher_probs > 0.5).astype(int)
+    y_arr = np.array(ys)
+    teacher_metrics = {
+        "accuracy": float(accuracy_score(y_arr, pred_labels)),
+        "recall": float(recall_score(y_arr, pred_labels, zero_division=0)),
+    }
+    # Fit linear regression on teacher logits to approximate probabilities
+    eps = 1e-6
+    logits = np.log(teacher_probs.clip(eps, 1 - eps) / (1 - teacher_probs.clip(eps, 1 - eps)))
+    linreg = LinearRegression()
+    linreg.fit(norm_X[window:], logits)
+    distilled = {
+        "intercept": float(linreg.intercept_),
+        "coefficients": [float(c) for c in linreg.coef_.tolist()],
+        "feature_mean": feat_mean.tolist(),
+        "feature_std": feat_std.tolist(),
+        "threshold": 0.5,
+    }
+
     model_json = {
         "model_id": "target_clone",
         "trained_at": datetime.utcnow().isoformat(),
@@ -812,6 +836,9 @@ def _train_transformer(
         "feature_mean": feat_mean.tolist(),
         "feature_std": feat_std.tolist(),
         "weights": weights,
+        "teacher_metrics": teacher_metrics,
+        "distilled": distilled,
+        "models": {"logreg": distilled},
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:

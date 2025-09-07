@@ -49,6 +49,16 @@ Run the unit tests:
 pytest
 ```
 
+## Model distillation
+
+The training pipeline can fit a high-capacity transformer model and then
+distil it into a simple logistic regression.  After the transformer is trained
+on rolling feature windows, its probabilities for each training sample are used
+as soft targets for a linear student.  The distilled coefficients and teacher
+evaluation metrics are saved in ``model.json`` and are embedded into
+``StrategyTemplate.mq4`` by ``scripts/generate_mql4_from_model.py`` for use in
+MetaTrader.
+
 ## Memory usage
 
 The log loading helpers in `scripts/train_target_clone.py` and

@@ -277,6 +277,11 @@ def insert_get_feature(
 ) -> None:
     """Insert generated GetFeature and session models into ``template``."""
     data = json.loads(model.read_text())
+    # If a distilled student exists and no explicit models are provided, expose
+    # it under the ``models`` key so the template receives logistic coefficients.
+    if "distilled" in data and not data.get("models"):
+        data["models"] = {"logreg": data["distilled"]}
+
     feature_names = data.get("retained_features") or data.get("feature_names", [])
     get_feature = build_switch(feature_names)
     session_models = _build_session_models(data)
@@ -301,7 +306,7 @@ def insert_get_feature(
         re.DOTALL,
     )
     output = re.sub(pattern, transformer_block, output)
-    if data.get("model_type") == "transformer":
+    if data.get("model_type") == "transformer" and not data.get("distilled"):
         output = output.replace("bool g_use_transformer = false;", "bool g_use_transformer = true;")
     cal_path = str(calendar_file) if calendar_file else "calendar.csv"
     output = output.replace("__CALENDAR_FILE__", cal_path)
