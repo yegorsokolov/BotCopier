@@ -204,6 +204,7 @@ def _train_lite_mode(
     symbol_graph: dict | str | Path | None = None,
     optuna_trials: int = 0,
     half_life_days: float = 0.0,
+    prune_threshold: float = 0.0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -583,15 +584,37 @@ def _train_lite_mode(
         return params, _predict
 
     # Use spread as a crude volatility proxy; fall back to zeros
-    vol_series = pd.to_numeric(df.get("spread", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0)
-    hours_series = pd.to_numeric(df.get("hour", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
-    X_all = df[[c for c in feature_names if c != "session"]].to_numpy()
+    vol_series = pd.to_numeric(
+        df.get("spread", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0.0)
+    hours_series = pd.to_numeric(
+        df.get("hour", pd.Series(0.0, index=df.index)), errors="coerce"
+    ).fillna(0)
+    feat_cols = [c for c in feature_names if c != "session"]
+    X_all = df[feat_cols].to_numpy()
     y_all = df["label"].astype(int).to_numpy()
     w_all = df["sample_weight"].to_numpy()
 
     median_vol = float(np.median(vol_series.to_numpy())) if len(vol_series) else 0.0
     high_mask = vol_series.to_numpy() > median_vol
     low_mask = ~high_mask
+
+    # Fit once to compute SHAP importances and optionally prune features
+    params_generic, _ = _fit_base_model(X_all, y_all, w_all)
+    coeffs = np.array(params_generic["coefficients"])
+    mean = np.array(params_generic["feature_mean"])
+    std = np.array(params_generic["feature_std"])
+    shap_vals = ((X_all - mean) / std) * coeffs
+    mean_abs_shap = np.mean(np.abs(shap_vals), axis=0)
+
+    keep_mask = mean_abs_shap >= prune_threshold
+    if prune_threshold > 0.0 and not keep_mask.all():
+        feat_cols = [n for n, k in zip(feat_cols, keep_mask) if k]
+        X_all = X_all[:, keep_mask]
+        # Recompute model on reduced feature set
+        params_generic, _ = _fit_base_model(X_all, y_all, w_all)
+
+    feature_names = feat_cols
 
     models: dict[str, dict[str, object]] = {}
     pred_funcs: list[Callable[[np.ndarray], np.ndarray]] = []
@@ -600,21 +623,36 @@ def _train_lite_mode(
     models["logreg"] = params_generic
     pred_funcs.append(pred_generic)
 
+    # Compute feature importance for the final model
+    coeffs = np.array(params_generic["coefficients"])
+    mean = np.array(params_generic["feature_mean"])
+    std = np.array(params_generic["feature_std"])
+    shap_vals = ((X_all - mean) / std) * coeffs
+    mean_abs_shap = np.mean(np.abs(shap_vals), axis=0)
+    feature_importance = {n: float(v) for n, v in zip(feature_names, mean_abs_shap)}
+
     if high_mask.sum() >= 2:
-        params_high, pred_high = _fit_base_model(X_all[high_mask], y_all[high_mask], w_all[high_mask])
+        params_high, pred_high = _fit_base_model(
+            X_all[high_mask], y_all[high_mask], w_all[high_mask]
+        )
     else:
         params_high, pred_high = params_generic, pred_generic
     models["xgboost"] = params_high
     pred_funcs.append(pred_high)
 
     if low_mask.sum() >= 2:
-        params_low, pred_low = _fit_base_model(X_all[low_mask], y_all[low_mask], w_all[low_mask])
+        params_low, pred_low = _fit_base_model(
+            X_all[low_mask], y_all[low_mask], w_all[low_mask]
+        )
     else:
         params_low, pred_low = params_generic, pred_generic
     models["lstm"] = params_low
     pred_funcs.append(pred_low)
 
     model["models"] = models
+    model["feature_importance"] = feature_importance
+    model["retained_features"] = feature_names
+    model["feature_names"] = feature_names
 
     # Determine which model performs best per sample
     probs = np.vstack([f(X_all) for f in pred_funcs])
@@ -752,6 +790,7 @@ def train(
     model_type: str = "logreg",
     optuna_trials: int = 0,
     half_life_days: float = 0.0,
+    prune_threshold: float = 0.0,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -763,6 +802,7 @@ def train(
             out_dir,
             optuna_trials=optuna_trials,
             half_life_days=half_life_days,
+            prune_threshold=prune_threshold,
             **kwargs,
         )
 
@@ -952,6 +992,12 @@ def main() -> None:
         default=0,
         help="number of Optuna trials for hyperparameter search",
     )
+    p.add_argument(
+        "--prune-threshold",
+        type=float,
+        default=0.0,
+        help="drop features with mean |SHAP| below this value",
+    )
     args = p.parse_args()
     train(
         args.data_dir,
@@ -959,6 +1005,7 @@ def main() -> None:
         model_type=args.model_type,
         optuna_trials=args.optuna_trials,
         half_life_days=args.half_life_days,
+        prune_threshold=args.prune_threshold,
         min_accuracy=args.min_accuracy,
         min_profit=args.min_profit,
         replay_file=args.replay_file,
