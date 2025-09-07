@@ -222,10 +222,12 @@ def _extract_features(
     calendar_file: Path | None = None,
     event_window: float = 60.0,
     news_sentiment: pd.DataFrame | None = None,
+    neighbor_corr_windows: Iterable[int] | None = None,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]]]:
-    """Attach graph embeddings and calendar flags."""
+    """Attach graph embeddings, calendar flags and correlation features."""
 
     embeddings: dict[str, list[float]] = {}
+    graph_data: dict | None = None
     if symbol_graph is not None:
         if not isinstance(symbol_graph, dict):
             with open(symbol_graph) as f_sg:
@@ -361,6 +363,60 @@ def _extract_features(
         feature_names.extend(
             [f"{name}_lag_1", f"{name}_lag_5", f"{name}_diff"]
         )
+
+    # Rolling correlations with graph neighbors
+    if (
+        neighbor_corr_windows
+        and graph_data is not None
+        and price_col is not None
+        and "symbol" in df.columns
+    ):
+        windows = list(neighbor_corr_windows)
+        symbols = graph_data.get("symbols") or list(
+            graph_data.get("nodes", {}).keys()
+        )
+        edge_index = graph_data.get("edge_index") or []
+        adjacency: dict[str, set[str]] = {sym: set() for sym in symbols}
+        if isinstance(edge_index, list) and len(edge_index) == 2:
+            for s_idx, d_idx in zip(edge_index[0], edge_index[1]):
+                try:
+                    src = symbols[int(s_idx)]
+                    dst = symbols[int(d_idx)]
+                    adjacency.setdefault(src, set()).add(dst)
+                except Exception:  # pragma: no cover - malformed graph
+                    continue
+        if not edge_index and graph_data.get("cointegration"):
+            for src, nbrs in graph_data["cointegration"].items():
+                adjacency.setdefault(src, set()).update(nbrs.keys())
+
+        idx_col = "event_time" if "event_time" in df.columns else None
+        idx_series = df[idx_col] if idx_col else df.index
+        wide = df.pivot_table(index=idx_series, columns="symbol", values=price_col)
+        corr_frames: list[pd.Series] = []
+        base_map: dict[str, str] = {}
+        for src, nbrs in adjacency.items():
+            if src not in wide.columns:
+                continue
+            for dst in nbrs:
+                if dst not in wide.columns:
+                    continue
+                for win in windows:
+                    corr = wide[src].rolling(window=win, min_periods=2).corr(wide[dst])
+                    col = f"corr_{src}_{dst}_w{win}"
+                    corr.name = col
+                    corr_frames.append(corr)
+                    base_map[col] = src
+        if corr_frames:
+            corr_df = pd.concat(corr_frames, axis=1)
+            if idx_col:
+                df = df.merge(corr_df, left_on=idx_col, right_index=True, how="left")
+            else:
+                df = df.merge(corr_df, left_index=True, right_index=True, how="left")
+            for col, src in base_map.items():
+                df[col] = np.where(df["symbol"] == src, df[col], 0.0)
+                df[col] = df[col].fillna(0.0)
+            feature_names.extend(base_map.keys())
+
     return df, feature_names, embeddings
 
 
@@ -399,6 +455,7 @@ def _train_lite_mode(
     news_sentiment: pd.DataFrame | None = None,
     ensemble: str | None = None,
     mi_threshold: float = 0.0,
+    neighbor_corr_windows: Iterable[int] | None = None,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -447,6 +504,7 @@ def _train_lite_mode(
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
         news_sentiment=news_sentiment,
+        neighbor_corr_windows=neighbor_corr_windows,
     )
     feature_names = [
         c
@@ -1124,6 +1182,7 @@ def _train_transformer(
     synthetic_model: Path | None = None,
     synthetic_frac: float = 0.0,
     synthetic_weight: float = 0.2,
+    neighbor_corr_windows: Iterable[int] | None = None,
 ) -> None:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
@@ -1141,6 +1200,7 @@ def _train_transformer(
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
         news_sentiment=news_sentiment,
+        neighbor_corr_windows=neighbor_corr_windows,
     )
 
     X_all = df[feature_names].to_numpy(dtype=float)
@@ -1324,6 +1384,7 @@ def _train_tree_model(
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
     news_sentiment: pd.DataFrame | None = None,
+    neighbor_corr_windows: Iterable[int] | None = None,
     **_: object,
 ) -> None:
     """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
@@ -1361,6 +1422,7 @@ def _train_tree_model(
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
         news_sentiment=news_sentiment,
+        neighbor_corr_windows=neighbor_corr_windows,
     )
     feature_names = [
         c
@@ -1435,6 +1497,7 @@ def train(
     symbol_graph: Path | dict | None = None,
     news_sentiment: Path | pd.DataFrame | None = None,
     ensemble: str | None = None,
+    neighbor_corr_windows: Iterable[int] | None = None,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -1463,6 +1526,7 @@ def train(
             calendar_file=calendar_file,
             symbol_graph=graph_path,
             news_sentiment=ns_df,
+            neighbor_corr_windows=neighbor_corr_windows,
             **kwargs,
         )
     elif model_type in {"xgboost", "lgbm", "catboost"}:
@@ -1474,6 +1538,7 @@ def train(
             calendar_file=calendar_file,
             symbol_graph=graph_path,
             news_sentiment=ns_df,
+            neighbor_corr_windows=neighbor_corr_windows,
             **kwargs,
         )
     else:
@@ -1487,6 +1552,7 @@ def train(
             symbol_graph=graph_path,
             news_sentiment=ns_df,
             ensemble=ensemble,
+            neighbor_corr_windows=neighbor_corr_windows,
             **kwargs,
         )
 
@@ -1751,7 +1817,17 @@ def main() -> None:
         help="JSON file with symbol graph (defaults to data_dir/symbol_graph.json)",
     )
     p.add_argument("--news-sentiment", type=Path, help="CSV file with news sentiment")
+    p.add_argument(
+        "--neighbor-corr-windows",
+        type=str,
+        help="Comma-separated window sizes for neighbor correlation features",
+    )
     args = p.parse_args()
+    corr_windows = (
+        [int(w) for w in args.neighbor_corr_windows.split(",") if w]
+        if args.neighbor_corr_windows
+        else None
+    )
     train(
         args.data_dir,
         args.out_dir,
@@ -1775,6 +1851,7 @@ def main() -> None:
         symbol_graph=args.symbol_graph,
         news_sentiment=args.news_sentiment,
         ensemble=None if args.ensemble == "none" else args.ensemble,
+        neighbor_corr_windows=corr_windows,
     )
 
 
