@@ -55,6 +55,43 @@ except Exception:  # pragma: no cover
     torch = None
     _HAS_TORCH = False
 
+try:  # Optional dependency
+    import shap
+
+    _HAS_SHAP = True
+except Exception:  # pragma: no cover
+    shap = None  # type: ignore
+    _HAS_SHAP = False
+
+
+def _mean_abs_shap_linear(
+    clf: SGDClassifier, scaler: StandardScaler, X: np.ndarray
+) -> np.ndarray:
+    """Return mean absolute SHAP values for linear models."""
+    if _HAS_SHAP:
+        explainer = shap.LinearExplainer(clf, scaler.transform(X))
+        shap_vals = explainer.shap_values(scaler.transform(X))
+        if isinstance(shap_vals, list):
+            shap_vals = shap_vals[0]
+    else:
+        coeffs = clf.coef_[0]
+        shap_vals = ((X - scaler.mean_) / scaler.scale_) * coeffs
+    return np.mean(np.abs(shap_vals), axis=0)
+
+
+def _mean_abs_shap_tree(clf, X: np.ndarray) -> np.ndarray:
+    """Return mean absolute SHAP values for tree models."""
+    if _HAS_SHAP:
+        try:
+            explainer = shap.TreeExplainer(clf)
+            shap_vals = explainer.shap_values(X)
+            if isinstance(shap_vals, list):
+                shap_vals = shap_vals[0]
+            return np.mean(np.abs(shap_vals), axis=0)
+        except Exception:  # pragma: no cover
+            logging.debug("Tree SHAP computation failed", exc_info=True)
+    return np.zeros(X.shape[1])
+
 
 # ---------------------------------------------------------------------------
 # Log loading
@@ -673,7 +710,7 @@ def _train_lite_mode(
     # Train alternative base models and a simple gating network
     # ------------------------------------------------------------------
     def _fit_base_model(X: np.ndarray, y: np.ndarray, w: np.ndarray):
-        """Fit logistic regression and return params and predictor."""
+        """Fit logistic regression and return params, predictor and model."""
         scaler = StandardScaler().fit(X)
         clf = SGDClassifier(loss="log_loss")
         clf.partial_fit(
@@ -695,7 +732,7 @@ def _train_lite_mode(
             "conformal_lower": 0.0,
             "conformal_upper": 1.0,
         }
-        return params, _predict
+        return params, _predict, clf, scaler
 
     # Use spread as a crude volatility proxy; fall back to zeros
     vol_series = pd.to_numeric(
@@ -713,40 +750,37 @@ def _train_lite_mode(
     high_mask = vol_series.to_numpy() > median_vol
     low_mask = ~high_mask
 
-    # Fit once to compute SHAP importances and optionally prune features
-    params_generic, _ = _fit_base_model(X_all, y_all, w_all)
-    coeffs = np.array(params_generic["coefficients"])
-    mean = np.array(params_generic["feature_mean"])
-    std = np.array(params_generic["feature_std"])
-    shap_vals = ((X_all - mean) / std) * coeffs
-    mean_abs_shap = np.mean(np.abs(shap_vals), axis=0)
+    # Fit model and compute SHAP importances for optional pruning
+    params_generic, pred_generic, clf_generic, scaler_generic = _fit_base_model(
+        X_all, y_all, w_all
+    )
+    mean_abs_shap = _mean_abs_shap_linear(clf_generic, scaler_generic, X_all)
 
     keep_mask = mean_abs_shap >= prune_threshold
     if prune_threshold > 0.0 and not keep_mask.all():
         feat_cols = [n for n, k in zip(feat_cols, keep_mask) if k]
         X_all = X_all[:, keep_mask]
-        # Recompute model on reduced feature set
-        params_generic, _ = _fit_base_model(X_all, y_all, w_all)
+        params_generic, pred_generic, clf_generic, scaler_generic = _fit_base_model(
+            X_all, y_all, w_all
+        )
+        mean_abs_shap = _mean_abs_shap_linear(clf_generic, scaler_generic, X_all)
 
     feature_names = feat_cols
 
     models: dict[str, dict[str, object]] = {}
     pred_funcs: list[Callable[[np.ndarray], np.ndarray]] = []
-
-    params_generic, pred_generic = _fit_base_model(X_all, y_all, w_all)
     models["logreg"] = params_generic
     pred_funcs.append(pred_generic)
 
     # Compute feature importance for the final model
-    coeffs = np.array(params_generic["coefficients"])
-    mean = np.array(params_generic["feature_mean"])
-    std = np.array(params_generic["feature_std"])
-    shap_vals = ((X_all - mean) / std) * coeffs
-    mean_abs_shap = np.mean(np.abs(shap_vals), axis=0)
-    feature_importance = {n: float(v) for n, v in zip(feature_names, mean_abs_shap)}
+    ranked_feats = sorted(
+        zip(feature_names, mean_abs_shap), key=lambda x: x[1], reverse=True
+    )
+    feature_importance = {n: float(v) for n, v in ranked_feats}
+    logging.info("Ranked feature importances: %s", ranked_feats)
 
     if high_mask.sum() >= 2:
-        params_high, pred_high = _fit_base_model(
+        params_high, pred_high, _, _ = _fit_base_model(
             X_all[high_mask], y_all[high_mask], w_all[high_mask]
         )
     else:
@@ -755,7 +789,7 @@ def _train_lite_mode(
     pred_funcs.append(pred_high)
 
     if low_mask.sum() >= 2:
-        params_low, pred_low = _fit_base_model(
+        params_low, pred_low, _, _ = _fit_base_model(
             X_all[low_mask], y_all[low_mask], w_all[low_mask]
         )
     else:
@@ -1094,6 +1128,12 @@ def _train_tree_model(
         raise ValueError(
             f"Model failed to meet min accuracy {min_accuracy} or profit {min_profit}"
         )
+
+    mean_abs_shap = _mean_abs_shap_tree(clf, X_train)
+    ranked_feats = sorted(
+        zip(feature_names, mean_abs_shap), key=lambda x: x[1], reverse=True
+    )
+    logging.info("Ranked feature importances: %s", ranked_feats)
 
     model_json = {
         "model_type": model_type,
