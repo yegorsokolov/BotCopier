@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - fallback to file logging
 
 import numpy as np
 import psutil
+from collections import deque
 from sklearn.linear_model import SGDClassifier
 
 try:  # detect resources to adapt behaviour on weaker hardware
@@ -134,9 +135,11 @@ class OnlineTrainer:
         self,
         model_path: Path | str = Path("model.json"),
         batch_size: int = 32,
+        run_generator: bool = True,
     ) -> None:
         self.model_path = Path(model_path)
         self.batch_size = batch_size
+        self.run_generator = run_generator
         self.clf = SGDClassifier(loss="log_loss")
         self.feature_names: List[str] = []
         self.feature_flags: Dict[str, bool] = {}
@@ -147,6 +150,9 @@ class OnlineTrainer:
         self.sleep_seconds = 3.0
         self.half_life_days = 0.0
         self.weight_decay: Dict[str, Any] | None = None
+        self.recent_probs: deque[float] = deque(maxlen=1000)
+        self.conformal_lower: float | None = None
+        self.conformal_upper: float | None = None
         if self.model_path.exists():
             self._load()
         elif detect_resources:
@@ -188,6 +194,8 @@ class OnlineTrainer:
         intercept = data.get("intercept")
         self.half_life_days = float(data.get("half_life_days", 0.0))
         self.weight_decay = data.get("weight_decay")
+        self.conformal_lower = data.get("conformal_lower")
+        self.conformal_upper = data.get("conformal_upper")
         if self.feature_names and coef is not None and intercept is not None:
             n = len(self.feature_names)
             self.clf.partial_fit(np.zeros((1, n)), [0], classes=np.array([0, 1]))
@@ -210,6 +218,10 @@ class OnlineTrainer:
             payload["half_life_days"] = self.half_life_days
         if self.weight_decay:
             payload["weight_decay"] = self.weight_decay
+        if self.conformal_lower is not None:
+            payload["conformal_lower"] = self.conformal_lower
+        if self.conformal_upper is not None:
+            payload["conformal_upper"] = self.conformal_upper
         try:
             existing = json.loads(self.model_path.read_text())
         except Exception:
@@ -254,6 +266,14 @@ class OnlineTrainer:
                 self.clf.partial_fit(X, y, classes=np.array([0, 1]))
             else:
                 self.clf.partial_fit(X, y)
+            try:
+                probs = self.clf.predict_proba(X)
+                self.recent_probs.extend(probs[np.arange(len(y)), y])
+                arr = np.fromiter(self.recent_probs, dtype=float)
+                self.conformal_lower = float(np.quantile(arr, 0.05))
+                self.conformal_upper = float(np.quantile(arr, 0.95))
+            except Exception:
+                pass
             coef = self.clf.coef_[0].tolist()
             intercept = float(self.clf.intercept_[0])
             prev = self._prev_coef
