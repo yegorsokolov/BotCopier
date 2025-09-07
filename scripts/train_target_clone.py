@@ -274,6 +274,14 @@ def _train_lite_mode(
     optuna_trials: int = 0,
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
+    logreg_c_low: float = 0.01,
+    logreg_c_high: float = 100.0,
+    logreg_l1_low: float = 0.0,
+    logreg_l1_high: float = 1.0,
+    gboost_n_estimators_low: int = 50,
+    gboost_n_estimators_high: int = 200,
+    gboost_subsample_low: float = 0.5,
+    gboost_subsample_high: float = 1.0,
     purge_gap: int = 1,
     news_sentiment: pd.DataFrame | None = None,
     **_: object,
@@ -365,9 +373,17 @@ def _train_lite_mode(
             threshold = trial.suggest_float("threshold", 0.1, 0.9)
             if model_type == "sgd":
                 lr = trial.suggest_float("learning_rate", 1e-4, 1e-1, log=True)
+                C = trial.suggest_float("C", logreg_c_low, logreg_c_high, log=True)
+                l1_ratio = trial.suggest_float("l1_ratio", logreg_l1_low, logreg_l1_high)
             else:
                 lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
                 depth = trial.suggest_int("max_depth", 2, 8)
+                n_estimators = trial.suggest_int(
+                    "n_estimators", gboost_n_estimators_low, gboost_n_estimators_high
+                )
+                subsample = trial.suggest_float(
+                    "subsample", gboost_subsample_low, gboost_subsample_high
+                )
             tscv = PurgedWalkForward(n_splits=min(3, len(X_all) - 1), gap=purge_gap)
             scores: list[float] = []
             for train_idx, val_idx in tscv.split(X_all):
@@ -380,6 +396,9 @@ def _train_lite_mode(
                         loss="log_loss",
                         learning_rate="constant",
                         eta0=lr,
+                        alpha=1.0 / C,
+                        penalty="elasticnet",
+                        l1_ratio=l1_ratio,
                     )
                     clf.partial_fit(
                         scaler.transform(X_train),
@@ -389,7 +408,12 @@ def _train_lite_mode(
                     )
                     probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
                 else:
-                    clf = GradientBoostingClassifier(learning_rate=lr, max_depth=depth)
+                    clf = GradientBoostingClassifier(
+                        learning_rate=lr,
+                        max_depth=depth,
+                        n_estimators=n_estimators,
+                        subsample=subsample,
+                    )
                     clf.fit(X_train, y_train, sample_weight=w_train)
                     probs = clf.predict_proba(X_val)[:, 1]
                 preds = (probs >= threshold).astype(int)
@@ -774,9 +798,10 @@ def _train_lite_mode(
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
     logging.info(
-        "Trained logreg model - cv_accuracy %.3f cv_profit %.3f",
+        "Trained logreg model - cv_accuracy %.3f cv_profit %.3f params %s",
         model.get("cv_accuracy", 0.0),
         model.get("cv_profit", 0.0),
+        model.get("optuna_best_params", {}),
     )
 
 
@@ -1345,6 +1370,54 @@ def main() -> None:
         help="number of Optuna trials for hyperparameter search",
     )
     p.add_argument(
+        "--logreg-c-low",
+        type=float,
+        default=0.01,
+        help="lower bound for logistic C in Optuna",
+    )
+    p.add_argument(
+        "--logreg-c-high",
+        type=float,
+        default=100.0,
+        help="upper bound for logistic C in Optuna",
+    )
+    p.add_argument(
+        "--logreg-l1-low",
+        type=float,
+        default=0.0,
+        help="lower bound for elasticnet l1_ratio",
+    )
+    p.add_argument(
+        "--logreg-l1-high",
+        type=float,
+        default=1.0,
+        help="upper bound for elasticnet l1_ratio",
+    )
+    p.add_argument(
+        "--gboost-n-est-low",
+        type=int,
+        default=50,
+        help="lower bound for GradientBoosting n_estimators",
+    )
+    p.add_argument(
+        "--gboost-n-est-high",
+        type=int,
+        default=200,
+        help="upper bound for GradientBoosting n_estimators",
+    )
+    p.add_argument(
+        "--gboost-subsample-low",
+        type=float,
+        default=0.5,
+        help="lower bound for GradientBoosting subsample",
+    )
+    p.add_argument(
+        "--gboost-subsample-high",
+        type=float,
+        default=1.0,
+        help="upper bound for GradientBoosting subsample",
+    )
+    p.add_argument(
         "--prune-threshold",
         type=float,
         default=0.0,
@@ -1365,6 +1438,14 @@ def main() -> None:
         optuna_trials=args.optuna_trials,
         half_life_days=args.half_life_days,
         prune_threshold=args.prune_threshold,
+        logreg_c_low=args.logreg_c_low,
+        logreg_c_high=args.logreg_c_high,
+        logreg_l1_low=args.logreg_l1_low,
+        logreg_l1_high=args.logreg_l1_high,
+        gboost_n_estimators_low=args.gboost_n_est_low,
+        gboost_n_estimators_high=args.gboost_n_est_high,
+        gboost_subsample_low=args.gboost_subsample_low,
+        gboost_subsample_high=args.gboost_subsample_high,
         min_accuracy=args.min_accuracy,
         min_profit=args.min_profit,
         replay_file=args.replay_file,
