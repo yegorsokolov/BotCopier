@@ -17,6 +17,9 @@ bool g_use_transformer = false;
 // __TRANSFORMER_PARAMS_START__
 int g_transformer_window = 0;
 int g_transformer_dim = 0;
+int g_transformer_feat_dim = 0;
+double g_tfeature_mean[1] = {0.0};
+double g_tfeature_std[1] = {1.0};
 double g_embed_weight[1] = {0.0};
 double g_embed_bias[1] = {0.0};
 double g_q_weight[1] = {0.0};
@@ -27,9 +30,10 @@ double g_v_weight[1] = {0.0};
 double g_v_bias[1] = {0.0};
 double g_out_weight[1] = {0.0};
 double g_out_bias = 0.0;
-double g_price_mean = 0.0;
-double g_price_std = 1.0;
 // __TRANSFORMER_PARAMS_END__
+
+double g_transformer_buffer[];
+int g_transformer_seq_len = 0;
 
 // __SYMBOL_EMBEDDINGS_START__
 double GraphEmbedding(int idx)
@@ -379,17 +383,25 @@ double TransformerScore()
 {
     int W = g_transformer_window;
     int D = g_transformer_dim;
-    if(W <= 0 || D <= 0)
+    int F = g_transformer_feat_dim;
+    if(W <= 0 || D <= 0 || F <= 0)
         return 0.0;
-    double prices[];
-    ArrayResize(prices, W);
-    for(int i = 0; i < W; i++)
-        prices[i] = (iClose(Symbol(), PERIOD_CURRENT, i) - g_price_mean) / g_price_std;
-
+    if(g_transformer_seq_len < W)
+        return 0.0;
     double embed[]; ArrayResize(embed, W * D);
     for(int t = 0; t < W; t++)
+    {
         for(int d = 0; d < D; d++)
-            embed[t * D + d] = prices[t] * g_embed_weight[d] + g_embed_bias[d];
+        {
+            double sum = g_embed_bias[d];
+            for(int f = 0; f < F; f++)
+            {
+                int idx = d * F + f;
+                sum += g_embed_weight[idx] * g_transformer_buffer[t * F + f];
+            }
+            embed[t * D + d] = sum;
+        }
+    }
 
     double Q[]; ArrayResize(Q, W * D);
     double K[]; ArrayResize(K, W * D);
@@ -483,6 +495,26 @@ void OnTick()
 {
     int model_idx = RouteModel();
     SelectModel(model_idx);
+
+    if(g_use_transformer)
+    {
+        int F = g_transformer_feat_dim;
+        int W = g_transformer_window;
+        if(ArraySize(g_transformer_buffer) != W * F)
+            ArrayResize(g_transformer_buffer, W * F);
+        for(int t = W - 1; t > 0; t--)
+            for(int f = 0; f < F; f++)
+                g_transformer_buffer[t * F + f] = g_transformer_buffer[(t - 1) * F + f];
+        for(int f = 0; f < F; f++)
+        {
+            double val = GetFeature(f);
+            double norm = (val - g_tfeature_mean[f]) / g_tfeature_std[f];
+            g_transformer_buffer[f] = norm;
+        }
+        if(g_transformer_seq_len < W)
+            g_transformer_seq_len++;
+        Print("seq_len=", g_transformer_seq_len);
+    }
 
     double prob = ScoreModel();
     double lot = PredictLot();

@@ -164,6 +164,9 @@ def _build_transformer_params(data: dict) -> str:
             f"{block_start}\n"
             "int g_transformer_window = 0;\n"
             "int g_transformer_dim = 0;\n"
+            "int g_transformer_feat_dim = 0;\n"
+            "double g_tfeature_mean[1] = {0.0};\n"
+            "double g_tfeature_std[1] = {1.0};\n"
             "double g_embed_weight[1] = {0.0};\n"
             "double g_embed_bias[1] = {0.0};\n"
             "double g_q_weight[1] = {0.0};\n"
@@ -174,8 +177,6 @@ def _build_transformer_params(data: dict) -> str:
             "double g_v_bias[1] = {0.0};\n"
             "double g_out_weight[1] = {0.0};\n"
             "double g_out_bias = 0.0;\n"
-            "double g_price_mean = 0.0;\n"
-            "double g_price_std = 1.0;\n"
             f"{block_end}"
         )
 
@@ -189,10 +190,24 @@ def _build_transformer_params(data: dict) -> str:
 
     lines = [block_start]
     lines.append(f"int g_transformer_window = {data.get('window_size', 0)};")
-    dim = len(w.get("embed_weight", []))
+    dim = len(w.get("embed_bias", []))
+    feat_dim = len(w.get("embed_weight", [[]])[0]) if w.get("embed_weight") else 0
     lines.append(f"int g_transformer_dim = {dim};")
+    lines.append(f"int g_transformer_feat_dim = {feat_dim};")
     lines.append(
-        "double g_embed_weight[] = {" + ", ".join(_flt(x) for x in w.get("embed_weight", [])) + "};"
+        "double g_tfeature_mean[] = {"
+        + ", ".join(_flt(x) for x in data.get("feature_mean", []))
+        + "};"
+    )
+    lines.append(
+        "double g_tfeature_std[] = {"
+        + ", ".join(_flt(x) for x in data.get("feature_std", []))
+        + "};"
+    )
+    lines.append(
+        "double g_embed_weight[] = {"
+        + ", ".join(_flt(x) for x in _flat(w.get("embed_weight", [])))
+        + "};"
     )
     lines.append(
         "double g_embed_bias[] = {" + ", ".join(_flt(x) for x in w.get("embed_bias", [])) + "};"
@@ -230,8 +245,6 @@ def _build_transformer_params(data: dict) -> str:
     if isinstance(out_bias, list):
         out_bias = out_bias[0]
     lines.append(f"double g_out_bias = {out_bias};")
-    lines.append(f"double g_price_mean = {data.get('price_mean', 0.0)};")
-    lines.append(f"double g_price_std = {data.get('price_std', 1.0)};")
     lines.append(block_end)
     return "\n".join(lines)
 
