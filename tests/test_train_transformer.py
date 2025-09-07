@@ -21,7 +21,19 @@ def test_transformer_weights_and_generation(tmp_path):
         "1,1.5,6\n"
     )
     out_dir = tmp_path / "out"
-    train(data, out_dir, model_type="transformer", window=2, epochs=1)
+    model_obj = train(data, out_dir, model_type="transformer", window=2, epochs=1)
+    assert next(model_obj.parameters()).device.type == "cpu"
+    if torch.cuda.is_available():
+        cuda_dir = tmp_path / "out_cuda"
+        cuda_model = train(
+            data,
+            cuda_dir,
+            model_type="transformer",
+            window=2,
+            epochs=1,
+            device="cuda",
+        )
+        assert next(cuda_model.parameters()).device.type == "cuda"
     model = json.loads((out_dir / "model.json").read_text())
     assert model["model_type"] == "transformer"
     weights = model["weights"]

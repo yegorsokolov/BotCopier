@@ -38,7 +38,7 @@ def test_transformer_with_synthetic_sequences(tmp_path):
         "1,1.5,6\n"
     )
     out_dir = tmp_path / "out"
-    train(
+    model_obj = train(
         data,
         out_dir,
         model_type="transformer",
@@ -48,6 +48,21 @@ def test_transformer_with_synthetic_sequences(tmp_path):
         synthetic_frac=1.0,
         synthetic_weight=0.5,
     )
+    assert next(model_obj.parameters()).device.type == "cpu"
+    if torch.cuda.is_available():
+        cuda_dir = tmp_path / "out_cuda"
+        cuda_model = train(
+            data,
+            cuda_dir,
+            model_type="transformer",
+            window=2,
+            epochs=1,
+            synthetic_model=gan_path,
+            synthetic_frac=1.0,
+            synthetic_weight=0.5,
+            device="cuda",
+        )
+        assert next(cuda_model.parameters()).device.type == "cuda"
 
     model = json.loads((out_dir / "model.json").read_text())
     assert "synthetic_metrics" in model

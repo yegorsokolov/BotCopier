@@ -1188,6 +1188,7 @@ def _train_transformer(
     window: int = 16,
     epochs: int = 5,
     lr: float = 1e-3,
+    device: str = "cpu",
     calendar_file: Path | None = None,
     symbol_graph: dict | str | Path | None = None,
     news_sentiment: pd.DataFrame | None = None,
@@ -1195,7 +1196,7 @@ def _train_transformer(
     synthetic_frac: float = 0.0,
     synthetic_weight: float = 0.2,
     neighbor_corr_windows: Iterable[int] | None = None,
-) -> None:
+) -> torch.nn.Module:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
         raise ImportError("PyTorch is required for transformer model")
@@ -1257,6 +1258,7 @@ def _train_transformer(
     weights_arr = np.where(np.array(synth_flags) > 0.0, synthetic_weight, 1.0).astype(
         float
     )
+    # keep tensors on CPU for the DataLoader and move to device during training
     X = torch.tensor(seqs, dtype=torch.float32)
     y = torch.tensor(ys, dtype=torch.float32).unsqueeze(-1)
     w = torch.tensor(weights_arr, dtype=torch.float32).unsqueeze(-1)
@@ -1286,17 +1288,31 @@ def _train_transformer(
             return self.out(ctx)
 
     dim = 16
-    model = TinyTransformer(len(feature_names), dim)
+    dev = torch.device(device)
+    model = TinyTransformer(len(feature_names), dim).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
+    use_cuda = torch.cuda.is_available() and dev.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_cuda)
     model.train()
     for _ in range(epochs):  # pragma: no cover - simple training loop
         for batch_x, batch_y, batch_w, _ in dl:
+            batch_x = batch_x.to(dev)
+            batch_y = batch_y.to(dev)
+            batch_w = batch_w.to(dev)
             opt.zero_grad()
-            logits = model(batch_x)
-            loss = (loss_fn(logits, batch_y) * batch_w).mean()
-            loss.backward()
-            opt.step()
+            if use_cuda:
+                with torch.cuda.amp.autocast():
+                    logits = model(batch_x)
+                    loss = (loss_fn(logits, batch_y) * batch_w).mean()
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
+            else:
+                logits = model(batch_x)
+                loss = (loss_fn(logits, batch_y) * batch_w).mean()
+                loss.backward()
+                opt.step()
 
     def _tensor_list(t: torch.Tensor) -> list:
         return t.detach().cpu().numpy().tolist()
@@ -1317,7 +1333,7 @@ def _train_transformer(
     # Distil transformer into a logistic regression student
     model.eval()
     with torch.no_grad():
-        teacher_logits = model(X).squeeze(-1)
+        teacher_logits = model(X.to(dev)).squeeze(-1)
         teacher_probs = torch.sigmoid(teacher_logits).cpu().numpy()
     pred_labels = (teacher_probs > 0.5).astype(int)
     y_arr = np.array(ys)
@@ -1381,6 +1397,8 @@ def _train_transformer(
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model_json, f)
+
+    return model
 
 
 def _train_tree_model(
@@ -1538,7 +1556,7 @@ def train(
                 ns_df = None
 
     if model_type == "transformer":
-        _train_transformer(
+        return _train_transformer(
             data_dir,
             out_dir,
             calendar_file=calendar_file,
@@ -1763,6 +1781,11 @@ def main() -> None:
         help="which model architecture to train",
     )
     p.add_argument(
+        "--device",
+        default="cpu",
+        help="torch device to use for training (e.g. 'cpu' or 'cuda')",
+    )
+    p.add_argument(
         "--ensemble",
         choices=["none", "voting", "stacking"],
         default="none",
@@ -1870,6 +1893,7 @@ def main() -> None:
         news_sentiment=args.news_sentiment,
         ensemble=None if args.ensemble == "none" else args.ensemble,
         neighbor_corr_windows=corr_windows,
+        device=args.device,
     )
 
 
