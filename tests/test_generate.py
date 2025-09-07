@@ -167,6 +167,44 @@ def test_models_and_router_inserted(tmp_path):
     assert "g_router_coeffs" in content
 
 
+def test_router_and_models_from_training(tmp_path):
+    data = tmp_path / "trades_raw.csv"
+    data.write_text(
+        "label,spread,hour\n"
+        "0,1.0,1\n"
+        "1,1.5,2\n"
+        "0,2.0,9\n"
+        "1,2.5,10\n"
+        "0,1.2,17\n"
+        "1,1.6,18\n"
+    )
+    out_dir = tmp_path / "out"
+    train(data, out_dir)
+    model = json.loads((out_dir / "model.json").read_text())
+    assert "ensemble_router" in model
+    assert "models" in model and len(model["models"]) >= 3
+
+    template_src = Path(__file__).resolve().parents[1] / "StrategyTemplate.mq4"
+    template = tmp_path / "StrategyTemplate.mq4"
+    template.write_text(template_src.read_text())
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            out_dir / "model.json",
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+    content = template.read_text()
+    assert "g_router_intercept" in content
+    assert "g_coeffs_logreg" in content
+    assert "g_coeffs_xgboost" in content
+    assert "g_coeffs_lstm" in content
+
+
 def test_generation_fails_on_unmapped_feature(tmp_path):
     model = tmp_path / "model.json"
     model.write_text(json.dumps({"feature_names": ["unknown"]}))

@@ -21,7 +21,7 @@ import shutil
 import importlib.util
 from pathlib import Path
 from datetime import datetime
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Callable
 
 import numpy as np
 import pandas as pd
@@ -552,32 +552,85 @@ def _train_lite_mode(
     if symbol_thresholds:
         model["symbol_thresholds"] = symbol_thresholds
 
-    # Expose per-algorithm models and a simple ensemble router so downstream
-    # consumers can select between alternative algorithms.  For now each model
-    # reuses the logistic regression parameters trained above, but the structure
-    # allows heavier algorithms to be plugged in by external callers.
-    if session_models:
-        any_name = next(iter(session_models))
-        base_params = session_models[any_name]
-        models = {
-            "logreg": base_params,
-            "xgboost": base_params,
-            "lstm": base_params,
-        }
-        model["models"] = models
+    # ------------------------------------------------------------------
+    # Train alternative base models and a simple gating network
+    # ------------------------------------------------------------------
+    def _fit_base_model(X: np.ndarray, y: np.ndarray, w: np.ndarray):
+        """Fit logistic regression and return params and predictor."""
+        scaler = StandardScaler().fit(X)
+        clf = SGDClassifier(loss="log_loss")
+        clf.partial_fit(
+            scaler.transform(X),
+            y,
+            classes=np.array([0, 1]),
+            sample_weight=w,
+        )
 
-    # Router uses hour of day and a simple volatility proxy (spread) as
-    # features.  The weights are placeholders but give generate_mql4_from_model
-    # concrete numbers to embed into the strategy template.
+        def _predict(inp: np.ndarray) -> np.ndarray:
+            return clf.predict_proba(scaler.transform(inp))[:, 1]
+
+        params = {
+            "coefficients": clf.coef_[0].astype(float).tolist(),
+            "intercept": float(clf.intercept_[0]),
+            "threshold": 0.5,
+            "feature_mean": scaler.mean_.astype(float).tolist(),
+            "feature_std": scaler.scale_.astype(float).tolist(),
+            "conformal_lower": 0.0,
+            "conformal_upper": 1.0,
+        }
+        return params, _predict
+
+    # Use spread as a crude volatility proxy; fall back to zeros
+    vol_series = pd.to_numeric(df.get("spread", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0.0)
+    hours_series = pd.to_numeric(df.get("hour", pd.Series(0.0, index=df.index)), errors="coerce").fillna(0)
+    X_all = df[[c for c in feature_names if c != "session"]].to_numpy()
+    y_all = df["label"].astype(int).to_numpy()
+    w_all = df["sample_weight"].to_numpy()
+
+    median_vol = float(np.median(vol_series.to_numpy())) if len(vol_series) else 0.0
+    high_mask = vol_series.to_numpy() > median_vol
+    low_mask = ~high_mask
+
+    models: dict[str, dict[str, object]] = {}
+    pred_funcs: list[Callable[[np.ndarray], np.ndarray]] = []
+
+    params_generic, pred_generic = _fit_base_model(X_all, y_all, w_all)
+    models["logreg"] = params_generic
+    pred_funcs.append(pred_generic)
+
+    if high_mask.sum() >= 2:
+        params_high, pred_high = _fit_base_model(X_all[high_mask], y_all[high_mask], w_all[high_mask])
+    else:
+        params_high, pred_high = params_generic, pred_generic
+    models["xgboost"] = params_high
+    pred_funcs.append(pred_high)
+
+    if low_mask.sum() >= 2:
+        params_low, pred_low = _fit_base_model(X_all[low_mask], y_all[low_mask], w_all[low_mask])
+    else:
+        params_low, pred_low = params_generic, pred_generic
+    models["lstm"] = params_low
+    pred_funcs.append(pred_low)
+
+    model["models"] = models
+
+    # Determine which model performs best per sample
+    probs = np.vstack([f(X_all) for f in pred_funcs])
+    errors = np.abs(probs - y_all)
+    best_idx = np.argmin(errors, axis=0)
+
+    router_feats = np.column_stack([vol_series.to_numpy(), hours_series.to_numpy()])
+    r_mean = router_feats.mean(axis=0)
+    r_std = router_feats.std(axis=0)
+    r_std[r_std == 0] = 1.0
+    norm_router = (router_feats - r_mean) / r_std
+    router_clf = SGDClassifier(loss="log_loss")
+    router_clf.partial_fit(norm_router, best_idx, classes=np.array([0, 1, 2]))
     router = {
-        "intercept": [0.0, 0.0, 0.0],
-        "coefficients": [
-            [1.0, -0.5],
-            [-0.5, 1.0],
-            [0.5, 0.5],
-        ],
-        "feature_mean": [0.0, 12.0],
-        "feature_std": [1.0, 6.0],
+        "intercept": router_clf.intercept_.astype(float).tolist(),
+        "coefficients": router_clf.coef_.astype(float).tolist(),
+        "feature_mean": r_mean.astype(float).tolist(),
+        "feature_std": r_std.astype(float).tolist(),
     }
     model["ensemble_router"] = router
     if embeddings:

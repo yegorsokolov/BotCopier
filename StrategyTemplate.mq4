@@ -51,16 +51,21 @@ double SymbolThreshold()
 
 int RouteModel()
 {
-    double vol = iStdDev(Symbol(), PERIOD_CURRENT, 14, 0, MODE_SMA, PRICE_CLOSE, 0);
-    double hour = TimeHour(TimeCurrent());
+    double features[2];
+    features[0] = iStdDev(Symbol(), PERIOD_CURRENT, 14, 0, MODE_SMA, PRICE_CLOSE, 0);
+    features[1] = TimeHour(TimeCurrent());
     int count = ArraySize(g_router_intercept);
+    int fcount = ArraySize(g_router_feature_mean);
     double best = -1e10;
     int best_idx = 0;
     for(int i = 0; i < count; i++)
     {
         double z = g_router_intercept[i];
-        z += (vol - g_router_feature_mean[0]) / g_router_feature_std[0] * g_router_coeffs[i*2];
-        z += (hour - g_router_feature_mean[1]) / g_router_feature_std[1] * g_router_coeffs[i*2 + 1];
+        for(int f = 0; f < fcount; f++)
+        {
+            double val = features[f];
+            z += (val - g_router_feature_mean[f]) / g_router_feature_std[f] * g_router_coeffs[i*fcount + f];
+        }
         if(z > best)
         {
             best = z;
