@@ -491,10 +491,12 @@ void OnTick()
     g_decision_id++;
     int decision_id = g_decision_id;
     string decision = "hold";
+    string reason = "";
     bool uncertain = (prob >= g_conformal_lower && prob <= g_conformal_upper);
     if(uncertain)
     {
         decision = "skip";
+        reason = "uncertain_prob";
     }
     else if(prob > g_threshold)
     {
@@ -531,6 +533,7 @@ void OnTick()
         ",lot=" + DoubleToString(lot, 2) +
         ",sl=" + DoubleToString(sl, 2) +
         ",tp=" + DoubleToString(tp, 2) +
+        ",reason=" + reason +
         ",features=" + features
     );
 }

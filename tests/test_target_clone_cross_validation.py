@@ -21,8 +21,10 @@ def test_cross_validation_metrics_written(tmp_path: Path) -> None:
     train(data, out_dir)
     model = json.loads((out_dir / "model.json").read_text())
     assert "cv_accuracy" in model and "cv_profit" in model
+    assert "conformal_lower" in model and "conformal_upper" in model
     for params in model["session_models"].values():
         assert params["cv_metrics"]
+        assert "conformal_lower" in params and "conformal_upper" in params
         for fm in params["cv_metrics"]:
             assert "accuracy" in fm and "profit" in fm
 
