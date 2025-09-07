@@ -750,6 +750,9 @@ def _train_transformer(
     calendar_file: Path | None = None,
     symbol_graph: dict | str | Path | None = None,
     news_sentiment: pd.DataFrame | None = None,
+    synthetic_model: Path | None = None,
+    synthetic_frac: float = 0.0,
+    synthetic_weight: float = 0.2,
 ) -> None:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
@@ -778,12 +781,43 @@ def _train_transformer(
 
     seqs: list[list[list[float]]] = []
     ys: list[float] = []
+    synth_flags: list[float] = []
     for i in range(window, len(norm_X)):
         seqs.append(norm_X[i - window : i].tolist())
         ys.append(y_all[i])
+        synth_flags.append(0.0)
+
+    synth_last_feats = np.empty((0, len(feature_names)))
+    if synthetic_model is not None and synthetic_frac > 0:
+        try:
+            from scripts.train_price_gan import sample_sequences
+
+            n_real = len(seqs)
+            n_synth = max(1, int(n_real * synthetic_frac))
+            synth = sample_sequences(Path(synthetic_model), n_synth)
+            n_feat = len(feature_names)
+            expected = window * n_feat
+            if synth.shape[1] != expected:
+                synth = np.resize(synth, (n_synth, expected))
+            synth = synth.reshape(n_synth, window, n_feat)
+            synth_last_feats = synth[:, -1, :]
+            p = float(y_all.mean()) if len(y_all) else 0.5
+            synth_y = np.random.binomial(1, p, size=n_synth).astype(float)
+            for seq, label in zip(synth, synth_y):
+                seqs.append(seq.tolist())
+                ys.append(float(label))
+                synth_flags.append(1.0)
+        except Exception:
+            pass
+
+    weights_arr = np.where(np.array(synth_flags) > 0.0, synthetic_weight, 1.0).astype(
+        float
+    )
     X = torch.tensor(seqs, dtype=torch.float32)
     y = torch.tensor(ys, dtype=torch.float32).unsqueeze(-1)
-    ds = torch.utils.data.TensorDataset(X, y)
+    w = torch.tensor(weights_arr, dtype=torch.float32).unsqueeze(-1)
+    flags = torch.tensor(synth_flags, dtype=torch.float32).unsqueeze(-1)
+    ds = torch.utils.data.TensorDataset(X, y, w, flags)
     dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
 
     class TinyTransformer(torch.nn.Module):
@@ -810,13 +844,13 @@ def _train_transformer(
     dim = 16
     model = TinyTransformer(len(feature_names), dim)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = torch.nn.BCEWithLogitsLoss()
+    loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     model.train()
     for _ in range(epochs):  # pragma: no cover - simple training loop
-        for batch_x, batch_y in dl:
+        for batch_x, batch_y, batch_w, _ in dl:
             opt.zero_grad()
             logits = model(batch_x)
-            loss = loss_fn(logits, batch_y)
+            loss = (loss_fn(logits, batch_y) * batch_w).mean()
             loss.backward()
             opt.step()
 
@@ -843,15 +877,41 @@ def _train_transformer(
         teacher_probs = torch.sigmoid(teacher_logits).cpu().numpy()
     pred_labels = (teacher_probs > 0.5).astype(int)
     y_arr = np.array(ys)
-    teacher_metrics = {
+    flags_arr = np.array(synth_flags, dtype=bool)
+    metrics_all = {
         "accuracy": float(accuracy_score(y_arr, pred_labels)),
         "recall": float(recall_score(y_arr, pred_labels, zero_division=0)),
+    }
+    real_mask = ~flags_arr
+    if real_mask.any():
+        metrics_real = {
+            "accuracy": float(accuracy_score(y_arr[real_mask], pred_labels[real_mask])),
+            "recall": float(
+                recall_score(
+                    y_arr[real_mask], pred_labels[real_mask], zero_division=0
+                )
+            ),
+        }
+    else:
+        metrics_real = {"accuracy": 0.0, "recall": 0.0}
+    teacher_metrics = metrics_all
+    synthetic_info = {
+        "all": metrics_all,
+        "real": metrics_real,
+        "synthetic_fraction": float(flags_arr.mean()) if len(flags_arr) else 0.0,
+        "synthetic_weight": float(synthetic_weight),
+        "accuracy_delta": metrics_all["accuracy"] - metrics_real["accuracy"],
     }
     # Fit linear regression on teacher logits to approximate probabilities
     eps = 1e-6
     logits = np.log(teacher_probs.clip(eps, 1 - eps) / (1 - teacher_probs.clip(eps, 1 - eps)))
     linreg = LinearRegression()
-    linreg.fit(norm_X[window:], logits)
+    base_features = norm_X[window:]
+    if len(synth_last_feats):
+        linreg_X = np.vstack([base_features, synth_last_feats])
+    else:
+        linreg_X = base_features
+    linreg.fit(linreg_X, logits)
     distilled = {
         "intercept": float(linreg.intercept_),
         "coefficients": [float(c) for c in linreg.coef_.tolist()],
@@ -870,6 +930,7 @@ def _train_transformer(
         "feature_std": feat_std.tolist(),
         "weights": weights,
         "teacher_metrics": teacher_metrics,
+        "synthetic_metrics": synthetic_info,
         "distilled": distilled,
         "models": {"logreg": distilled},
     }

@@ -138,6 +138,33 @@ def save_model(gen: Generator, path: Path) -> None:
     torch.save(checkpoint, path)
 
 
+def load_model(path: Path) -> Generator:
+    """Load a previously trained :class:`Generator`.
+
+    The helper is intentionally lightweight so it can also be reused in
+    unit tests where a tiny GAN is trained for a handful of steps.  It
+    returns the generator in evaluation mode.
+    """
+
+    checkpoint = torch.load(path, map_location="cpu")
+    gen = Generator(checkpoint["latent_dim"], checkpoint["seq_len"])
+    gen.load_state_dict(checkpoint["state_dict"])
+    gen.eval()
+    return gen
+
+
+def sample_sequences(path: Path, n: int, seed: int | None = None) -> np.ndarray:
+    """Generate ``n`` synthetic return sequences from a stored model."""
+
+    if seed is not None:
+        torch.manual_seed(seed)
+    gen = load_model(path)
+    with torch.no_grad():
+        z = torch.randn(n, gen.latent_dim)
+        seqs = gen(z).cpu().numpy()
+    return seqs
+
+
 def main() -> None:  # pragma: no cover - CLI entry point
     p = argparse.ArgumentParser(description="Train a GAN on tick data")
     p.add_argument("tick_file", help="CSV file containing bid/ask quotes")
