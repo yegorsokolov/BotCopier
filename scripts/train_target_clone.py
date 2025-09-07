@@ -330,6 +330,20 @@ def _extract_features(
             "bollinger_lower",
             "atr",
         ]
+    base_cols: dict[str, str] = {}
+    if price_col is not None:
+        base_cols["price"] = price_col
+    for col in ["volume", "spread"]:
+        if col in df.columns:
+            base_cols[col] = col
+    for name, src in base_cols.items():
+        series = pd.to_numeric(df[src], errors="coerce")
+        df[f"{name}_lag_1"] = series.shift(1).fillna(0.0)
+        df[f"{name}_lag_5"] = series.shift(5).fillna(0.0)
+        df[f"{name}_diff"] = series.diff().fillna(0.0)
+        feature_names.extend(
+            [f"{name}_lag_1", f"{name}_lag_5", f"{name}_diff"]
+        )
     return df, feature_names, embeddings
 
 
