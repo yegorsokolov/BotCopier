@@ -37,6 +37,8 @@ def test_price_indicators_persisted(tmp_path: Path) -> None:
     for col in ["price", "volume", "spread"]:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert df[feat].notna().all()
+    assert "sma*rsi" in model["feature_names"]
+    assert df["sma*rsi"].notna().all()
 
 
 def test_neighbor_correlation_features(tmp_path: Path) -> None:
@@ -68,6 +70,8 @@ def test_neighbor_correlation_features(tmp_path: Path) -> None:
     )
     for col in corr_cols:
         assert df[col].notna().all()
+    assert "sma*rsi" in model["feature_names"]
+    assert df["sma*rsi"].notna().all()
 
 
 def test_mutual_info_feature_filter(tmp_path: Path) -> None:

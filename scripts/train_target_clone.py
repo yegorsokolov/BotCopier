@@ -27,7 +27,7 @@ import logging
 import numpy as np
 import pandas as pd
 import psutil
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import RobustScaler, PolynomialFeatures
 from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
 from sklearn.metrics import accuracy_score, recall_score
@@ -460,6 +460,16 @@ def _extract_features(
                         feature_names.append(col)
         except Exception:
             pass
+    # Generate pairwise interaction features from numeric columns
+    numeric_cols = [c for c in feature_names if pd.api.types.is_numeric_dtype(df[c])]
+    if numeric_cols:
+        poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+        X_poly = poly.fit_transform(df[numeric_cols].to_numpy(dtype=float))
+        poly_names = poly.get_feature_names_out(numeric_cols)
+        for idx, name in enumerate(poly_names[len(numeric_cols):], start=len(numeric_cols)):
+            col_name = name.replace(" ", "*")
+            df[col_name] = X_poly[:, idx]
+            feature_names.append(col_name)
 
     return df, feature_names, embeddings
 
