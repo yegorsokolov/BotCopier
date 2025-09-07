@@ -150,8 +150,10 @@ def _extract_features(
     feature_names: list[str],
     *,
     symbol_graph: dict | str | Path | None = None,
+    calendar_file: Path | None = None,
+    event_window: float = 60.0,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]]]:
-    """Attach graph embedding columns and update ``feature_names``."""
+    """Attach graph embeddings and calendar flags."""
 
     embeddings: dict[str, list[float]] = {}
     if symbol_graph is not None:
@@ -181,6 +183,28 @@ def _extract_features(
                     else 0.0
                 )
             feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
+
+    if calendar_file is not None and "event_time" in df.columns:
+        try:
+            cdf = pd.read_csv(calendar_file)
+            cdf.columns = [c.lower() for c in cdf.columns]
+            cdf["time"] = pd.to_datetime(cdf["time"], errors="coerce")
+            events = list(zip(cdf["time"], pd.to_numeric(cdf.get("impact", 0), errors="coerce")))
+        except Exception:
+            events = []
+        df["event_flag"] = 0.0
+        df["event_impact"] = 0.0
+        if events:
+            for ev_time, ev_imp in events:
+                mask = (
+                    df["event_time"].sub(ev_time).abs().dt.total_seconds()
+                    <= event_window * 60.0
+                )
+                df.loc[mask, "event_flag"] = 1.0
+                df.loc[mask, "event_impact"] = np.maximum(
+                    df.loc[mask, "event_impact"], ev_imp
+                )
+        feature_names = feature_names + ["event_flag", "event_impact"]
     return df, feature_names, embeddings
 
 
@@ -202,6 +226,7 @@ def _train_lite_mode(
     replay_file: Path | None = None,
     replay_weight: float = 1.0,
     symbol_graph: dict | str | Path | None = None,
+    calendar_file: Path | None = None,
     optuna_trials: int = 0,
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
@@ -243,7 +268,10 @@ def _train_lite_mode(
         raise ValueError("label column missing from data")
 
     df, feature_names, embeddings = _extract_features(
-        df, feature_names, symbol_graph=symbol_graph
+        df,
+        feature_names,
+        symbol_graph=symbol_graph,
+        calendar_file=calendar_file,
     )
     feature_names = [
         c
@@ -690,6 +718,7 @@ def _train_transformer(
     window: int = 16,
     epochs: int = 5,
     lr: float = 1e-3,
+    calendar_file: Path | None = None,
 ) -> None:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
@@ -791,11 +820,12 @@ def train(
     optuna_trials: int = 0,
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
+    calendar_file: Path | None = None,
     **kwargs,
 ) -> None:
     """Public training entry point."""
     if model_type == "transformer":
-        _train_transformer(data_dir, out_dir, **kwargs)
+        _train_transformer(data_dir, out_dir, calendar_file=calendar_file, **kwargs)
     else:
         _train_lite_mode(
             data_dir,
@@ -803,6 +833,7 @@ def train(
             optuna_trials=optuna_trials,
             half_life_days=half_life_days,
             prune_threshold=prune_threshold,
+            calendar_file=calendar_file,
             **kwargs,
         )
 
@@ -998,6 +1029,7 @@ def main() -> None:
         default=0.0,
         help="drop features with mean |SHAP| below this value",
     )
+    p.add_argument("--calendar-file", type=Path, help="CSV file with calendar events")
     args = p.parse_args()
     train(
         args.data_dir,
@@ -1010,6 +1042,7 @@ def main() -> None:
         min_profit=args.min_profit,
         replay_file=args.replay_file,
         replay_weight=args.replay_weight,
+        calendar_file=args.calendar_file,
     )
 
 

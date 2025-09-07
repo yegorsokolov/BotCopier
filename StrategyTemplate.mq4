@@ -49,6 +49,64 @@ double SymbolThreshold()
 }
 // __SYMBOL_THRESHOLDS_END__
 
+string g_calendar_file = "__CALENDAR_FILE__";
+datetime g_cal_times[];
+double g_cal_impacts[];
+int g_cal_loaded = 0;
+int g_cal_count = 0;
+int g_calendar_window = 60;
+
+void LoadCalendar()
+{
+    if(g_cal_loaded) return;
+    int handle = FileOpen(g_calendar_file, FILE_READ|FILE_CSV);
+    if(handle < 0)
+    {
+        g_cal_loaded = 1;
+        return;
+    }
+    FileReadString(handle); // header
+    while(!FileIsEnding(handle))
+    {
+        string sTime = FileReadString(handle);
+        if(sTime == "") break;
+        double impact = StrToDouble(FileReadString(handle));
+        FileReadString(handle);
+        ArrayResize(g_cal_times, g_cal_count+1);
+        ArrayResize(g_cal_impacts, g_cal_count+1);
+        g_cal_times[g_cal_count] = StringToTime(sTime);
+        g_cal_impacts[g_cal_count] = impact;
+        g_cal_count++;
+    }
+    FileClose(handle);
+    g_cal_loaded = 1;
+}
+
+double CalendarFlag()
+{
+    LoadCalendar();
+    datetime now = TimeCurrent();
+    for(int i=0; i<g_cal_count; i++)
+    {
+        if(MathAbs((double)(now - g_cal_times[i])) <= g_calendar_window*60) return 1.0;
+    }
+    return 0.0;
+}
+
+double CalendarImpact()
+{
+    LoadCalendar();
+    datetime now = TimeCurrent();
+    double maxImp = 0.0;
+    for(int i=0; i<g_cal_count; i++)
+    {
+        double diff = MathAbs((double)(now - g_cal_times[i]));
+        if(diff <= g_calendar_window*60 && g_cal_impacts[i] > maxImp)
+            maxImp = g_cal_impacts[i];
+    }
+    return maxImp;
+}
+
 int RouteModel()
 {
     double features[2];
@@ -359,24 +417,7 @@ double RollingCorrelation(string sym1, string sym2, int window)
     return(num / den);
 }
 
-double GetFeature(int idx)
-{
-    switch(idx)
-    {
-    case 0: return MarketInfo(Symbol(), MODE_SPREAD); // spread
-    case 1: return OrderSlippage(); // slippage
-    case 2: return AccountEquity(); // equity
-    case 3: return AccountMarginLevel(); // margin_level
-    case 4: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume
-    case 5: return MathSin(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_sin
-    case 6: return MathCos(TimeHour(TimeCurrent())*2*MathPi()/24); // hour_cos
-    case 7: return MathSin((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_sin
-    case 8: return MathCos((TimeMonth(TimeCurrent())-1)*2*MathPi()/12); // month_cos
-    case 9: return MathSin((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_sin
-    case 10: return MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31); // dom_cos
-    }
-    return 0.0;
-}
+// __GET_FEATURE__
 
 
 double ApplyModel(double &coeffs[])
