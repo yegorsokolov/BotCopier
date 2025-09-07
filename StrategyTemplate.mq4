@@ -42,6 +42,13 @@ double GraphEmbedding(int idx)
 }
 // __SYMBOL_EMBEDDINGS_END__
 
+// __SYMBOL_THRESHOLDS_START__
+double SymbolThreshold()
+{
+    return g_threshold;
+}
+// __SYMBOL_THRESHOLDS_END__
+
 int RouteModel()
 {
     double vol = iStdDev(Symbol(), PERIOD_CURRENT, 14, 0, MODE_SMA, PRICE_CLOSE, 0);
@@ -530,7 +537,7 @@ void OnTick()
         decision = "skip";
         reason = "uncertain_prob";
     }
-    else if(prob > g_threshold)
+    else if(prob > SymbolThreshold())
     {
         double sl_price = Ask - sl * Point;
         double tp_price = Ask + tp * Point;
@@ -540,7 +547,7 @@ void OnTick()
             decision = "buy";
         }
     }
-    else if((1.0 - prob) > g_threshold)
+    else if((1.0 - prob) > SymbolThreshold())
     {
         double sl_price = Bid + sl * Point;
         double tp_price = Bid - tp * Point;
