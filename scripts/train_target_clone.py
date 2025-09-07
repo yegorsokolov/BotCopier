@@ -510,20 +510,40 @@ def _train_lite_mode(
                 w_train = sw_all[train_idx]
                 if model_type == "sgd":
                     scaler = StandardScaler().fit(X_train)
-                    clf = SGDClassifier(
-                        loss="log_loss",
-                        learning_rate="constant",
-                        eta0=lr,
-                        alpha=1.0 / C,
-                        penalty="elasticnet",
-                        l1_ratio=l1_ratio,
-                    )
-                    clf.partial_fit(
-                        scaler.transform(X_train),
-                        y_train,
-                        classes=np.array([0, 1]),
-                        sample_weight=w_train,
-                    )
+                    class_counts = np.bincount(y_train)
+                    val_size = int(len(y_train) * 0.1)
+                    if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
+                        clf = SGDClassifier(
+                            loss="log_loss",
+                            learning_rate="constant",
+                            eta0=lr,
+                            alpha=1.0 / C,
+                            penalty="elasticnet",
+                            l1_ratio=l1_ratio,
+                        )
+                        clf.partial_fit(
+                            scaler.transform(X_train),
+                            y_train,
+                            classes=np.array([0, 1]),
+                            sample_weight=w_train,
+                        )
+                    else:
+                        clf = SGDClassifier(
+                            loss="log_loss",
+                            learning_rate="constant",
+                            eta0=lr,
+                            alpha=1.0 / C,
+                            penalty="elasticnet",
+                            l1_ratio=l1_ratio,
+                            early_stopping=True,
+                            validation_fraction=0.1,
+                            n_iter_no_change=5,
+                        )
+                        clf.fit(
+                            scaler.transform(X_train),
+                            y_train,
+                            sample_weight=w_train,
+                        )
                     probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
                 else:
                     clf = GradientBoostingClassifier(
@@ -531,6 +551,8 @@ def _train_lite_mode(
                         max_depth=depth,
                         n_estimators=n_estimators,
                         subsample=subsample,
+                        validation_fraction=0.1,
+                        n_iter_no_change=5,
                     )
                     clf.fit(X_train, y_train, sample_weight=w_train)
                     probs = clf.predict_proba(X_val)[:, 1]
@@ -593,13 +615,28 @@ def _train_lite_mode(
             y_train, y_val = y_all[train_idx], y_all[val_idx]
             w_train = w_all[train_idx]
             scaler = StandardScaler().fit(X_train)
-            clf = SGDClassifier(loss="log_loss")
-            clf.partial_fit(
-                scaler.transform(X_train),
-                y_train,
-                classes=np.array([0, 1]),
-                sample_weight=w_train,
-            )
+            class_counts = np.bincount(y_train)
+            val_size = int(len(y_train) * 0.1)
+            if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
+                clf = SGDClassifier(loss="log_loss")
+                clf.partial_fit(
+                    scaler.transform(X_train),
+                    y_train,
+                    classes=np.array([0, 1]),
+                    sample_weight=w_train,
+                )
+            else:
+                clf = SGDClassifier(
+                    loss="log_loss",
+                    early_stopping=True,
+                    validation_fraction=0.1,
+                    n_iter_no_change=5,
+                )
+                clf.fit(
+                    scaler.transform(X_train),
+                    y_train,
+                    sample_weight=w_train,
+                )
             probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
             # collect probabilities and labels for conformal interval computation
             all_probs.append(probs)
@@ -652,14 +689,30 @@ def _train_lite_mode(
         if conf_lower > conf_upper:
             conf_lower, conf_upper = conf_upper, conf_lower
         scaler_full = StandardScaler().fit(X_all)
-        clf_full = SGDClassifier(loss="log_loss")
-        X_scaled_full = scaler_full.transform(X_all)
-        clf_full.partial_fit(
-            X_scaled_full,
-            y_all,
-            classes=np.array([0, 1]),
-            sample_weight=w_all,
-        )
+        class_counts_full = np.bincount(y_all)
+        val_size_full = int(len(y_all) * 0.1)
+        if len(class_counts_full) < 2 or class_counts_full.min() < 2 or val_size_full < 2:
+            clf_full = SGDClassifier(loss="log_loss")
+            X_scaled_full = scaler_full.transform(X_all)
+            clf_full.partial_fit(
+                X_scaled_full,
+                y_all,
+                classes=np.array([0, 1]),
+                sample_weight=w_all,
+            )
+        else:
+            clf_full = SGDClassifier(
+                loss="log_loss",
+                early_stopping=True,
+                validation_fraction=0.1,
+                n_iter_no_change=5,
+            )
+            X_scaled_full = scaler_full.transform(X_all)
+            clf_full.fit(
+                X_scaled_full,
+                y_all,
+                sample_weight=w_all,
+            )
 
         def _fit_regression(target_names: list[str]) -> dict | None:
             for col in target_names:
@@ -726,13 +779,28 @@ def _train_lite_mode(
             y_sym = sym_df["label"].astype(int).to_numpy()
             w_sym = sym_df["sample_weight"].to_numpy()
             scaler_sym = StandardScaler().fit(X_sym)
-            base_clf = SGDClassifier(loss="log_loss")
-            base_clf.partial_fit(
-                scaler_sym.transform(X_sym),
-                y_sym,
-                classes=np.array([0, 1]),
-                sample_weight=w_sym,
-            )
+            class_counts = np.bincount(y_sym)
+            val_size_sym = int(len(y_sym) * 0.1)
+            if len(class_counts) < 2 or class_counts.min() < 2 or val_size_sym < 2:
+                base_clf = SGDClassifier(loss="log_loss")
+                base_clf.partial_fit(
+                    scaler_sym.transform(X_sym),
+                    y_sym,
+                    classes=np.array([0, 1]),
+                    sample_weight=w_sym,
+                )
+            else:
+                base_clf = SGDClassifier(
+                    loss="log_loss",
+                    early_stopping=True,
+                    validation_fraction=0.1,
+                    n_iter_no_change=5,
+                )
+                base_clf.fit(
+                    scaler_sym.transform(X_sym),
+                    y_sym,
+                    sample_weight=w_sym,
+                )
             calib = CalibratedClassifierCV(base_clf, method="isotonic", cv="prefit")
             calib.fit(
                 scaler_sym.transform(X_sym),
@@ -793,13 +861,28 @@ def _train_lite_mode(
     def _fit_base_model(X: np.ndarray, y: np.ndarray, w: np.ndarray):
         """Fit logistic regression and return params, predictor and model."""
         scaler = StandardScaler().fit(X)
-        clf = SGDClassifier(loss="log_loss")
-        clf.partial_fit(
-            scaler.transform(X),
-            y,
-            classes=np.array([0, 1]),
-            sample_weight=w,
-        )
+        class_counts = np.bincount(y)
+        val_size = int(len(y) * 0.1)
+        if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
+            clf = SGDClassifier(loss="log_loss")
+            clf.partial_fit(
+                scaler.transform(X),
+                y,
+                classes=np.array([0, 1]),
+                sample_weight=w,
+            )
+        else:
+            clf = SGDClassifier(
+                loss="log_loss",
+                early_stopping=True,
+                validation_fraction=0.1,
+                n_iter_no_change=5,
+            )
+            clf.fit(
+                scaler.transform(X),
+                y,
+                sample_weight=w,
+            )
 
         def _predict(inp: np.ndarray) -> np.ndarray:
             return clf.predict_proba(scaler.transform(inp))[:, 1]
@@ -893,10 +976,21 @@ def _train_lite_mode(
     r_std = router_feats.std(axis=0)
     r_std[r_std == 0] = 1.0
     norm_router = (router_feats - r_mean) / r_std
-    router_clf = SGDClassifier(loss="log_loss")
-    router_clf.partial_fit(
-        norm_router, best_idx, classes=np.array([0, 1, 2]), sample_weight=w_all
-    )
+    class_counts = np.bincount(best_idx)
+    val_size_router = int(len(best_idx) * 0.1)
+    if len(class_counts) < 2 or class_counts.min() < 2 or val_size_router < 2:
+        router_clf = SGDClassifier(loss="log_loss")
+        router_clf.partial_fit(
+            norm_router, best_idx, classes=np.array([0, 1, 2]), sample_weight=w_all
+        )
+    else:
+        router_clf = SGDClassifier(
+            loss="log_loss",
+            early_stopping=True,
+            validation_fraction=0.1,
+            n_iter_no_change=5,
+        )
+        router_clf.fit(norm_router, best_idx, sample_weight=w_all)
     router = {
         "intercept": router_clf.intercept_.astype(float).tolist(),
        "coefficients": router_clf.coef_.astype(float).tolist(),
@@ -915,7 +1009,13 @@ def _train_lite_mode(
             ),
             (
                 "gboost",
-                GradientBoostingClassifier(random_state=0, n_estimators=5, max_depth=1),
+                GradientBoostingClassifier(
+                    random_state=0,
+                    n_estimators=5,
+                    max_depth=1,
+                    validation_fraction=0.1,
+                    n_iter_no_change=5,
+                ),
             ),
         ]
         if ensemble == "voting":
