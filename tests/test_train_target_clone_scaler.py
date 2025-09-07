@@ -1,24 +1,38 @@
 import json
-from pathlib import Path
 
-from scripts.train_target_clone import train
+import numpy as np
+from sklearn.preprocessing import RobustScaler
+
+from scripts.train_target_clone import train, _load_logs, _extract_features
 
 
-def test_scaler_stats_present(tmp_path):
+def test_scaler_robust_with_outliers(tmp_path):
     data = tmp_path / "trades_raw.csv"
     data.write_text(
         "label,spread,hour\n"
         "0,1.0,1\n"
-        "1,1.2,2\n"
-        "0,1.3,9\n"
-        "1,1.5,10\n"
-        "0,1.4,17\n"
-        "1,1.6,18\n"
+        "1,1.2,1\n"
+        "0,1.3,1\n"
+        "1,1.4,2\n"
+        "0,1.5,2\n"
+        "1,1.6,2\n"
+        "0,1.7,3\n"
+        "1,1.8,3\n"
+        "0,100.0,3\n"
     )
     out_dir = tmp_path / "out"
     train(data, out_dir)
     model = json.loads((out_dir / "model.json").read_text())
-    for sess in ["asian", "london", "newyork"]:
-        params = model["session_models"][sess]
-        assert "feature_mean" in params
-        assert "feature_std" in params
+    params = model["session_models"]["asian"]
+
+    df, features, _ = _load_logs(data)
+    df, features, _ = _extract_features(df, features)
+    X = df[features].to_numpy(dtype=float)
+    clip_min = np.quantile(X, 0.01, axis=0)
+    clip_max = np.quantile(X, 0.99, axis=0)
+    X_c = np.clip(X, clip_min, clip_max)
+    scaler = RobustScaler().fit(X_c)
+
+    assert np.allclose(params["feature_mean"], scaler.center_.tolist())
+    assert np.allclose(params["feature_std"], scaler.scale_.tolist())
+

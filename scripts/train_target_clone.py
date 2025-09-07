@@ -27,7 +27,7 @@ import logging
 import numpy as np
 import pandas as pd
 import psutil
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler
 from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
 from sklearn.metrics import accuracy_score, recall_score
@@ -68,8 +68,24 @@ except Exception:  # pragma: no cover
 from .features import _sma, _rsi, _bollinger, _macd_update, _atr
 
 
+# Quantile bounds for feature clipping
+_CLIP_BOUNDS = (0.01, 0.99)
+
+
+def _clip_train_features(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Clip extreme feature values and return clipped array with bounds."""
+    low = np.quantile(X, _CLIP_BOUNDS[0], axis=0)
+    high = np.quantile(X, _CLIP_BOUNDS[1], axis=0)
+    return np.clip(X, low, high), low, high
+
+
+def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
+    """Apply precomputed clipping bounds to features."""
+    return np.clip(X, low, high)
+
+
 def _mean_abs_shap_linear(
-    clf: SGDClassifier, scaler: StandardScaler, X: np.ndarray
+    clf: SGDClassifier, scaler: RobustScaler, X: np.ndarray
 ) -> np.ndarray:
     """Return mean absolute SHAP values for linear models."""
     if _HAS_SHAP:
@@ -79,7 +95,7 @@ def _mean_abs_shap_linear(
             shap_vals = shap_vals[0]
     else:
         coeffs = clf.coef_[0]
-        shap_vals = ((X - scaler.mean_) / scaler.scale_) * coeffs
+        shap_vals = ((X - scaler.center_) / scaler.scale_) * coeffs
     return np.mean(np.abs(shap_vals), axis=0)
 
 
@@ -464,7 +480,8 @@ def _train_lite_mode(
     # Compute mutual information for each feature and drop low-score features
     X_mi = df[feature_names].to_numpy(dtype=float)
     y_mi = df["label"].astype(int).to_numpy()
-    scaler_mi = StandardScaler().fit(X_mi)
+    X_mi, _, _ = _clip_train_features(X_mi)
+    scaler_mi = RobustScaler().fit(X_mi)
     mi_scores = mutual_info_classif(scaler_mi.transform(X_mi), y_mi)
     retained_features = [
         name for name, score in zip(feature_names, mi_scores) if score >= mi_threshold
@@ -509,7 +526,9 @@ def _train_lite_mode(
                 y_train, y_val = y_all[train_idx], y_all[val_idx]
                 w_train = sw_all[train_idx]
                 if model_type == "sgd":
-                    scaler = StandardScaler().fit(X_train)
+                    X_train, c_low, c_high = _clip_train_features(X_train)
+                    X_val = _clip_apply(X_val, c_low, c_high)
+                    scaler = RobustScaler().fit(X_train)
                     class_counts = np.bincount(y_train)
                     val_size = int(len(y_train) * 0.1)
                     if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
@@ -614,7 +633,9 @@ def _train_lite_mode(
             X_train, X_val = X_all[train_idx], X_all[val_idx]
             y_train, y_val = y_all[train_idx], y_all[val_idx]
             w_train = w_all[train_idx]
-            scaler = StandardScaler().fit(X_train)
+            X_train, c_low, c_high = _clip_train_features(X_train)
+            X_val = _clip_apply(X_val, c_low, c_high)
+            scaler = RobustScaler().fit(X_train)
             class_counts = np.bincount(y_train)
             val_size = int(len(y_train) * 0.1)
             if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
@@ -688,12 +709,13 @@ def _train_lite_mode(
         conf_upper = float(np.quantile(pos_probs, alpha)) if len(pos_probs) else 1.0
         if conf_lower > conf_upper:
             conf_lower, conf_upper = conf_upper, conf_lower
-        scaler_full = StandardScaler().fit(X_all)
+        X_all_clip, _, _ = _clip_train_features(X_all)
+        scaler_full = RobustScaler().fit(X_all_clip)
         class_counts_full = np.bincount(y_all)
         val_size_full = int(len(y_all) * 0.1)
+        X_scaled_full = scaler_full.transform(X_all_clip)
         if len(class_counts_full) < 2 or class_counts_full.min() < 2 or val_size_full < 2:
             clf_full = SGDClassifier(loss="log_loss")
-            X_scaled_full = scaler_full.transform(X_all)
             clf_full.partial_fit(
                 X_scaled_full,
                 y_all,
@@ -707,7 +729,6 @@ def _train_lite_mode(
                 validation_fraction=0.1,
                 n_iter_no_change=5,
             )
-            X_scaled_full = scaler_full.transform(X_all)
             clf_full.fit(
                 X_scaled_full,
                 y_all,
@@ -745,7 +766,7 @@ def _train_lite_mode(
             "coefficients": clf_full.coef_[0].astype(float).tolist(),
             "intercept": float(clf_full.intercept_[0]),
             "threshold": avg_thresh,
-            "feature_mean": scaler_full.mean_.astype(float).tolist(),
+            "feature_mean": scaler_full.center_.astype(float).tolist(),
             "feature_std": scaler_full.scale_.astype(float).tolist(),
             "metrics": {
                 "accuracy": mean_acc,
@@ -778,7 +799,8 @@ def _train_lite_mode(
             X_sym = sym_df[feat_cols_all].to_numpy()
             y_sym = sym_df["label"].astype(int).to_numpy()
             w_sym = sym_df["sample_weight"].to_numpy()
-            scaler_sym = StandardScaler().fit(X_sym)
+            X_sym, _, _ = _clip_train_features(X_sym)
+            scaler_sym = RobustScaler().fit(X_sym)
             class_counts = np.bincount(y_sym)
             val_size_sym = int(len(y_sym) * 0.1)
             if len(class_counts) < 2 or class_counts.min() < 2 or val_size_sym < 2:
@@ -860,13 +882,14 @@ def _train_lite_mode(
     # ------------------------------------------------------------------
     def _fit_base_model(X: np.ndarray, y: np.ndarray, w: np.ndarray):
         """Fit logistic regression and return params, predictor and model."""
-        scaler = StandardScaler().fit(X)
+        X_clip, c_low, c_high = _clip_train_features(X)
+        scaler = RobustScaler().fit(X_clip)
         class_counts = np.bincount(y)
         val_size = int(len(y) * 0.1)
         if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
             clf = SGDClassifier(loss="log_loss")
             clf.partial_fit(
-                scaler.transform(X),
+                scaler.transform(X_clip),
                 y,
                 classes=np.array([0, 1]),
                 sample_weight=w,
@@ -879,24 +902,24 @@ def _train_lite_mode(
                 n_iter_no_change=5,
             )
             clf.fit(
-                scaler.transform(X),
+                scaler.transform(X_clip),
                 y,
                 sample_weight=w,
             )
 
         def _predict(inp: np.ndarray) -> np.ndarray:
-            return clf.predict_proba(scaler.transform(inp))[:, 1]
+            return clf.predict_proba(scaler.transform(_clip_apply(inp, c_low, c_high)))[:, 1]
 
         params = {
             "coefficients": clf.coef_[0].astype(float).tolist(),
             "intercept": float(clf.intercept_[0]),
             "threshold": 0.5,
-            "feature_mean": scaler.mean_.astype(float).tolist(),
+            "feature_mean": scaler.center_.astype(float).tolist(),
             "feature_std": scaler.scale_.astype(float).tolist(),
             "conformal_lower": 0.0,
             "conformal_upper": 1.0,
         }
-        return params, _predict, clf, scaler
+        return params, _predict, clf, scaler, c_low, c_high
 
     # Use spread as a crude volatility proxy; fall back to zeros
     vol_series = pd.to_numeric(
@@ -915,19 +938,33 @@ def _train_lite_mode(
     low_mask = ~high_mask
 
     # Fit model and compute SHAP importances for optional pruning
-    params_generic, pred_generic, clf_generic, scaler_generic = _fit_base_model(
-        X_all, y_all, w_all
+    (
+        params_generic,
+        pred_generic,
+        clf_generic,
+        scaler_generic,
+        c_low_gen,
+        c_high_gen,
+    ) = _fit_base_model(X_all, y_all, w_all)
+    mean_abs_shap = _mean_abs_shap_linear(
+        clf_generic, scaler_generic, _clip_apply(X_all, c_low_gen, c_high_gen)
     )
-    mean_abs_shap = _mean_abs_shap_linear(clf_generic, scaler_generic, X_all)
 
     keep_mask = mean_abs_shap >= prune_threshold
     if prune_threshold > 0.0 and not keep_mask.all():
         feat_cols = [n for n, k in zip(feat_cols, keep_mask) if k]
         X_all = X_all[:, keep_mask]
-        params_generic, pred_generic, clf_generic, scaler_generic = _fit_base_model(
-            X_all, y_all, w_all
+        (
+            params_generic,
+            pred_generic,
+            clf_generic,
+            scaler_generic,
+            c_low_gen,
+            c_high_gen,
+        ) = _fit_base_model(X_all, y_all, w_all)
+        mean_abs_shap = _mean_abs_shap_linear(
+            clf_generic, scaler_generic, _clip_apply(X_all, c_low_gen, c_high_gen)
         )
-        mean_abs_shap = _mean_abs_shap_linear(clf_generic, scaler_generic, X_all)
 
     feature_names = feat_cols
 
@@ -944,7 +981,7 @@ def _train_lite_mode(
     logging.info("Ranked feature importances: %s", ranked_feats)
 
     if high_mask.sum() >= 2:
-        params_high, pred_high, _, _ = _fit_base_model(
+        params_high, pred_high, _, _, _, _ = _fit_base_model(
             X_all[high_mask], y_all[high_mask], w_all[high_mask]
         )
     else:
@@ -953,7 +990,7 @@ def _train_lite_mode(
     pred_funcs.append(pred_high)
 
     if low_mask.sum() >= 2:
-        params_low, pred_low, _, _ = _fit_base_model(
+        params_low, pred_low, _, _, _, _ = _fit_base_model(
             X_all[low_mask], y_all[low_mask], w_all[low_mask]
         )
     else:
@@ -972,10 +1009,9 @@ def _train_lite_mode(
     best_idx = np.argmin(errors, axis=0)
 
     router_feats = np.column_stack([vol_series.to_numpy(), hours_series.to_numpy()])
-    r_mean = router_feats.mean(axis=0)
-    r_std = router_feats.std(axis=0)
-    r_std[r_std == 0] = 1.0
-    norm_router = (router_feats - r_mean) / r_std
+    router_feats, r_low, r_high = _clip_train_features(router_feats)
+    scaler_router = RobustScaler().fit(router_feats)
+    norm_router = scaler_router.transform(router_feats)
     class_counts = np.bincount(best_idx)
     val_size_router = int(len(best_idx) * 0.1)
     if len(class_counts) < 2 or class_counts.min() < 2 or val_size_router < 2:
@@ -993,9 +1029,9 @@ def _train_lite_mode(
         router_clf.fit(norm_router, best_idx, sample_weight=w_all)
     router = {
         "intercept": router_clf.intercept_.astype(float).tolist(),
-       "coefficients": router_clf.coef_.astype(float).tolist(),
-       "feature_mean": r_mean.astype(float).tolist(),
-       "feature_std": r_std.astype(float).tolist(),
+        "coefficients": router_clf.coef_.astype(float).tolist(),
+        "feature_mean": scaler_router.center_.astype(float).tolist(),
+        "feature_std": scaler_router.scale_.astype(float).tolist(),
     }
     model["ensemble_router"] = router
 
@@ -1004,7 +1040,7 @@ def _train_lite_mode(
             (
                 "logreg",
                 make_pipeline(
-                    StandardScaler(), LogisticRegression(max_iter=1000, random_state=0)
+                    RobustScaler(), LogisticRegression(max_iter=1000, random_state=0)
                 ),
             ),
             (
@@ -1025,12 +1061,13 @@ def _train_lite_mode(
                 estimators=base_estimators,
                 final_estimator=LogisticRegression(max_iter=1000, random_state=0),
             )
-        ensemble_clf.fit(X_all, y_all)
+        X_all_ens, _, _ = _clip_train_features(X_all)
+        ensemble_clf.fit(X_all_ens, y_all)
         base_acc = {
-            name: float(accuracy_score(y_all, est.predict(X_all)))
+            name: float(accuracy_score(y_all, est.predict(X_all_ens)))
             for name, est in ensemble_clf.named_estimators_.items()
         }
-        ensemble_acc = float(accuracy_score(y_all, ensemble_clf.predict(X_all)))
+        ensemble_acc = float(accuracy_score(y_all, ensemble_clf.predict(X_all_ens)))
         if ensemble == "voting":
             weights_out = (
                 list(ensemble_clf.weights)
@@ -1096,10 +1133,11 @@ def _train_transformer(
 
     X_all = df[feature_names].to_numpy(dtype=float)
     y_all = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
-    feat_mean = X_all.mean(axis=0)
-    feat_std = X_all.std(axis=0)
-    feat_std[feat_std == 0] = 1.0
-    norm_X = (X_all - feat_mean) / feat_std
+    X_all, _, _ = _clip_train_features(X_all)
+    scaler_t = RobustScaler().fit(X_all)
+    norm_X = scaler_t.transform(X_all)
+    feat_mean = scaler_t.center_
+    feat_std = scaler_t.scale_
 
     seqs: list[list[list[float]]] = []
     ys: list[float] = []
