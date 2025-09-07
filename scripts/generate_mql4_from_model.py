@@ -33,6 +33,7 @@ FEATURE_MAP: dict[str, str] = {
     "slippage": "OrderSlippage()",
     "equity": "AccountEquity()",
     "margin_level": "AccountMarginLevel()",
+    "atr": "iATR(Symbol(), PERIOD_CURRENT, 14, 0)",
     "event_flag": "CalendarFlag()",
     "event_impact": "CalendarImpact()",
     "news_sentiment": "NewsSentiment()",

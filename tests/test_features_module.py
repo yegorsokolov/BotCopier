@@ -33,6 +33,9 @@ def test_extract_features_basic():
     feats, labels, *_ = _extract_features(rows)
     assert len(feats) == 2
     assert labels.tolist() == [1, 0]
+    assert "atr" in feats[0]
+    assert "sl_dist_atr" in feats[0]
+    assert "tp_dist_atr" in feats[0]
 
 
 def test_mandatory_features_present():
@@ -50,5 +53,5 @@ def test_mandatory_features_present():
         }
     ]
     feats, *_ = _extract_features(rows)
-    for key in ["book_bid_vol", "book_ask_vol", "book_imbalance", "equity", "margin_level"]:
+    for key in ["book_bid_vol", "book_ask_vol", "book_imbalance", "equity", "margin_level", "atr"]:
         assert key in feats[0]

@@ -251,7 +251,6 @@ def _extract_features(
     use_rsi=False,
     rsi_period=14,
     use_macd=False,
-    use_atr=False,
     atr_period=14,
     use_bollinger=False,
     boll_window=20,
@@ -397,7 +396,6 @@ def _extract_features(
         "use_adx",
         "use_stochastic",
         "use_bollinger",
-        "use_atr",
     ]
 
     for r in rows:
@@ -582,8 +580,14 @@ def _extract_features(
             feat["macd"] = macd
             feat["macd_signal"] = signal
 
-        if use_atr:
-            feat["atr"] = _atr(prices, atr_period)
+        atr_val = _atr(prices, atr_period)
+        feat["atr"] = atr_val
+        if atr_val > 0:
+            feat["sl_dist_atr"] = sl_dist / atr_val
+            feat["tp_dist_atr"] = tp_dist / atr_val
+        else:
+            feat["sl_dist_atr"] = 0.0
+            feat["tp_dist_atr"] = 0.0
 
         if use_bollinger:
             upper, mid, lower = _bollinger(prices, boll_window)
@@ -728,9 +732,7 @@ def _extract_features(
                 elapsed > perf_budget * row_idx or load > 90.0
             ):
                 feat_name = heavy_order.pop(0)
-                if feat_name == "use_atr":
-                    use_atr = False
-                elif feat_name == "use_bollinger":
+                if feat_name == "use_bollinger":
                     use_bollinger = False
                 elif feat_name == "use_stochastic":
                     use_stochastic = False
@@ -758,8 +760,7 @@ def _extract_features(
         enabled_feats.append("rsi")
     if use_macd:
         enabled_feats.append("macd")
-    if use_atr:
-        enabled_feats.append("atr")
+    enabled_feats.append("atr")
     if use_bollinger:
         enabled_feats.append("bollinger")
     if use_stochastic:
