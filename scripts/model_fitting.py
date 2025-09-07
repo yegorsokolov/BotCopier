@@ -72,6 +72,69 @@ def fit_logistic_regression(
     return clf
 
 
+def fit_xgb_classifier(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    sample_weight=None,
+    existing_model: "xgb.XGBClassifier | None" = None,
+    **params: float | int,
+) -> "xgb.XGBClassifier":  # pragma: no cover - optional dependency
+    """Fit an ``xgboost.XGBClassifier`` and return the fitted model."""
+    if xgb is None:  # pragma: no cover - optional dependency
+        raise RuntimeError("xgboost is not available")
+    default_params = {
+        "objective": "binary:logistic",
+        "eval_metric": "logloss",
+        "use_label_encoder": False,
+        "verbosity": 0,
+    }
+    default_params.update(params)
+    clf = xgb.XGBClassifier(**default_params)
+    if existing_model is not None:
+        clf.load_model(existing_model)  # type: ignore[arg-type]
+    clf.fit(X, y, sample_weight=sample_weight)
+    return clf
+
+
+def fit_lgbm_classifier(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    sample_weight=None,
+    existing_model: "lgb.LGBMClassifier | None" = None,
+    **params: float | int,
+) -> "lgb.LGBMClassifier":  # pragma: no cover - optional dependency
+    """Fit a ``lightgbm.LGBMClassifier`` and return the fitted model."""
+    if lgb is None:  # pragma: no cover - optional dependency
+        raise RuntimeError("lightgbm is not available")
+    clf = lgb.LGBMClassifier(**params)
+    if existing_model is not None:
+        clf = existing_model
+    clf.fit(X, y, sample_weight=sample_weight)
+    return clf
+
+
+def fit_catboost_classifier(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    sample_weight=None,
+    existing_model: "cb.CatBoostClassifier | None" = None,
+    **params: float | int,
+) -> "cb.CatBoostClassifier":  # pragma: no cover - optional dependency
+    """Fit a ``catboost.CatBoostClassifier`` and return the fitted model."""
+    if cb is None:  # pragma: no cover - optional dependency
+        raise RuntimeError("catboost is not available")
+    default_params = {"verbose": False}
+    default_params.update(params)
+    clf = cb.CatBoostClassifier(**default_params)
+    if existing_model is not None:
+        clf = existing_model
+    clf.fit(X, y, sample_weight=sample_weight)
+    return clf
+
+
 def _compute_decay_weights(
     event_times: np.ndarray, half_life_days: float
 ) -> tuple[np.ndarray, np.ndarray]:

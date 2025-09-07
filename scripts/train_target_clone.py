@@ -23,6 +23,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Iterable, Tuple, Callable
 
+import logging
 import numpy as np
 import pandas as pd
 import psutil
@@ -32,6 +33,11 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, recall_score
 from .splitters import PurgedWalkForward
 from sklearn.calibration import CalibratedClassifierCV
+from .model_fitting import (
+    fit_xgb_classifier,
+    fit_lgbm_classifier,
+    fit_catboost_classifier,
+)
 
 try:  # Optional dependency
     import optuna
@@ -767,6 +773,11 @@ def _train_lite_mode(
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
+    logging.info(
+        "Trained logreg model - cv_accuracy %.3f cv_profit %.3f",
+        model.get("cv_accuracy", 0.0),
+        model.get("cv_profit", 0.0),
+    )
 
 
 def _train_transformer(
@@ -968,6 +979,112 @@ def _train_transformer(
         json.dump(model_json, f)
 
 
+def _train_tree_model(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    model_type: str,
+    min_accuracy: float = 0.0,
+    min_profit: float = 0.0,
+    half_life_days: float = 0.0,
+    replay_file: Path | None = None,
+    replay_weight: float = 1.0,
+    symbol_graph: dict | str | Path | None = None,
+    calendar_file: Path | None = None,
+    news_sentiment: pd.DataFrame | None = None,
+    **_: object,
+) -> None:
+    """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
+    df, feature_names, _ = _load_logs(data_dir)
+    if not isinstance(df, pd.DataFrame):
+        df = pd.concat(list(df), ignore_index=True)
+    feature_names = list(feature_names)
+    if replay_file:
+        rdf = pd.read_csv(replay_file)
+        rdf.columns = [c.lower() for c in rdf.columns]
+        df = pd.concat([df, rdf], ignore_index=True)
+    if "net_profit" in df.columns:
+        weights = pd.to_numeric(df["net_profit"], errors="coerce").abs().to_numpy()
+    elif "lots" in df.columns:
+        weights = pd.to_numeric(df["lots"], errors="coerce").abs().to_numpy()
+    else:
+        weights = np.ones(len(df), dtype=float)
+    if replay_file:
+        weights[-len(rdf) :] *= replay_weight
+    if "event_time" in df.columns:
+        ref_time = df["event_time"].max()
+        age_days = (ref_time - df["event_time"]).dt.total_seconds() / (24 * 3600)
+    else:
+        age_days = pd.Series(0.0, index=df.index)
+    if half_life_days > 0:
+        weights = weights * (0.5 ** (age_days / half_life_days))
+    df["sample_weight"] = weights
+
+    if "label" not in df.columns:
+        raise ValueError("label column missing from data")
+
+    df, feature_names, _ = _extract_features(
+        df,
+        feature_names,
+        symbol_graph=symbol_graph,
+        calendar_file=calendar_file,
+        news_sentiment=news_sentiment,
+    )
+    feature_names = [
+        c
+        for c in feature_names
+        if c not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
+    ]
+    X = df[feature_names].to_numpy(dtype=float)
+    y = df["label"].astype(int).to_numpy()
+    w = df["sample_weight"].to_numpy(dtype=float)
+    profit_col = "profit" if "profit" in df.columns else (
+        "net_profit" if "net_profit" in df.columns else None
+    )
+    profits = df[profit_col].to_numpy(dtype=float) if profit_col else np.zeros(len(df))
+
+    n_splits = max(1, min(5, len(X) - 1))
+    tscv = PurgedWalkForward(n_splits=n_splits, gap=1)
+    train_idx, val_idx = list(tscv.split(X))[-1]
+    X_train, X_val = X[train_idx], X[val_idx]
+    y_train, y_val = y[train_idx], y[val_idx]
+    w_train = w[train_idx]
+    profits_val = profits[val_idx]
+
+    if model_type == "xgboost":
+        clf = fit_xgb_classifier(X_train, y_train, sample_weight=w_train)
+    elif model_type == "lgbm":
+        clf = fit_lgbm_classifier(X_train, y_train, sample_weight=w_train)
+    elif model_type == "catboost":
+        clf = fit_catboost_classifier(X_train, y_train, sample_weight=w_train)
+    else:  # pragma: no cover - defensive
+        raise ValueError(f"Unsupported model type: {model_type}")
+
+    preds = clf.predict(X_val)
+    acc = float(accuracy_score(y_val, preds)) if len(y_val) else 0.0
+    profit = (
+        float((profits_val * preds).mean()) if len(profits_val) else 0.0
+    )
+    if acc < min_accuracy and profit < min_profit:
+        raise ValueError(
+            f"Model failed to meet min accuracy {min_accuracy} or profit {min_profit}"
+        )
+
+    model_json = {
+        "model_type": model_type,
+        "trained_at": datetime.utcnow().isoformat(),
+        "feature_names": feature_names,
+        "half_life_days": float(half_life_days),
+        "validation_metrics": {"accuracy": acc, "profit": profit},
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model_json, f)
+
+    logging.info(
+        "Trained %s model - accuracy %.3f profit %.3f", model_type, acc, profit
+    )
+
 def train(
     data_dir: Path,
     out_dir: Path,
@@ -1004,6 +1121,17 @@ def train(
         _train_transformer(
             data_dir,
             out_dir,
+            calendar_file=calendar_file,
+            symbol_graph=graph_path,
+            news_sentiment=ns_df,
+            **kwargs,
+        )
+    elif model_type in {"xgboost", "lgbm", "catboost"}:
+        _train_tree_model(
+            data_dir,
+            out_dir,
+            model_type=model_type,
+            half_life_days=half_life_days,
             calendar_file=calendar_file,
             symbol_graph=graph_path,
             news_sentiment=ns_df,
@@ -1206,7 +1334,7 @@ def main() -> None:
     )
     p.add_argument(
         "--model-type",
-        choices=["logreg", "transformer"],
+        choices=["logreg", "xgboost", "lgbm", "catboost", "transformer"],
         default="logreg",
         help="which model architecture to train",
     )
