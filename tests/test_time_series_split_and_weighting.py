@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import TimeSeriesSplit
+
+from scripts.splitters import PurgedWalkForward
 
 
 def _compute_decay_weights(
@@ -13,14 +14,13 @@ def _compute_decay_weights(
     return 0.5 ** (age_days / half_life_days)
 
 
-def test_time_series_split_is_chronological():
+def test_purged_walkforward_respects_gap():
     n = 12
-    tscv = TimeSeriesSplit(n_splits=5)
-    train_idx, val_idx = list(tscv.split(np.arange(n)))[-1]
-    assert len(train_idx) == 10
-    assert len(val_idx) == 2
-    # ensure validation follows training chronologically
-    assert train_idx[-1] < val_idx[0]
+    tscv = PurgedWalkForward(n_splits=5, gap=2)
+    for train_idx, val_idx in tscv.split(np.arange(n)):
+        assert train_idx[-1] < val_idx[0]
+        # verify that the purging gap is respected
+        assert val_idx[0] - train_idx[-1] - 1 >= 2
 
 
 def test_shorter_half_life_emphasizes_recent_trades():

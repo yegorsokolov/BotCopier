@@ -144,6 +144,14 @@ applies an exponential decay of ``0.5 ** (age_days / half_life_days)`` to each
 sample where ``age_days`` is the number of days since the most recent trade.
 The selected ``half_life_days`` value is stored in ``model.json`` for reference.
 
+## Purged Walk-Forward Split
+
+Cross-validation during training uses a ``PurgedWalkForward`` splitter which
+skips a configurable gap between the training window and the following
+validation fold.  This purging gap prevents leakage from adjacent samples so
+that no validation row ever precedes its training counterpart.  Adjust the gap
+via the ``--purge-gap`` option when invoking ``scripts/train_target_clone.py``.
+
 
 ## Symbol Graph Embeddings
 
