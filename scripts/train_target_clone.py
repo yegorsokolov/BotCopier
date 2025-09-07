@@ -152,6 +152,7 @@ def _extract_features(
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
     event_window: float = 60.0,
+    news_sentiment: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]]]:
     """Attach graph embeddings and calendar flags."""
 
@@ -206,6 +207,31 @@ def _extract_features(
                     df.loc[mask, "event_impact"], ev_imp
                 )
         feature_names = feature_names + ["event_flag", "event_impact"]
+
+    if (
+        news_sentiment is not None
+        and "event_time" in df.columns
+        and "symbol" in df.columns
+        and len(news_sentiment) > 0
+    ):
+        ns = news_sentiment.copy()
+        ns.columns = [c.lower() for c in ns.columns]
+        ns["timestamp"] = pd.to_datetime(ns["timestamp"], errors="coerce")
+        ns.sort_values(["symbol", "timestamp"], inplace=True)
+        df_idx = df.index
+        df = df.sort_values(["symbol", "event_time"])
+        merged = pd.merge_asof(
+            df,
+            ns,
+            left_on="event_time",
+            right_on="timestamp",
+            by="symbol",
+            direction="backward",
+        )
+        merged["news_sentiment"] = merged["score"].fillna(0.0)
+        merged.drop(columns=["timestamp", "score"], inplace=True)
+        df = merged.set_index(df_idx).sort_index()
+        feature_names = feature_names + ["news_sentiment"]
     return df, feature_names, embeddings
 
 
@@ -231,6 +257,7 @@ def _train_lite_mode(
     optuna_trials: int = 0,
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
+    news_sentiment: pd.DataFrame | None = None,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -273,6 +300,7 @@ def _train_lite_mode(
         feature_names,
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
+        news_sentiment=news_sentiment,
     )
     feature_names = [
         c
@@ -721,6 +749,7 @@ def _train_transformer(
     lr: float = 1e-3,
     calendar_file: Path | None = None,
     symbol_graph: dict | str | Path | None = None,
+    news_sentiment: pd.DataFrame | None = None,
 ) -> None:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
@@ -733,7 +762,11 @@ def _train_transformer(
         raise ValueError("label column missing from data")
 
     df, feature_names, _ = _extract_features(
-        df, feature_names, symbol_graph=symbol_graph, calendar_file=calendar_file
+        df,
+        feature_names,
+        symbol_graph=symbol_graph,
+        calendar_file=calendar_file,
+        news_sentiment=news_sentiment,
     )
 
     X_all = df[feature_names].to_numpy(dtype=float)
@@ -855,6 +888,7 @@ def train(
     prune_threshold: float = 0.0,
     calendar_file: Path | None = None,
     symbol_graph: Path | dict | None = None,
+    news_sentiment: Path | pd.DataFrame | None = None,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -866,12 +900,23 @@ def train(
         elif Path("symbol_graph.json").exists():
             graph_path = Path("symbol_graph.json")
 
+    ns_df: pd.DataFrame | None = None
+    if news_sentiment is not None:
+        if isinstance(news_sentiment, pd.DataFrame):
+            ns_df = news_sentiment
+        else:
+            try:
+                ns_df = pd.read_csv(news_sentiment)
+            except Exception:
+                ns_df = None
+
     if model_type == "transformer":
         _train_transformer(
             data_dir,
             out_dir,
             calendar_file=calendar_file,
             symbol_graph=graph_path,
+            news_sentiment=ns_df,
             **kwargs,
         )
     else:
@@ -883,6 +928,7 @@ def train(
             prune_threshold=prune_threshold,
             calendar_file=calendar_file,
             symbol_graph=graph_path,
+            news_sentiment=ns_df,
             **kwargs,
         )
 
@@ -1084,6 +1130,7 @@ def main() -> None:
         type=Path,
         help="JSON file with symbol graph (defaults to data_dir/symbol_graph.json)",
     )
+    p.add_argument("--news-sentiment", type=Path, help="CSV file with news sentiment")
     args = p.parse_args()
     train(
         args.data_dir,
@@ -1098,6 +1145,7 @@ def main() -> None:
         replay_weight=args.replay_weight,
         calendar_file=args.calendar_file,
         symbol_graph=args.symbol_graph,
+        news_sentiment=args.news_sentiment,
     )
 
 

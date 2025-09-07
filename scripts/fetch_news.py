@@ -3,7 +3,9 @@
 
 This utility downloads recent headlines for given symbols and scores them using
 FinBERT from the :mod:`transformers` library.  Scores are stored in a SQLite
-and CSV file keeping only a rolling window of recent entries per symbol.
+and CSV file keeping only a rolling window of recent entries per symbol.  The
+CSV output can be consumed during model training or by a lightweight runtime
+service that provides the latest sentiment to trading algorithms.
 
 Example
 -------

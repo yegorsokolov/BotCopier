@@ -35,6 +35,7 @@ FEATURE_MAP: dict[str, str] = {
     "margin_level": "AccountMarginLevel()",
     "event_flag": "CalendarFlag()",
     "event_impact": "CalendarImpact()",
+    "news_sentiment": "NewsSentiment()",
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
