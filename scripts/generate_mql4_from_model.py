@@ -33,6 +33,8 @@ FEATURE_MAP: dict[str, str] = {
     "slippage": "OrderSlippage()",
     "equity": "AccountEquity()",
     "margin_level": "AccountMarginLevel()",
+    "event_flag": "CalendarFlag()",
+    "event_impact": "CalendarImpact()",
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
@@ -268,7 +270,9 @@ def _build_transformer_params(data: dict) -> str:
     return "\n".join(lines)
 
 
-def insert_get_feature(model: Path, template: Path) -> None:
+def insert_get_feature(
+    model: Path, template: Path, calendar_file: Path | None = None
+) -> None:
     """Insert generated GetFeature and session models into ``template``."""
     data = json.loads(model.read_text())
     feature_names = data.get("retained_features") or data.get("feature_names", [])
@@ -297,6 +301,8 @@ def insert_get_feature(model: Path, template: Path) -> None:
     output = re.sub(pattern, transformer_block, output)
     if data.get("model_type") == "transformer":
         output = output.replace("bool g_use_transformer = false;", "bool g_use_transformer = true;")
+    cal_path = str(calendar_file) if calendar_file else "calendar.csv"
+    output = output.replace("__CALENDAR_FILE__", cal_path)
     template.write_text(output)
 
 
@@ -306,8 +312,9 @@ def main() -> None:
     p.add_argument(
         "--template", type=Path, default=Path("StrategyTemplate.mq4"), help="Template .mq4 file"
     )
+    p.add_argument("--calendar-file", type=Path, help="CSV file with calendar events")
     args = p.parse_args()
-    insert_get_feature(args.model, args.template)
+    insert_get_feature(args.model, args.template, calendar_file=args.calendar_file)
 
 
 if __name__ == "__main__":
