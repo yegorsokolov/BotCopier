@@ -30,7 +30,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import SGDClassifier, LinearRegression
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, recall_score
-from sklearn.model_selection import TimeSeriesSplit
+from .splitters import PurgedWalkForward
 from sklearn.calibration import CalibratedClassifierCV
 
 try:  # Optional dependency
@@ -268,6 +268,7 @@ def _train_lite_mode(
     optuna_trials: int = 0,
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
+    purge_gap: int = 1,
     news_sentiment: pd.DataFrame | None = None,
     **_: object,
 ) -> None:
@@ -361,7 +362,7 @@ def _train_lite_mode(
             else:
                 lr = trial.suggest_float("learning_rate", 0.01, 0.3, log=True)
                 depth = trial.suggest_int("max_depth", 2, 8)
-            tscv = TimeSeriesSplit(n_splits=min(3, len(X_all) - 1))
+            tscv = PurgedWalkForward(n_splits=min(3, len(X_all) - 1), gap=purge_gap)
             scores: list[float] = []
             for train_idx, val_idx in tscv.split(X_all):
                 X_train, X_val = X_all[train_idx], X_all[val_idx]
@@ -427,7 +428,7 @@ def _train_lite_mode(
                 )
             ]
         else:
-            tscv = TimeSeriesSplit(n_splits=n_splits)
+            tscv = PurgedWalkForward(n_splits=n_splits, gap=purge_gap)
             splits = list(tscv.split(X_all))
         fold_metrics: list[dict[str, float]] = []
         fold_thresholds: list[float] = []
