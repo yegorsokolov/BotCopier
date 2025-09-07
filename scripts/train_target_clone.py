@@ -173,11 +173,12 @@ def _extract_features(
                 sym: [float(v) for v in emb]
                 for sym, emb in graph_data.get("embeddings", {}).items()
             }
-        if embeddings:
+        if embeddings and "symbol" in df.columns:
             emb_dim = len(next(iter(embeddings.values())))
+            sym_series = df["symbol"]
             for i in range(emb_dim):
                 col = f"graph_emb{i}"
-                df[col] = df.get("symbol").map(
+                df[col] = sym_series.map(
                     lambda s: embeddings.get(str(s), [0.0] * emb_dim)[i]
                     if isinstance(s, str)
                     else 0.0
@@ -719,6 +720,7 @@ def _train_transformer(
     epochs: int = 5,
     lr: float = 1e-3,
     calendar_file: Path | None = None,
+    symbol_graph: dict | str | Path | None = None,
 ) -> None:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
@@ -729,6 +731,10 @@ def _train_transformer(
         df = pd.concat(list(df), ignore_index=True)
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
+
+    df, feature_names, _ = _extract_features(
+        df, feature_names, symbol_graph=symbol_graph, calendar_file=calendar_file
+    )
 
     X_all = df[feature_names].to_numpy(dtype=float)
     y_all = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
@@ -821,11 +827,26 @@ def train(
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
     calendar_file: Path | None = None,
+    symbol_graph: Path | dict | None = None,
     **kwargs,
 ) -> None:
     """Public training entry point."""
+    graph_path = symbol_graph
+    if graph_path is None:
+        default_path = data_dir / "symbol_graph.json"
+        if default_path.exists():
+            graph_path = default_path
+        elif Path("symbol_graph.json").exists():
+            graph_path = Path("symbol_graph.json")
+
     if model_type == "transformer":
-        _train_transformer(data_dir, out_dir, calendar_file=calendar_file, **kwargs)
+        _train_transformer(
+            data_dir,
+            out_dir,
+            calendar_file=calendar_file,
+            symbol_graph=graph_path,
+            **kwargs,
+        )
     else:
         _train_lite_mode(
             data_dir,
@@ -834,6 +855,7 @@ def train(
             half_life_days=half_life_days,
             prune_threshold=prune_threshold,
             calendar_file=calendar_file,
+            symbol_graph=graph_path,
             **kwargs,
         )
 
@@ -1030,6 +1052,11 @@ def main() -> None:
         help="drop features with mean |SHAP| below this value",
     )
     p.add_argument("--calendar-file", type=Path, help="CSV file with calendar events")
+    p.add_argument(
+        "--symbol-graph",
+        type=Path,
+        help="JSON file with symbol graph (defaults to data_dir/symbol_graph.json)",
+    )
     args = p.parse_args()
     train(
         args.data_dir,
@@ -1043,6 +1070,7 @@ def main() -> None:
         replay_file=args.replay_file,
         replay_weight=args.replay_weight,
         calendar_file=args.calendar_file,
+        symbol_graph=args.symbol_graph,
     )
 
 
