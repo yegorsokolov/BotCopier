@@ -619,8 +619,11 @@ def _train_lite_mode(
         else:
             tscv = PurgedWalkForward(n_splits=n_splits, gap=purge_gap)
             splits = list(tscv.split(X_all))
-        fold_metrics: list[dict[str, float]] = []
-        fold_thresholds: list[float] = []
+
+        threshold_grid = np.linspace(0.0, 1.0, 101)
+        profits_matrix: list[list[float]] = []
+        acc_matrix: list[list[float]] = []
+        rec_matrix: list[list[float]] = []
         # Store probabilities and labels from validation folds for conformal bounds
         all_probs: list[np.ndarray] = []
         all_labels: list[np.ndarray] = []
@@ -662,32 +665,39 @@ def _train_lite_mode(
             # collect probabilities and labels for conformal interval computation
             all_probs.append(probs)
             all_labels.append(y_val)
-            thresholds = np.unique(np.concatenate(([0.0], probs, [1.0])))
-            best_thresh = 0.5
-            best_acc = -1.0
-            best_rec = 0.0
-            best_profit = 0.0
             profits_val = (
                 group.iloc[val_idx][profit_col].to_numpy()
                 if profit_col
                 else np.zeros_like(y_val, dtype=float)
             )
-            for t in thresholds:
+            fold_profits: list[float] = []
+            fold_accs: list[float] = []
+            fold_recs: list[float] = []
+            for t in threshold_grid:
                 preds = (probs >= t).astype(int)
-                acc = accuracy_score(y_val, preds)
-                rec = recall_score(y_val, preds, zero_division=0)
+                fold_accs.append(accuracy_score(y_val, preds))
+                fold_recs.append(recall_score(y_val, preds, zero_division=0))
                 profit = (
                     float((profits_val * preds).mean()) if len(profits_val) else 0.0
                 )
-                if acc > best_acc:
-                    best_acc = float(acc)
-                    best_rec = float(rec)
-                    best_thresh = float(t)
-                    best_profit = profit
-            fold_metrics.append(
-                {"accuracy": best_acc, "recall": best_rec, "profit": best_profit}
-            )
-            fold_thresholds.append(best_thresh)
+                fold_profits.append(profit)
+            profits_matrix.append(fold_profits)
+            acc_matrix.append(fold_accs)
+            rec_matrix.append(fold_recs)
+        profits_arr = np.asarray(profits_matrix)
+        acc_arr = np.asarray(acc_matrix)
+        rec_arr = np.asarray(rec_matrix)
+        mean_profit_by_thresh = profits_arr.mean(axis=0)
+        best_idx = int(np.argmax(mean_profit_by_thresh))
+        best_thresh = float(threshold_grid[best_idx])
+        fold_metrics = [
+            {
+                "accuracy": float(acc_arr[i, best_idx]),
+                "recall": float(rec_arr[i, best_idx]),
+                "profit": float(profits_arr[i, best_idx]),
+            }
+            for i in range(len(profits_matrix))
+        ]
         if not any(
             fm["accuracy"] >= min_accuracy or fm["profit"] >= min_profit
             for fm in fold_metrics
@@ -695,10 +705,12 @@ def _train_lite_mode(
             raise ValueError(
                 f"Session {name} failed to meet min accuracy {min_accuracy} or profit {min_profit}"
             )
-        mean_acc = float(np.mean([fm["accuracy"] for fm in fold_metrics]))
-        mean_rec = float(np.mean([fm["recall"] for fm in fold_metrics]))
-        mean_profit = float(np.mean([fm["profit"] for fm in fold_metrics]))
-        avg_thresh = float(np.mean(fold_thresholds))
+        mean_acc = float(acc_arr[:, best_idx].mean()) if len(acc_arr) else 0.0
+        mean_rec = float(rec_arr[:, best_idx].mean()) if len(rec_arr) else 0.0
+        mean_profit = (
+            float(mean_profit_by_thresh[best_idx]) if len(mean_profit_by_thresh) else 0.0
+        )
+        avg_thresh = best_thresh
         # Compute conformal bounds using validation probabilities
         probs_flat = np.concatenate(all_probs) if all_probs else np.array([])
         labels_flat = np.concatenate(all_labels) if all_labels else np.array([])
