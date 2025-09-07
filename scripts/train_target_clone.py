@@ -31,6 +31,7 @@ from sklearn.linear_model import SGDClassifier, LinearRegression
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, recall_score
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.calibration import CalibratedClassifierCV
 
 try:  # Optional dependency
     import optuna
@@ -478,6 +479,54 @@ def _train_lite_mode(
     if not session_models:
         raise ValueError(f"No training data found in {data_dir}")
 
+    symbol_thresholds: dict[str, float] = {}
+    if "symbol" in df.columns:
+        feat_cols_all = [c for c in feature_names if c != "session"]
+        for sym, sym_df in df.groupby("symbol"):
+            if len(sym_df) < 2:
+                continue
+            X_sym = sym_df[feat_cols_all].to_numpy()
+            y_sym = sym_df["label"].astype(int).to_numpy()
+            w_sym = sym_df["sample_weight"].to_numpy()
+            scaler_sym = StandardScaler().fit(X_sym)
+            base_clf = SGDClassifier(loss="log_loss")
+            base_clf.partial_fit(
+                scaler_sym.transform(X_sym),
+                y_sym,
+                classes=np.array([0, 1]),
+                sample_weight=w_sym,
+            )
+            calib = CalibratedClassifierCV(base_clf, method="isotonic", cv="prefit")
+            calib.fit(
+                scaler_sym.transform(X_sym),
+                y_sym,
+                sample_weight=w_sym,
+            )
+            probs = calib.predict_proba(scaler_sym.transform(X_sym))[:, 1]
+            thresholds = np.unique(np.concatenate(([0.0], probs, [1.0])))
+            best_thresh = 0.5
+            best_acc = -1.0
+            profit_col = (
+                "profit"
+                if "profit" in sym_df.columns
+                else (
+                    "net_profit" if "net_profit" in sym_df.columns else None
+                )
+            )
+            profits = (
+                sym_df[profit_col].to_numpy()
+                if profit_col
+                else np.zeros_like(y_sym, dtype=float)
+            )
+            for t in thresholds:
+                preds = (probs >= t).astype(int)
+                acc = accuracy_score(y_sym, preds)
+                profit = float((profits * preds).mean()) if len(profits) else 0.0
+                if acc > best_acc:
+                    best_acc = float(acc)
+                    best_thresh = float(t)
+            symbol_thresholds[str(sym)] = best_thresh
+
     # Aggregate conformal bounds across sessions for convenience
     conf_lowers = [p["conformal_lower"] for p in session_models.values()]
     conf_uppers = [p["conformal_upper"] for p in session_models.values()]
@@ -500,6 +549,8 @@ def _train_lite_mode(
         "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
         "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
     }
+    if symbol_thresholds:
+        model["symbol_thresholds"] = symbol_thresholds
 
     # Expose per-algorithm models and a simple ensemble router so downstream
     # consumers can select between alternative algorithms.  For now each model

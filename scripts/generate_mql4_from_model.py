@@ -156,6 +156,18 @@ def _build_symbol_embeddings(emb_map: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_symbol_thresholds(thresh_map: dict) -> str:
+    """Generate function for per-symbol probability thresholds."""
+
+    lines: list[str] = []
+    lines.append("double SymbolThreshold()\n{")
+    lines.append("    string s = Symbol();")
+    for sym, thresh in thresh_map.items():
+        lines.append(f'    if(s == "{sym}") return {thresh};')
+    lines.append("    return g_threshold;")
+    lines.append("}")
+    return "\n".join(lines)
+
 def _build_transformer_params(data: dict) -> str:
     block_start = "// __TRANSFORMER_PARAMS_START__"
     block_end = "// __TRANSFORMER_PARAMS_END__"
@@ -256,6 +268,7 @@ def insert_get_feature(model: Path, template: Path) -> None:
     get_feature = build_switch(feature_names)
     session_models = _build_session_models(data)
     symbol_emb = _build_symbol_embeddings(data.get("symbol_embeddings", {}))
+    symbol_thresh = _build_symbol_thresholds(data.get("symbol_thresholds", {}))
     transformer_block = _build_transformer_params(data)
     content = template.read_text()
     output = content.replace("// __GET_FEATURE__", get_feature)
@@ -265,6 +278,11 @@ def insert_get_feature(model: Path, template: Path) -> None:
         re.DOTALL,
     )
     output = re.sub(pattern_emb, symbol_emb, output)
+    pattern_thresh = re.compile(
+        r"// __SYMBOL_THRESHOLDS_START__.*// __SYMBOL_THRESHOLDS_END__",
+        re.DOTALL,
+    )
+    output = re.sub(pattern_thresh, symbol_thresh, output)
     pattern = re.compile(
         r"// __TRANSFORMER_PARAMS_START__.*// __TRANSFORMER_PARAMS_END__",
         re.DOTALL,
