@@ -35,6 +35,7 @@ from sklearn.calibration import CalibratedClassifierCV
 
 try:  # Optional dependency
     import optuna
+
     _HAS_OPTUNA = True
 except Exception:  # pragma: no cover
     optuna = None  # type: ignore
@@ -42,6 +43,7 @@ except Exception:  # pragma: no cover
 
 try:  # Optional dependency
     import torch
+
     _HAS_TORCH = True
 except Exception:  # pragma: no cover
     torch = None
@@ -51,6 +53,7 @@ except Exception:  # pragma: no cover
 # ---------------------------------------------------------------------------
 # Log loading
 # ---------------------------------------------------------------------------
+
 
 def _load_logs(
     data_dir: Path,
@@ -133,9 +136,11 @@ def _load_logs(
     # chunked iteration was previously the default behaviour.
     cs = chunk_size or (50000 if lite_mode else None)
     if cs:
+
         def _iter():
             for start in range(0, len(df), cs):
-                yield df.iloc[start:start + cs]
+                yield df.iloc[start : start + cs]
+
         return _iter(), feature_cols, []
 
     return df, feature_cols, []
@@ -144,6 +149,7 @@ def _load_logs(
 # ---------------------------------------------------------------------------
 # Feature extraction helpers
 # ---------------------------------------------------------------------------
+
 
 def _extract_features(
     df: pd.DataFrame,
@@ -180,9 +186,11 @@ def _extract_features(
             for i in range(emb_dim):
                 col = f"graph_emb{i}"
                 df[col] = sym_series.map(
-                    lambda s: embeddings.get(str(s), [0.0] * emb_dim)[i]
-                    if isinstance(s, str)
-                    else 0.0
+                    lambda s: (
+                        embeddings.get(str(s), [0.0] * emb_dim)[i]
+                        if isinstance(s, str)
+                        else 0.0
+                    )
                 )
             feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
 
@@ -191,7 +199,9 @@ def _extract_features(
             cdf = pd.read_csv(calendar_file)
             cdf.columns = [c.lower() for c in cdf.columns]
             cdf["time"] = pd.to_datetime(cdf["time"], errors="coerce")
-            events = list(zip(cdf["time"], pd.to_numeric(cdf.get("impact", 0), errors="coerce")))
+            events = list(
+                zip(cdf["time"], pd.to_numeric(cdf.get("impact", 0), errors="coerce"))
+            )
         except Exception:
             events = []
         df["event_flag"] = 0.0
@@ -239,6 +249,7 @@ def _extract_features(
 # Training
 # ---------------------------------------------------------------------------
 
+
 def _train_lite_mode(
     data_dir: Path,
     out_dir: Path,
@@ -271,17 +282,22 @@ def _train_lite_mode(
         rdf = pd.read_csv(replay_file)
         rdf.columns = [c.lower() for c in rdf.columns]
         df = pd.concat([df, rdf], ignore_index=True)
-        weights = np.ones(len(df))
-        weights[-len(rdf):] = replay_weight
+    if "net_profit" in df.columns:
+        weights = pd.to_numeric(df["net_profit"], errors="coerce").abs().to_numpy()
+    elif "lots" in df.columns:
+        weights = pd.to_numeric(df["lots"], errors="coerce").abs().to_numpy()
     else:
-        weights = np.ones(len(df))
+        weights = np.ones(len(df), dtype=float)
+    if "lots" in df.columns:
+        lot_vals = pd.to_numeric(df["lots"], errors="coerce").abs().to_numpy()
+        weights = np.where(weights > 0, weights, lot_vals)
+    if replay_file:
+        weights[-len(rdf) :] *= replay_weight
 
     # Compute sample age relative to the most recent trade
     if "event_time" in df.columns:
         ref_time = df["event_time"].max()
-        age_days = (
-            (ref_time - df["event_time"]).dt.total_seconds() / (24 * 3600)
-        )
+        age_days = (ref_time - df["event_time"]).dt.total_seconds() / (24 * 3600)
     else:
         age_days = (df.index.max() - df.index).astype(float)
     df["age_days"] = age_days
@@ -324,9 +340,7 @@ def _train_lite_mode(
                 corr_name = f"corr_{base_symbol}_{sym}"
                 ratio_name = f"ratio_{base_symbol}_{sym}"
                 df[corr_name] = corr.fillna(0.0)
-                df[ratio_name] = (
-                    ratio.replace([np.inf, -np.inf], 0.0).fillna(0.0)
-                )
+                df[ratio_name] = ratio.replace([np.inf, -np.inf], 0.0).fillna(0.0)
         feature_names = [
             c
             for c in df.columns
@@ -368,9 +382,7 @@ def _train_lite_mode(
                     )
                     probs = clf.predict_proba(scaler.transform(X_val))[:, 1]
                 else:
-                    clf = GradientBoostingClassifier(
-                        learning_rate=lr, max_depth=depth
-                    )
+                    clf = GradientBoostingClassifier(learning_rate=lr, max_depth=depth)
                     clf.fit(X_train, y_train, sample_weight=w_train)
                     probs = clf.predict_proba(X_val)[:, 1]
                 preds = (probs >= threshold).astype(int)
@@ -408,10 +420,12 @@ def _train_lite_mode(
         if n_splits < 1:
             continue
         if n_splits < 2:
-            splits = [(
-                np.arange(len(group) - 1),
-                np.arange(len(group) - 1, len(group)),
-            )]
+            splits = [
+                (
+                    np.arange(len(group) - 1),
+                    np.arange(len(group) - 1, len(group)),
+                )
+            ]
         else:
             tscv = TimeSeriesSplit(n_splits=n_splits)
             splits = list(tscv.split(X_all))
@@ -420,8 +434,10 @@ def _train_lite_mode(
         # Store probabilities and labels from validation folds for conformal bounds
         all_probs: list[np.ndarray] = []
         all_labels: list[np.ndarray] = []
-        profit_col = "profit" if "profit" in group.columns else (
-            "net_profit" if "net_profit" in group.columns else None
+        profit_col = (
+            "profit"
+            if "profit" in group.columns
+            else ("net_profit" if "net_profit" in group.columns else None)
         )
         for train_idx, val_idx in splits:
             X_train, X_val = X_all[train_idx], X_all[val_idx]
@@ -445,19 +461,25 @@ def _train_lite_mode(
             best_rec = 0.0
             best_profit = 0.0
             profits_val = (
-                group.iloc[val_idx][profit_col].to_numpy() if profit_col else np.zeros_like(y_val, dtype=float)
+                group.iloc[val_idx][profit_col].to_numpy()
+                if profit_col
+                else np.zeros_like(y_val, dtype=float)
             )
             for t in thresholds:
                 preds = (probs >= t).astype(int)
                 acc = accuracy_score(y_val, preds)
                 rec = recall_score(y_val, preds, zero_division=0)
-                profit = float((profits_val * preds).mean()) if len(profits_val) else 0.0
+                profit = (
+                    float((profits_val * preds).mean()) if len(profits_val) else 0.0
+                )
                 if acc > best_acc:
                     best_acc = float(acc)
                     best_rec = float(rec)
                     best_thresh = float(t)
                     best_profit = profit
-            fold_metrics.append({"accuracy": best_acc, "recall": best_rec, "profit": best_profit})
+            fold_metrics.append(
+                {"accuracy": best_acc, "recall": best_rec, "profit": best_profit}
+            )
             fold_thresholds.append(best_thresh)
         if not any(
             fm["accuracy"] >= min_accuracy or fm["profit"] >= min_profit
@@ -494,9 +516,7 @@ def _train_lite_mode(
             for col in target_names:
                 if col in group.columns:
                     y = pd.to_numeric(group[col], errors="coerce").to_numpy(dtype=float)
-                    reg = LinearRegression().fit(
-                        X_scaled_full, y, sample_weight=w_all
-                    )
+                    reg = LinearRegression().fit(X_scaled_full, y, sample_weight=w_all)
                     return {
                         "coefficients": reg.coef_.astype(float).tolist(),
                         "intercept": float(reg.intercept_),
@@ -504,16 +524,20 @@ def _train_lite_mode(
             return None
 
         lot_model = _fit_regression(["lot", "lot_size", "lots"])
-        sl_model = _fit_regression([
-            "sl_distance",
-            "stop_loss_distance",
-            "stop_loss",
-        ])
-        tp_model = _fit_regression([
-            "tp_distance",
-            "take_profit_distance",
-            "take_profit",
-        ])
+        sl_model = _fit_regression(
+            [
+                "sl_distance",
+                "stop_loss_distance",
+                "stop_loss",
+            ]
+        )
+        tp_model = _fit_regression(
+            [
+                "tp_distance",
+                "take_profit_distance",
+                "take_profit",
+            ]
+        )
 
         params: dict[str, object] = {
             "coefficients": clf_full.coef_[0].astype(float).tolist(),
@@ -521,7 +545,11 @@ def _train_lite_mode(
             "threshold": avg_thresh,
             "feature_mean": scaler_full.mean_.astype(float).tolist(),
             "feature_std": scaler_full.scale_.astype(float).tolist(),
-            "metrics": {"accuracy": mean_acc, "recall": mean_rec, "profit": mean_profit},
+            "metrics": {
+                "accuracy": mean_acc,
+                "recall": mean_rec,
+                "profit": mean_profit,
+            },
             "cv_metrics": fold_metrics,
             "conformal_lower": conf_lower,
             "conformal_upper": conf_upper,
@@ -569,9 +597,7 @@ def _train_lite_mode(
             profit_col = (
                 "profit"
                 if "profit" in sym_df.columns
-                else (
-                    "net_profit" if "net_profit" in sym_df.columns else None
-                )
+                else ("net_profit" if "net_profit" in sym_df.columns else None)
             )
             profits = (
                 sym_df[profit_col].to_numpy()
@@ -722,7 +748,9 @@ def _train_lite_mode(
     r_std[r_std == 0] = 1.0
     norm_router = (router_feats - r_mean) / r_std
     router_clf = SGDClassifier(loss="log_loss")
-    router_clf.partial_fit(norm_router, best_idx, classes=np.array([0, 1, 2]))
+    router_clf.partial_fit(
+        norm_router, best_idx, classes=np.array([0, 1, 2]), sample_weight=w_all
+    )
     router = {
         "intercept": router_clf.intercept_.astype(float).tolist(),
         "coefficients": router_clf.coef_.astype(float).tolist(),
@@ -887,9 +915,7 @@ def _train_transformer(
         metrics_real = {
             "accuracy": float(accuracy_score(y_arr[real_mask], pred_labels[real_mask])),
             "recall": float(
-                recall_score(
-                    y_arr[real_mask], pred_labels[real_mask], zero_division=0
-                )
+                recall_score(y_arr[real_mask], pred_labels[real_mask], zero_division=0)
             ),
         }
     else:
@@ -904,14 +930,16 @@ def _train_transformer(
     }
     # Fit linear regression on teacher logits to approximate probabilities
     eps = 1e-6
-    logits = np.log(teacher_probs.clip(eps, 1 - eps) / (1 - teacher_probs.clip(eps, 1 - eps)))
+    logits = np.log(
+        teacher_probs.clip(eps, 1 - eps) / (1 - teacher_probs.clip(eps, 1 - eps))
+    )
     linreg = LinearRegression()
     base_features = norm_X[window:]
     if len(synth_last_feats):
         linreg_X = np.vstack([base_features, synth_last_feats])
     else:
         linreg_X = base_features
-    linreg.fit(linreg_X, logits)
+    linreg.fit(linreg_X, logits, sample_weight=weights_arr)
     distilled = {
         "intercept": float(linreg.intercept_),
         "coefficients": [float(c) for c in linreg.coef_.tolist()],
@@ -998,14 +1026,15 @@ def train(
 # Resource detection utilities (kept from original implementation)
 # ---------------------------------------------------------------------------
 
+
 def detect_resources():
     """Detect available resources and suggest an operating mode."""
     try:
-        mem_gb = psutil.virtual_memory().available / (1024 ** 3)
+        mem_gb = psutil.virtual_memory().available / (1024**3)
     except Exception:
         mem_gb = 0.0
     try:
-        swap_gb = psutil.swap_memory().total / (1024 ** 3)
+        swap_gb = psutil.swap_memory().total / (1024**3)
     except Exception:
         swap_gb = 0.0
     try:
@@ -1016,7 +1045,7 @@ def detect_resources():
         cpu_mhz = psutil.cpu_freq().max
     except Exception:
         cpu_mhz = 0.0
-    disk_gb = shutil.disk_usage("/").free / (1024 ** 3)
+    disk_gb = shutil.disk_usage("/").free / (1024**3)
     lite_mode = mem_gb < 4 or cores < 2 or disk_gb < 5
     heavy_mode = mem_gb >= 8 and cores >= 4
 
@@ -1025,8 +1054,8 @@ def detect_resources():
     if _HAS_TORCH:
         try:
             if torch.cuda.is_available():
-                gpu_mem_gb = (
-                    torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (
+                    1024**3
                 )
                 has_gpu = True
         except Exception:
@@ -1057,13 +1086,18 @@ def detect_resources():
     else:
         model_type = "transformer"
         if not (
-            has_gpu and has("transformers") and gpu_mem_gb >= 8.0 and cpu_mhz >= CPU_MHZ_THRESHOLD
+            has_gpu
+            and has("transformers")
+            and gpu_mem_gb >= 8.0
+            and cpu_mhz >= CPU_MHZ_THRESHOLD
         ):
             model_type = "logreg"
 
     use_optuna = heavy_mode and has("optuna")
     bayes_steps = 20 if use_optuna else 0
-    enable_rl = heavy_mode and has_gpu and gpu_mem_gb >= 8.0 and has("stable_baselines3")
+    enable_rl = (
+        heavy_mode and has_gpu and gpu_mem_gb >= 8.0 and has("stable_baselines3")
+    )
     if enable_rl:
         mode = "rl"
     elif lite_mode:
@@ -1094,6 +1128,7 @@ def detect_resources():
 # ---------------------------------------------------------------------------
 # Federated helper
 # ---------------------------------------------------------------------------
+
 
 def sync_with_server(
     model_path: Path,
@@ -1137,6 +1172,7 @@ def sync_with_server(
 # ---------------------------------------------------------------------------
 # Command line interface
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Train target clone model")

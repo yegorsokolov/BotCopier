@@ -3,10 +3,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import TimeSeriesSplit
 
 
-def _compute_decay_weights(event_times: np.ndarray, half_life_days: float) -> np.ndarray:
+def _compute_decay_weights(
+    event_times: np.ndarray, half_life_days: float
+) -> np.ndarray:
     ref_time = event_times.max()
-    age_days = (
-        (ref_time - event_times).astype("timedelta64[s]").astype(float) / (24 * 3600)
+    age_days = (ref_time - event_times).astype("timedelta64[s]").astype(float) / (
+        24 * 3600
     )
     return 0.5 ** (age_days / half_life_days)
 
@@ -43,8 +45,26 @@ def test_shorter_half_life_emphasizes_recent_trades():
 
 
 def test_weights_decrease_with_age():
-    times = np.array(
-        ["2024-01-01", "2024-01-02", "2024-01-03"], dtype="datetime64[s]"
-    )
+    times = np.array(["2024-01-01", "2024-01-02", "2024-01-03"], dtype="datetime64[s]")
     weights = _compute_decay_weights(times, half_life_days=1.0)
     assert weights[0] < weights[1] < weights[2]
+
+
+def test_profitable_trades_receive_larger_weights():
+    profits = np.array([1.0, 5.0])
+    lots = np.array([0.1, 0.1])
+    weights = np.abs(profits)
+    weights = np.where(weights > 0, weights, lots)
+    assert weights[1] > weights[0]
+
+
+def test_profit_weighting_changes_coefficients():
+    X = np.array([[0], [1]], dtype=float)
+    y = np.array([0, 1])
+    profits_pos = np.array([1.0, 10.0])
+    profits_neg = np.array([10.0, 1.0])
+    w_pos = np.abs(profits_pos)
+    w_neg = np.abs(profits_neg)
+    clf_pos = LogisticRegression().fit(X, y, sample_weight=w_pos)
+    clf_neg = LogisticRegression().fit(X, y, sample_weight=w_neg)
+    assert clf_pos.coef_[0, 0] > clf_neg.coef_[0, 0]
