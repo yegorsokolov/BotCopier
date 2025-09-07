@@ -17,6 +17,8 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
+from .meta_strategy import train_meta_model
+
 
 # ---------------------------------------------------------------------------
 # Core analytics
@@ -119,6 +121,39 @@ def update_bandit_state(metrics: List[Dict[str, Any]], state_file: Path) -> None
         wins[idx] += m["chosen"]["wins"]
 
     state_file.write_text(json.dumps({"total": total, "wins": wins}))
+
+
+# ---------------------------------------------------------------------------
+# Gating model refinement
+# ---------------------------------------------------------------------------
+
+def update_gating_model(
+    data_file: Path,
+    gating_file: Path,
+    feature_cols: List[str],
+    label_col: str = "best_model",
+) -> Dict[str, Any]:
+    """Incrementally update gating parameters using ``data_file``.
+
+    Existing parameters are loaded from ``gating_file`` if it exists and passed
+    to :func:`train_meta_model` for incremental ``partial_fit`` training.  The
+    resulting parameters overwrite ``gating_file``.
+    """
+
+    df = pd.read_csv(data_file)
+    try:
+        params = json.loads(gating_file.read_text()) if gating_file.exists() else None
+    except Exception:
+        params = None
+    new_params = train_meta_model(
+        df,
+        feature_cols,
+        label_col=label_col,
+        params=params,
+        use_partial_fit=True,
+    )
+    gating_file.write_text(json.dumps(new_params))
+    return new_params
 
 
 # ---------------------------------------------------------------------------

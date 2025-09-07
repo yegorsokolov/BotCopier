@@ -3,17 +3,19 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 
 
 def train_meta_model(
     df: pd.DataFrame,
     feature_cols: List[str],
     label_col: str = "best_model",
+    params: Optional[Dict[str, object]] = None,
+    use_partial_fit: bool = False,
 ) -> Dict[str, object]:
     """Train multinomial logistic regression to select best model.
 
@@ -25,6 +27,11 @@ def train_meta_model(
         Columns to use as features.
     label_col : str, default "best_model"
         Column containing the index of the best-performing base model.
+    params : dict, optional
+        Previously trained parameters to warm-start incremental training.
+    use_partial_fit : bool, default False
+        When ``True``, use :class:`~sklearn.linear_model.SGDClassifier` with
+        ``partial_fit`` to update parameters incrementally.
 
     Returns
     -------
@@ -33,8 +40,32 @@ def train_meta_model(
     """
     X = df[feature_cols].values
     y = df[label_col].values
-    clf = LogisticRegression(multi_class="multinomial", solver="lbfgs", max_iter=200)
-    clf.fit(X, y)
+
+    if use_partial_fit:
+        clf = SGDClassifier(loss="log_loss", random_state=0)
+        if params:
+            try:
+                coef = np.array(params.get("gating_coefficients", []))
+                intercept = np.array(params.get("gating_intercepts", []))
+                classes = np.array(params.get("classes", []))
+                if coef.shape[0] == 2 and classes.size == 2:
+                    coef = coef[1:2]
+                    intercept = intercept[1:2]
+                clf.coef_ = coef
+                clf.intercept_ = intercept
+                if classes.size:
+                    clf.classes_ = classes
+            except Exception:
+                pass
+        if not hasattr(clf, "classes_") or len(getattr(clf, "classes_", [])) == 0:
+            classes = np.unique(y)
+        else:
+            classes = clf.classes_
+        clf.partial_fit(X, y, classes=classes)
+    else:
+        clf = LogisticRegression(multi_class="multinomial", solver="lbfgs", max_iter=200)
+        clf.fit(X, y)
+
     coeffs = clf.coef_
     intercepts = clf.intercept_
     # For binary problems, sklearn returns a single row; create symmetric rows
@@ -45,6 +76,7 @@ def train_meta_model(
         "feature_names": feature_cols,
         "gating_coefficients": coeffs.tolist(),
         "gating_intercepts": intercepts.tolist(),
+        "classes": clf.classes_.tolist(),
     }
 
 
