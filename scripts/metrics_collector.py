@@ -27,7 +27,16 @@ from typing import Callable, Optional
 from asyncio import Queue
 from aiohttp import web
 
-from river.drift import ADWIN
+try:
+    from river.drift import ADWIN
+except Exception:  # pragma: no cover - optional dependency
+    class ADWIN:  # minimal stub
+        def update(self, x):
+            return False
+
+        @property
+        def estimation(self):
+            return 0.0
 
 import psutil
 
@@ -48,9 +57,12 @@ SCHEMA_VERSION = 1
 
 from opentelemetry import trace, metrics
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+try:  # optional OTLP exporters
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+except Exception:  # pragma: no cover - exporters not installed
+    OTLPSpanExporter = OTLPLogExporter = OTLPMetricExporter = None  # type: ignore
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
@@ -95,17 +107,18 @@ FIELDS = [
     "risk_weight",
     "trace_id",
     "span_id",
+    "queue_backlog",
 ]
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "metrics_collector")})
 provider = TracerProvider(resource=resource)
-if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
+if (endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) and OTLPSpanExporter is not None:
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
 
 metric_readers = []
-if endpoint:
+if endpoint and OTLPMetricExporter is not None:
     metric_readers.append(
         PeriodicExportingMetricReader(OTLPMetricExporter(endpoint=endpoint))
     )
@@ -178,7 +191,7 @@ def _context_from_ids(trace_id: str, span_id: str):
     return None
 
 logger_provider = LoggerProvider(resource=resource)
-if endpoint:
+if endpoint and OTLPLogExporter is not None:
     logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
 set_logger_provider(logger_provider)
 handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
@@ -257,6 +270,7 @@ async def _writer_task(
                 span.set_attribute("file_write_errors", row.get("file_write_errors", 0))
                 span.set_attribute("socket_errors", row.get("socket_errors", 0))
                 span.set_attribute("fallback_events", row.get("fallback_events", 0))
+                span.set_attribute("queue_backlog", row.get("queue_backlog", 0))
                 try:
                     conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
                     conn.commit()
@@ -411,6 +425,9 @@ def serve(
             metric_retry_g = Gauge(
                 "bot_metric_retry_count", "Metric send retry count"
             )
+            queue_backlog_g = Gauge(
+                "bot_queue_backlog", "Observer fallback queue backlog"
+            )
             wal_dir = Path(
                 os.getenv(
                     "BOTCOPIER_LOG_DIR",
@@ -513,6 +530,11 @@ def serve(
                             logger.warning({"alert": "trade backlog", "trade_queue_depth": val})
                     except (TypeError, ValueError):
                         pass
+                if (v := row.get("queue_backlog")) is not None:
+                    try:
+                        queue_backlog_g.set(float(v))
+                    except (TypeError, ValueError):
+                        pass
                 if (v := row.get("trade_retry_count")) is not None:
                     try:
                         val = float(v)
@@ -578,6 +600,7 @@ def serve(
                             span.set_attribute("file_write_errors", row.get("file_write_errors", 0))
                             span.set_attribute("socket_errors", row.get("socket_errors", 0))
                             span.set_attribute("fallback_events", row.get("fallback_events", 0))
+                            span.set_attribute("queue_backlog", row.get("queue_backlog", 0))
                             extra = {}
                             try:
                                 extra["trace_id"] = int(row["trace_id"], 16)
@@ -627,6 +650,7 @@ def serve(
                 span.set_attribute("file_write_errors", data.get("file_write_errors", 0))
                 span.set_attribute("socket_errors", data.get("socket_errors", 0))
                 span.set_attribute("fallback_events", data.get("fallback_events", 0))
+                span.set_attribute("queue_backlog", data.get("queue_backlog", 0))
                 extra = {}
                 try:
                     extra["trace_id"] = int(data["trace_id"], 16)

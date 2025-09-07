@@ -94,6 +94,14 @@
       "targets": [
         {"expr": "bot_cvar"}
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue Backlog",
+      "id": 12,
+      "targets": [
+        {"expr": "bot_queue_backlog"}
+      ]
     }
   ]
 }

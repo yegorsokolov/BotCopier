@@ -26,6 +26,10 @@ from pathlib import Path
 import subprocess
 from typing import Any, Dict
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.trace import format_trace_id, format_span_id
+
 try:  # optional system metrics
     import psutil  # type: ignore
 except Exception:  # pragma: no cover - psutil not installed
@@ -98,6 +102,7 @@ METRIC_FIELDS: Dict[str, type] = {
     "sharpe": float,
     "fileWriteErrors": int,
     "socketErrors": int,
+    "queueBacklog": int,
     "bookRefreshSeconds": int,
 }
 
@@ -114,6 +119,7 @@ if pa is not None:  # pragma: no cover - exercised in integration tests
             ("sharpe", pa.float64()),
             ("file_write_errors", pa.int32()),
             ("socket_errors", pa.int32()),
+            ("queue_backlog", pa.int32()),
             ("book_refresh_seconds", pa.int32()),
         ]
     )
@@ -122,6 +128,22 @@ else:  # pragma: no cover - pyarrow missing
 
 current_trace_id = ""
 current_span_id = ""
+
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def _span(name: str):
+    with tracer.start_as_current_span(name) as span:
+        ctx = span.get_span_context()
+        global current_trace_id, current_span_id
+        current_trace_id = format_trace_id(ctx.trace_id)
+        current_span_id = format_span_id(ctx.span_id)
+        yield
 
 
 def append_csv(path: Path, record: Dict[str, Any]) -> None:
@@ -159,23 +181,29 @@ def _validate(fields: Dict[str, type], msg: Any, kind: str) -> Dict[str, Any] | 
 
 
 def process_trade(msg) -> None:
-    record = _validate(TRADE_FIELDS, msg, "trade")
-    if record is None:
-        return
-    decision_id = getattr(msg, "decisionId", None)
-    if decision_id in (None, 0):
-        match = re.search(r"decision_id=(\d+)", record.get("comment", ""))
-        if match:
-            decision_id = int(match.group(1))
-    record["decision_id"] = decision_id
-    append_csv(Path("logs/trades_raw.csv"), record)
+    with _span("process_trade"):
+        record = _validate(TRADE_FIELDS, msg, "trade")
+        if record is None:
+            return
+        decision_id = getattr(msg, "decisionId", None)
+        if decision_id in (None, 0):
+            match = re.search(r"decision_id=(\d+)", record.get("comment", ""))
+            if match:
+                decision_id = int(match.group(1))
+        record["decision_id"] = decision_id
+        record["trace_id"] = current_trace_id
+        record["span_id"] = current_span_id
+        append_csv(Path("logs/trades_raw.csv"), record)
 
 
 def process_metric(msg) -> None:
-    record = _validate(METRIC_FIELDS, msg, "metric")
-    if record is None:
-        return
-    append_csv(Path("logs/metrics.csv"), record)
+    with _span("process_metric"):
+        record = _validate(METRIC_FIELDS, msg, "metric")
+        if record is None:
+            return
+        record["trace_id"] = current_trace_id
+        record["span_id"] = current_span_id
+        append_csv(Path("logs/metrics.csv"), record)
 
 
 def capture_system_metrics() -> None:
