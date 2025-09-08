@@ -32,7 +32,12 @@ from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegres
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn import set_config
-from sklearn.metrics import accuracy_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    recall_score,
+    roc_auc_score,
+    brier_score_loss,
+)
 from sklearn.pipeline import make_pipeline
 from sklearn.feature_selection import mutual_info_classif
 from .splitters import PurgedWalkForward
@@ -737,6 +742,7 @@ def _train_lite_mode(
     synthetic_data: Path | pd.DataFrame | None = None,
     synthetic_weight: float = 0.2,
     tick_encoder: Path | None = None,
+    bayesian_ensembles: int = 0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -1636,10 +1642,45 @@ def _train_lite_mode(
     router = {
         "intercept": router_clf.intercept_.astype(float).tolist(),
         "coefficients": router_clf.coef_.astype(float).tolist(),
-        "feature_mean": scaler_router.center_.astype(float).tolist(),
+       "feature_mean": scaler_router.center_.astype(float).tolist(),
         "feature_std": scaler_router.scale_.astype(float).tolist(),
     }
     model["ensemble_router"] = router
+
+    if bayesian_ensembles and bayesian_ensembles > 1:
+        X_be, c_low_be, c_high_be = _clip_train_features(X_all)
+        scaler_be = RobustScaler().fit(X_be)
+        X_scaled_be = scaler_be.transform(X_be)
+        prob_list: list[np.ndarray] = []
+        for seed in range(int(bayesian_ensembles)):
+            clf_be = SGDClassifier(loss="log_loss", random_state=seed)
+            clf_be.partial_fit(
+                X_scaled_be,
+                y_all,
+                classes=np.array([0, 1]),
+                sample_weight=w_all,
+            )
+            probs = clf_be.predict_proba(X_scaled_be)[:, 1]
+            prob_list.append(probs)
+        prob_arr = np.vstack(prob_list)
+        avg_probs = prob_arr.mean(axis=0)
+        var_probs = float(prob_arr.var(axis=0).mean())
+        single_probs = prob_list[0]
+        if len(np.unique(y_all)) > 1:
+            roc_single = float(roc_auc_score(y_all, single_probs))
+            roc_ens = float(roc_auc_score(y_all, avg_probs))
+        else:
+            roc_single = roc_ens = 0.0
+        brier_single = float(brier_score_loss(y_all, single_probs))
+        brier_ens = float(brier_score_loss(y_all, avg_probs))
+        model["bayesian_ensemble"] = {
+            "size": int(bayesian_ensembles),
+            "variance": var_probs,
+            "metrics": {
+                "single": {"roc_auc": roc_single, "brier": brier_single},
+                "ensemble": {"roc_auc": roc_ens, "brier": brier_ens},
+            },
+        }
 
     if ensemble in {"voting", "stacking"}:
         base_estimators = [
@@ -1752,6 +1793,7 @@ def _train_transformer(
     uncertain_weight: float = 2.0,
     neighbor_corr_windows: Iterable[int] | None = None,
     tick_encoder: Path | None = None,
+    bayesian_ensembles: int = 0,
     **_,
 ) -> torch.nn.Module:
     """Train a tiny attention encoder on rolling feature windows."""
@@ -1948,6 +1990,37 @@ def _train_transformer(
     with torch.no_grad():
         teacher_logits = model(X.to(dev)).squeeze(-1)
         teacher_probs = torch.sigmoid(teacher_logits).cpu().numpy()
+
+    bayes_info: dict | None = None
+    if bayesian_ensembles and bayesian_ensembles > 1 and dropout > 0.0:
+        model.train()
+        probs_list = []
+        for seed in range(int(bayesian_ensembles)):
+            torch.manual_seed(seed)
+            with torch.no_grad():
+                logits_mc = model(X.to(dev)).squeeze(-1)
+                probs_list.append(torch.sigmoid(logits_mc).cpu().numpy())
+        prob_arr = np.vstack(probs_list)
+        avg_probs = prob_arr.mean(axis=0)
+        var_probs = float(prob_arr.var(axis=0).mean())
+        y_arr_full = np.array(ys)
+        if len(np.unique(y_arr_full)) > 1:
+            roc_single = float(roc_auc_score(y_arr_full, teacher_probs))
+            roc_ens = float(roc_auc_score(y_arr_full, avg_probs))
+        else:
+            roc_single = roc_ens = 0.0
+        brier_single = float(brier_score_loss(y_arr_full, teacher_probs))
+        brier_ens = float(brier_score_loss(y_arr_full, avg_probs))
+        bayes_info = {
+            "size": int(bayesian_ensembles),
+            "variance": var_probs,
+            "metrics": {
+                "single": {"roc_auc": roc_single, "brier": brier_single},
+                "ensemble": {"roc_auc": roc_ens, "brier": brier_ens},
+            },
+        }
+        model.eval()
+
     pred_labels = (teacher_probs > 0.5).astype(int)
     y_arr = np.array(ys)
     flags_arr = np.array(synth_flags, dtype=bool)
@@ -2022,6 +2095,8 @@ def _train_transformer(
         "distilled": distilled,
         "models": {"logreg": distilled},
     }
+    if bayes_info:
+        model_json["bayesian_ensemble"] = bayes_info
     out_dir.mkdir(parents=True, exist_ok=True)
     _persist_encoder_meta(out_dir, model_json, tick_encoder)
     with open(out_dir / "model.json", "w") as f:
@@ -2233,6 +2308,7 @@ def train(
     noise_quantile: float = 0.9,
     smote_threshold: float | None = None,
     tick_encoder: Path | None = None,
+    bayesian_ensembles: int = 0,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -2263,6 +2339,7 @@ def train(
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
             tick_encoder=tick_encoder,
+            bayesian_ensembles=bayesian_ensembles,
             **kwargs,
         )
     elif model_type in {"xgboost", "lgbm", "catboost"}:
@@ -2295,6 +2372,7 @@ def train(
             filter_noise=filter_noise,
             noise_quantile=noise_quantile,
             tick_encoder=tick_encoder,
+            bayesian_ensembles=bayesian_ensembles,
             **kwargs,
         )
 
@@ -2527,6 +2605,12 @@ def main() -> None:
         help="dropout rate for transformer layers",
     )
     p.add_argument(
+        "--bayesian-ensembles",
+        type=int,
+        default=0,
+        help="number of models for Bayesian ensemble averaging",
+    )
+    p.add_argument(
         "--ensemble",
         choices=["none", "voting", "stacking"],
         default="none",
@@ -2662,6 +2746,7 @@ def main() -> None:
         epochs=args.epochs,
         lr=args.lr,
         dropout=args.dropout,
+        bayesian_ensembles=args.bayesian_ensembles,
         use_autoencoder=args.autoencoder,
         autoencoder_dim=args.autoencoder_dim,
         autoencoder_epochs=args.autoencoder_epochs,
