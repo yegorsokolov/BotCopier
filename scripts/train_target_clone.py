@@ -1272,6 +1272,7 @@ def _train_transformer(
     window: int = 16,
     epochs: int = 5,
     lr: float = 1e-3,
+    dropout: float = 0.0,
     device: str = "cpu",
     calendar_file: Path | None = None,
     symbol_graph: dict | str | Path | None = None,
@@ -1280,6 +1281,7 @@ def _train_transformer(
     synthetic_frac: float = 0.0,
     synthetic_weight: float = 0.2,
     neighbor_corr_windows: Iterable[int] | None = None,
+    **_,
 ) -> torch.nn.Module:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
@@ -1348,20 +1350,27 @@ def _train_transformer(
     w = torch.tensor(weights_arr, dtype=torch.float32).unsqueeze(-1)
     flags = torch.tensor(synth_flags, dtype=torch.float32).unsqueeze(-1)
     ds = torch.utils.data.TensorDataset(X, y, w, flags)
-    dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
+    split = max(1, int(len(ds) * 0.8))
+    train_ds, val_ds = torch.utils.data.random_split(ds, [split, len(ds) - split])
+    dl = torch.utils.data.DataLoader(train_ds, batch_size=32, shuffle=True)
+    val_dl = torch.utils.data.DataLoader(val_ds, batch_size=32)
 
     class TinyTransformer(torch.nn.Module):
-        def __init__(self, in_dim: int, dim: int = 16):
+        def __init__(self, in_dim: int, win: int, dim: int = 16, drop: float = 0.0):
             super().__init__()
             self.embed = torch.nn.Linear(in_dim, dim)
+            self.pos_embed = torch.nn.Embedding(win, dim)
             self.q = torch.nn.Linear(dim, dim)
             self.k = torch.nn.Linear(dim, dim)
             self.v = torch.nn.Linear(dim, dim)
+            self.attn_dropout = torch.nn.Dropout(drop)
             self.out = torch.nn.Linear(dim, 1)
+            self.out_dropout = torch.nn.Dropout(drop)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             # x: (B, T, F)
-            emb = self.embed(x)
+            positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
+            emb = self.embed(x) + self.pos_embed(positions)
             q = self.q(emb)
             k = self.k(emb)
             v = self.v(emb)
@@ -1369,17 +1378,22 @@ def _train_transformer(
                 torch.matmul(q, k.transpose(-2, -1)) / (q.shape[-1] ** 0.5), dim=-1
             )
             ctx = torch.matmul(attn, v).mean(dim=1)
-            return self.out(ctx)
+            ctx = self.attn_dropout(ctx)
+            return self.out_dropout(self.out(ctx))
 
     dim = 16
     dev = torch.device(device)
-    model = TinyTransformer(len(feature_names), dim).to(dev)
+    model = TinyTransformer(len(feature_names), window, dim, dropout).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     use_cuda = torch.cuda.is_available() and dev.type == "cuda"
     scaler = torch.cuda.amp.GradScaler(enabled=use_cuda)
-    model.train()
+    best_loss = float("inf")
+    best_state = None
+    patience = 2
+    no_improve = 0
     for _ in range(epochs):  # pragma: no cover - simple training loop
+        model.train()
         for batch_x, batch_y, batch_w, _ in dl:
             batch_x = batch_x.to(dev)
             batch_y = batch_y.to(dev)
@@ -1397,6 +1411,28 @@ def _train_transformer(
                 loss = (loss_fn(logits, batch_y) * batch_w).mean()
                 loss.backward()
                 opt.step()
+        # validation
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for vx, vy, vw, _ in val_dl:
+                vx = vx.to(dev)
+                vy = vy.to(dev)
+                vw = vw.to(dev)
+                logits = model(vx)
+                val_loss += (loss_fn(logits, vy) * vw).mean().item()
+        val_loss /= max(1, len(val_dl))
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     def _tensor_list(t: torch.Tensor) -> list:
         return t.detach().cpu().numpy().tolist()
@@ -1404,6 +1440,7 @@ def _train_transformer(
     weights = {
         "embed_weight": _tensor_list(model.embed.weight),
         "embed_bias": _tensor_list(model.embed.bias),
+        "pos_embed_weight": _tensor_list(model.pos_embed.weight),
         "q_weight": _tensor_list(model.q.weight),
         "q_bias": _tensor_list(model.q.bias),
         "k_weight": _tensor_list(model.k.weight),
@@ -1473,6 +1510,7 @@ def _train_transformer(
         "feature_mean": feat_mean.tolist(),
         "feature_std": feat_std.tolist(),
         "weights": weights,
+        "dropout": float(dropout),
         "teacher_metrics": teacher_metrics,
         "synthetic_metrics": synthetic_info,
         "distilled": distilled,
@@ -1894,6 +1932,30 @@ def main() -> None:
         help="torch device to use for training (e.g. 'cpu' or 'cuda')",
     )
     p.add_argument(
+        "--window",
+        type=int,
+        default=16,
+        help="sequence window size for transformer model",
+    )
+    p.add_argument(
+        "--epochs",
+        type=int,
+        default=5,
+        help="number of training epochs for transformer",
+    )
+    p.add_argument(
+        "--lr",
+        type=float,
+        default=1e-3,
+        help="learning rate for transformer optimizer",
+    )
+    p.add_argument(
+        "--dropout",
+        type=float,
+        default=0.0,
+        help="dropout rate for transformer layers",
+    )
+    p.add_argument(
         "--ensemble",
         choices=["none", "voting", "stacking"],
         default="none",
@@ -2002,6 +2064,10 @@ def main() -> None:
         ensemble=None if args.ensemble == "none" else args.ensemble,
         neighbor_corr_windows=corr_windows,
         device=args.device,
+        window=args.window,
+        epochs=args.epochs,
+        lr=args.lr,
+        dropout=args.dropout,
     )
 
 
