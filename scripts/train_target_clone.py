@@ -465,12 +465,12 @@ def _extract_features(
             left_on="event_time",
             right_on="timestamp",
             by="symbol",
-            direction="backward",
+            direction="nearest",
         )
-        merged["news_sentiment"] = merged["score"].fillna(0.0)
+        merged["sentiment_score"] = merged["score"].fillna(0.0)
         merged.drop(columns=["timestamp", "score"], inplace=True)
         df = merged.set_index(df_idx).sort_index()
-        feature_names = feature_names + ["news_sentiment"]
+        feature_names = feature_names + ["sentiment_score"]
     price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
     if price_col is not None:
         price_series = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
