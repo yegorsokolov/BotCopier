@@ -34,6 +34,7 @@ except Exception:  # pragma: no cover - fallback to file logging
 
 import numpy as np
 import psutil
+import pandas as pd
 from collections import deque
 from sklearn.linear_model import SGDClassifier
 
@@ -52,6 +53,15 @@ try:  # drift metrics utilities
         from drift_monitor import _compute_metrics, _update_model  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     _compute_metrics = _update_model = None  # type: ignore
+
+try:  # optional graph embedding support
+    from graph_dataset import GraphDataset, compute_gnn_embeddings
+
+    _HAS_TG = True
+except Exception:  # pragma: no cover
+    GraphDataset = None  # type: ignore
+    compute_gnn_embeddings = None  # type: ignore
+    _HAS_TG = False
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -153,6 +163,8 @@ class OnlineTrainer:
         self.recent_probs: deque[float] = deque(maxlen=1000)
         self.conformal_lower: float | None = None
         self.conformal_upper: float | None = None
+        self.gnn_state: Dict[str, Any] | None = None
+        self.graph_dataset: GraphDataset | None = None
         if self.model_path.exists():
             self._load()
         elif detect_resources:
@@ -196,6 +208,12 @@ class OnlineTrainer:
         self.weight_decay = data.get("weight_decay")
         self.conformal_lower = data.get("conformal_lower")
         self.conformal_upper = data.get("conformal_upper")
+        self.gnn_state = data.get("gnn_state")
+        if self.gnn_state and _HAS_TG and Path("symbol_graph.json").exists():
+            try:
+                self.graph_dataset = GraphDataset(Path("symbol_graph.json"))
+            except Exception:
+                self.graph_dataset = None
         if self.feature_names and coef is not None and intercept is not None:
             n = len(self.feature_names)
             self.clf.partial_fit(np.zeros((1, n)), [0], classes=np.array([0, 1]))
@@ -222,6 +240,8 @@ class OnlineTrainer:
             payload["conformal_lower"] = self.conformal_lower
         if self.conformal_upper is not None:
             payload["conformal_upper"] = self.conformal_upper
+        if self.gnn_state:
+            payload["gnn_state"] = self.gnn_state
         try:
             existing = json.loads(self.model_path.read_text())
         except Exception:
@@ -245,6 +265,24 @@ class OnlineTrainer:
             self.clf.coef_ = coef
 
     def _vectorise(self, batch: List[Dict[str, Any]]):
+        if (
+            self.gnn_state
+            and self.graph_dataset is not None
+            and compute_gnn_embeddings is not None
+        ):
+            try:
+                df_batch = pd.DataFrame(batch)
+                emb_map, _ = compute_gnn_embeddings(
+                    df_batch, self.graph_dataset, state_dict=self.gnn_state
+                )
+                if emb_map:
+                    emb_dim = len(next(iter(emb_map.values())))
+                    for rec in batch:
+                        sym = str(rec.get("symbol", ""))
+                        for i in range(emb_dim):
+                            rec[f"graph_emb{i}"] = emb_map.get(sym, [0.0] * emb_dim)[i]
+            except Exception:
+                pass
         for rec in batch:
             self._ensure_features(rec.keys())
         X = [[float(rec.get(f, 0.0)) for f in self.feature_names] for rec in batch]

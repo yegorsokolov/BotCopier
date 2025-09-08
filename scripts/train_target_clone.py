@@ -77,6 +77,15 @@ except Exception:  # pragma: no cover
 
 from .features import _sma, _rsi, _bollinger, _macd_update, _atr
 
+try:  # Optional graph dependencies
+    from .graph_dataset import GraphDataset, compute_gnn_embeddings
+
+    _HAS_TG = True
+except Exception:  # pragma: no cover
+    GraphDataset = None  # type: ignore
+    compute_gnn_embeddings = None  # type: ignore
+    _HAS_TG = False
+
 
 # Quantile bounds for feature clipping
 _CLIP_BOUNDS = (0.01, 0.99)
@@ -234,10 +243,10 @@ def _extract_features(
     news_sentiment: pd.DataFrame | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
     regime_model: dict | str | Path | None = None,
-) -> tuple[pd.DataFrame, list[str], dict[str, list[float]]]:
+) -> tuple[pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]]:
     """Attach graph embeddings, calendar flags and correlation features."""
 
-    embeddings: dict[str, list[float]] = {}
+    g_dataset: GraphDataset | None = None
     graph_data: dict | None = None
     if symbol_graph is not None:
         if not isinstance(symbol_graph, dict):
@@ -245,30 +254,13 @@ def _extract_features(
                 graph_data = json.load(f_sg)
         else:
             graph_data = symbol_graph
-        nodes = graph_data.get("nodes") or {}
-        if nodes:
-            for sym, vals in nodes.items():
-                emb = vals.get("embedding")
-                if isinstance(emb, list):
-                    embeddings[sym] = [float(v) for v in emb]
-        elif graph_data.get("embeddings"):
-            embeddings = {
-                sym: [float(v) for v in emb]
-                for sym, emb in graph_data.get("embeddings", {}).items()
-            }
-        if embeddings and "symbol" in df.columns:
-            emb_dim = len(next(iter(embeddings.values())))
-            sym_series = df["symbol"]
-            for i in range(emb_dim):
-                col = f"graph_emb{i}"
-                df[col] = sym_series.map(
-                    lambda s: (
-                        embeddings.get(str(s), [0.0] * emb_dim)[i]
-                        if isinstance(s, str)
-                        else 0.0
-                    )
-                )
-            feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
+        if _HAS_TG and not isinstance(symbol_graph, dict):
+            try:
+                g_dataset = GraphDataset(symbol_graph)
+            except Exception:
+                g_dataset = None
+    embeddings: dict[str, list[float]] = {}
+    gnn_state: dict[str, list[list[float]]] = {}
 
     if calendar_file is not None and "event_time" in df.columns:
         try:
@@ -479,7 +471,22 @@ def _extract_features(
             df[col_name] = X_poly[:, idx]
             feature_names.append(col_name)
 
-    return df, feature_names, embeddings
+    if g_dataset is not None and compute_gnn_embeddings is not None:
+        try:
+            embeddings, gnn_state = compute_gnn_embeddings(df, g_dataset)
+        except Exception:
+            embeddings, gnn_state = {}, {}
+        if embeddings and "symbol" in df.columns:
+            emb_dim = len(next(iter(embeddings.values())))
+            sym_series = df["symbol"].astype(str)
+            for i in range(emb_dim):
+                col = f"graph_emb{i}"
+                df[col] = sym_series.map(
+                    lambda s: embeddings.get(s, [0.0] * emb_dim)[i]
+                )
+            feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
+
+    return df, feature_names, embeddings, gnn_state
 
 
 # ---------------------------------------------------------------------------
@@ -578,7 +585,7 @@ def _train_lite_mode(
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
 
-    df, feature_names, embeddings = _extract_features(
+    df, feature_names, embeddings, gnn_state = _extract_features(
         df,
         feature_names,
         symbol_graph=symbol_graph,
@@ -1370,6 +1377,8 @@ def _train_lite_mode(
         }
     if embeddings:
         model["symbol_embeddings"] = embeddings
+    if gnn_state:
+        model["gnn_state"] = gnn_state
     if optuna_info:
         model["optuna_best_params"] = optuna_info.get("params", {})
         model["optuna_best_score"] = optuna_info.get("score", 0.0)
@@ -1414,7 +1423,7 @@ def _train_transformer(
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
 
-    df, feature_names, _ = _extract_features(
+    df, feature_names, _, _ = _extract_features(
         df,
         feature_names,
         symbol_graph=symbol_graph,
@@ -1705,7 +1714,7 @@ def _train_tree_model(
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
 
-    df, feature_names, _ = _extract_features(
+    df, feature_names, _, _ = _extract_features(
         df,
         feature_names,
         symbol_graph=symbol_graph,
