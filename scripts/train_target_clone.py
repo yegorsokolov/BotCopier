@@ -21,7 +21,7 @@ import shutil
 import importlib.util
 from pathlib import Path
 from datetime import datetime
-from typing import Iterable, Tuple, Callable
+from typing import Iterable, Tuple, Callable, Sequence
 
 import logging
 import numpy as np
@@ -49,6 +49,7 @@ from .model_fitting import (
     _compute_decay_weights,
 )
 from .meta_strategy import train_meta_model
+from .meta_adapt import _logistic_grad, _sigmoid
 
 try:  # Optional dependency
     import optuna
@@ -741,6 +742,7 @@ def _train_lite_mode(
     device: str = "cpu",
     synthetic_data: Path | pd.DataFrame | None = None,
     synthetic_weight: float = 0.2,
+    meta_weights: Sequence[float] | Path | None = None,
     tick_encoder: Path | None = None,
     bayesian_ensembles: int = 0,
     **_: object,
@@ -752,6 +754,17 @@ def _train_lite_mode(
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
     feature_names = list(feature_names)
+
+    meta_init: np.ndarray | None = None
+    if meta_weights is not None:
+        if isinstance(meta_weights, (str, Path)):
+            try:
+                meta_data = json.loads(Path(meta_weights).read_text())
+                meta_init = np.array(meta_data.get("meta_weights", meta_data), dtype=float)
+            except Exception:
+                meta_init = np.array(meta_weights, dtype=float)
+        else:
+            meta_init = np.array(list(meta_weights), dtype=float)
 
     df["synthetic"] = 0.0
     if synthetic_data is not None:
@@ -1462,6 +1475,8 @@ def _train_lite_mode(
         "training_rows": int(len(df)),
         "dropped_noisy": int(dropped_noisy),
     }
+    if meta_init is not None:
+        model["meta_weights"] = meta_init.astype(float).tolist()
     w_stats = df["sample_weight"].to_numpy(dtype=float)
     model["sample_weight_stats"] = {
         "mean": float(w_stats.mean()) if len(w_stats) else 0.0,
@@ -1496,35 +1511,67 @@ def _train_lite_mode(
             X, y, w = _maybe_smote(X, y, w, threshold=smote_threshold)
         X_clip, c_low, c_high = _clip_train_features(X)
         scaler = RobustScaler().fit(X_clip)
-        class_counts = np.bincount(y)
-        val_size = int(len(y) * 0.1)
-        if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
-            clf = SGDClassifier(loss="log_loss")
-            clf.partial_fit(
-                scaler.transform(X_clip),
-                y,
-                classes=np.array([0, 1]),
-                sample_weight=w,
-            )
+        X_scaled = scaler.transform(X_clip)
+
+        clf: object
+        coef: np.ndarray
+        intercept: float
+
+        if meta_init is not None and len(meta_init) == X_scaled.shape[1]:
+            w_vec = np.concatenate([meta_init.astype(float), np.zeros(1)])
+            Xb = np.hstack([X_scaled, np.ones((len(X_scaled), 1))])
+            for _ in range(100):
+                preds = _sigmoid(Xb @ w_vec)
+                grad = Xb.T @ (preds - y) / len(y)
+                w_vec -= 0.1 * grad
+            coef = w_vec[:-1]
+            intercept = float(w_vec[-1])
+
+            class _GDClf:
+                def __init__(self, c: np.ndarray, i: float) -> None:
+                    self.coef_ = np.array([c], dtype=float)
+                    self.intercept_ = np.array([i], dtype=float)
+
+                def predict_proba(self, X: np.ndarray) -> np.ndarray:
+                    z = X @ self.coef_[0] + self.intercept_[0]
+                    p = _sigmoid(z)
+                    return np.vstack([1 - p, p]).T
+
+            clf = _GDClf(coef, intercept)
         else:
-            clf = SGDClassifier(
-                loss="log_loss",
-                early_stopping=True,
-                validation_fraction=0.1,
-                n_iter_no_change=5,
-            )
-            clf.fit(
-                scaler.transform(X_clip),
-                y,
-                sample_weight=w,
-            )
+            class_counts = np.bincount(y)
+            val_size = int(len(y) * 0.1)
+            if len(class_counts) < 2 or class_counts.min() < 2 or val_size < 2:
+                clf = SGDClassifier(loss="log_loss")
+                clf.partial_fit(
+                    X_scaled,
+                    y,
+                    classes=np.array([0, 1]),
+                    sample_weight=w,
+                )
+            else:
+                clf = SGDClassifier(
+                    loss="log_loss",
+                    early_stopping=True,
+                    validation_fraction=0.1,
+                    n_iter_no_change=5,
+                )
+                clf.fit(
+                    X_scaled,
+                    y,
+                    sample_weight=w,
+                )
+            coef = clf.coef_[0]
+            intercept = float(clf.intercept_[0])
 
         def _predict(inp: np.ndarray) -> np.ndarray:
-            return clf.predict_proba(scaler.transform(_clip_apply(inp, c_low, c_high)))[:, 1]
+            return clf.predict_proba(
+                scaler.transform(_clip_apply(inp, c_low, c_high))
+            )[:, 1]
 
         params = {
-            "coefficients": clf.coef_[0].astype(float).tolist(),
-            "intercept": float(clf.intercept_[0]),
+            "coefficients": coef.astype(float).tolist(),
+            "intercept": float(intercept),
             "threshold": 0.5,
             "feature_mean": scaler.center_.astype(float).tolist(),
             "feature_std": scaler.scale_.astype(float).tolist(),
@@ -2307,6 +2354,7 @@ def train(
     filter_noise: bool = False,
     noise_quantile: float = 0.9,
     smote_threshold: float | None = None,
+    meta_weights: Sequence[float] | Path | None = None,
     tick_encoder: Path | None = None,
     bayesian_ensembles: int = 0,
     **kwargs,
@@ -2371,6 +2419,7 @@ def train(
             per_regime=per_regime,
             filter_noise=filter_noise,
             noise_quantile=noise_quantile,
+            meta_weights=meta_weights,
             tick_encoder=tick_encoder,
             bayesian_ensembles=bayesian_ensembles,
             **kwargs,
@@ -2689,6 +2738,11 @@ def main() -> None:
         help="Comma-separated window sizes for neighbor correlation features",
     )
     p.add_argument(
+        "--meta-weights",
+        type=Path,
+        help="JSON file with meta-learned initial weights",
+    )
+    p.add_argument(
         "--tick-encoder",
         type=Path,
         help="path to pretrained contrastive encoder",
@@ -2741,6 +2795,7 @@ def main() -> None:
         ensemble=None if args.ensemble == "none" else args.ensemble,
         neighbor_corr_windows=corr_windows,
         tick_encoder=args.tick_encoder,
+        meta_weights=args.meta_weights,
         device=args.device,
         window=args.window,
         epochs=args.epochs,
