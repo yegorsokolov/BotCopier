@@ -77,6 +77,14 @@ except Exception:  # pragma: no cover
     get_label_quality_scores = None  # type: ignore
     _HAS_CLEANLAB = False
 
+try:  # Optional dependency
+    from imblearn.over_sampling import SMOTE
+
+    _HAS_IMBLEARN = True
+except Exception:  # pragma: no cover
+    SMOTE = None  # type: ignore
+    _HAS_IMBLEARN = False
+
 from .features import _sma, _rsi, _bollinger, _macd_update, _atr
 
 try:  # Optional graph dependencies
@@ -103,6 +111,33 @@ def _clip_train_features(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndar
 def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     """Apply precomputed clipping bounds to features."""
     return np.clip(X, low, high)
+
+
+def _maybe_smote(
+    X: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    *,
+    threshold: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply SMOTE oversampling when class imbalance exceeds ``threshold``."""
+    if not _HAS_IMBLEARN:
+        return X, y, w
+    class_counts = np.bincount(y)
+    if len(class_counts) < 2:
+        return X, y, w
+    minor = class_counts.min()
+    major = class_counts.max()
+    if minor <= 1 or major / max(minor, 1) <= threshold:
+        return X, y, w
+    k_neighbors = min(5, minor - 1)
+    sm = SMOTE(k_neighbors=k_neighbors, random_state=0)
+    X_res, y_res = sm.fit_resample(X, y)
+    minority_class = int(np.argmin(class_counts))
+    minority_weight = float(w[y == minority_class].mean()) if len(w) else 1.0
+    extra_w = np.full(len(X_res) - len(X), minority_weight, dtype=float)
+    w_res = np.concatenate([w, extra_w])
+    return X_res, y_res, w_res
 
 
 def _train_autoencoder_weights(
@@ -1345,6 +1380,8 @@ def _train_lite_mode(
     # ------------------------------------------------------------------
     def _fit_base_model(X: np.ndarray, y: np.ndarray, w: np.ndarray):
         """Fit logistic regression and return params, predictor and model."""
+        if smote_threshold is not None:
+            X, y, w = _maybe_smote(X, y, w, threshold=smote_threshold)
         X_clip, c_low, c_high = _clip_train_features(X)
         scaler = RobustScaler().fit(X_clip)
         class_counts = np.bincount(y)
@@ -2005,6 +2042,7 @@ def train(
     per_regime: bool = False,
     filter_noise: bool = False,
     noise_quantile: float = 0.9,
+    smote_threshold: float | None = None,
     **kwargs,
 ) -> None:
     """Public training entry point."""

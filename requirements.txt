@@ -25,6 +25,7 @@ ruptures
 nats-py
 confluent-kafka[avro]
 fastavro
+imbalanced-learn
 transformers
 pytorch-forecasting; extra == "tft"
 torch
