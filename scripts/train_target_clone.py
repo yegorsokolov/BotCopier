@@ -119,6 +119,52 @@ def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return np.clip(X, low, high)
 
 
+def _apply_drift_pruning(
+    df: pd.DataFrame,
+    feature_names: list[str],
+    drift_scores: dict[str, float] | None,
+    threshold: float,
+    weight: float,
+) -> list[str]:
+    """Drop or down-weight features whose drift score exceeds ``threshold``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data frame containing feature columns.
+    feature_names : list[str]
+        Current list of feature names.
+    drift_scores : dict[str, float] | None
+        Mapping of feature name to drift score.
+    threshold : float
+        Features with scores above this value are pruned.
+    weight : float
+        If ``weight`` > 0, features are multiplied by this factor instead of
+        being dropped.
+
+    Returns
+    -------
+    list[str]
+        The list of features that were removed or down-weighted.
+    """
+    removed: list[str] = []
+    if not drift_scores or threshold <= 0:
+        return removed
+    for feat in list(feature_names):
+        score = drift_scores.get(feat)
+        if score is None or score <= threshold:
+            continue
+        if weight <= 0:
+            df.drop(columns=feat, inplace=True)
+            feature_names.remove(feat)
+        else:
+            df[feat] = df[feat] * weight
+        removed.append(feat)
+    if removed:
+        logging.info("Drift pruning applied to features: %s", removed)
+    return removed
+
+
 def _maybe_smote(
     X: np.ndarray,
     y: np.ndarray,
@@ -744,6 +790,9 @@ def _train_lite_mode(
     synthetic_weight: float = 0.2,
     meta_weights: Sequence[float] | Path | None = None,
     tick_encoder: Path | None = None,
+    drift_scores: dict[str, float] | None = None,
+    drift_threshold: float = 0.0,
+    drift_weight: float = 0.0,
     bayesian_ensembles: int = 0,
     **_: object,
 ) -> None:
@@ -930,6 +979,10 @@ def _train_lite_mode(
         )
     feature_names = retained_features
     logging.info("Retained features after MI filtering: %s", feature_names)
+
+    _apply_drift_pruning(
+        df, feature_names, drift_scores, drift_threshold, drift_weight
+    )
 
     dropped_noisy = 0
     if filter_noise:
@@ -1840,6 +1893,9 @@ def _train_transformer(
     uncertain_weight: float = 2.0,
     neighbor_corr_windows: Iterable[int] | None = None,
     tick_encoder: Path | None = None,
+    drift_scores: dict[str, float] | None = None,
+    drift_threshold: float = 0.0,
+    drift_weight: float = 0.0,
     bayesian_ensembles: int = 0,
     **_,
 ) -> torch.nn.Module:
@@ -1860,6 +1916,10 @@ def _train_transformer(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
+    )
+
+    _apply_drift_pruning(
+        df, feature_names, drift_scores, drift_threshold, drift_weight
     )
     unc_df = None
     uncertain_idx = np.zeros(len(df), dtype=bool)
@@ -2170,6 +2230,9 @@ def _train_tree_model(
     neighbor_corr_windows: Iterable[int] | None = None,
     use_volatility_weight: bool = False,
     tick_encoder: Path | None = None,
+    drift_scores: dict[str, float] | None = None,
+    drift_threshold: float = 0.0,
+    drift_weight: float = 0.0,
     **_: object,
 ) -> None:
     """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
@@ -2242,6 +2305,10 @@ def _train_tree_model(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
+    )
+
+    _apply_drift_pruning(
+        df, feature_names, drift_scores, drift_threshold, drift_weight
     )
     if use_volatility_weight and "price_volatility" in df.columns:
         vol = pd.to_numeric(df["price_volatility"], errors="coerce").fillna(0.0)
@@ -2356,6 +2423,9 @@ def train(
     smote_threshold: float | None = None,
     meta_weights: Sequence[float] | Path | None = None,
     tick_encoder: Path | None = None,
+    drift_scores: dict[str, float] | None = None,
+    drift_threshold: float = 0.0,
+    drift_weight: float = 0.0,
     bayesian_ensembles: int = 0,
     **kwargs,
 ) -> None:
@@ -2387,6 +2457,9 @@ def train(
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
             tick_encoder=tick_encoder,
+            drift_scores=drift_scores,
+            drift_threshold=drift_threshold,
+            drift_weight=drift_weight,
             bayesian_ensembles=bayesian_ensembles,
             **kwargs,
         )
@@ -2401,6 +2474,9 @@ def train(
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
             tick_encoder=tick_encoder,
+            drift_scores=drift_scores,
+            drift_threshold=drift_threshold,
+            drift_weight=drift_weight,
             **kwargs,
         )
     else:
@@ -2421,6 +2497,9 @@ def train(
             noise_quantile=noise_quantile,
             meta_weights=meta_weights,
             tick_encoder=tick_encoder,
+            drift_scores=drift_scores,
+            drift_threshold=drift_threshold,
+            drift_weight=drift_weight,
             bayesian_ensembles=bayesian_ensembles,
             **kwargs,
         )
@@ -2725,6 +2804,19 @@ def main() -> None:
         default=0.0,
         help="drop features with mean |SHAP| below this value",
     )
+    p.add_argument("--drift-scores", type=Path, help="JSON file with per-feature drift scores")
+    p.add_argument(
+        "--drift-threshold",
+        type=float,
+        default=0.0,
+        help="threshold above which features are pruned",
+    )
+    p.add_argument(
+        "--drift-weight",
+        type=float,
+        default=0.0,
+        help="if >0, scale drifted features by this factor instead of dropping",
+    )
     p.add_argument("--calendar-file", type=Path, help="CSV file with calendar events")
     p.add_argument(
         "--symbol-graph",
@@ -2770,6 +2862,12 @@ def main() -> None:
         if args.neighbor_corr_windows
         else None
     )
+    drift_scores = None
+    if args.drift_scores:
+        try:
+            drift_scores = json.loads(Path(args.drift_scores).read_text())
+        except Exception:
+            drift_scores = None
     train(
         args.data_dir,
         args.out_dir,
@@ -2796,6 +2894,9 @@ def main() -> None:
         neighbor_corr_windows=corr_windows,
         tick_encoder=args.tick_encoder,
         meta_weights=args.meta_weights,
+        drift_scores=drift_scores,
+        drift_threshold=args.drift_threshold,
+        drift_weight=args.drift_weight,
         device=args.device,
         window=args.window,
         epochs=args.epochs,
