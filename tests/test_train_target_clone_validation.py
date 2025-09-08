@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 from sklearn.datasets import make_classification
 
-from scripts.train_target_clone import train
+from scripts.train_target_clone import train, _HAS_OPTUNA
 
 
 def test_voting_ensemble_improves_accuracy(tmp_path):
@@ -101,3 +101,47 @@ def test_volatility_weighting_changes_coefficients(tmp_path):
     coeffs2 = model2["session_models"]["asian"]["coefficients"]
 
     assert any(abs(a - b) > 1e-6 for a, b in zip(coeffs1, coeffs2))
+
+
+@pytest.mark.skipif(not _HAS_OPTUNA, reason="optuna not installed")
+def test_optuna_cross_validation_respects_fold_count(tmp_path):
+    X, y = make_classification(
+        n_samples=60,
+        n_features=11,
+        n_informative=5,
+        n_redundant=0,
+        random_state=42,
+        flip_y=0.3,
+    )
+    cols = [
+        "spread",
+        "slippage",
+        "equity",
+        "margin_level",
+        "volume",
+        "hour_sin",
+        "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
+    ]
+    df = pd.DataFrame(X, columns=cols)
+    df["label"] = y
+    df["profit"] = (y * 2 - 1).astype(float)
+    data_file = tmp_path / "trades_raw.csv"
+    df.to_csv(data_file, index=False)
+
+    out_dir2 = tmp_path / "out2"
+    train(data_file, out_dir2, optuna_trials=1, optuna_folds=2)
+    model2 = json.loads((out_dir2 / "model.json").read_text())
+    folds2 = model2["optuna_best_fold_scores"]
+    assert len(folds2) == 2
+
+    out_dir3 = tmp_path / "out3"
+    train(data_file, out_dir3, optuna_trials=1, optuna_folds=3)
+    model3 = json.loads((out_dir3 / "model.json").read_text())
+    folds3 = model3["optuna_best_fold_scores"]
+    assert len(folds3) == 3
+
+    assert model2["optuna_best_score"] != model3["optuna_best_score"]
