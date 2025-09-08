@@ -103,6 +103,48 @@ def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return np.clip(X, low, high)
 
 
+def _train_autoencoder_weights(
+    X: np.ndarray,
+    out_file: Path,
+    *,
+    latent_dim: int = 8,
+    epochs: int = 10,
+    device: str = "cpu",
+) -> None:
+    """Train a linear autoencoder via SVD and save the encoder weights.
+
+    A simple approximation of an autoencoder is obtained by performing singular
+    value decomposition on the feature matrix and keeping the top ``latent_dim``
+    right singular vectors.  These act as the encoder weights and are stored as
+    a NumPy ``.npy`` array with ``.pt`` extension for compatibility.
+    """
+    _ = epochs, device  # unused but kept for API compatibility
+    U, S, Vt = np.linalg.svd(X, full_matrices=False)
+    weights = Vt[:latent_dim].astype(np.float32)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_file, "wb") as f:
+        np.save(f, weights)
+
+
+def _encode_with_autoencoder(
+    X: np.ndarray, weight_file: Path, *, device: str = "cpu"
+) -> np.ndarray:
+    """Load encoder weights saved by :func:`_train_autoencoder_weights`.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Feature matrix to transform.
+    weight_file : Path
+        Path to ``autoencoder.pt`` produced during training.
+    device : str
+        Unused but kept for API compatibility with potential torch version.
+    """
+    _ = device  # unused
+    weights = np.load(weight_file)
+    return X.dot(weights.T)
+
+
 def _mean_abs_shap_linear(
     clf: SGDClassifier, scaler: RobustScaler, X: np.ndarray
 ) -> np.ndarray:
@@ -531,6 +573,10 @@ def _train_lite_mode(
     per_regime: bool = False,
     filter_noise: bool = False,
     noise_quantile: float = 0.9,
+    use_autoencoder: bool = False,
+    autoencoder_dim: int = 8,
+    autoencoder_epochs: int = 10,
+    device: str = "cpu",
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -638,7 +684,7 @@ def _train_lite_mode(
     y_mi = df["label"].astype(int).to_numpy()
     X_mi, _, _ = _clip_train_features(X_mi)
     scaler_mi = RobustScaler().fit(X_mi)
-    mi_scores = mutual_info_classif(scaler_mi.transform(X_mi), y_mi)
+    mi_scores = mutual_info_classif(scaler_mi.transform(X_mi), y_mi, random_state=0)
     retained_features = [
         name for name, score in zip(feature_names, mi_scores) if score >= mi_threshold
     ]
@@ -731,6 +777,23 @@ def _train_lite_mode(
         mean_sw = float(np.mean(sw))
         if mean_sw > 0:
             df["sample_weight"] = sw / mean_sw
+
+    if use_autoencoder and feature_names:
+        X_raw = df[feature_names].to_numpy(dtype=float)
+        ae_path = out_dir / "autoencoder.pt"
+        _train_autoencoder_weights(
+            X_raw,
+            ae_path,
+            latent_dim=autoencoder_dim,
+            epochs=autoencoder_epochs,
+            device=device,
+        )
+        embedded = _encode_with_autoencoder(X_raw, ae_path, device=device)
+        df.drop(columns=feature_names, inplace=True)
+        ae_cols = [f"ae_{i}" for i in range(embedded.shape[1])]
+        for i, col in enumerate(ae_cols):
+            df[col] = embedded[:, i]
+        feature_names = ae_cols
 
     optuna_info: dict[str, object] | None = None
     if optuna_trials > 0 and _HAS_OPTUNA:
@@ -1158,6 +1221,8 @@ def _train_lite_mode(
         "training_rows": int(len(df)),
         "dropped_noisy": int(dropped_noisy),
     }
+    if use_autoencoder:
+        model["autoencoder"] = "autoencoder.pt"
     if not per_regime:
         model["session_hours"] = {
             "asian": [0, 8],
@@ -2167,6 +2232,23 @@ def main() -> None:
         type=str,
         help="Comma-separated window sizes for neighbor correlation features",
     )
+    p.add_argument(
+        "--autoencoder",
+        action="store_true",
+        help="enable training and application of feature autoencoder",
+    )
+    p.add_argument(
+        "--autoencoder-dim",
+        type=int,
+        default=8,
+        help="dimension of autoencoder bottleneck",
+    )
+    p.add_argument(
+        "--autoencoder-epochs",
+        type=int,
+        default=10,
+        help="number of epochs to train autoencoder",
+    )
     args = p.parse_args()
     corr_windows = (
         [int(w) for w in args.neighbor_corr_windows.split(",") if w]
@@ -2202,6 +2284,9 @@ def main() -> None:
         epochs=args.epochs,
         lr=args.lr,
         dropout=args.dropout,
+        use_autoencoder=args.autoencoder,
+        autoencoder_dim=args.autoencoder_dim,
+        autoencoder_epochs=args.autoencoder_epochs,
     )
 
 
