@@ -33,7 +33,7 @@ def test_price_indicators_persisted(tmp_path: Path) -> None:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert feat in model["feature_names"]
     df, feature_cols, _ = _load_logs(data)
-    df, _, _ = _extract_features(df, feature_cols)
+    df, _, _, _ = _extract_features(df, feature_cols)
     for col in ["price", "volume", "spread"]:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert df[feat].notna().all()
@@ -65,7 +65,7 @@ def test_neighbor_correlation_features(tmp_path: Path) -> None:
     for col in corr_cols:
         assert col in model["feature_names"]
     df, feature_cols, _ = _load_logs(data)
-    df, _, _ = _extract_features(
+    df, _, _, _ = _extract_features(
         df, feature_cols, symbol_graph=sg_path, neighbor_corr_windows=[3]
     )
     for col in corr_cols:

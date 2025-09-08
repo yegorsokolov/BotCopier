@@ -27,6 +27,8 @@ confluent-kafka[avro]
 fastavro
 transformers
 pytorch-forecasting; extra == "tft"
+torch
+torch_geometric
 
 # Optional extras
 uvloop; extra == "uvloop"  # faster asyncio event loop (stream_listener.py, metrics_collector.py)

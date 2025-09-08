@@ -29,7 +29,19 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 
-from train_target_clone import detect_resources
+try:
+    from train_target_clone import detect_resources
+except Exception:  # pragma: no cover - script executed within package
+    from scripts.train_target_clone import detect_resources  # type: ignore
+
+try:  # optional graph embedding support
+    from graph_dataset import GraphDataset, compute_gnn_embeddings
+
+    _HAS_TG = True
+except Exception:  # pragma: no cover
+    GraphDataset = None  # type: ignore
+    compute_gnn_embeddings = None  # type: ignore
+    _HAS_TG = False
 
 
 def _load_model(model_file: Path) -> Dict:
@@ -90,6 +102,27 @@ def _recompute(df: pd.DataFrame, model: Dict, threshold: float) -> Dict:
     resources = detect_resources()
     use_complex = not resources.get("lite_mode") and model.get("nn_weights")
     pred_fn = _predict_nn if use_complex else _predict_logistic
+
+    gnn_state = model.get("gnn_state")
+    if (
+        _HAS_TG
+        and gnn_state
+        and Path("symbol_graph.json").exists()
+        and "symbol" in df.columns
+    ):
+        try:
+            dataset = GraphDataset(Path("symbol_graph.json"))
+            emb_map, _ = compute_gnn_embeddings(df, dataset, state_dict=gnn_state)
+            if emb_map:
+                emb_dim = len(next(iter(emb_map.values())))
+                sym_series = df["symbol"].astype(str)
+                for i in range(emb_dim):
+                    col = f"graph_emb{i}"
+                    df[col] = sym_series.map(
+                        lambda s: emb_map.get(s, [0.0] * emb_dim)[i]
+                    )
+        except Exception:
+            pass
 
     divergences = []
     profits = df.get("profit")

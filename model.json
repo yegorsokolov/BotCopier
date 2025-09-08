@@ -143,6 +143,7 @@
     "embedding_dim": 0
   },
   "symbol_embeddings": {},
+  "gnn_state": {},
   "risk_parity_symbols": [
     "EURUSD",
     "USDJPY"
