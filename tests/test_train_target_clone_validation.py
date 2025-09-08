@@ -145,3 +145,31 @@ def test_optuna_cross_validation_respects_fold_count(tmp_path):
     assert len(folds3) == 3
 
     assert model2["optuna_best_score"] != model3["optuna_best_score"]
+
+
+def test_synthetic_rows_expand_dataset_and_metrics(tmp_path):
+    data = tmp_path / "trades_raw.csv"
+    rows = [
+        "label,price,spread,hour\n",
+        "0,1.0,1.0,0\n",
+        "1,1.1,1.0,1\n",
+        "0,1.2,1.0,2\n",
+        "1,1.3,1.0,3\n",
+    ]
+    data.write_text("".join(rows))
+    out1 = tmp_path / "out1"
+    train(data, out1)
+    model1 = json.loads((out1 / "model.json").read_text())
+
+    synth = tmp_path / "synthetic_prices.csv"
+    synth.write_text("price,hour\n1.4,4\n1.5,5\n1.6,6\n")
+    out2 = tmp_path / "out2"
+    train(data, out2, synthetic_data=synth, synthetic_weight=0.5)
+    model2 = json.loads((out2 / "model.json").read_text())
+
+    sm1 = model1["synthetic_metrics"]
+    sm2 = model2["synthetic_metrics"]
+    assert sm1["synthetic"] == 0
+    assert sm2["synthetic"] > 0
+    assert sm2["all"] > sm1["all"]
+    assert model1["cv_accuracy"] != model2["cv_accuracy"]
