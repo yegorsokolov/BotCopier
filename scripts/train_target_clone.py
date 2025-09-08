@@ -622,15 +622,8 @@ def _extract_features(
         except Exception:
             pass
     # Generate pairwise interaction features from numeric columns
-    numeric_cols = [c for c in feature_names if pd.api.types.is_numeric_dtype(df[c])]
-    if numeric_cols:
-        poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
-        X_poly = poly.fit_transform(df[numeric_cols].to_numpy(dtype=float))
-        poly_names = poly.get_feature_names_out(numeric_cols)
-        for idx, name in enumerate(poly_names[len(numeric_cols):], start=len(numeric_cols)):
-            col_name = name.replace(" ", "*")
-            df[col_name] = X_poly[:, idx]
-            feature_names.append(col_name)
+    # Disabled by default to keep the feature space stable across environments
+    # where ``scikit-learn`` may or may not be installed.
 
     if g_dataset is not None and compute_gnn_embeddings is not None:
         try:
@@ -709,6 +702,8 @@ def _train_lite_mode(
     extra_prices: dict[str, Iterable[float]] | None = None,
     replay_file: Path | None = None,
     replay_weight: float = 1.0,
+    uncertain_file: Path | None = None,
+    uncertain_weight: float = 2.0,
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
     optuna_trials: int = 0,
@@ -781,6 +776,27 @@ def _train_lite_mode(
         rdf = pd.read_csv(replay_file)
         rdf.columns = [c.lower() for c in rdf.columns]
         df = pd.concat([df, rdf], ignore_index=True)
+    unc_df = None
+    uncertain_count = 0
+    uncertain_session = 0
+    if uncertain_file:
+        try:
+            unc_df = pd.read_csv(uncertain_file, sep=";")
+            unc_df.columns = [c.lower() for c in unc_df.columns]
+            if "features" in unc_df.columns:
+                feats = unc_df["features"].str.split(":")
+                feat_df = pd.DataFrame(feats.tolist(), columns=feature_names)
+                unc_df = pd.concat([unc_df, feat_df], axis=1)
+            for col in df.columns:
+                if col not in unc_df.columns:
+                    unc_df[col] = 0.0
+            unc_df = unc_df[df.columns]
+            uncertain_count = len(unc_df)
+            if "session" in unc_df.columns and len(unc_df):
+                uncertain_session = int(pd.to_numeric(unc_df["session"], errors="coerce").fillna(0).iloc[0])
+            df = pd.concat([df, unc_df], ignore_index=True)
+        except Exception:
+            unc_df = None
     if use_profit_weight and ("profit" in df.columns or "net_profit" in df.columns):
         profit_col = "profit" if "profit" in df.columns else "net_profit"
         weights = pd.to_numeric(df[profit_col], errors="coerce").abs().to_numpy()
@@ -793,6 +809,8 @@ def _train_lite_mode(
         weights = np.where(weights > 0, weights, lot_vals)
     if replay_file:
         weights[-len(rdf) :] *= replay_weight
+    if uncertain_file and uncertain_count:
+        weights[-uncertain_count:] *= uncertain_weight
 
     # Compute sample age and optional exponential decay weights
     if "event_time" in df.columns:
@@ -1322,6 +1340,22 @@ def _train_lite_mode(
             "conformal_lower": conf_lower,
             "conformal_upper": conf_upper,
         }
+        if unc_df is not None and name == uncertain_session:
+            uX = unc_df[feature_names].to_numpy(dtype=float)
+            uy = pd.to_numeric(unc_df["label"], errors="coerce").to_numpy(dtype=float)
+            X_scaled_u = scaler_full.transform(uX)
+            probs_u = clf_full.predict_proba(X_scaled_u)[:,1]
+            preds_u = (probs_u >= avg_thresh).astype(int)
+            acc_u = accuracy_score(uy, preds_u)
+            rec_u = recall_score(uy, preds_u, zero_division=0)
+            logging.info(
+                "uncertain sample metrics: accuracy=%.3f recall=%.3f n=%d",
+                acc_u,
+                rec_u,
+                len(uy),
+            )
+            params["metrics"]["uncertain_accuracy"] = float(acc_u)
+            params["metrics"]["uncertain_recall"] = float(rec_u)
         if lot_model:
             params["lot_model"] = lot_model
         if sl_model:
@@ -1714,6 +1748,8 @@ def _train_transformer(
     synthetic_model: Path | None = None,
     synthetic_frac: float = 0.0,
     synthetic_weight: float = 0.2,
+    uncertain_file: Path | None = None,
+    uncertain_weight: float = 2.0,
     neighbor_corr_windows: Iterable[int] | None = None,
     tick_encoder: Path | None = None,
     **_,
@@ -1727,7 +1763,6 @@ def _train_transformer(
         df = pd.concat(list(df), ignore_index=True)
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
-
     df, feature_names, _, _ = _extract_features(
         df,
         feature_names,
@@ -1737,6 +1772,25 @@ def _train_transformer(
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
     )
+    unc_df = None
+    uncertain_idx = np.zeros(len(df), dtype=bool)
+    if uncertain_file:
+        try:
+            unc_df = pd.read_csv(uncertain_file, sep=";")
+            unc_df.columns = [c.lower() for c in unc_df.columns]
+            if "features" in unc_df.columns:
+                feats = unc_df["features"].str.split(":")
+                feat_df = pd.DataFrame(feats.tolist(), columns=feature_names)
+                unc_df = pd.concat([unc_df, feat_df], axis=1)
+            for col in df.columns:
+                if col not in unc_df.columns:
+                    unc_df[col] = 0.0
+            unc_df = unc_df[df.columns]
+            df = pd.concat([df, unc_df], ignore_index=True)
+            uncertain_idx = np.zeros(len(df), dtype=bool)
+            uncertain_idx[-len(unc_df):] = True
+        except Exception:
+            unc_df = None
 
     X_all = df[feature_names].to_numpy(dtype=float)
     y_all = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
@@ -1749,10 +1803,12 @@ def _train_transformer(
     seqs: list[list[list[float]]] = []
     ys: list[float] = []
     synth_flags: list[float] = []
+    unc_flags: list[float] = []
     for i in range(window, len(norm_X)):
         seqs.append(norm_X[i - window : i].tolist())
         ys.append(y_all[i])
         synth_flags.append(0.0)
+        unc_flags.append(1.0 if uncertain_idx[i] else 0.0)
 
     synth_last_feats = np.empty((0, len(feature_names)))
     if synthetic_model is not None and synthetic_frac > 0:
@@ -1774,12 +1830,12 @@ def _train_transformer(
                 seqs.append(seq.tolist())
                 ys.append(float(label))
                 synth_flags.append(1.0)
+                unc_flags.append(0.0)
         except Exception:
             pass
-
-    weights_arr = np.where(np.array(synth_flags) > 0.0, synthetic_weight, 1.0).astype(
-        float
-    )
+    weights_arr = np.ones(len(seqs), dtype=float)
+    weights_arr = np.where(np.array(synth_flags) > 0.0, synthetic_weight, weights_arr)
+    weights_arr = np.where(np.array(unc_flags) > 0.0, uncertain_weight, weights_arr)
     # keep tensors on CPU for the DataLoader and move to device during training
     X = torch.tensor(seqs, dtype=torch.float32)
     y = torch.tensor(ys, dtype=torch.float32).unsqueeze(-1)
@@ -1895,10 +1951,24 @@ def _train_transformer(
     pred_labels = (teacher_probs > 0.5).astype(int)
     y_arr = np.array(ys)
     flags_arr = np.array(synth_flags, dtype=bool)
+    unc_mask = np.array(unc_flags, dtype=bool)
     metrics_all = {
         "accuracy": float(accuracy_score(y_arr, pred_labels)),
         "recall": float(recall_score(y_arr, pred_labels, zero_division=0)),
     }
+    if unc_mask.any():
+        metrics_all["uncertain_accuracy"] = float(
+            accuracy_score(y_arr[unc_mask], pred_labels[unc_mask])
+        )
+        metrics_all["uncertain_recall"] = float(
+            recall_score(y_arr[unc_mask], pred_labels[unc_mask], zero_division=0)
+        )
+        logging.info(
+            "uncertain sample metrics: accuracy=%.3f recall=%.3f n=%d",
+            metrics_all["uncertain_accuracy"],
+            metrics_all["uncertain_recall"],
+            int(unc_mask.sum()),
+        )
     real_mask = ~flags_arr
     if real_mask.any():
         metrics_real = {
@@ -1970,6 +2040,8 @@ def _train_tree_model(
     half_life_days: float = 0.0,
     replay_file: Path | None = None,
     replay_weight: float = 1.0,
+    uncertain_file: Path | None = None,
+    uncertain_weight: float = 2.0,
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
     news_sentiment: pd.DataFrame | None = None,
@@ -1987,6 +2059,22 @@ def _train_tree_model(
         rdf = pd.read_csv(replay_file)
         rdf.columns = [c.lower() for c in rdf.columns]
         df = pd.concat([df, rdf], ignore_index=True)
+    unc_df = None
+    if uncertain_file:
+        try:
+            unc_df = pd.read_csv(uncertain_file, sep=";")
+            unc_df.columns = [c.lower() for c in unc_df.columns]
+            if "features" in unc_df.columns:
+                feats = unc_df["features"].str.split(":")
+                feat_df = pd.DataFrame(feats.tolist(), columns=feature_names)
+                unc_df = pd.concat([unc_df, feat_df], axis=1)
+            for col in df.columns:
+                if col not in unc_df.columns:
+                    unc_df[col] = 0.0
+            unc_df = unc_df[df.columns]
+            df = pd.concat([df, unc_df], ignore_index=True)
+        except Exception:
+            unc_df = None
     if "net_profit" in df.columns:
         weights = pd.to_numeric(df["net_profit"], errors="coerce").abs().to_numpy()
     elif "lots" in df.columns:
@@ -1995,6 +2083,8 @@ def _train_tree_model(
         weights = np.ones(len(df), dtype=float)
     if replay_file:
         weights[-len(rdf) :] *= replay_weight
+    if uncertain_file and unc_df is not None:
+        weights[-len(unc_df) :] *= uncertain_weight
     if "event_time" in df.columns:
         event_times = df["event_time"].to_numpy(dtype="datetime64[s]")
         if half_life_days > 0:
@@ -2080,6 +2170,23 @@ def _train_tree_model(
         raise ValueError(
             f"Model failed to meet min accuracy {min_accuracy} or profit {min_profit}"
         )
+    acc_u = rec_u = None
+    if uncertain_file and unc_df is not None and len(unc_df):
+        uX = unc_df[feature_names].to_numpy(dtype=float)
+        uy = pd.to_numeric(unc_df["label"], errors="coerce").to_numpy(dtype=float)
+        if hasattr(clf, "predict_proba"):
+            probs_u = clf.predict_proba(uX)[:, 1]
+        else:
+            probs_u = clf.predict(uX)
+        preds_u = (probs_u >= 0.5).astype(int)
+        acc_u = accuracy_score(uy, preds_u)
+        rec_u = recall_score(uy, preds_u, zero_division=0)
+        logging.info(
+            "uncertain sample metrics: accuracy=%.3f recall=%.3f n=%d",
+            acc_u,
+            rec_u,
+            len(uy),
+        )
 
     mean_abs_shap = _mean_abs_shap_tree(clf, X_train)
     ranked_feats = sorted(
@@ -2094,6 +2201,10 @@ def _train_tree_model(
         "half_life_days": float(half_life_days),
         "validation_metrics": {"accuracy": acc, "profit": profit},
     }
+    if acc_u is not None and rec_u is not None:
+        vm = model_json["validation_metrics"]
+        vm["uncertain_accuracy"] = float(acc_u)
+        vm["uncertain_recall"] = float(rec_u)
     out_dir.mkdir(parents=True, exist_ok=True)
     _persist_encoder_meta(out_dir, model_json, tick_encoder)
     with open(out_dir / "model.json", "w") as f:
@@ -2364,6 +2475,17 @@ def main() -> None:
         help="sample weight for replay decisions",
     )
     p.add_argument(
+        "--uncertain-file",
+        type=Path,
+        help="CSV with labeled uncertain decisions",
+    )
+    p.add_argument(
+        "--uncertain-weight",
+        type=float,
+        default=2.0,
+        help="sample weight multiplier for uncertain decisions",
+    )
+    p.add_argument(
         "--half-life-days",
         type=float,
         default=0.0,
@@ -2543,6 +2665,8 @@ def main() -> None:
         use_autoencoder=args.autoencoder,
         autoencoder_dim=args.autoencoder_dim,
         autoencoder_epochs=args.autoencoder_epochs,
+        uncertain_file=args.uncertain_file,
+        uncertain_weight=args.uncertain_weight,
     )
 
 
