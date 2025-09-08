@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import IsolationForest
 
 try:  # pragma: no cover - fallback for package import
     from otel_logging import setup_logging
@@ -77,6 +78,32 @@ def _compute_metrics(baseline_file: Path, recent_file: Path) -> dict[str, float]
     }
 
 
+def _isolation_forest_scores(baseline_file: Path, recent_file: Path) -> dict[str, float]:
+    """Return per-feature drift scores via :class:`IsolationForest`.
+
+    The baseline distribution is used to fit an ``IsolationForest`` for each
+    feature.  The fraction of recent samples predicted as outliers becomes the
+    drift score for that feature.  Higher values indicate greater drift.
+    """
+    base = pd.read_csv(baseline_file)
+    recent = pd.read_csv(recent_file)
+    features = [c for c in base.columns if c in recent.columns]
+    scores: dict[str, float] = {}
+    for col in features:
+        try:
+            b = base[col].astype(float).dropna().to_numpy().reshape(-1, 1)
+            r = recent[col].astype(float).dropna().to_numpy().reshape(-1, 1)
+        except Exception:
+            continue
+        if len(b) < 10 or len(r) < 1:
+            continue
+        model = IsolationForest(random_state=0).fit(b)
+        preds = model.predict(r)
+        score = float((preds == -1).mean())
+        scores[col] = score
+    return scores
+
+
 def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) -> None:
     """Record drift metrics and retrain timestamp in ``model.json``."""
     ts = datetime.utcnow().isoformat()
@@ -123,6 +150,11 @@ def main() -> int:
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--files-dir", type=Path, required=True)
     p.add_argument(
+        "--drift-scores",
+        type=Path,
+        help="optional path to write per-feature IsolationForest drift scores",
+    )
+    p.add_argument(
         "--flag-file",
         type=Path,
         help="optional file to touch when drift exceeds threshold",
@@ -131,6 +163,13 @@ def main() -> int:
 
     metrics = _compute_metrics(args.baseline_file, args.recent_file)
     logger.info({"drift_metrics": metrics})
+    if args.drift_scores is not None:
+        scores = _isolation_forest_scores(args.baseline_file, args.recent_file)
+        try:
+            args.drift_scores.write_text(json.dumps(scores, indent=2))
+        except Exception:
+            logger.exception("failed to write drift scores")
+        logger.info({"feature_drift": scores})
     method = max(metrics, key=metrics.get)
     metric_val = metrics[method]
     retrain = metric_val > args.drift_threshold
