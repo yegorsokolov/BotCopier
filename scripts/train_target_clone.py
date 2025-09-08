@@ -182,6 +182,44 @@ def _encode_with_autoencoder(
     return X.dot(weights.T)
 
 
+def _persist_encoder_meta(out_dir: Path, model: dict, enc_path: Path | None) -> None:
+    """Copy contrastive encoder files and record metadata in ``model``.
+
+    Parameters
+    ----------
+    out_dir : Path
+        Directory where ``model.json`` will be written.
+    model : dict
+        Model dictionary to update with encoder metadata.
+    enc_path : Path | None
+        Source ``encoder.pt`` produced by :mod:`pretrain_contrastive`.
+    """
+
+    if not enc_path:
+        return
+    try:
+        enc_src = Path(enc_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        pt_dst = out_dir / "encoder.pt"
+        shutil.copy(enc_src, pt_dst)
+        onnx_src = enc_src.with_suffix(".onnx")
+        meta = {"file": "encoder.pt"}
+        if onnx_src.exists():
+            shutil.copy(onnx_src, out_dir / "encoder.onnx")
+            meta["onnx"] = "encoder.onnx"
+        if _HAS_TORCH:
+            state = torch.load(enc_src, map_location="cpu")
+            meta.update(
+                {
+                    "window": int(state.get("window", 0)),
+                    "dim": int(state.get("dim", 0)),
+                }
+            )
+        model["encoder"] = meta
+    except Exception:  # pragma: no cover - best effort
+        pass
+
+
 def _mean_abs_shap_linear(
     clf: SGDClassifier, scaler: RobustScaler, X: np.ndarray
 ) -> np.ndarray:
@@ -337,6 +375,7 @@ def _extract_features(
     news_sentiment: pd.DataFrame | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
     regime_model: dict | str | Path | None = None,
+    tick_encoder: Path | None = None,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]]:
     """Attach graph embeddings, calendar flags and correlation features."""
 
@@ -355,6 +394,34 @@ def _extract_features(
                 g_dataset = None
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
+
+    if tick_encoder is not None and _HAS_TORCH:
+        tick_cols = [c for c in df.columns if c.startswith("tick_")]
+        if tick_cols:
+            tick_cols = sorted(
+                tick_cols,
+                key=lambda c: int(c.split("_")[1]) if c.split("_")[1].isdigit() else 0,
+            )
+            try:
+                state = torch.load(tick_encoder, map_location="cpu")
+                weight = state.get("state_dict", {}).get("weight")
+                if weight is not None:
+                    weight_t = weight.float().t()
+                    window = weight_t.shape[0]
+                    use_cols = tick_cols[:window]
+                    if len(use_cols) == window:
+                        X = torch.tensor(
+                            df[use_cols].to_numpy(dtype=float), dtype=torch.float32
+                        )
+                        emb = X @ weight_t
+                        for i in range(weight_t.shape[1]):
+                            col = f"enc_{i}"
+                            df[col] = emb[:, i].numpy()
+                        feature_names = feature_names + [
+                            f"enc_{i}" for i in range(weight_t.shape[1])
+                        ]
+            except Exception:
+                pass
 
     if calendar_file is not None and "event_time" in df.columns:
         try:
@@ -667,12 +734,14 @@ def _train_lite_mode(
     per_regime: bool = False,
     filter_noise: bool = False,
     noise_quantile: float = 0.9,
+    smote_threshold: float | None = None,
     use_autoencoder: bool = False,
     autoencoder_dim: int = 8,
     autoencoder_epochs: int = 10,
     device: str = "cpu",
     synthetic_data: Path | pd.DataFrame | None = None,
     synthetic_weight: float = 0.2,
+    tick_encoder: Path | None = None,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -764,6 +833,7 @@ def _train_lite_mode(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         regime_model=regime_model,
+        tick_encoder=tick_encoder,
     )
     if use_volatility_weight and "price_volatility" in df.columns:
         vol = pd.to_numeric(df["price_volatility"], errors="coerce").fillna(0.0)
@@ -1364,6 +1434,8 @@ def _train_lite_mode(
     model["weighted_by_profit"] = bool(use_profit_weight and profit_col is not None)
     if use_autoencoder:
         model["autoencoder"] = "autoencoder.pt"
+    if tick_encoder is not None:
+        _persist_encoder_meta(out_dir, model, tick_encoder)
     if not per_regime:
         model["session_hours"] = {
             "asian": [0, 8],
@@ -1643,6 +1715,7 @@ def _train_transformer(
     synthetic_frac: float = 0.0,
     synthetic_weight: float = 0.2,
     neighbor_corr_windows: Iterable[int] | None = None,
+    tick_encoder: Path | None = None,
     **_,
 ) -> torch.nn.Module:
     """Train a tiny attention encoder on rolling feature windows."""
@@ -1662,6 +1735,7 @@ def _train_transformer(
         calendar_file=calendar_file,
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
+        tick_encoder=tick_encoder,
     )
 
     X_all = df[feature_names].to_numpy(dtype=float)
@@ -1879,6 +1953,7 @@ def _train_transformer(
         "models": {"logreg": distilled},
     }
     out_dir.mkdir(parents=True, exist_ok=True)
+    _persist_encoder_meta(out_dir, model_json, tick_encoder)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model_json, f)
 
@@ -1900,6 +1975,7 @@ def _train_tree_model(
     news_sentiment: pd.DataFrame | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
     use_volatility_weight: bool = False,
+    tick_encoder: Path | None = None,
     **_: object,
 ) -> None:
     """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
@@ -1953,6 +2029,7 @@ def _train_tree_model(
         calendar_file=calendar_file,
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
+        tick_encoder=tick_encoder,
     )
     if use_volatility_weight and "price_volatility" in df.columns:
         vol = pd.to_numeric(df["price_volatility"], errors="coerce").fillna(0.0)
@@ -2018,6 +2095,7 @@ def _train_tree_model(
         "validation_metrics": {"accuracy": acc, "profit": profit},
     }
     out_dir.mkdir(parents=True, exist_ok=True)
+    _persist_encoder_meta(out_dir, model_json, tick_encoder)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model_json, f)
 
@@ -2043,6 +2121,7 @@ def train(
     filter_noise: bool = False,
     noise_quantile: float = 0.9,
     smote_threshold: float | None = None,
+    tick_encoder: Path | None = None,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -2072,6 +2151,7 @@ def train(
             symbol_graph=graph_path,
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
+            tick_encoder=tick_encoder,
             **kwargs,
         )
     elif model_type in {"xgboost", "lgbm", "catboost"}:
@@ -2084,6 +2164,7 @@ def train(
             symbol_graph=graph_path,
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
+            tick_encoder=tick_encoder,
             **kwargs,
         )
     else:
@@ -2102,6 +2183,7 @@ def train(
             per_regime=per_regime,
             filter_noise=filter_noise,
             noise_quantile=noise_quantile,
+            tick_encoder=tick_encoder,
             **kwargs,
         )
 
@@ -2401,6 +2483,11 @@ def main() -> None:
         help="Comma-separated window sizes for neighbor correlation features",
     )
     p.add_argument(
+        "--tick-encoder",
+        type=Path,
+        help="path to pretrained contrastive encoder",
+    )
+    p.add_argument(
         "--autoencoder",
         action="store_true",
         help="enable training and application of feature autoencoder",
@@ -2447,6 +2534,7 @@ def main() -> None:
         news_sentiment=args.news_sentiment,
         ensemble=None if args.ensemble == "none" else args.ensemble,
         neighbor_corr_windows=corr_windows,
+        tick_encoder=args.tick_encoder,
         device=args.device,
         window=args.window,
         epochs=args.epochs,
