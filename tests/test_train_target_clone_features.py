@@ -1,7 +1,12 @@
 import json
 from pathlib import Path
 
-from scripts.train_target_clone import _extract_features, _load_logs, train
+from scripts.train_target_clone import (
+    _encode_with_autoencoder,
+    _extract_features,
+    _load_logs,
+    train,
+)
 
 
 def test_price_indicators_persisted(tmp_path: Path) -> None:
@@ -93,4 +98,33 @@ def test_mutual_info_feature_filter(tmp_path: Path) -> None:
     assert "spread_lag_1" in model_low["feature_names"]
     assert "spread_lag_1" not in model_high["feature_names"]
     assert len(model_high["feature_names"]) < len(model_low["feature_names"])
+
+
+def test_autoencoder_embedding_shapes(tmp_path: Path) -> None:
+    data = tmp_path / "trades_raw.csv"
+    rows = [
+        "label,price,volume,spread,hour,symbol\n",
+        "0,1.0,100,1.5,0,EURUSD\n",
+        "1,1.1,110,1.6,1,EURUSD\n",
+        "0,1.2,120,1.7,2,EURUSD\n",
+        "1,1.3,130,1.8,3,EURUSD\n",
+        "0,1.4,140,1.9,4,EURUSD\n",
+    ]
+    data.write_text("".join(rows))
+    out_dir = tmp_path / "out"
+    train(
+        data,
+        out_dir,
+        use_autoencoder=True,
+        autoencoder_dim=2,
+        autoencoder_epochs=5,
+    )
+    assert (out_dir / "autoencoder.pt").exists()
+    model = json.loads((out_dir / "model.json").read_text())
+    assert model["feature_names"] == ["ae_0", "ae_1"]
+    df, feature_cols, _ = _load_logs(data)
+    df, feature_cols, _, _ = _extract_features(df, feature_cols)
+    X = df[feature_cols].to_numpy(dtype=float)
+    emb = _encode_with_autoencoder(X, out_dir / "autoencoder.pt")
+    assert emb.shape == (len(df), 2)
 

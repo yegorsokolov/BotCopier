@@ -38,6 +38,11 @@ FEATURE_MAP: dict[str, str] = {
     "event_impact": "CalendarImpact()",
     "news_sentiment": "NewsSentiment()",
     "spread_lag_1": "MarketInfo(Symbol(), MODE_SPREAD)",
+    "spread*hour_sin": "MarketInfo(Symbol(), MODE_SPREAD) * MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)",
+    "spread*hour_cos": "MarketInfo(Symbol(), MODE_SPREAD) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)",
+    "spread*spread_lag_1": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
+    "spread*spread_lag_5": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
+    "spread*spread_diff": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
