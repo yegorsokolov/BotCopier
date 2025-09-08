@@ -275,6 +275,19 @@ void QueueMetric(string payload)
     AppendWal(METRIC_WAL, payload);
 }
 
+void LogUncertainDecision(int decision_id, double prob, double thr, string features, string action)
+{
+    int handle = FileOpen("uncertain_decisions.csv", FILE_READ|FILE_WRITE|FILE_CSV, ';');
+    if(handle == INVALID_HANDLE)
+        return;
+    bool write_header = FileSize(handle) == 0;
+    FileSeek(handle, 0, SEEK_END);
+    if(write_header)
+        FileWrite(handle, "decision_id", "action", "probability", "threshold", "features", "label");
+    FileWrite(handle, decision_id, action, prob, thr, features, "");
+    FileClose(handle);
+}
+
 void ReportWalSizes()
 {
     QueueMetric("trade_wal_size=" + IntegerToString(GetWalSize(TRADE_WAL)));
@@ -577,13 +590,14 @@ void OnTick()
     int decision_id = g_decision_id;
     string decision = "hold";
     string reason = "";
+    double thr = SymbolThreshold();
     bool uncertain = (prob >= g_conformal_lower && prob <= g_conformal_upper);
     if(uncertain)
     {
         decision = "skip";
         reason = "uncertain_prob";
     }
-    else if(prob > SymbolThreshold())
+    else if(prob > thr)
     {
         double sl_price = Ask - sl * Point;
         double tp_price = Ask + tp * Point;
@@ -593,7 +607,7 @@ void OnTick()
             decision = "buy";
         }
     }
-    else if((1.0 - prob) > SymbolThreshold())
+    else if((1.0 - prob) > thr)
     {
         double sl_price = Bid + sl * Point;
         double tp_price = Bid - tp * Point;
@@ -611,6 +625,8 @@ void OnTick()
             features += ":";
         features += DoubleToString(GetFeature(i), 8);
     }
+    if(uncertain)
+        LogUncertainDecision(decision_id, prob, thr, features, decision);
     QueueTrade(
         "decision_id=" + IntegerToString(decision_id) +
         ",decision=" + decision +

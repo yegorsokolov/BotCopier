@@ -236,6 +236,7 @@ def test_on_tick_logs_uncertain_reason(tmp_path):
     assert "prob >= g_conformal_lower && prob <= g_conformal_upper" in content
     assert 'decision = "skip"' in content
     assert ",reason=" in content
+    assert "LogUncertainDecision" in content
 
 def test_generation_fails_on_unmapped_feature(tmp_path):
     model = tmp_path / "model.json"

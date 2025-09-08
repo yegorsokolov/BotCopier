@@ -43,6 +43,7 @@ FEATURE_MAP: dict[str, str] = {
     "spread*spread_lag_1": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
     "spread*spread_lag_5": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
     "spread*spread_diff": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
+    "hour_sin*hour_cos": "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)",
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
