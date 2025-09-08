@@ -67,6 +67,14 @@ except Exception:  # pragma: no cover
     shap = None  # type: ignore
     _HAS_SHAP = False
 
+try:  # Optional dependency
+    from cleanlab.rank import get_label_quality_scores
+
+    _HAS_CLEANLAB = True
+except Exception:  # pragma: no cover
+    get_label_quality_scores = None  # type: ignore
+    _HAS_CLEANLAB = False
+
 from .features import _sma, _rsi, _bollinger, _macd_update, _atr
 
 
@@ -513,6 +521,8 @@ def _train_lite_mode(
     use_volatility_weight: bool = False,
     regime_model: dict | str | Path | None = None,
     per_regime: bool = False,
+    filter_noise: bool = False,
+    noise_quantile: float = 0.9,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -634,6 +644,85 @@ def _train_lite_mode(
         )
     feature_names = retained_features
     logging.info("Retained features after MI filtering: %s", feature_names)
+
+    dropped_noisy = 0
+    if filter_noise:
+        X_nf = df[feature_names].to_numpy()
+        y_nf = df["label"].astype(int).to_numpy()
+        sw_nf = df["sample_weight"].to_numpy()
+        n_splits_nf = min(5, len(df) - 1)
+        if n_splits_nf >= 2:
+            tscv_nf = PurgedWalkForward(n_splits=n_splits_nf, gap=purge_gap)
+            probs = np.zeros(len(df))
+            for tr_idx, va_idx in tscv_nf.split(X_nf):
+                X_tr, X_va = X_nf[tr_idx], X_nf[va_idx]
+                y_tr = y_nf[tr_idx]
+                w_tr = sw_nf[tr_idx]
+                X_tr, low, high = _clip_train_features(X_tr)
+                X_va = _clip_apply(X_va, low, high)
+                scaler_nf = RobustScaler().fit(X_tr)
+                clf_nf = SGDClassifier(loss="log_loss")
+                clf_nf.partial_fit(
+                    scaler_nf.transform(X_tr),
+                    y_tr,
+                    classes=np.array([0, 1]),
+                    sample_weight=w_tr,
+                )
+                probs[va_idx] = clf_nf.predict_proba(
+                    scaler_nf.transform(X_va)
+                )[:, 1]
+        else:
+            X_nf_clip, low, high = _clip_train_features(X_nf)
+            scaler_nf = RobustScaler().fit(X_nf_clip)
+            clf_nf = SGDClassifier(loss="log_loss")
+            clf_nf.partial_fit(
+                scaler_nf.transform(X_nf_clip),
+                y_nf,
+                classes=np.array([0, 1]),
+                sample_weight=sw_nf,
+            )
+            probs = clf_nf.predict_proba(
+                scaler_nf.transform(X_nf_clip)
+            )[:, 1]
+        errors = np.abs(probs - y_nf)
+        drop_count = int(max(1, (1 - noise_quantile) * len(errors)))
+        if _HAS_CLEANLAB:
+            try:
+                psx = np.vstack([1 - probs, probs]).T
+                quality = get_label_quality_scores(
+                    y_nf, psx, sample_weight=sw_nf
+                )
+                drop_idx = np.argpartition(quality, drop_count)[:drop_count]
+                keep_mask = np.ones(len(quality), dtype=bool)
+                keep_mask[drop_idx] = False
+                dropped_noisy = int(len(keep_mask) - keep_mask.sum())
+                df = df.loc[keep_mask].reset_index(drop=True)
+                logging.info(
+                    "Dropped %d noisy samples using cleanlab", dropped_noisy
+                )
+            except Exception:
+                drop_idx = np.argpartition(errors, -drop_count)[-drop_count:]
+                keep_mask = np.ones(len(errors), dtype=bool)
+                keep_mask[drop_idx] = False
+                dropped_noisy = int(len(keep_mask) - keep_mask.sum())
+                df = df.loc[keep_mask].reset_index(drop=True)
+                logging.info(
+                    "Dropped %d noisy samples via auxiliary model", dropped_noisy
+                )
+        else:
+            drop_idx = np.argpartition(errors, -drop_count)[-drop_count:]
+            keep_mask = np.ones(len(errors), dtype=bool)
+            keep_mask[drop_idx] = False
+            dropped_noisy = int(len(keep_mask) - keep_mask.sum())
+            df = df.loc[keep_mask].reset_index(drop=True)
+            logging.info(
+                "Dropped %d noisy samples via auxiliary model", dropped_noisy
+            )
+        # re-normalise weights after filtering
+        sw = df["sample_weight"].to_numpy(dtype=float)
+        mean_sw = float(np.mean(sw))
+        if mean_sw > 0:
+            df["sample_weight"] = sw / mean_sw
 
     optuna_info: dict[str, object] | None = None
     if optuna_trials > 0 and _HAS_OPTUNA:
@@ -1031,6 +1120,8 @@ def _train_lite_mode(
         "cv_profit": float(np.mean(cv_profit_all)) if cv_profit_all else 0.0,
         "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
         "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
+        "training_rows": int(len(df)),
+        "dropped_noisy": int(dropped_noisy),
     }
     if not per_regime:
         model["session_hours"] = {
@@ -1678,6 +1769,8 @@ def train(
     neighbor_corr_windows: Iterable[int] | None = None,
     regime_model: Path | dict | None = None,
     per_regime: bool = False,
+    filter_noise: bool = False,
+    noise_quantile: float = 0.9,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -1735,6 +1828,8 @@ def train(
             neighbor_corr_windows=neighbor_corr_windows,
             regime_model=regime_model,
             per_regime=per_regime,
+            filter_noise=filter_noise,
+            noise_quantile=noise_quantile,
             **kwargs,
         )
 
