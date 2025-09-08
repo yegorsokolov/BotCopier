@@ -24,6 +24,7 @@
     "hour_cos",
     "volume"
   ],
+  "meta_weights": [0.0, 0.0, 0.0, 0.0],
   "session_models": {
     "asian": {
       "coefficients": [0.0],
