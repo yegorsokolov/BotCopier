@@ -29,6 +29,13 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 
+try:  # optional torch dependency for encoder
+    import torch
+    _HAS_TORCH = True
+except Exception:  # pragma: no cover
+    torch = None  # type: ignore
+    _HAS_TORCH = False
+
 try:
     from train_target_clone import detect_resources
 except Exception:  # pragma: no cover - script executed within package
@@ -97,7 +104,9 @@ def _load_logs(log_file: Path) -> pd.DataFrame:
     return df
 
 
-def _recompute(df: pd.DataFrame, model: Dict, threshold: float) -> Dict:
+def _recompute(
+    df: pd.DataFrame, model: Dict, threshold: float, model_dir: Path | None = None
+) -> Dict:
     """Recompute probabilities and collect statistics."""
     resources = detect_resources()
     use_complex = not resources.get("lite_mode") and model.get("nn_weights")
@@ -123,6 +132,34 @@ def _recompute(df: pd.DataFrame, model: Dict, threshold: float) -> Dict:
                     )
         except Exception:
             pass
+
+    enc_meta = model.get("encoder")
+    if enc_meta and _HAS_TORCH:
+        enc_file = Path(enc_meta.get("file", "encoder.pt"))
+        if not enc_file.is_absolute() and model_dir is not None:
+            enc_file = model_dir / enc_file
+        tick_cols = [c for c in df.columns if c.startswith("tick_")]
+        if tick_cols and enc_file.exists():
+            tick_cols = sorted(
+                tick_cols,
+                key=lambda c: int(c.split("_")[1]) if c.split("_")[1].isdigit() else 0,
+            )
+            try:
+                state = torch.load(enc_file, map_location="cpu")
+                weight = state.get("state_dict", {}).get("weight")
+                if weight is not None:
+                    weight_t = weight.float().t()
+                    window = weight_t.shape[0]
+                    cols = tick_cols[:window]
+                    if len(cols) == window:
+                        X = torch.tensor(
+                            df[cols].to_numpy(dtype=float), dtype=torch.float32
+                        )
+                        emb = X @ weight_t
+                        for i in range(weight_t.shape[1]):
+                            df[f"enc_{i}"] = emb[:, i].numpy()
+            except Exception:
+                pass
 
     divergences = []
     profits = df.get("profit")
@@ -218,7 +255,7 @@ def main() -> int:
         model.get("threshold", 0.5)
     )
     df = _load_logs(args.log_file)
-    stats = _recompute(df, model, threshold)
+    stats = _recompute(df, model, threshold, args.model.parent)
 
     if stats["divergences"]:
         out_df = pd.DataFrame(stats["divergences"])
