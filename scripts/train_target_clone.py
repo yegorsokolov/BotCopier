@@ -577,6 +577,8 @@ def _train_lite_mode(
     autoencoder_dim: int = 8,
     autoencoder_epochs: int = 10,
     device: str = "cpu",
+    synthetic_data: Path | pd.DataFrame | None = None,
+    synthetic_weight: float = 0.2,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -586,6 +588,32 @@ def _train_lite_mode(
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
     feature_names = list(feature_names)
+
+    df["synthetic"] = 0.0
+    if synthetic_data is not None:
+        try:
+            sdf = (
+                synthetic_data.copy()
+                if isinstance(synthetic_data, pd.DataFrame)
+                else pd.read_csv(synthetic_data)
+            )
+            sdf.columns = [c.lower() for c in sdf.columns]
+            if "label" not in sdf.columns:
+                price_col = next((c for c in ["price", "bid", "ask"] if c in sdf.columns), None)
+                if price_col is not None:
+                    prices = pd.to_numeric(sdf[price_col], errors="coerce").fillna(0.0)
+                    sdf["label"] = (prices.diff().fillna(0.0) > 0).astype(float)
+                else:
+                    sdf["label"] = 0.0
+            sdf["synthetic"] = 1.0
+            for col in df.columns:
+                if col not in sdf.columns:
+                    sdf[col] = 0.0
+            sdf = sdf[df.columns]
+            df = pd.concat([df, sdf], ignore_index=True)
+        except Exception:
+            pass
+
     if replay_file:
         rdf = pd.read_csv(replay_file)
         rdf.columns = [c.lower() for c in rdf.columns]
@@ -627,6 +655,8 @@ def _train_lite_mode(
         weights = weights / mean_w
 
     df["sample_weight"] = weights
+    if "synthetic" in df.columns:
+        df.loc[df["synthetic"] > 0, "sample_weight"] *= synthetic_weight
 
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
@@ -1449,6 +1479,15 @@ def _train_lite_mode(
         model["optuna_best_score"] = optuna_info.get("score", 0.0)
         if optuna_info.get("fold_scores"):
             model["optuna_best_fold_scores"] = optuna_info.get("fold_scores", [])
+    synth_count = int(df["synthetic"].sum()) if "synthetic" in df.columns else 0
+    synthetic_info = {
+        "real": int(len(df) - synth_count),
+        "synthetic": synth_count,
+        "all": int(len(df)),
+        "synthetic_fraction": float(synth_count / len(df)) if len(df) else 0.0,
+        "synthetic_weight": float(synthetic_weight),
+    }
+    model["synthetic_metrics"] = synthetic_info
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
