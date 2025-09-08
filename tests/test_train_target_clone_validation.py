@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from sklearn.datasets import make_classification
@@ -97,6 +98,46 @@ def test_volatility_weighting_changes_coefficients(tmp_path):
 
     out_dir2 = tmp_path / "out2"
     train(data_file, out_dir2, use_volatility_weight=True)
+    model2 = json.loads((out_dir2 / "model.json").read_text())
+    coeffs2 = model2["session_models"]["asian"]["coefficients"]
+
+    assert any(abs(a - b) > 1e-6 for a, b in zip(coeffs1, coeffs2))
+
+
+def test_profit_weighting_changes_coefficients(tmp_path):
+    X, y = make_classification(
+        n_samples=200,
+        n_features=11,
+        n_informative=5,
+        n_redundant=0,
+        random_state=1,
+    )
+    cols = [
+        "spread",
+        "slippage",
+        "equity",
+        "margin_level",
+        "volume",
+        "hour_sin",
+        "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
+    ]
+    df = pd.DataFrame(X, columns=cols)
+    df["label"] = y
+    df["profit"] = np.where(y == 1, 2.0, 0.5)
+    data_file = tmp_path / "trades_raw.csv"
+    df.to_csv(data_file, index=False)
+
+    out_dir1 = tmp_path / "out1"
+    train(data_file, out_dir1)
+    model1 = json.loads((out_dir1 / "model.json").read_text())
+    coeffs1 = model1["session_models"]["asian"]["coefficients"]
+
+    out_dir2 = tmp_path / "out2"
+    train(data_file, out_dir2, use_profit_weight=True)
     model2 = json.loads((out_dir2 / "model.json").read_text())
     coeffs2 = model2["session_models"]["asian"]["coefficients"]
 

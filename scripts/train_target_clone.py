@@ -30,6 +30,7 @@ import psutil
 from sklearn.preprocessing import RobustScaler, PolynomialFeatures
 from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
+from sklearn import set_config
 from sklearn.metrics import accuracy_score, recall_score
 from sklearn.pipeline import make_pipeline
 from sklearn.feature_selection import mutual_info_classif
@@ -569,6 +570,7 @@ def _train_lite_mode(
     mi_threshold: float = 0.0,
     neighbor_corr_windows: Iterable[int] | None = None,
     use_volatility_weight: bool = False,
+    use_profit_weight: bool = False,
     regime_model: dict | str | Path | None = None,
     per_regime: bool = False,
     filter_noise: bool = False,
@@ -618,8 +620,9 @@ def _train_lite_mode(
         rdf = pd.read_csv(replay_file)
         rdf.columns = [c.lower() for c in rdf.columns]
         df = pd.concat([df, rdf], ignore_index=True)
-    if "net_profit" in df.columns:
-        weights = pd.to_numeric(df["net_profit"], errors="coerce").abs().to_numpy()
+    if use_profit_weight and ("profit" in df.columns or "net_profit" in df.columns):
+        profit_col = "profit" if "profit" in df.columns else "net_profit"
+        weights = pd.to_numeric(df[profit_col], errors="coerce").abs().to_numpy()
     elif "lots" in df.columns:
         weights = pd.to_numeric(df["lots"], errors="coerce").abs().to_numpy()
     else:
@@ -1251,6 +1254,16 @@ def _train_lite_mode(
         "training_rows": int(len(df)),
         "dropped_noisy": int(dropped_noisy),
     }
+    w_stats = df["sample_weight"].to_numpy(dtype=float)
+    model["sample_weight_stats"] = {
+        "mean": float(w_stats.mean()) if len(w_stats) else 0.0,
+        "min": float(w_stats.min()) if len(w_stats) else 0.0,
+        "max": float(w_stats.max()) if len(w_stats) else 0.0,
+    }
+    profit_col = "profit" if "profit" in df.columns else (
+        "net_profit" if "net_profit" in df.columns else None
+    )
+    model["weighted_by_profit"] = bool(use_profit_weight and profit_col is not None)
     if use_autoencoder:
         model["autoencoder"] = "autoencoder.pt"
     if not per_regime:
@@ -1449,7 +1462,22 @@ def _train_lite_mode(
                 final_estimator=LogisticRegression(max_iter=1000, random_state=0),
             )
         X_all_ens, _, _ = _clip_train_features(X_all)
-        ensemble_clf.fit(X_all_ens, y_all)
+        set_config(enable_metadata_routing=True)
+        try:
+            ensemble_clf.set_fit_request(sample_weight=True)
+            for _, est in ensemble_clf.estimators:
+                try:
+                    est.set_fit_request(sample_weight=True)
+                except Exception:
+                    pass
+            if ensemble == "stacking":
+                try:
+                    ensemble_clf.final_estimator_.set_fit_request(sample_weight=True)
+                except Exception:
+                    pass
+            ensemble_clf.fit(X_all_ens, y_all, sample_weight=w_all)
+        except Exception:
+            ensemble_clf.fit(X_all_ens, y_all)
         base_acc = {
             name: float(accuracy_score(y_all, est.predict(X_all_ens)))
             for name, est in ensemble_clf.named_estimators_.items()
