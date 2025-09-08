@@ -503,6 +503,7 @@ def _train_lite_mode(
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
     optuna_trials: int = 0,
+    optuna_folds: int = 3,
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
     logreg_c_low: float = 0.01,
@@ -729,6 +730,11 @@ def _train_lite_mode(
         X_all = df[feature_names].to_numpy()
         y_all = df["label"].astype(int).to_numpy()
         sw_all = df["sample_weight"].to_numpy()
+        profit_col = (
+            "profit"
+            if "profit" in df.columns
+            else ("net_profit" if "net_profit" in df.columns else None)
+        )
 
         def objective(trial: "optuna.Trial") -> float:
             model_type = trial.suggest_categorical("model_type", ["sgd", "gboost"])
@@ -746,9 +752,12 @@ def _train_lite_mode(
                 subsample = trial.suggest_float(
                     "subsample", gboost_subsample_low, gboost_subsample_high
                 )
-            tscv = PurgedWalkForward(n_splits=min(3, len(X_all) - 1), gap=purge_gap)
-            scores: list[float] = []
-            for train_idx, val_idx in tscv.split(X_all):
+            outer = PurgedWalkForward(
+                n_splits=min(optuna_folds, len(X_all) - 1), gap=purge_gap
+            )
+            acc_scores: list[float] = []
+            profit_scores: list[float] = []
+            for fold_idx, (train_idx, val_idx) in enumerate(outer.split(X_all)):
                 X_train, X_val = X_all[train_idx], X_all[val_idx]
                 y_train, y_val = y_all[train_idx], y_all[val_idx]
                 w_train = sw_all[train_idx]
@@ -803,14 +812,33 @@ def _train_lite_mode(
                     clf.fit(X_train, y_train, sample_weight=w_train)
                     probs = clf.predict_proba(X_val)[:, 1]
                 preds = (probs >= threshold).astype(int)
-                scores.append(accuracy_score(y_val, preds))
-            return float(np.mean(scores))
+                acc = accuracy_score(y_val, preds)
+                acc_scores.append(acc)
+                if profit_col:
+                    profits_val = df.iloc[val_idx][profit_col].to_numpy()
+                    profit = float((profits_val * preds).mean())
+                else:
+                    profit = 0.0
+                profit_scores.append(profit)
+                trial.report(acc, step=fold_idx)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
+            trial.set_user_attr(
+                "fold_scores",
+                [
+                    {"accuracy": float(a), "profit": float(p)}
+                    for a, p in zip(acc_scores, profit_scores)
+                ],
+            )
+            return float(np.mean(acc_scores)) if acc_scores else 0.0
 
-        study = optuna.create_study(direction="maximize")
+        sampler = optuna.samplers.TPESampler(seed=0)
+        study = optuna.create_study(direction="maximize", sampler=sampler)
         study.optimize(objective, n_trials=optuna_trials)
         optuna_info = {
             "params": study.best_params,
             "score": float(study.best_value),
+            "fold_scores": study.best_trial.user_attrs.get("fold_scores", []),
         }
 
     def _session_from_hour(hour: int) -> str:
@@ -1345,6 +1373,8 @@ def _train_lite_mode(
     if optuna_info:
         model["optuna_best_params"] = optuna_info.get("params", {})
         model["optuna_best_score"] = optuna_info.get("score", 0.0)
+        if optuna_info.get("fold_scores"):
+            model["optuna_best_fold_scores"] = optuna_info.get("fold_scores", [])
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
