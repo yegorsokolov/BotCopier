@@ -30,6 +30,7 @@ import psutil
 from sklearn.preprocessing import RobustScaler, PolynomialFeatures
 from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
+from sklearn.multioutput import MultiOutputClassifier
 from sklearn import set_config
 from sklearn.metrics import accuracy_score, recall_score
 from sklearn.pipeline import make_pipeline
@@ -254,6 +255,21 @@ def _load_logs(
     if dows is not None:
         optional_cols.extend(["dow_sin", "dow_cos"])
     feature_cols = [c for c in optional_cols if c in df.columns]
+
+    # ------------------------------------------------------------------
+    # Create additional forward looking label columns based on future PnL
+    # ------------------------------------------------------------------
+    price_col = next(
+        (c for c in ["net_profit", "profit", "price", "bid", "ask"] if c in df.columns),
+        None,
+    )
+    if price_col is not None:
+        prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
+        for horizon in (5, 20):
+            label_name = f"label_h{horizon}"
+            if label_name not in df.columns:
+                pnl = prices.shift(-horizon) - prices
+                df[label_name] = (pnl > 0).astype(float).fillna(0.0)
 
     # When ``chunk_size`` is provided (or lite_mode explicitly enabled), yield
     # DataFrame chunks instead of a single concatenated frame so callers can
@@ -535,6 +551,47 @@ def _extract_features(
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
+
+
+def _train_multi_output_clf(
+    df: pd.DataFrame,
+    feature_names: list[str],
+    label_cols: list[str],
+    out_dir: Path,
+) -> None:
+    """Fit a multi-output ``SGDClassifier`` and persist model parameters."""
+
+    X_all = df[feature_names].to_numpy(dtype=float)
+    y_all = df[label_cols].astype(int).to_numpy()
+    w_all = df["sample_weight"].to_numpy(dtype=float)
+
+    X_all, c_low, c_high = _clip_train_features(X_all)
+    scaler = RobustScaler().fit(X_all)
+    base = SGDClassifier(loss="log_loss")
+    clf = MultiOutputClassifier(base)
+    clf.fit(scaler.transform(X_all), y_all, sample_weight=w_all)
+
+    coefs = np.vstack([est.coef_[0] for est in clf.estimators_])
+    intercepts = np.array([est.intercept_[0] for est in clf.estimators_])
+
+    params = {
+        "coefficients": coefs.astype(float).tolist(),
+        "intercept": intercepts.astype(float).tolist(),
+        "threshold": 0.5,
+        "thresholds": {name: 0.5 for name in label_cols},
+        "feature_mean": scaler.center_.astype(float).tolist(),
+        "feature_std": scaler.scale_.astype(float).tolist(),
+        "clip_low": c_low.astype(float).tolist(),
+        "clip_high": c_high.astype(float).tolist(),
+    }
+    model = {
+        "models": {"sgd": params},
+        "feature_names": feature_names,
+        "label_columns": label_cols,
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model, f)
 
 
 def _train_lite_mode(
@@ -827,6 +884,12 @@ def _train_lite_mode(
         for i, col in enumerate(ae_cols):
             df[col] = embedded[:, i]
         feature_names = ae_cols
+
+    label_cols = [c for c in df.columns if c.startswith("label")]
+    active_labels = [c for c in label_cols if df[c].nunique() > 1]
+    if len(active_labels) > 1:
+        _train_multi_output_clf(df, feature_names, active_labels, out_dir)
+        return
 
     optuna_info: dict[str, object] | None = None
     if optuna_trials > 0 and _HAS_OPTUNA:
