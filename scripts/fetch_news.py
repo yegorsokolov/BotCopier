@@ -9,7 +9,11 @@ service that provides the latest sentiment to trading algorithms.
 
 Example
 -------
+    # Run once for EURUSD and GBPUSD
     python scripts/fetch_news.py EURUSD GBPUSD
+
+    # Update sentiment every 30 minutes
+    python scripts/fetch_news.py EURUSD GBPUSD --interval 1800
 
 Environment variables
 ---------------------
@@ -23,6 +27,7 @@ import argparse
 import csv
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Tuple
@@ -145,8 +150,18 @@ if __name__ == "__main__":
     parser.add_argument("--db", type=Path, default=Path("news_sentiment.db"))
     parser.add_argument("--csv", type=Path, default=Path("news_sentiment.csv"))
     parser.add_argument("--window", type=int, default=50)
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.0,
+        help="seconds between fetches; 0 to run once",
+    )
     args = parser.parse_args()
     if not os.getenv("NEWSAPI_API_KEY"):
         print("NEWSAPI_API_KEY not set; skipping fetch")
     else:
-        update_store(args.symbols, args.db, args.csv, args.window)
+        while True:
+            update_store(args.symbols, args.db, args.csv, args.window)
+            if args.interval <= 0:
+                break
+            time.sleep(args.interval)

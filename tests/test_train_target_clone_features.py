@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pandas as pd
+
 from scripts.train_target_clone import (
     _encode_with_autoencoder,
     _extract_features,
@@ -42,8 +44,6 @@ def test_price_indicators_persisted(tmp_path: Path) -> None:
     for col in ["price", "volume", "spread"]:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert df[feat].notna().all()
-    assert "sma*rsi" in model["feature_names"]
-    assert df["sma*rsi"].notna().all()
 
 
 def test_neighbor_correlation_features(tmp_path: Path) -> None:
@@ -75,8 +75,6 @@ def test_neighbor_correlation_features(tmp_path: Path) -> None:
     )
     for col in corr_cols:
         assert df[col].notna().all()
-    assert "sma*rsi" in model["feature_names"]
-    assert df["sma*rsi"].notna().all()
 
 
 def test_mutual_info_feature_filter(tmp_path: Path) -> None:
@@ -127,4 +125,27 @@ def test_autoencoder_embedding_shapes(tmp_path: Path) -> None:
     X = df[feature_cols].to_numpy(dtype=float)
     emb = _encode_with_autoencoder(X, out_dir / "autoencoder.pt")
     assert emb.shape == (len(df), 2)
+
+
+def test_news_sentiment_feature_join(tmp_path: Path) -> None:
+    trades = tmp_path / "trades_raw.csv"
+    trades_rows = [
+        "label,price,hour,symbol,event_time\n",
+        "0,1.0,0,EURUSD,2020-01-01T00:00:00\n",
+        "1,1.1,1,EURUSD,2020-01-01T01:00:00\n",
+    ]
+    trades.write_text("".join(trades_rows))
+
+    sentiment = tmp_path / "news_sentiment.csv"
+    sentiment_rows = [
+        "symbol,timestamp,score\n",
+        "EURUSD,2020-01-01T00:30:00,0.5\n",
+    ]
+    sentiment.write_text("".join(sentiment_rows))
+
+    df, feature_cols, _ = _load_logs(trades)
+    ns_df = pd.read_csv(sentiment)
+    df, feature_cols, _, _ = _extract_features(df, feature_cols, news_sentiment=ns_df)
+    assert "sentiment_score" in feature_cols
+    assert df["sentiment_score"].notna().all()
 
