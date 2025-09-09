@@ -95,3 +95,23 @@ def test_learning_rate_decay_and_validation(tmp_path: Path):
     assert trainer.lr_history[0] > trainer.lr_history[1]
     assert acc2 >= acc1 >= acc0
 
+
+def test_calibration_parameters_evolve(tmp_path: Path):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2)
+    batch1 = [
+        {"a": 1.0, "b": 0.0, "y": 1},
+        {"a": 0.0, "b": 1.0, "y": 0},
+    ]
+    trainer.update(batch1)
+    first = json.loads(model_path.read_text()).get("calibration")
+    assert first is not None
+    batch2 = [
+        {"a": 5.0, "b": 0.0, "y": 1},
+        {"a": 0.0, "b": 5.0, "y": 0},
+    ]
+    trainer.update(batch2)
+    second = json.loads(model_path.read_text()).get("calibration")
+    assert second is not None
+    assert first != second
+
