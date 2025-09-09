@@ -105,6 +105,44 @@ def select_model(params: Dict[str, object], features: Dict[str, float]) -> int:
     return int(np.argmax(scores))
 
 
+class RollingMetrics:
+    """Maintain rolling profit and accuracy for base models.
+
+    The metrics are updated using exponential moving averages so that recent
+    performance has greater influence.  Weights for combining model outputs are
+    computed from these metrics using an exponential transformation and
+    normalisation.
+    """
+
+    def __init__(self, n_models: int, alpha: float = 0.1) -> None:
+        self.alpha = float(alpha)
+        self.profit = np.zeros(n_models, dtype=float)
+        self.accuracy = np.zeros(n_models, dtype=float)
+
+    def update(self, model_idx: int, profit: float, correct: bool) -> None:
+        """Update rolling statistics for ``model_idx``."""
+        self.profit[model_idx] = (1 - self.alpha) * self.profit[model_idx] + self.alpha * float(profit)
+        self.accuracy[model_idx] = (
+            (1 - self.alpha) * self.accuracy[model_idx]
+            + self.alpha * (1.0 if correct else 0.0)
+        )
+
+    def weights(self) -> np.ndarray:
+        """Return exponential weights derived from recent performance."""
+        score = self.profit + self.accuracy
+        score -= score.max()
+        exp_score = np.exp(score)
+        if exp_score.sum() == 0:
+            return np.ones_like(exp_score) / len(exp_score)
+        return exp_score / exp_score.sum()
+
+    def combine(self, outputs: Iterable[float]) -> float:
+        """Combine ``outputs`` from base models using current weights."""
+        preds = np.array(list(outputs), dtype=float)
+        w = self.weights()[: len(preds)]
+        return float(np.dot(w, preds))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train meta gating model")
     parser.add_argument("data", help="CSV file with regime features and best_model column")
