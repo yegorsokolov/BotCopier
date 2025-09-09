@@ -8,6 +8,7 @@ from scripts.train_target_clone import (
     _encode_with_autoencoder,
     _extract_features,
     _load_logs,
+    _neutralize_against_market_index,
     train,
 )
 
@@ -154,4 +155,34 @@ def test_news_sentiment_feature_join(tmp_path: Path) -> None:
     df, feature_cols, _, _ = _extract_features(df, feature_cols, news_sentiment=ns_df)
     assert "sentiment_score" in feature_cols
     assert df["sentiment_score"].notna().all()
+
+
+def test_market_index_neutralization(tmp_path: Path) -> None:
+    data = tmp_path / "trades_raw.csv"
+    rows = [
+        "label,price,hour,symbol\n",
+        "0,1.0,0,EURUSD\n",
+        "0,0.9,0,USDCHF\n",
+        "1,1.1,1,EURUSD\n",
+        "1,0.95,1,USDCHF\n",
+        "0,1.2,2,EURUSD\n",
+        "0,1.0,2,USDCHF\n",
+    ]
+    data.write_text("".join(rows))
+    df, feature_cols, _ = _load_logs(data)
+    df, feature_cols, _, _ = _extract_features(df, feature_cols)
+    df_before = df.copy()
+    df_neu, feature_cols_neu = _neutralize_against_market_index(df, feature_cols)
+
+    price = df_before["price"]
+    returns = price.groupby(df_before["symbol"]).pct_change().fillna(0.0)
+    market_idx = returns.groupby(df_before.index).transform("mean")
+    feat = "price_lag_1"
+    assert feat in feature_cols_neu
+    corr_before = float(np.corrcoef(df_before[feat], market_idx)[0, 1])
+    corr_after = float(np.corrcoef(df_neu[feat], market_idx)[0, 1])
+    var_before = float(df_before[feat].var())
+    var_after = float(df_neu[feat].var())
+    assert abs(corr_after) < abs(corr_before) or np.isclose(corr_before, 0)
+    assert var_after <= var_before
 

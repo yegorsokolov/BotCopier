@@ -855,6 +855,45 @@ def _extract_features(
     return df, feature_names, embeddings, gnn_state
 
 
+def _neutralize_against_market_index(
+    df: pd.DataFrame, feature_names: list[str]
+) -> tuple[pd.DataFrame, list[str]]:
+    """Neutralise features by removing linear dependence on market index.
+
+    A market index is approximated as the average return across all symbols.
+    Each feature is regressed against this index and replaced by the residual.
+    The variance reduction from this operation is logged for transparency.
+    """
+
+    if "symbol" not in df.columns:
+        return df, feature_names
+    price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
+    if price_col is None:
+        return df, feature_names
+
+    prices = pd.to_numeric(df[price_col], errors="coerce")
+    returns = prices.groupby(df["symbol"]).pct_change().fillna(0.0)
+    mkt = returns.groupby(df.index).transform("mean")
+    if np.var(mkt) == 0:
+        return df, feature_names
+    X = mkt.to_numpy().reshape(-1, 1)
+
+    for col in feature_names:
+        y = pd.to_numeric(df[col], errors="coerce").fillna(0.0).to_numpy()
+        if np.var(y) == 0:
+            continue
+        lr = LinearRegression().fit(X, y)
+        pred = lr.predict(X)
+        resid = y - pred
+        var_before = float(np.var(y))
+        var_after = float(np.var(resid))
+        logging.info(
+            "Neutralised %s: variance %.6f -> %.6f", col, var_before, var_after
+        )
+        df[col] = resid
+    return df, feature_names
+
+
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
@@ -1113,6 +1152,8 @@ def _train_lite_mode(
         for c in feature_names
         if c not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
     ]
+
+    df, feature_names = _neutralize_against_market_index(df, feature_names)
 
     if extra_prices:
         price_col = next((c for c in ["price", "bid", "ask"] if c in df.columns), None)
