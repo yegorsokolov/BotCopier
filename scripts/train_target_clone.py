@@ -565,6 +565,7 @@ def _extract_features(
     neighbor_corr_windows: Iterable[int] | None = None,
     regime_model: dict | str | Path | None = None,
     tick_encoder: Path | None = None,
+    calendar_features: bool = True,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]]:
     """Attach graph embeddings, calendar flags and correlation features."""
 
@@ -583,6 +584,35 @@ def _extract_features(
                 g_dataset = None
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
+
+    if "event_time" in df.columns:
+        df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce", utc=True)
+        if calendar_features:
+            if "hour" not in df.columns:
+                df["hour"] = df["event_time"].dt.hour.astype(int)
+            if "dayofweek" not in df.columns:
+                df["dayofweek"] = df["event_time"].dt.dayofweek.astype(int)
+            if "month" not in df.columns:
+                df["month"] = df["event_time"].dt.month.astype(int)
+            if "hour_sin" not in df.columns:
+                df["hour_sin"] = np.sin(2 * np.pi * df["hour"] / 24.0)
+                df["hour_cos"] = np.cos(2 * np.pi * df["hour"] / 24.0)
+            if "dow_sin" not in df.columns:
+                df["dow_sin"] = np.sin(2 * np.pi * df["dayofweek"] / 7.0)
+                df["dow_cos"] = np.cos(2 * np.pi * df["dayofweek"] / 7.0)
+            if "month_sin" not in df.columns:
+                df["month_sin"] = np.sin(2 * np.pi * (df["month"] - 1) / 12.0)
+                df["month_cos"] = np.cos(2 * np.pi * (df["month"] - 1) / 12.0)
+            for col in [
+                "hour_sin",
+                "hour_cos",
+                "dow_sin",
+                "dow_cos",
+                "month_sin",
+                "month_cos",
+            ]:
+                if col in df.columns and col not in feature_names:
+                    feature_names.append(col)
 
     if tick_encoder is not None and _HAS_TORCH:
         tick_cols = [c for c in df.columns if c.startswith("tick_")]
@@ -644,7 +674,7 @@ def _extract_features(
     ):
         ns = news_sentiment.copy()
         ns.columns = [c.lower() for c in ns.columns]
-        ns["timestamp"] = pd.to_datetime(ns["timestamp"], errors="coerce")
+        ns["timestamp"] = pd.to_datetime(ns["timestamp"], errors="coerce", utc=True)
         ns.sort_values(["symbol", "timestamp"], inplace=True)
         df_idx = df.index
         df = df.sort_values(["symbol", "event_time"])
@@ -961,6 +991,7 @@ def _train_lite_mode(
     uncertain_weight: float = 2.0,
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
+    calendar_features: bool = True,
     optuna_trials: int = 0,
     optuna_folds: int = 3,
     half_life_days: float = 0.0,
@@ -1016,6 +1047,27 @@ def _train_lite_mode(
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
     feature_names = list(feature_names)
+
+    if not calendar_features:
+        drop_cols = [
+            "hour",
+            "dayofweek",
+            "day_of_week",
+            "month",
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "dom_sin",
+            "dom_cos",
+        ]
+        for col in drop_cols:
+            if col in df.columns:
+                df.drop(columns=[col], inplace=True)
+            if col in feature_names:
+                feature_names.remove(col)
 
     if use_meta_label and "meta_label" in df.columns:
         df["label"] = df["meta_label"]
@@ -1132,6 +1184,7 @@ def _train_lite_mode(
         feature_names,
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
+        calendar_features=calendar_features,
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         regime_model=regime_model,
@@ -1752,6 +1805,12 @@ def _train_lite_mode(
         "hold_period": int(hold_period),
         "use_meta_label": bool(use_meta_label),
     }
+    if calendar_features:
+        model["calendar_encoding"] = {
+            "hour": ["hour_sin", "hour_cos"],
+            "dayofweek": ["dow_sin", "dow_cos"],
+            "month": ["month_sin", "month_cos"],
+        }
     if meta_init is not None:
         model["meta_weights"] = meta_init.astype(float).tolist()
     w_stats = df["sample_weight"].to_numpy(dtype=float)
@@ -2124,6 +2183,7 @@ def _train_transformer(
     uncertain_weight: float = 2.0,
     neighbor_corr_windows: Iterable[int] | None = None,
     tick_encoder: Path | None = None,
+    calendar_features: bool = True,
     drift_scores: dict[str, float] | None = None,
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
@@ -2150,11 +2210,32 @@ def _train_transformer(
         df["label"] = df["meta_label"]
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
+    if not calendar_features:
+        drop_cols = [
+            "hour",
+            "dayofweek",
+            "day_of_week",
+            "month",
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "dom_sin",
+            "dom_cos",
+        ]
+        for col in drop_cols:
+            if col in df.columns:
+                df.drop(columns=[col], inplace=True)
+            if col in feature_names:
+                feature_names.remove(col)
     df, feature_names, _, _ = _extract_features(
         df,
         feature_names,
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
+        calendar_features=calendar_features,
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
@@ -2450,6 +2531,12 @@ def _train_transformer(
         "hold_period": int(hold_period),
         "use_meta_label": bool(use_meta_label),
     }
+    if calendar_features:
+        model_json["calendar_encoding"] = {
+            "hour": ["hour_sin", "hour_cos"],
+            "dayofweek": ["dow_sin", "dow_cos"],
+            "month": ["month_sin", "month_cos"],
+        }
     if bayes_info:
         model_json["bayesian_ensemble"] = bayes_info
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2473,6 +2560,7 @@ def _train_tab_transformer(
     news_sentiment: pd.DataFrame | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
     tick_encoder: Path | None = None,
+    calendar_features: bool = True,
     drift_scores: dict[str, float] | None = None,
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
@@ -2498,11 +2586,32 @@ def _train_tab_transformer(
         df["label"] = df["meta_label"]
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
+    if not calendar_features:
+        drop_cols = [
+            "hour",
+            "dayofweek",
+            "day_of_week",
+            "month",
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "dom_sin",
+            "dom_cos",
+        ]
+        for col in drop_cols:
+            if col in df.columns:
+                df.drop(columns=[col], inplace=True)
+            if col in feature_names:
+                feature_names.remove(col)
     df, feature_names, _, _ = _extract_features(
         df,
         feature_names,
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
+        calendar_features=calendar_features,
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
@@ -2542,6 +2651,12 @@ def _train_tab_transformer(
             "use_meta_label": bool(use_meta_label),
         },
     }
+    if calendar_features:
+        model_json["calendar_encoding"] = {
+            "hour": ["hour_sin", "hour_cos"],
+            "dayofweek": ["dow_sin", "dow_cos"],
+            "month": ["month_sin", "month_cos"],
+        }
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model_json, f)
@@ -2563,6 +2678,7 @@ def _train_tree_model(
     uncertain_weight: float = 2.0,
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
+    calendar_features: bool = True,
     news_sentiment: pd.DataFrame | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
     use_volatility_weight: bool = False,
@@ -2586,6 +2702,26 @@ def _train_tree_model(
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
     feature_names = list(feature_names)
+    if not calendar_features:
+        drop_cols = [
+            "hour",
+            "dayofweek",
+            "day_of_week",
+            "month",
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "dom_sin",
+            "dom_cos",
+        ]
+        for col in drop_cols:
+            if col in df.columns:
+                df.drop(columns=[col], inplace=True)
+            if col in feature_names:
+                feature_names.remove(col)
     if use_meta_label and "meta_label" in df.columns:
         df["label"] = df["meta_label"]
     if replay_file:
@@ -2650,6 +2786,7 @@ def _train_tree_model(
         feature_names,
         symbol_graph=symbol_graph,
         calendar_file=calendar_file,
+        calendar_features=calendar_features,
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
@@ -2744,6 +2881,12 @@ def _train_tree_model(
             "use_meta_label": bool(use_meta_label),
         },
     }
+    if calendar_features:
+        model_json["calendar_encoding"] = {
+            "hour": ["hour_sin", "hour_cos"],
+            "dayofweek": ["dow_sin", "dow_cos"],
+            "month": ["month_sin", "month_cos"],
+        }
     if acc_u is not None and rec_u is not None:
         vm = model_json["validation_metrics"]
         vm["uncertain_accuracy"] = float(acc_u)
@@ -2777,6 +2920,7 @@ def train(
     smote_threshold: float | None = None,
     meta_weights: Sequence[float] | Path | None = None,
     tick_encoder: Path | None = None,
+    calendar_features: bool = True,
     drift_scores: dict[str, float] | None = None,
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
@@ -2816,6 +2960,7 @@ def train(
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
             tick_encoder=tick_encoder,
+            calendar_features=calendar_features,
             drift_scores=drift_scores,
             drift_threshold=drift_threshold,
             drift_weight=drift_weight,
@@ -2836,6 +2981,7 @@ def train(
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
             tick_encoder=tick_encoder,
+            calendar_features=calendar_features,
             drift_scores=drift_scores,
             drift_threshold=drift_threshold,
             drift_weight=drift_weight,
@@ -2855,6 +3001,7 @@ def train(
             model_type=model_type,
             half_life_days=half_life_days,
             calendar_file=calendar_file,
+            calendar_features=calendar_features,
             symbol_graph=graph_path,
             news_sentiment=ns_df,
             neighbor_corr_windows=neighbor_corr_windows,
@@ -2876,6 +3023,7 @@ def train(
             half_life_days=half_life_days,
             prune_threshold=prune_threshold,
             calendar_file=calendar_file,
+            calendar_features=calendar_features,
             symbol_graph=graph_path,
             news_sentiment=ns_df,
             ensemble=ensemble,
@@ -3225,6 +3373,11 @@ def main() -> None:
     )
     p.add_argument("--calendar-file", type=Path, help="CSV file with calendar events")
     p.add_argument(
+        "--disable-calendar-features",
+        action="store_true",
+        help="disable hour/day-of-week/month derived features",
+    )
+    p.add_argument(
         "--symbol-graph",
         type=Path,
         help="JSON file with symbol graph (defaults to data_dir/symbol_graph.json)",
@@ -3317,6 +3470,7 @@ def main() -> None:
         replay_file=args.replay_file,
         replay_weight=args.replay_weight,
         calendar_file=args.calendar_file,
+        calendar_features=not args.disable_calendar_features,
         symbol_graph=args.symbol_graph,
         news_sentiment=args.news_sentiment,
         ensemble=None if args.ensemble == "none" else args.ensemble,
