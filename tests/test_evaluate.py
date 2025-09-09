@@ -71,6 +71,8 @@ def test_evaluate(tmp_path: Path):
     assert stats["expected_return"] == 10
     assert stats["downside_risk"] == 0
     assert stats["risk_reward"] == 10
+    assert stats["var_95"] == 10
+    assert stats["es_95"] == 10
     assert stats["model_value_mean"] == model_info["value_mean"]
     assert stats["model_value_std"] == model_info["value_std"]
     assert stats["model_value_atoms"] == model_info["value_atoms"]

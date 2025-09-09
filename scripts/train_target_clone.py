@@ -48,6 +48,7 @@ from .model_fitting import (
     fit_lgbm_classifier,
     fit_catboost_classifier,
     _compute_decay_weights,
+    fit_quantile_model,
 )
 from .meta_strategy import train_meta_model
 from .meta_adapt import _logistic_grad, _sigmoid
@@ -961,6 +962,7 @@ def _train_lite_mode(
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
     use_meta_label: bool = False,
+    quantile_model: bool = False,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -1721,6 +1723,13 @@ def _train_lite_mode(
         "net_profit" if "net_profit" in df.columns else None
     )
     model["weighted_by_profit"] = bool(use_profit_weight and profit_col is not None)
+    if quantile_model and profit_col is not None:
+        X_q = df[feature_names].to_numpy(dtype=float)
+        y_q = pd.to_numeric(df[profit_col], errors="coerce").fillna(0.0).to_numpy()
+        q_models = fit_quantile_model(X_q, y_q)
+        model["quantile_predictions"] = {
+            str(q): q_models[q].predict(X_q).tolist() for q in q_models
+        }
     if use_autoencoder:
         model["autoencoder"] = "autoencoder.pt"
     if tick_encoder is not None:
@@ -2732,6 +2741,7 @@ def train(
     drift_weight: float = 0.0,
     bayesian_ensembles: int = 0,
     use_meta_label: bool = False,
+    quantile_model: bool = False,
     take_profit_mult: float = 1.0,
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
@@ -2773,6 +2783,7 @@ def train(
             stop_loss_mult=stop_loss_mult,
             hold_period=hold_period,
             use_meta_label=use_meta_label,
+            quantile_model=quantile_model,
             **kwargs,
         )
     elif model_type == "tabtransformer":
@@ -2842,6 +2853,7 @@ def train(
             stop_loss_mult=stop_loss_mult,
             hold_period=hold_period,
             use_meta_label=use_meta_label,
+            quantile_model=quantile_model,
             **kwargs,
         )
 
@@ -3087,6 +3099,11 @@ def main() -> None:
         help="number of models for Bayesian ensemble averaging",
     )
     p.add_argument(
+        "--quantile-model",
+        action="store_true",
+        help="train additional quantile regressors on future PnL",
+    )
+    p.add_argument(
         "--ensemble",
         choices=["none", "voting", "stacking"],
         default="none",
@@ -3274,6 +3291,7 @@ def main() -> None:
         lr=args.lr,
         dropout=args.dropout,
         bayesian_ensembles=args.bayesian_ensembles,
+        quantile_model=args.quantile_model,
         use_autoencoder=args.autoencoder,
         autoencoder_dim=args.autoencoder_dim,
         autoencoder_epochs=args.autoencoder_epochs,

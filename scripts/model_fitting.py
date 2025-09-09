@@ -11,7 +11,8 @@ try:  # pragma: no cover - optional dependency
     from schemas.trades import TradeEvent  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     TradeEvent = None  # type: ignore
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, QuantileRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
@@ -173,6 +174,42 @@ def fit_catboost_classifier(
     if best_iter is not None:
         logging.info("best_iteration=%s", best_iter)
     return clf
+
+
+def fit_quantile_model(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    quantiles: Iterable[float] = (0.05, 0.5, 0.95),
+    model_type: str = "gbrt",
+    **params: float | int,
+) -> dict[float, object]:
+    """Fit regressors for each quantile and return mapping of quantile to model.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Feature matrix.
+    y : np.ndarray
+        Target values.
+    quantiles : Iterable[float], optional
+        Quantiles to fit, by default (0.05, 0.5, 0.95).
+    model_type : str, optional
+        ``"gbrt"`` to use :class:`GradientBoostingRegressor` or ``"linear"`` to use
+        :class:`QuantileRegressor`.
+    **params : float | int
+        Additional keyword arguments passed to the regressor constructor.
+    """
+
+    models: dict[float, object] = {}
+    for q in quantiles:
+        if model_type == "linear":
+            reg = QuantileRegressor(quantile=q, **params)
+        else:
+            reg = GradientBoostingRegressor(loss="quantile", alpha=q, **params)
+        reg.fit(X, y)
+        models[float(q)] = reg
+    return models
 
 
 def _compute_decay_weights(
