@@ -49,6 +49,7 @@ from .model_fitting import (
     fit_catboost_classifier,
     _compute_decay_weights,
     fit_quantile_model,
+    FocalLoss,
 )
 from .meta_strategy import train_meta_model
 from .meta_adapt import _logistic_grad, _sigmoid
@@ -292,6 +293,7 @@ if _HAS_TORCH:
         lr: float = 1e-3,
         dropout: float = 0.0,
         device: str = "cpu",
+        focal_gamma: float | None = None,
     ) -> tuple[dict[str, list], Callable[[np.ndarray], np.ndarray], TCNClassifier]:
         """Train a :class:`TCNClassifier` on ``X`` and ``y``."""
         dev = torch.device(device)
@@ -302,7 +304,10 @@ if _HAS_TORCH:
         )
         dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
-        loss_fn = torch.nn.BCEWithLogitsLoss()
+        if focal_gamma is not None:
+            loss_fn = FocalLoss(gamma=focal_gamma)
+        else:
+            loss_fn = torch.nn.BCEWithLogitsLoss()
         model.train()
         for _ in range(max(1, epochs)):
             for xb, yb in dl:
@@ -2416,6 +2421,7 @@ def _train_transformer(
     lr: float = 1e-3,
     dropout: float = 0.0,
     device: str = "cpu",
+    focal_gamma: float | None = None,
     calendar_file: Path | None = None,
     symbol_graph: dict | str | Path | None = None,
     news_sentiment: pd.DataFrame | None = None,
@@ -2593,7 +2599,10 @@ def _train_transformer(
     dev = torch.device(device)
     model = TinyTransformer(len(feature_names), window, dim, dropout).to(dev)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
+    if focal_gamma is not None:
+        loss_fn = FocalLoss(gamma=focal_gamma, reduction="none")
+    else:
+        loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
     use_cuda = torch.cuda.is_available() and dev.type == "cuda"
     scaler = torch.cuda.amp.GradScaler(enabled=use_cuda)
     best_loss = float("inf")
@@ -2933,6 +2942,7 @@ def _train_tcn(
     lr: float = 1e-3,
     dropout: float = 0.0,
     device: str = "cpu",
+    focal_gamma: float | None = None,
     calendar_file: Path | None = None,
     symbol_graph: dict | str | Path | None = None,
     news_sentiment: pd.DataFrame | None = None,
@@ -3017,7 +3027,13 @@ def _train_tcn(
     y_seq = np.array(ys)
 
     state, predict_fn, model = fit_tcn(
-        X_seq, y_seq, epochs=epochs, lr=lr, dropout=dropout, device=device
+        X_seq,
+        y_seq,
+        epochs=epochs,
+        lr=lr,
+        dropout=dropout,
+        device=device,
+        focal_gamma=focal_gamma,
     )
 
     probs = predict_fn(X_seq)
@@ -3412,6 +3428,7 @@ def train(
             lr=kwargs.get("lr", 1e-3),
             dropout=kwargs.get("dropout", 0.0),
             device=kwargs.get("device", "cpu"),
+            focal_gamma=kwargs.get("focal_gamma"),
         )
     elif model_type in {"xgboost", "lgbm", "catboost"}:
         _train_tree_model(
@@ -3727,6 +3744,12 @@ def main() -> None:
         help="dropout rate for transformer layers",
     )
     p.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=None,
+        help="enable focal loss with specified gamma for transformer/tcn models",
+    )
+    p.add_argument(
         "--bayesian-ensembles",
         type=int,
         default=0,
@@ -3959,6 +3982,7 @@ def main() -> None:
         hold_period=args.hold_period,
         threshold_objective=args.threshold_objective,
         explain=args.explain,
+        focal_gamma=args.focal_gamma,
     )
 
 

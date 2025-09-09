@@ -45,6 +45,40 @@ except Exception:  # pragma: no cover - optional dependency
     pa = None  # type: ignore
     flight = None  # type: ignore
 
+try:  # pragma: no cover - optional dependency
+    import torch
+    import torch.nn.functional as F
+except Exception:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore
+    F = None  # type: ignore
+
+if torch is not None:  # pragma: no cover - simple wrapper
+    class FocalLoss(torch.nn.Module):
+        """Binary Focal Loss for imbalanced classification."""
+
+        def __init__(self, gamma: float = 2.0, reduction: str = "mean") -> None:
+            super().__init__()
+            self.gamma = gamma
+            self.reduction = reduction
+
+        def forward(
+            self, input: "torch.Tensor", target: "torch.Tensor"
+        ) -> "torch.Tensor":
+            bce = F.binary_cross_entropy_with_logits(input, target, reduction="none")
+            pt = torch.exp(-bce)
+            loss = (1 - pt) ** self.gamma * bce
+            if self.reduction == "mean":
+                return loss.mean()
+            if self.reduction == "sum":
+                return loss.sum()
+            return loss
+
+else:  # pragma: no cover - torch optional
+
+    class FocalLoss:  # type: ignore[misc]
+        def __init__(self, *_, **__) -> None:
+            raise ImportError("PyTorch is required for FocalLoss")
+
 SCHEMA_VERSION = 3
 START_EVENT_ID = 0
 
