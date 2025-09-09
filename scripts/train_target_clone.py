@@ -33,6 +33,7 @@ from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegres
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn import set_config
+from sklearn.decomposition import PCA
 from sklearn.metrics import (
     accuracy_score,
     recall_score,
@@ -767,6 +768,7 @@ def _extract_features(
     regime_model: dict | str | Path | None = None,
     tick_encoder: Path | None = None,
     calendar_features: bool = True,
+    pca_components: dict | None = None,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]]:
     """Attach graph embeddings, calendar flags and correlation features."""
 
@@ -1030,6 +1032,66 @@ def _extract_features(
                 df[col] = df[col].fillna(0.0)
             feature_names.extend(base_map.keys())
 
+    # Cross-sectional PCA factor loadings
+    pca_info: dict[str, object] | None = None
+    if price_col is not None and "symbol" in df.columns:
+        idx_col = "event_time" if "event_time" in df.columns else None
+        idx_series = df[idx_col] if idx_col else df.index
+        wide_price = (
+            df.pivot_table(index=idx_series, columns="symbol", values=price_col)
+            .sort_index()
+        )
+        returns = (
+            wide_price.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        )
+        if pca_components is None and returns.shape[1] > 1:
+            n_comp = min(returns.shape[1], 3)
+            if n_comp > 0 and len(returns) > 0:
+                try:
+                    pca = PCA(n_components=n_comp)
+                    scores = pca.fit_transform(returns.to_numpy())
+                    components = pca.components_
+                    symbols = returns.columns.tolist()
+                    pca_info = {
+                        "components": components.astype(float).tolist(),
+                        "symbols": symbols,
+                    }
+                except Exception:
+                    scores = np.zeros((len(returns), 0))
+                    components = np.zeros((0, returns.shape[1]))
+                    symbols = returns.columns.tolist()
+        elif pca_components is not None:
+            components = np.asarray(pca_components.get("components", []), dtype=float)
+            symbols = list(pca_components.get("symbols", []))
+            for sym in symbols:
+                if sym not in returns.columns:
+                    returns[sym] = 0.0
+            returns = returns[symbols]
+            scores = returns.to_numpy() @ components.T
+            pca_info = pca_components
+        if pca_info:
+            factor_cols = [f"factor_{i}" for i in range(components.shape[0])]
+            scores_df = pd.DataFrame(scores, index=returns.index, columns=factor_cols)
+            frames: list[pd.DataFrame] = []
+            for i, sym in enumerate(symbols):
+                sym_df = scores_df.multiply(components[:, i], axis=1)
+                sym_df["symbol"] = sym
+                frames.append(sym_df)
+            factors_long = pd.concat(frames).reset_index().rename(
+                columns={"index": idx_col if idx_col else "index"}
+            )
+            if idx_col:
+                df = df.merge(factors_long, on=[idx_col, "symbol"], how="left")
+            else:
+                df = df.reset_index().merge(
+                    factors_long, on=["index", "symbol"], how="left"
+                ).set_index("index")
+            for col in factor_cols:
+                df[col] = df[col].fillna(0.0)
+                if col not in feature_names:
+                    feature_names.append(col)
+            df.attrs["pca_components"] = pca_info
+
     if regime_model is not None:
         try:
             if not isinstance(regime_model, dict):
@@ -1135,6 +1197,7 @@ def _train_multi_output_clf(
     feature_names: list[str],
     label_cols: list[str],
     out_dir: Path,
+    pca_components: dict | None = None,
 ) -> None:
     """Fit a multi-output ``SGDClassifier`` and persist model parameters."""
 
@@ -1170,6 +1233,8 @@ def _train_multi_output_clf(
         "feature_names": feature_names,
         "label_columns": label_cols,
     }
+    if pca_components:
+        model["pca_components"] = pca_components
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
@@ -1444,6 +1509,7 @@ def _train_lite_mode(
         regime_model=regime_model,
         tick_encoder=tick_encoder,
     )
+    pca_components = df.attrs.get("pca_components")
 
     pseudo_mask = df.get("pseudo", pd.Series(dtype=float)) > 0
     pseudo_orig = int(pseudo_mask.sum())
@@ -1642,7 +1708,9 @@ def _train_lite_mode(
     label_cols = [c for c in df.columns if c.startswith("label")]
     active_labels = [c for c in label_cols if df[c].nunique() > 1]
     if len(active_labels) > 1:
-        _train_multi_output_clf(df, feature_names, active_labels, out_dir)
+        _train_multi_output_clf(
+            df, feature_names, active_labels, out_dir, pca_components=pca_components
+        )
         return
 
     optuna_info: dict[str, object] | None = None
@@ -2131,6 +2199,8 @@ def _train_lite_mode(
         "pseudo_samples": int(pseudo_kept or pseudo_orig),
         "dropped_noisy": int(dropped_noisy),
     }
+    if pca_components:
+        model["pca_components"] = pca_components
     if expected_value:
         model["combine"] = "probability_times_pnl"
     model["meta_barriers"] = {
@@ -2589,6 +2659,10 @@ def _train_transformer(
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
     )
+    pca_components = df.attrs.get("pca_components")
+    pca_components = df.attrs.get("pca_components")
+    pca_components = df.attrs.get("pca_components")
+    pca_components = df.attrs.get("pca_components")
 
     _apply_drift_pruning(
         df, feature_names, drift_scores, drift_threshold, drift_weight
@@ -2883,6 +2957,8 @@ def _train_transformer(
         "distilled": distilled,
         "models": {"logreg": distilled},
     }
+    if pca_components:
+        model_json["pca_components"] = pca_components
     model_json["meta_barriers"] = {
         "take_profit_mult": float(take_profit_mult),
         "stop_loss_mult": float(stop_loss_mult),
@@ -3019,6 +3095,8 @@ def _train_tab_transformer(
             "use_meta_label": bool(use_meta_label),
         },
     }
+    if pca_components:
+        model_json["pca_components"] = pca_components
     if calendar_features:
         model_json["calendar_encoding"] = {
             "hour": ["hour_sin", "hour_cos"],
@@ -3150,6 +3228,8 @@ def _train_tcn(
         "metrics": {"accuracy": acc},
         "window": int(window),
     }
+    if pca_components:
+        model_json["pca_components"] = pca_components
     if calendar_features:
         model_json["calendar_encoding"] = {
             "hour": ["hour_sin", "hour_cos"],
@@ -3380,6 +3460,8 @@ def _train_tree_model(
             "use_meta_label": bool(use_meta_label),
         },
     }
+    if pca_components:
+        model_json["pca_components"] = pca_components
     if calendar_features:
         model_json["calendar_encoding"] = {
             "hour": ["hour_sin", "hour_cos"],

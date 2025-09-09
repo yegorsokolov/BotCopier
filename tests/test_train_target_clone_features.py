@@ -76,12 +76,18 @@ def test_neighbor_correlation_features(tmp_path: Path) -> None:
     corr_cols = ["corr_EURUSD_USDCHF_w3", "corr_USDCHF_EURUSD_w3"]
     for col in corr_cols:
         assert col in model["feature_names"]
+    factor_cols = ["factor_0", "factor_1"]
+    for col in factor_cols:
+        assert col in model["feature_names"]
+    assert "pca_components" in model
     df, feature_cols, _ = _load_logs(data)
     df, _, _, _ = _extract_features(
         df, feature_cols, symbol_graph=sg_path, neighbor_corr_windows=[3]
     )
     for col in corr_cols:
         assert df[col].notna().all()
+    for col in factor_cols:
+        assert np.isfinite(df[col]).all()
 
 
 def test_calendar_fields_utc_and_ranges() -> None:
