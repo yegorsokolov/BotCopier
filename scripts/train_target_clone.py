@@ -131,8 +131,13 @@ def _load_logreg_params(model: dict) -> dict | None:
     try:
         if "session_models" in model:
             params = next(iter(model["session_models"].values()))
-        elif "models" in model and "sgd" in model["models"]:
-            params = model["models"]["sgd"]
+        elif "models" in model:
+            if "sgd" in model["models"]:
+                params = model["models"]["sgd"]
+            elif "logreg" in model["models"]:
+                params = model["models"]["logreg"]
+            else:
+                params = model
         else:
             params = model
         coef = np.asarray(params.get("coefficients", []), dtype=float)
@@ -3269,6 +3274,7 @@ def _train_tree_model(
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
     use_meta_label: bool = False,
+    distill_teacher: bool = False,
     **_: object,
 ) -> None:
     """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
@@ -3447,6 +3453,35 @@ def _train_tree_model(
     )
     logging.info("Ranked feature importances: %s", ranked_feats)
 
+    distilled = None
+    if distill_teacher:
+        if hasattr(clf, "predict_proba"):
+            teacher_probs = clf.predict_proba(X)[:, 1]
+        else:
+            teacher_probs = clf.predict(X)
+        np.save(out_dir / "teacher_probs.npy", teacher_probs)
+        feat_mean = X.mean(axis=0)
+        feat_std = X.std(axis=0)
+        denom = np.where(feat_std == 0, 1, feat_std)
+        norm_X = (X - feat_mean) / denom
+        norm_X, clip_low, clip_high = _clip_train_features(norm_X)
+        eps = 1e-6
+        logits = np.log(
+            teacher_probs.clip(eps, 1 - eps)
+            / (1 - teacher_probs.clip(eps, 1 - eps))
+        )
+        linreg = LinearRegression()
+        linreg.fit(norm_X, logits, sample_weight=w)
+        distilled = {
+            "intercept": float(linreg.intercept_),
+            "coefficients": [float(c) for c in linreg.coef_.tolist()],
+            "feature_mean": feat_mean.tolist(),
+            "feature_std": feat_std.tolist(),
+            "clip_low": clip_low.tolist(),
+            "clip_high": clip_high.tolist(),
+            "threshold": 0.5,
+        }
+
     model_json = {
         "model_type": model_type,
         "trained_at": datetime.utcnow().isoformat(),
@@ -3472,6 +3507,9 @@ def _train_tree_model(
         vm = model_json["validation_metrics"]
         vm["uncertain_accuracy"] = float(acc_u)
         vm["uncertain_recall"] = float(rec_u)
+    if distilled is not None:
+        model_json["distilled"] = distilled
+        model_json.setdefault("models", {})["logreg"] = distilled
     out_dir.mkdir(parents=True, exist_ok=True)
     _persist_encoder_meta(out_dir, model_json, tick_encoder)
     with open(out_dir / "model.json", "w") as f:
@@ -3518,6 +3556,7 @@ def train(
     pseudo_confidence_high: float = 0.9,
     augment_data: float = 0.0,
     expected_value: bool = False,
+    distill_teacher: bool = False,
     explain: bool = False,
     **kwargs,
 ) -> None:
@@ -3632,6 +3671,7 @@ def train(
             stop_loss_mult=stop_loss_mult,
             hold_period=hold_period,
             use_meta_label=use_meta_label,
+            distill_teacher=distill_teacher,
             **kwargs,
         )
     else:
@@ -3889,6 +3929,11 @@ def main() -> None:
         "--expected-value",
         action="store_true",
         help="train PnL regressor and output expected value",
+    )
+    p.add_argument(
+        "--distill-teacher",
+        action="store_true",
+        help="fit lightweight student model on teacher probabilities",
     )
     p.add_argument(
         "--half-life-days",
@@ -4174,6 +4219,7 @@ def main() -> None:
         pseudo_confidence_low=args.pseudo_confidence_low,
         augment_data=args.augment_data,
         expected_value=args.expected_value,
+        distill_teacher=args.distill_teacher,
         use_meta_label=args.use_meta_label,
         take_profit_mult=args.take_profit_mult,
         stop_loss_mult=args.stop_loss_mult,
