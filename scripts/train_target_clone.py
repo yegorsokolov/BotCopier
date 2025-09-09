@@ -247,6 +247,81 @@ if _HAS_TORCH:
         state = {k: v.detach().cpu().numpy().tolist() for k, v in model.state_dict().items()}
         return state, _predict, model
 
+    class TCNClassifier(torch.nn.Module):
+        """Lightweight temporal convolutional network for sequence classification."""
+
+        def __init__(
+            self,
+            in_channels: int,
+            hidden_channels: int = 16,
+            num_layers: int = 3,
+            kernel_size: int = 3,
+            dropout: float = 0.0,
+        ) -> None:
+            super().__init__()
+            layers = []
+            channels = in_channels
+            dilation = 1
+            for _ in range(num_layers):
+                layers.append(
+                    torch.nn.Conv1d(
+                        channels,
+                        hidden_channels,
+                        kernel_size,
+                        dilation=dilation,
+                        padding=(kernel_size - 1) * dilation,
+                    )
+                )
+                layers.append(torch.nn.ReLU())
+                layers.append(torch.nn.Dropout(dropout))
+                channels = hidden_channels
+                dilation *= 2
+            self.net = torch.nn.Sequential(*layers)
+            self.head = torch.nn.Linear(hidden_channels, 1)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - tested via helper
+            x = self.net(x)
+            x = x.mean(dim=-1)  # global average pooling
+            return self.head(x)
+
+    def fit_tcn(
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        epochs: int = 10,
+        lr: float = 1e-3,
+        dropout: float = 0.0,
+        device: str = "cpu",
+    ) -> tuple[dict[str, list], Callable[[np.ndarray], np.ndarray], TCNClassifier]:
+        """Train a :class:`TCNClassifier` on ``X`` and ``y``."""
+        dev = torch.device(device)
+        model = TCNClassifier(X.shape[1], dropout=dropout).to(dev)
+        ds = torch.utils.data.TensorDataset(
+            torch.tensor(X, dtype=torch.float32),
+            torch.tensor(y, dtype=torch.float32).unsqueeze(-1),
+        )
+        dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        model.train()
+        for _ in range(max(1, epochs)):
+            for xb, yb in dl:
+                xb, yb = xb.to(dev), yb.to(dev)
+                opt.zero_grad()
+                loss = loss_fn(model(xb), yb)
+                loss.backward()
+                opt.step()
+        model.eval()
+
+        def _predict(inp: np.ndarray) -> np.ndarray:
+            with torch.no_grad():
+                xt = torch.tensor(inp, dtype=torch.float32, device=dev)
+                logits = model(xt)
+                return torch.sigmoid(logits).cpu().numpy().ravel()
+
+        state = {k: v.detach().cpu().numpy().tolist() for k, v in model.state_dict().items()}
+        return state, _predict, model
+
 else:  # pragma: no cover - torch is optional
 
     class TabTransformer:  # type: ignore
@@ -254,6 +329,12 @@ else:  # pragma: no cover - torch is optional
 
     def fit_tab_transformer(*_args, **_kwargs):  # type: ignore
         raise ImportError("PyTorch is required for TabTransformer")
+
+    class TCNClassifier:  # type: ignore
+        pass
+
+    def fit_tcn(*_args, **_kwargs):  # type: ignore
+        raise ImportError("PyTorch is required for TCNClassifier")
 
 
 def _apply_drift_pruning(
@@ -2843,6 +2924,130 @@ def _train_tab_transformer(
     return model
 
 
+def _train_tcn(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    window: int = 16,
+    epochs: int = 5,
+    lr: float = 1e-3,
+    dropout: float = 0.0,
+    device: str = "cpu",
+    calendar_file: Path | None = None,
+    symbol_graph: dict | str | Path | None = None,
+    news_sentiment: pd.DataFrame | None = None,
+    neighbor_corr_windows: Iterable[int] | None = None,
+    tick_encoder: Path | None = None,
+    calendar_features: bool = True,
+    drift_scores: dict[str, float] | None = None,
+    drift_threshold: float = 0.0,
+    drift_weight: float = 0.0,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
+    use_meta_label: bool = False,
+    **_,
+) -> TCNClassifier:
+    """Train a :class:`TCNClassifier` on rolling feature windows."""
+    if not _HAS_TORCH:  # pragma: no cover - optional dependency
+        raise ImportError("PyTorch is required for tcn model")
+
+    df, feature_names, _ = _load_logs(
+        data_dir,
+        take_profit_mult=take_profit_mult,
+        stop_loss_mult=stop_loss_mult,
+        hold_period=hold_period,
+    )
+    if not isinstance(df, pd.DataFrame):
+        df = pd.concat(list(df), ignore_index=True)
+    if use_meta_label and "meta_label" in df.columns:
+        df["label"] = df["meta_label"]
+    if "label" not in df.columns:
+        raise ValueError("label column missing from data")
+    if not calendar_features:
+        drop_cols = [
+            "hour",
+            "dayofweek",
+            "day_of_week",
+            "month",
+            "hour_sin",
+            "hour_cos",
+            "dow_sin",
+            "dow_cos",
+            "month_sin",
+            "month_cos",
+            "dom_sin",
+            "dom_cos",
+        ]
+        for col in drop_cols:
+            if col in df.columns:
+                df.drop(columns=[col], inplace=True)
+            if col in feature_names:
+                feature_names.remove(col)
+    df, feature_names, _, _ = _extract_features(
+        df,
+        feature_names,
+        symbol_graph=symbol_graph,
+        calendar_file=calendar_file,
+        calendar_features=calendar_features,
+        news_sentiment=news_sentiment,
+        neighbor_corr_windows=neighbor_corr_windows,
+        tick_encoder=tick_encoder,
+    )
+
+    _apply_drift_pruning(
+        df, feature_names, drift_scores, drift_threshold, drift_weight
+    )
+
+    X_all = df[feature_names].to_numpy(dtype=float)
+    y_all = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
+    X_all, c_low, c_high = _clip_train_features(X_all)
+    scaler = RobustScaler().fit(X_all)
+    norm_X = scaler.transform(X_all)
+
+    seqs: list[np.ndarray] = []
+    ys: list[float] = []
+    for i in range(window, len(norm_X)):
+        seqs.append(norm_X[i - window : i].T)
+        ys.append(y_all[i])
+
+    if not seqs:
+        raise ValueError("not enough data for the specified window size")
+    X_seq = np.stack(seqs)
+    y_seq = np.array(ys)
+
+    state, predict_fn, model = fit_tcn(
+        X_seq, y_seq, epochs=epochs, lr=lr, dropout=dropout, device=device
+    )
+
+    probs = predict_fn(X_seq)
+    preds = (probs >= 0.5).astype(int)
+    acc = float(accuracy_score(y_seq, preds)) if len(y_seq) else 0.0
+
+    model_json = {
+        "model_type": "tcn",
+        "feature_names": feature_names,
+        "mean": scaler.center_.tolist(),
+        "std": scaler.scale_.tolist(),
+        "clip_low": c_low.tolist(),
+        "clip_high": c_high.tolist(),
+        "state_dict": state,
+        "metrics": {"accuracy": acc},
+        "window": int(window),
+    }
+    if calendar_features:
+        model_json["calendar_encoding"] = {
+            "hour": ["hour_sin", "hour_cos"],
+            "dayofweek": ["dow_sin", "dow_cos"],
+            "month": ["month_sin", "month_cos"],
+        }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model_json, f)
+
+    return model
+
+
 def _train_tree_model(
     data_dir: Path,
     out_dir: Path,
@@ -3185,6 +3390,29 @@ def train(
             dropout=kwargs.get("dropout", 0.0),
             device=kwargs.get("device", "cpu"),
         )
+    elif model_type == "tcn":
+        return _train_tcn(
+            data_dir,
+            out_dir,
+            calendar_file=calendar_file,
+            symbol_graph=graph_path,
+            news_sentiment=ns_df,
+            neighbor_corr_windows=neighbor_corr_windows,
+            tick_encoder=tick_encoder,
+            calendar_features=calendar_features,
+            drift_scores=drift_scores,
+            drift_threshold=drift_threshold,
+            drift_weight=drift_weight,
+            take_profit_mult=take_profit_mult,
+            stop_loss_mult=stop_loss_mult,
+            hold_period=hold_period,
+            use_meta_label=use_meta_label,
+            window=kwargs.get("window", 16),
+            epochs=kwargs.get("epochs", 5),
+            lr=kwargs.get("lr", 1e-3),
+            dropout=kwargs.get("dropout", 0.0),
+            device=kwargs.get("device", "cpu"),
+        )
     elif model_type in {"xgboost", "lgbm", "catboost"}:
         _train_tree_model(
             data_dir,
@@ -3464,6 +3692,7 @@ def main() -> None:
             "catboost",
             "transformer",
             "tabtransformer",
+            "tcn",
         ],
         default="logreg",
         help="which model architecture to train",
@@ -3477,7 +3706,7 @@ def main() -> None:
         "--window",
         type=int,
         default=16,
-        help="sequence window size for transformer model",
+        help="sequence window size for transformer/tcn model",
     )
     p.add_argument(
         "--epochs",
