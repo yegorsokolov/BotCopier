@@ -1059,6 +1059,7 @@ def _train_lite_mode(
     hold_period: int = 20,
     use_meta_label: bool = False,
     quantile_model: bool = False,
+    threshold_objective: str = "profit",
     pseudo_label_files: Sequence[Path] | None = None,
     pseudo_weight: float = 0.5,
     pseudo_confidence_low: float = 0.1,
@@ -1601,6 +1602,8 @@ def _train_lite_mode(
     session_models: dict[str, dict[str, object]] = {}
     cv_acc_all: list[float] = []
     cv_profit_all: list[float] = []
+    cv_sharpe_all: list[float] = []
+    cv_sortino_all: list[float] = []
     for name, group in group_iter:
         model_name = f"regime_{int(name)}" if group_field == "regime" else name
         if len(group) < 2:
@@ -1627,6 +1630,7 @@ def _train_lite_mode(
         profits_matrix: list[list[float]] = []
         acc_matrix: list[list[float]] = []
         rec_matrix: list[list[float]] = []
+        returns_lists: list[list[float]] = [[] for _ in threshold_grid]
         # Store probabilities and labels from validation folds for conformal bounds
         all_probs: list[np.ndarray] = []
         all_labels: list[np.ndarray] = []
@@ -1676,7 +1680,7 @@ def _train_lite_mode(
             fold_profits: list[float] = []
             fold_accs: list[float] = []
             fold_recs: list[float] = []
-            for t in threshold_grid:
+            for idx_t, t in enumerate(threshold_grid):
                 preds = (probs >= t).astype(int)
                 fold_accs.append(accuracy_score(y_val, preds))
                 fold_recs.append(recall_score(y_val, preds, zero_division=0))
@@ -1684,6 +1688,7 @@ def _train_lite_mode(
                     float((profits_val * preds).mean()) if len(profits_val) else 0.0
                 )
                 fold_profits.append(profit)
+                returns_lists[idx_t].extend((profits_val * preds).tolist())
             profits_matrix.append(fold_profits)
             acc_matrix.append(fold_accs)
             rec_matrix.append(fold_recs)
@@ -1691,7 +1696,32 @@ def _train_lite_mode(
         acc_arr = np.asarray(acc_matrix)
         rec_arr = np.asarray(rec_matrix)
         mean_profit_by_thresh = profits_arr.mean(axis=0)
-        best_idx = int(np.argmax(mean_profit_by_thresh))
+        sharpe_list: list[float] = []
+        sortino_list: list[float] = []
+        for r in returns_lists:
+            arr = np.asarray(r, dtype=float)
+            if arr.size > 1:
+                mean_r = float(arr.mean())
+                std_r = float(arr.std(ddof=1))
+                sharpe = mean_r / std_r if std_r > 0 else 0.0
+                downside = arr[arr < 0]
+                down_std = float(downside.std(ddof=1)) if downside.size > 0 else 0.0
+                sortino = mean_r / down_std if down_std > 0 else 0.0
+            else:
+                sharpe = 0.0
+                sortino = 0.0
+            sharpe_list.append(sharpe)
+            sortino_list.append(sortino)
+        sharpe_arr = np.asarray(sharpe_list)
+        sortino_arr = np.asarray(sortino_list)
+        if threshold_objective == "profit":
+            best_idx = int(np.argmax(mean_profit_by_thresh))
+        elif threshold_objective == "sharpe":
+            best_idx = int(np.argmax(sharpe_arr))
+        elif threshold_objective == "sortino":
+            best_idx = int(np.argmax(sortino_arr))
+        else:
+            raise ValueError(f"Unknown threshold objective {threshold_objective}")
         best_thresh = float(threshold_grid[best_idx])
         fold_metrics = [
             {
@@ -1713,6 +1743,8 @@ def _train_lite_mode(
         mean_profit = (
             float(mean_profit_by_thresh[best_idx]) if len(mean_profit_by_thresh) else 0.0
         )
+        mean_sharpe = float(sharpe_arr[best_idx]) if len(sharpe_arr) else 0.0
+        mean_sortino = float(sortino_arr[best_idx]) if len(sortino_arr) else 0.0
         avg_thresh = best_thresh
         # Compute conformal bounds using validation probabilities
         probs_flat = np.concatenate(all_probs) if all_probs else np.array([])
@@ -1787,6 +1819,8 @@ def _train_lite_mode(
                 "accuracy": mean_acc,
                 "recall": mean_rec,
                 "profit": mean_profit,
+                "sharpe_ratio": mean_sharpe,
+                "sortino_ratio": mean_sortino,
             },
             "cv_metrics": fold_metrics,
             "conformal_lower": conf_lower,
@@ -1818,6 +1852,8 @@ def _train_lite_mode(
         session_models[model_name] = params
         cv_acc_all.append(mean_acc)
         cv_profit_all.append(mean_profit)
+        cv_sharpe_all.append(mean_sharpe)
+        cv_sortino_all.append(mean_sortino)
 
     if not session_models:
         raise ValueError(f"No training data found in {data_dir}")
@@ -1903,6 +1939,8 @@ def _train_lite_mode(
         "mode": mode,
         "cv_accuracy": float(np.mean(cv_acc_all)) if cv_acc_all else 0.0,
         "cv_profit": float(np.mean(cv_profit_all)) if cv_profit_all else 0.0,
+        "cv_sharpe": float(np.mean(cv_sharpe_all)) if cv_sharpe_all else 0.0,
+        "cv_sortino": float(np.mean(cv_sortino_all)) if cv_sortino_all else 0.0,
         "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
         "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
         "training_rows": int(len(df)),
@@ -3040,6 +3078,7 @@ def train(
     take_profit_mult: float = 1.0,
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
+    threshold_objective: str = "profit",
     pseudo_label_files: Sequence[Path] | None = None,
     pseudo_weight: float = 0.5,
     pseudo_confidence_low: float = 0.1,
@@ -3160,6 +3199,7 @@ def train(
             stop_loss_mult=stop_loss_mult,
             hold_period=hold_period,
             use_meta_label=use_meta_label,
+            threshold_objective=threshold_objective,
             quantile_model=quantile_model,
             **kwargs,
         )
@@ -3580,6 +3620,13 @@ def main() -> None:
         default=20,
         help="maximum holding period for meta labeling",
     )
+    p.add_argument(
+        "--threshold-objective",
+        type=str,
+        default="profit",
+        choices=["profit", "sharpe", "sortino"],
+        help="metric used to optimise decision threshold",
+    )
     args = p.parse_args()
     corr_windows = (
         [int(w) for w in args.neighbor_corr_windows.split(",") if w]
@@ -3642,6 +3689,7 @@ def main() -> None:
         take_profit_mult=args.take_profit_mult,
         stop_loss_mult=args.stop_loss_mult,
         hold_period=args.hold_period,
+        threshold_objective=args.threshold_objective,
     )
 
 
