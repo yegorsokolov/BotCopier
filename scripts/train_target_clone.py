@@ -529,6 +529,48 @@ def _mean_abs_shap_tree(clf, X: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def _augment_dataframe(df: pd.DataFrame, ratio: float) -> pd.DataFrame:
+    """Return DataFrame with additional augmented rows.
+
+    Augmentation combines simple techniques:
+
+    * **Mixup** of randomly selected pairs of rows.
+    * **Jittering** of numeric values with small Gaussian noise.
+    * **Timestamp warping** within \±60 seconds.
+    """
+    if ratio <= 0 or df.empty:
+        return df
+
+    n = len(df)
+    n_aug = max(1, int(n * ratio))
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    stats = df[num_cols].std().replace(0, 1).to_numpy()
+
+    aug_rows: list[pd.Series] = []
+    for _ in range(n_aug):
+        i1, i2 = np.random.randint(0, n, size=2)
+        lam = np.random.beta(0.4, 0.4)
+        row1 = df.iloc[i1]
+        row2 = df.iloc[i2]
+        new_row = row1.copy()
+        if num_cols:
+            mix = lam * row1[num_cols].to_numpy(dtype=float) + (1 - lam) * row2[
+                num_cols
+            ].to_numpy(dtype=float)
+            jitter = np.random.normal(0.0, 0.01, size=len(num_cols)) * stats
+            new_row[num_cols] = mix + jitter
+        if "event_time" in df.columns and pd.notnull(new_row.get("event_time")):
+            delta = np.random.uniform(-60, 60)  # seconds
+            new_row["event_time"] = new_row["event_time"] + pd.to_timedelta(
+                delta, unit="s"
+            )
+        aug_rows.append(new_row)
+
+    aug_df = pd.DataFrame(aug_rows)
+    logging.info("Augmenting data with %d synthetic rows (ratio %.3f)", n_aug, n_aug / n)
+    return pd.concat([df, aug_df], ignore_index=True)
+
+
 def _load_logs(
     data_dir: Path,
     *,
@@ -539,6 +581,7 @@ def _load_logs(
     take_profit_mult: float = 1.0,
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
+    augment_ratio: float = 0.0,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], list[str]]:
     """Load trade logs from ``trades_raw.csv``.
 
@@ -658,6 +701,9 @@ def _load_logs(
             if label_name not in df.columns:
                 pnl = prices.shift(-horizon) - prices
                 df[label_name] = (pnl > 0).astype(float).fillna(0.0)
+
+    if augment_ratio > 0:
+        df = _augment_dataframe(df, augment_ratio)
 
     # When ``chunk_size`` is provided (or lite_mode explicitly enabled), yield
     # DataFrame chunks instead of a single concatenated frame so callers can
@@ -1164,6 +1210,7 @@ def _train_lite_mode(
     pseudo_weight: float = 0.5,
     pseudo_confidence_low: float = 0.1,
     pseudo_confidence_high: float = 0.9,
+    augment_data: float = 0.0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -1174,6 +1221,7 @@ def _train_lite_mode(
         take_profit_mult=take_profit_mult,
         stop_loss_mult=stop_loss_mult,
         hold_period=hold_period,
+        augment_ratio=augment_data,
     )
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
@@ -3335,6 +3383,7 @@ def train(
     pseudo_weight: float = 0.5,
     pseudo_confidence_low: float = 0.1,
     pseudo_confidence_high: float = 0.9,
+    augment_data: float = 0.0,
     explain: bool = False,
     **kwargs,
 ) -> None:
@@ -3478,6 +3527,7 @@ def train(
             stop_loss_mult=stop_loss_mult,
             hold_period=hold_period,
             use_meta_label=use_meta_label,
+            augment_data=augment_data,
             threshold_objective=threshold_objective,
             quantile_model=quantile_model,
             **kwargs,
@@ -3693,6 +3743,12 @@ def main() -> None:
         type=float,
         default=0.1,
         help="maximum probability to assign negative pseudo-label",
+    )
+    p.add_argument(
+        "--augment-data",
+        type=float,
+        default=0.0,
+        help="ratio of synthetic data augmentation to apply",
     )
     p.add_argument(
         "--half-life-days",
@@ -3976,6 +4032,7 @@ def main() -> None:
         pseudo_weight=args.pseudo_weight,
         pseudo_confidence_high=args.pseudo_confidence_high,
         pseudo_confidence_low=args.pseudo_confidence_low,
+        augment_data=args.augment_data,
         use_meta_label=args.use_meta_label,
         take_profit_mult=args.take_profit_mult,
         stop_loss_mult=args.stop_loss_mult,

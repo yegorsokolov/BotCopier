@@ -188,6 +188,31 @@ def test_news_sentiment_feature_join(tmp_path: Path) -> None:
     assert df["sentiment_score"].notna().all()
 
 
+def test_augmentation_adds_rows_and_limits_ranges(tmp_path: Path) -> None:
+    data = tmp_path / "trades_raw.csv"
+    rows = [
+        "label,price,volume,spread,event_time,symbol\n",
+        "0,1.0,100,1.5,2020-01-01T00:00:00,EURUSD\n",
+        "1,1.1,110,1.6,2020-01-01T00:01:00,EURUSD\n",
+        "0,1.2,120,1.7,2020-01-01T00:02:00,EURUSD\n",
+        "1,1.3,130,1.8,2020-01-01T00:03:00,EURUSD\n",
+        "0,1.4,140,1.9,2020-01-01T00:04:00,EURUSD\n",
+    ]
+    data.write_text("".join(rows))
+    base_df, _, _ = _load_logs(data)
+    aug_df, _, _ = _load_logs(data, augment_ratio=0.5)
+    assert len(aug_df) > len(base_df)
+    min_time = base_df["event_time"].min()
+    max_time = base_df["event_time"].max()
+    assert pd.to_datetime(aug_df["event_time"]).between(
+        min_time - pd.Timedelta("1min"), max_time + pd.Timedelta("1min")
+    ).all()
+    for col in ["price", "volume", "spread"]:
+        lo, hi = base_df[col].min(), base_df[col].max()
+        rng = hi - lo
+        assert aug_df[col].between(lo - 0.1 * rng, hi + 0.1 * rng).all()
+
+
 def test_market_index_neutralization(tmp_path: Path) -> None:
     data = tmp_path / "trades_raw.csv"
     rows = [
