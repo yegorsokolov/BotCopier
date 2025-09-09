@@ -84,6 +84,37 @@ def test_neighbor_correlation_features(tmp_path: Path) -> None:
         assert df[col].notna().all()
 
 
+def test_calendar_fields_utc_and_ranges() -> None:
+    df = pd.DataFrame(
+        {
+            "label": [1, 0],
+            "price": [1.0, 1.1],
+            "event_time": [
+                "2024-01-01T01:00:00+02:00",
+                "2024-06-01T13:30:00-05:00",
+            ],
+        }
+    )
+    feature_cols = ["price"]
+    df, feature_cols, _, _ = _extract_features(df, feature_cols)
+    assert df["hour"].tolist() == [23, 18]
+    assert df["dayofweek"].tolist() == [6, 5]
+    assert df["month"].tolist() == [12, 6]
+    assert df["hour"].between(0, 23).all()
+    assert df["dayofweek"].between(0, 6).all()
+    assert df["month"].between(1, 12).all()
+    for col in [
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        "month_sin",
+        "month_cos",
+    ]:
+        assert col in feature_cols
+        assert ((df[col] >= -1) & (df[col] <= 1)).all()
+
+
 def test_mutual_info_feature_filter(tmp_path: Path) -> None:
     data = tmp_path / "trades_raw.csv"
     rows = [
