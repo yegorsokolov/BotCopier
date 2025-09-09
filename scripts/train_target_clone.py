@@ -31,7 +31,7 @@ import pickle
 import numpy as np
 import pandas as pd
 import psutil
-from sklearn.preprocessing import RobustScaler, PolynomialFeatures
+from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegression
 from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
 from sklearn.multioutput import MultiOutputClassifier
@@ -122,6 +122,65 @@ except Exception:  # pragma: no cover
 _CLIP_BOUNDS = (0.01, 0.99)
 
 
+# Default decay rate for adaptive feature scaling.  This value can be
+# overridden at runtime via the ``--scaler-decay`` command line option.
+SCALER_DECAY: float = 0.01
+
+
+class AdaptiveScaler:
+    """Maintain running mean and variance with exponential moving average."""
+
+    def __init__(self, decay: float | None = None, eps: float = 1e-8):
+        self.decay = SCALER_DECAY if decay is None else float(decay)
+        self.eps = eps
+        self.center_: np.ndarray | None = None
+        self.var_: np.ndarray | None = None
+        self.logger = logging.getLogger(__name__)
+
+    def fit(self, X: np.ndarray) -> "AdaptiveScaler":
+        """Initialise statistics from data."""
+        self.center_ = np.mean(X, axis=0)
+        self.var_ = np.var(X, axis=0)
+        # Log initial statistics for traceability
+        self.logger.info(
+            "AdaptiveScaler init mean=%s std=%s",
+            np.round(self.center_[:3], 4),
+            np.round(self.scale_[:3], 4),
+        )
+        return self
+
+    def update(self, X: np.ndarray) -> None:
+        """Update running statistics with EMA."""
+        batch_mean = np.mean(X, axis=0)
+        batch_var = np.var(X, axis=0)
+        if self.center_ is None or self.var_ is None:
+            self.center_ = batch_mean
+            self.var_ = batch_var
+        else:
+            d = self.decay
+            self.center_ = (1 - d) * self.center_ + d * batch_mean
+            self.var_ = (1 - d) * self.var_ + d * batch_var
+        self.logger.info(
+            "AdaptiveScaler updated mean=%s std=%s",
+            np.round(self.center_[:3], 4),
+            np.round(self.scale_[:3], 4),
+        )
+
+    @property
+    def scale_(self) -> np.ndarray:
+        return np.sqrt(self.var_ + self.eps) if self.var_ is not None else np.array([])
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """Scale data using the running statistics and update them."""
+        self.update(X)
+        return (X - self.center_) / self.scale_
+
+
+# Backwards compatibility – replace usage of sklearn's RobustScaler with the
+# adaptive variant defined above throughout this module.
+RobustScaler = AdaptiveScaler
+
+
 def _clip_train_features(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Clip extreme feature values and return clipped array with bounds."""
     low = np.quantile(X, _CLIP_BOUNDS[0], axis=0)
@@ -192,6 +251,9 @@ def _load_logreg_params(model: dict) -> dict | None:
             "feature_std": np.asarray(params.get("feature_std", np.ones(n)), dtype=float),
             "clip_low": np.asarray(params.get("clip_low", np.full(n, -np.inf)), dtype=float),
             "clip_high": np.asarray(params.get("clip_high", np.full(n, np.inf)), dtype=float),
+            "scaler_decay": float(
+                params.get("scaler_decay", model.get("scaler_decay", SCALER_DECAY))
+            ),
             "pnl_model": pnl_model,
             "pnl_logvar_model": pnl_var_model,
             "imputer": imputer,
@@ -1333,6 +1395,7 @@ def _train_multi_output_clf(
         "thresholds": {name: 0.5 for name in label_cols},
         "feature_mean": scaler.center_.astype(float).tolist(),
         "feature_std": scaler.scale_.astype(float).tolist(),
+        "scaler_decay": float(scaler.decay),
         "clip_low": c_low.astype(float).tolist(),
         "clip_high": c_high.astype(float).tolist(),
     }
@@ -2241,6 +2304,7 @@ def _train_lite_mode(
             "threshold": avg_thresh,
             "feature_mean": scaler_full.center_.astype(float).tolist(),
             "feature_std": scaler_full.scale_.astype(float).tolist(),
+            "scaler_decay": float(scaler_full.decay),
             "metrics": {
                 "accuracy": mean_acc,
                 "recall": mean_rec,
@@ -2521,6 +2585,7 @@ def _train_lite_mode(
             "threshold": 0.5,
             "feature_mean": scaler.center_.astype(float).tolist(),
             "feature_std": scaler.scale_.astype(float).tolist(),
+            "scaler_decay": float(scaler.decay),
             "conformal_lower": 0.0,
             "conformal_upper": 1.0,
         }
@@ -2640,8 +2705,9 @@ def _train_lite_mode(
     router = {
         "intercept": router_clf.intercept_.astype(float).tolist(),
         "coefficients": router_clf.coef_.astype(float).tolist(),
-       "feature_mean": scaler_router.center_.astype(float).tolist(),
+        "feature_mean": scaler_router.center_.astype(float).tolist(),
         "feature_std": scaler_router.scale_.astype(float).tolist(),
+        "scaler_decay": float(scaler_router.decay),
     }
     model["ensemble_router"] = router
 
@@ -3137,6 +3203,7 @@ def _train_transformer(
         "coefficients": [float(c) for c in linreg.coef_.tolist()],
         "feature_mean": feat_mean.tolist(),
         "feature_std": feat_std.tolist(),
+        "scaler_decay": float(SCALER_DECAY),
         "threshold": 0.5,
     }
 
@@ -3148,6 +3215,7 @@ def _train_transformer(
         "feature_names": feature_names,
         "feature_mean": feat_mean.tolist(),
         "feature_std": feat_std.tolist(),
+        "scaler_decay": float(SCALER_DECAY),
         "weights": weights,
         "dropout": float(dropout),
         "teacher_metrics": teacher_metrics,
@@ -3285,6 +3353,7 @@ def _train_tab_transformer(
         "feature_names": feature_names,
         "mean": scaler.center_.tolist(),
         "std": scaler.scale_.tolist(),
+        "scaler_decay": float(scaler.decay),
         "clip_low": c_low.tolist(),
         "clip_high": c_high.tolist(),
         "state_dict": state,
@@ -3426,6 +3495,7 @@ def _train_tcn(
         "feature_names": feature_names,
         "mean": scaler.center_.tolist(),
         "std": scaler.scale_.tolist(),
+        "scaler_decay": float(scaler.decay),
         "clip_low": c_low.tolist(),
         "clip_high": c_high.tolist(),
         "state_dict": state,
@@ -3681,6 +3751,7 @@ def _train_tree_model(
             "feature_std": feat_std.tolist(),
             "clip_low": clip_low.tolist(),
             "clip_high": clip_high.tolist(),
+            "scaler_decay": float(SCALER_DECAY),
             "threshold": 0.5,
         }
 
@@ -4139,6 +4210,12 @@ def main() -> None:
         help="ratio of synthetic data augmentation to apply",
     )
     p.add_argument(
+        "--scaler-decay",
+        type=float,
+        default=0.01,
+        help="decay rate for adaptive feature scaler",
+    )
+    p.add_argument(
         "--expected-value",
         action="store_true",
         help="train PnL regressor and output expected value",
@@ -4389,6 +4466,8 @@ def main() -> None:
         help="metric used to optimise decision threshold",
     )
     args = p.parse_args()
+    global SCALER_DECAY
+    SCALER_DECAY = args.scaler_decay
     corr_windows = (
         [int(w) for w in args.neighbor_corr_windows.split(",") if w]
         if args.neighbor_corr_windows
