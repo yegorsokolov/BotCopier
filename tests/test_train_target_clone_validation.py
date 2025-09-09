@@ -68,6 +68,29 @@ def test_threshold_selected_by_profit(tmp_path: Path) -> None:
     params = model["session_models"]["asian"]
     assert params["threshold"] == pytest.approx(0.0)
     assert params["metrics"]["profit"] == pytest.approx(1.5)
+    assert "sharpe_ratio" in params["metrics"]
+    assert "sortino_ratio" in params["metrics"]
+
+
+def test_threshold_optimisation_changes_value(tmp_path: Path) -> None:
+    rows = [
+        "label,profit,hour,spread\n",
+        "1,2,1,1.0\n",
+        "0,-1,2,0.0\n",
+        "1,2,3,1.1\n",
+        "0,-0.5,4,0.1\n",
+        "1,2,5,1.2\n",
+        "0,-0.5,6,0.2\n",
+    ]
+    data = tmp_path / "trades_raw.csv"
+    data.write_text("".join(rows))
+    out_s = tmp_path / "out_s"
+    train(data, out_s, threshold_objective="sharpe")
+    thr_s = json.loads((out_s / "model.json").read_text())["session_models"]["asian"]["threshold"]
+    out_so = tmp_path / "out_so"
+    train(data, out_so, threshold_objective="sortino")
+    thr_so = json.loads((out_so / "model.json").read_text())["session_models"]["asian"]["threshold"]
+    assert thr_s != thr_so
 
 
 def test_volatility_weighting_changes_coefficients(tmp_path):

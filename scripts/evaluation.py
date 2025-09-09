@@ -132,6 +132,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
     gross_profit = 0.0
     gross_loss = 0.0
     profits: List[float] = []
+    trade_times: List[datetime] = []
     used = set()
     predictions_per_model: Dict[int, int] = {}
     matches_per_model: Dict[int, int] = {}
@@ -184,6 +185,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
             trade = actual_trades[match_idx]
             p = trade["profit"]
             profits.append(p)
+            trade_times.append(trade["close_time"])
             if p >= 0:
                 gross_profit += p
             else:
@@ -233,6 +235,18 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
             downside_dev = math.sqrt(sum((p) ** 2 for p in downside) / len(downside))
         if downside_dev > 0:
             sortino = mean / downside_dev
+    annual_sharpe = 0.0
+    annual_sortino = 0.0
+    if trade_times and len(profits) > 1:
+        start = min(trade_times)
+        end = max(trade_times)
+        years = (end - start).total_seconds() / (365 * 24 * 3600)
+        if years <= 0:
+            years = 1.0
+        trades_per_year = len(profits) / years
+        factor = math.sqrt(trades_per_year)
+        annual_sharpe = sharpe * factor
+        annual_sortino = sortino * factor
     roc_auc = None
     pr_auc = None
     brier = None
@@ -269,6 +283,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
         "es_95": es_95,
         "sharpe_ratio": sharpe,
         "sortino_ratio": sortino,
+        "sharpe_ratio_annualised": annual_sharpe,
+        "sortino_ratio_annualised": annual_sortino,
         "risk_reward": risk_reward,
         "conformal_coverage": conformal,
         "predictions_per_model": predictions_per_model,
