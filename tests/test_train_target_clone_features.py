@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from scripts.train_target_clone import (
@@ -36,6 +37,9 @@ def test_price_indicators_persisted(tmp_path: Path) -> None:
         "atr",
     ]:
         assert name in model["feature_names"]
+    fft_cols = ["fft_0_mag", "fft_0_phase", "fft_1_mag", "fft_1_phase"]
+    for col in fft_cols:
+        assert col in model["feature_names"]
     for col in ["price", "volume", "spread"]:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert feat in model["feature_names"]
@@ -44,6 +48,8 @@ def test_price_indicators_persisted(tmp_path: Path) -> None:
     for col in ["price", "volume", "spread"]:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert df[feat].notna().all()
+    for col in fft_cols:
+        assert np.isfinite(df[col]).all()
 
 
 def test_neighbor_correlation_features(tmp_path: Path) -> None:
