@@ -1416,6 +1416,8 @@ def _train_lite_mode(
     pseudo_confidence_high: float = 0.9,
     expected_value: bool = False,
     rank_features: bool = False,
+    pareto_weight: float | None = None,
+    pareto_metric: str = "accuracy",
     augment_data: float = 0.0,
     **_: object,
 ) -> None:
@@ -1849,7 +1851,7 @@ def _train_lite_mode(
             else ("net_profit" if "net_profit" in df.columns else None)
         )
 
-        def objective(trial: "optuna.Trial") -> float:
+        def objective(trial: "optuna.Trial") -> tuple[float, float]:
             model_type = trial.suggest_categorical("model_type", ["sgd", "gboost"])
             threshold = trial.suggest_float("threshold", 0.1, 0.9)
             if model_type == "sgd":
@@ -1943,15 +1945,51 @@ def _train_lite_mode(
                     for a, p in zip(acc_scores, profit_scores)
                 ],
             )
-            return float(np.mean(acc_scores)) if acc_scores else 0.0
+            mean_acc = float(np.mean(acc_scores)) if acc_scores else 0.0
+            mean_profit = float(np.mean(profit_scores)) if profit_scores else 0.0
+            return mean_acc, mean_profit
 
         sampler = optuna.samplers.TPESampler(seed=0)
-        study = optuna.create_study(direction="maximize", sampler=sampler)
+        study = optuna.create_study(
+            directions=["maximize", "maximize"], sampler=sampler
+        )
         study.optimize(objective, n_trials=optuna_trials)
+        for t in study.best_trials:
+            logging.info(
+                "Pareto trial %d: accuracy %.3f profit %.3f params %s",
+                t.number,
+                t.values[0],
+                t.values[1],
+                t.params,
+            )
+        pareto_trials = [
+            {
+                "number": t.number,
+                "params": t.params,
+                "scores": {
+                    "accuracy": float(t.values[0]),
+                    "profit": float(t.values[1]),
+                },
+                "fold_scores": t.user_attrs.get("fold_scores", []),
+            }
+            for t in study.best_trials
+        ]
+        if pareto_weight is not None:
+            def _score(trial: "optuna.trial.FrozenTrial") -> float:
+                return pareto_weight * trial.values[0] + (1 - pareto_weight) * trial.values[1]
+
+            best_trial = max(study.best_trials, key=_score)
+        else:
+            idx = 0 if pareto_metric == "accuracy" else 1
+            best_trial = max(study.best_trials, key=lambda t: t.values[idx])
         optuna_info = {
-            "params": study.best_params,
-            "score": float(study.best_value),
-            "fold_scores": study.best_trial.user_attrs.get("fold_scores", []),
+            "params": best_trial.params,
+            "scores": {
+                "accuracy": float(best_trial.values[0]),
+                "profit": float(best_trial.values[1]),
+            },
+            "fold_scores": best_trial.user_attrs.get("fold_scores", []),
+            "pareto_trials": pareto_trials,
         }
 
     def _session_from_hour(hour: int) -> str:
@@ -2711,9 +2749,14 @@ def _train_lite_mode(
         model["gnn_state"] = gnn_state
     if optuna_info:
         model["optuna_best_params"] = optuna_info.get("params", {})
-        model["optuna_best_score"] = optuna_info.get("score", 0.0)
+        if optuna_info.get("scores"):
+            model["optuna_best_scores"] = optuna_info.get("scores", {})
+        else:
+            model["optuna_best_score"] = optuna_info.get("score", 0.0)
         if optuna_info.get("fold_scores"):
             model["optuna_best_fold_scores"] = optuna_info.get("fold_scores", [])
+        if optuna_info.get("pareto_trials"):
+            model["optuna_pareto_trials"] = optuna_info.get("pareto_trials", [])
     synth_count = int(df["synthetic"].sum()) if "synthetic" in df.columns else 0
     synthetic_info = {
         "real": int(len(df) - synth_count),
@@ -3685,6 +3728,8 @@ def train(
     *,
     model_type: str = "logreg",
     optuna_trials: int = 0,
+    pareto_weight: float | None = None,
+    pareto_metric: str = "accuracy",
     half_life_days: float = 0.0,
     prune_threshold: float = 0.0,
     calendar_file: Path | None = None,
@@ -3844,6 +3889,8 @@ def train(
             data_dir,
             out_dir,
             optuna_trials=optuna_trials,
+            pareto_weight=pareto_weight,
+            pareto_metric=pareto_metric,
             half_life_days=half_life_days,
             prune_threshold=prune_threshold,
             calendar_file=calendar_file,
@@ -4190,6 +4237,17 @@ def main() -> None:
         help="number of Optuna trials for hyperparameter search",
     )
     p.add_argument(
+        "--pareto-weight",
+        type=float,
+        help="weight for accuracy when selecting from Pareto frontier",
+    )
+    p.add_argument(
+        "--pareto-metric",
+        choices=["accuracy", "profit"],
+        default="accuracy",
+        help="metric to choose final model from Pareto frontier if no weight",
+    )
+    p.add_argument(
         "--logreg-c-low",
         type=float,
         default=0.01,
@@ -4347,6 +4405,8 @@ def main() -> None:
         args.out_dir,
         model_type=args.model_type,
         optuna_trials=args.optuna_trials,
+        pareto_weight=args.pareto_weight,
+        pareto_metric=args.pareto_metric,
         half_life_days=args.half_life_days,
         prune_threshold=args.prune_threshold,
         logreg_c_low=args.logreg_c_low,
