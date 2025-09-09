@@ -121,6 +121,32 @@ def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return np.clip(X, low, high)
 
 
+def _load_logreg_params(model: dict) -> dict | None:
+    """Extract linear model parameters for inference."""
+    try:
+        if "session_models" in model:
+            params = next(iter(model["session_models"].values()))
+        elif "models" in model and "sgd" in model["models"]:
+            params = model["models"]["sgd"]
+        else:
+            params = model
+        coef = np.asarray(params.get("coefficients", []), dtype=float)
+        if coef.ndim > 1:
+            coef = coef[0]
+        n = int(coef.shape[0])
+        return {
+            "feature_names": model.get("feature_names", []),
+            "coefficients": coef,
+            "intercept": float(np.asarray(params.get("intercept", 0.0)).reshape(-1)[0]),
+            "feature_mean": np.asarray(params.get("feature_mean", np.zeros(n)), dtype=float),
+            "feature_std": np.asarray(params.get("feature_std", np.ones(n)), dtype=float),
+            "clip_low": np.asarray(params.get("clip_low", np.full(n, -np.inf)), dtype=float),
+            "clip_high": np.asarray(params.get("clip_high", np.full(n, np.inf)), dtype=float),
+        }
+    except Exception:
+        return None
+
+
 if _HAS_TORCH:
 
     class _TTBlock(torch.nn.Module):
@@ -1033,6 +1059,10 @@ def _train_lite_mode(
     hold_period: int = 20,
     use_meta_label: bool = False,
     quantile_model: bool = False,
+    pseudo_label_files: Sequence[Path] | None = None,
+    pseudo_weight: float = 0.5,
+    pseudo_confidence_low: float = 0.1,
+    pseudo_confidence_high: float = 0.9,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -1083,7 +1113,20 @@ def _train_lite_mode(
         else:
             meta_init = np.array(list(meta_weights), dtype=float)
 
+    model_params = None
+    model_path = out_dir / "model.json"
+    if not model_path.exists() and Path("model.json").exists():
+        model_path = Path("model.json")
+    if model_path.exists():
+        try:
+            model_params = _load_logreg_params(json.loads(model_path.read_text()))
+        except Exception:
+            model_params = None
+
     df["synthetic"] = 0.0
+    df["pseudo"] = 0.0
+    if "pseudo" not in feature_names:
+        feature_names.append("pseudo")
     if synthetic_data is not None:
         try:
             sdf = (
@@ -1148,6 +1191,38 @@ def _train_lite_mode(
     if uncertain_file and uncertain_count:
         weights[-uncertain_count:] *= uncertain_weight
 
+    if pseudo_label_files:
+        pseudo_frames = []
+        for pf in pseudo_label_files:
+            try:
+                p_df, _, _ = _load_logs(
+                    pf,
+                    chunk_size=chunk_size,
+                    flight_uri=flight_uri,
+                    take_profit_mult=take_profit_mult,
+                    stop_loss_mult=stop_loss_mult,
+                    hold_period=hold_period,
+                )
+                if not isinstance(p_df, pd.DataFrame):
+                    p_df = pd.concat(list(p_df), ignore_index=True)
+                p_df["label"] = 0.0
+                p_df["pseudo"] = 1.0
+                pseudo_frames.append(p_df)
+            except Exception:
+                continue
+        if pseudo_frames:
+            pl_df = pd.concat(pseudo_frames, ignore_index=True)
+            for col in df.columns:
+                if col not in pl_df.columns:
+                    pl_df[col] = 0.0
+            for col in pl_df.columns:
+                if col not in df.columns:
+                    df[col] = 0.0
+            df = pd.concat([df, pl_df], ignore_index=True)
+            weights = np.concatenate(
+                [weights, np.full(len(pl_df), float(pseudo_weight))]
+            )
+
     # Compute sample age and optional exponential decay weights
     if "event_time" in df.columns:
         event_times = df["event_time"].to_numpy(dtype="datetime64[s]")
@@ -1190,6 +1265,40 @@ def _train_lite_mode(
         regime_model=regime_model,
         tick_encoder=tick_encoder,
     )
+
+    pseudo_mask = df.get("pseudo", pd.Series(dtype=float)) > 0
+    pseudo_orig = int(pseudo_mask.sum())
+    pseudo_kept = 0
+    if pseudo_mask.any() and model_params is not None:
+        feats = model_params["feature_names"]
+        for col in feats:
+            if col not in df.columns:
+                df[col] = 0.0
+        X_p = df.loc[pseudo_mask, feats].to_numpy(dtype=float)
+        X_p = _clip_apply(X_p, model_params["clip_low"], model_params["clip_high"])
+        X_s = (X_p - model_params["feature_mean"]) / model_params["feature_std"]
+        logits = X_s @ model_params["coefficients"] + model_params["intercept"]
+        probs = _sigmoid(logits)
+        high = probs >= pseudo_confidence_high
+        low = probs <= pseudo_confidence_low
+        keep = high | low
+        df.loc[pseudo_mask, "label"] = np.where(high, 1.0, 0.0)
+        drop_idx = df.index[pseudo_mask][~keep]
+        if len(drop_idx):
+            df.drop(index=drop_idx, inplace=True)
+        pseudo_kept = int(keep.sum())
+        if pseudo_kept:
+            logging.info(
+                "Pseudo-labelled %d samples (%.1f%% of data)",
+                pseudo_kept,
+                100.0 * pseudo_kept / len(df),
+            )
+        df.reset_index(drop=True, inplace=True)
+        pseudo_mask = df.get("pseudo", pd.Series(dtype=float)) > 0
+
+    if "pseudo" in feature_names:
+        feature_names.remove("pseudo")
+
     if use_volatility_weight and "price_volatility" in df.columns:
         vol = pd.to_numeric(df["price_volatility"], errors="coerce").fillna(0.0)
         mean_vol = float(vol.mean())
@@ -1797,6 +1906,7 @@ def _train_lite_mode(
         "conformal_lower": float(min(conf_lowers)) if conf_lowers else 0.0,
         "conformal_upper": float(max(conf_uppers)) if conf_uppers else 1.0,
         "training_rows": int(len(df)),
+        "pseudo_samples": int(pseudo_kept or pseudo_orig),
         "dropped_noisy": int(dropped_noisy),
     }
     model["meta_barriers"] = {
@@ -2930,6 +3040,10 @@ def train(
     take_profit_mult: float = 1.0,
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
+    pseudo_label_files: Sequence[Path] | None = None,
+    pseudo_weight: float = 0.5,
+    pseudo_confidence_low: float = 0.1,
+    pseudo_confidence_high: float = 0.9,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -2970,6 +3084,10 @@ def train(
             hold_period=hold_period,
             use_meta_label=use_meta_label,
             quantile_model=quantile_model,
+            pseudo_label_files=pseudo_label_files,
+            pseudo_weight=pseudo_weight,
+            pseudo_confidence_low=pseudo_confidence_low,
+            pseudo_confidence_high=pseudo_confidence_high,
             **kwargs,
         )
     elif model_type == "tabtransformer":
@@ -3234,6 +3352,30 @@ def main() -> None:
         help="sample weight multiplier for uncertain decisions",
     )
     p.add_argument(
+        "--pseudo-label-files",
+        type=Path,
+        nargs="*",
+        help="CSV files with unlabeled samples for pseudo-labelling",
+    )
+    p.add_argument(
+        "--pseudo-weight",
+        type=float,
+        default=0.5,
+        help="sample weight for pseudo-labelled samples",
+    )
+    p.add_argument(
+        "--pseudo-confidence-high",
+        type=float,
+        default=0.9,
+        help="minimum probability to assign positive pseudo-label",
+    )
+    p.add_argument(
+        "--pseudo-confidence-low",
+        type=float,
+        default=0.1,
+        help="maximum probability to assign negative pseudo-label",
+    )
+    p.add_argument(
         "--half-life-days",
         type=float,
         default=0.0,
@@ -3492,6 +3634,10 @@ def main() -> None:
         autoencoder_epochs=args.autoencoder_epochs,
         uncertain_file=args.uncertain_file,
         uncertain_weight=args.uncertain_weight,
+        pseudo_label_files=args.pseudo_label_files,
+        pseudo_weight=args.pseudo_weight,
+        pseudo_confidence_high=args.pseudo_confidence_high,
+        pseudo_confidence_low=args.pseudo_confidence_low,
         use_meta_label=args.use_meta_label,
         take_profit_mult=args.take_profit_mult,
         stop_loss_mult=args.stop_loss_mult,
