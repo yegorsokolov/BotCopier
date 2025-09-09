@@ -7,7 +7,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.datasets import make_classification
 from sklearn.metrics import log_loss
 
-from scripts.model_fitting import load_logs, scale_features, fit_xgb_classifier
+from scripts.model_fitting import (
+    load_logs,
+    scale_features,
+    fit_xgb_classifier,
+    fit_quantile_model,
+)
 
 
 def _write_log(path: Path) -> None:
@@ -99,3 +104,14 @@ def test_early_stopping_reduces_overfit(caplog) -> None:
     assert overfit_es < overfit_no
     assert any("best_iteration" in rec.message for rec in caplog.records)
     assert clf_es.best_iteration < 49
+
+
+def test_fit_quantile_model_produces_monotonic_quantiles() -> None:
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(100, 1))
+    y = X.ravel() + rng.normal(scale=0.1, size=100)
+    models = fit_quantile_model(X, y, quantiles=(0.05, 0.5, 0.95))
+    preds = {q: m.predict(X) for q, m in models.items()}
+    assert set(models.keys()) == {0.05, 0.5, 0.95}
+    medians = {q: float(np.median(p)) for q, p in preds.items()}
+    assert medians[0.05] <= medians[0.5] <= medians[0.95]
