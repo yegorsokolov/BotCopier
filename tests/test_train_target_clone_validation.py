@@ -6,7 +6,14 @@ import pandas as pd
 import pytest
 from sklearn.datasets import make_classification
 
-from scripts.train_target_clone import train, _HAS_OPTUNA
+from scripts.train_target_clone import (
+    train,
+    _HAS_OPTUNA,
+    _HAS_TORCH,
+    TabTransformer,
+    _load_logs,
+    _extract_features,
+)
 
 
 def test_voting_ensemble_improves_accuracy(tmp_path):
@@ -214,3 +221,57 @@ def test_synthetic_rows_expand_dataset_and_metrics(tmp_path):
     assert sm2["synthetic"] > 0
     assert sm2["all"] > sm1["all"]
     assert model1["cv_accuracy"] != model2["cv_accuracy"]
+
+
+@pytest.mark.skipif(not _HAS_TORCH, reason="torch not installed")
+def test_tabtransformer_predictions(tmp_path):
+    import torch
+
+    X, y = make_classification(
+        n_samples=80,
+        n_features=11,
+        n_informative=5,
+        n_redundant=0,
+        random_state=0,
+    )
+    cols = [
+        "spread",
+        "slippage",
+        "equity",
+        "margin_level",
+        "volume",
+        "hour_sin",
+        "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
+    ]
+    df = pd.DataFrame(X, columns=cols)
+    df["label"] = y
+    data_file = tmp_path / "trades_raw.csv"
+    df.to_csv(data_file, index=False)
+    out_dir = tmp_path / "out"
+    train(data_file, out_dir, model_type="tabtransformer", epochs=5)
+    model = json.loads((out_dir / "model.json").read_text())
+    feature_names = model["feature_names"]
+    state = {k: torch.tensor(v) for k, v in model["state_dict"].items()}
+    tt = TabTransformer(len(feature_names))
+    tt.load_state_dict(state)
+    proc, fcols, _ = _load_logs(data_file)
+    if not isinstance(proc, pd.DataFrame):
+        proc = pd.concat(list(proc), ignore_index=True)
+    proc, fcols, _, _ = _extract_features(proc, fcols)
+    X_infer = proc[feature_names].to_numpy(dtype=float)
+    c_low = np.array(model["clip_low"]) ; c_high = np.array(model["clip_high"])
+    X_infer = np.clip(X_infer, c_low, c_high)
+    mean = np.array(model["mean"]) ; std = np.array(model["std"])
+    X_scaled = (X_infer - mean) / np.where(std == 0, 1, std)
+    with torch.no_grad():
+        preds = torch.sigmoid(
+            tt(torch.tensor(X_scaled, dtype=torch.float32))
+        ).numpy().ravel()
+    assert preds.shape[0] == len(df)
+    assert np.all((preds >= 0.0) & (preds <= 1.0))
+    acc = ((preds > 0.5) == y).mean()
+    assert acc >= 0.5

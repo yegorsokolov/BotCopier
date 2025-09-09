@@ -37,9 +37,9 @@ except Exception:  # pragma: no cover
     _HAS_TORCH = False
 
 try:
-    from train_target_clone import detect_resources
+    from train_target_clone import detect_resources, TabTransformer
 except Exception:  # pragma: no cover - script executed within package
-    from scripts.train_target_clone import detect_resources  # type: ignore
+    from scripts.train_target_clone import detect_resources, TabTransformer  # type: ignore
 
 try:  # optional graph embedding support
     from graph_dataset import GraphDataset, compute_gnn_embeddings
@@ -95,6 +95,29 @@ def _predict_nn(model: Dict, features: Dict[str, float]) -> float:
     return float(1 / (1 + np.exp(-z)))
 
 
+def _predict_tabtransformer(model: Dict, features: Dict[str, float]) -> float:
+    """Compute probability using a tabular transformer model."""
+    state = model.get("state_dict")
+    if state is None or not _HAS_TORCH:
+        return _predict_logistic(model, features)
+    names = model.get("feature_names", [])
+    mean = np.array(model.get("mean", [0.0] * len(names)), dtype=float)
+    std = np.array(model.get("std", [1.0] * len(names)), dtype=float)
+    low = np.array(model.get("clip_low", [0.0] * len(names)), dtype=float)
+    high = np.array(model.get("clip_high", [0.0] * len(names)), dtype=float)
+    vec = np.array([float(features.get(n, 0.0)) for n in names])
+    vec = np.clip(vec, low, high)
+    std_safe = np.where(std == 0, 1, std)
+    x = (vec - mean) / std_safe
+    tt = TabTransformer(len(names))
+    tt.load_state_dict({k: torch.tensor(v) for k, v in state.items()})
+    tt.eval()
+    with torch.no_grad():
+        inp = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
+        logit = tt(inp)
+        return float(torch.sigmoid(logit).item())
+
+
 def _load_logs(log_file: Path) -> pd.DataFrame:
     """Load decision logs from ``log_file``."""
     df = pd.read_csv(log_file, sep=";")
@@ -109,8 +132,11 @@ def _recompute(
 ) -> Dict:
     """Recompute probabilities and collect statistics."""
     resources = detect_resources()
-    use_complex = not resources.get("lite_mode") and model.get("nn_weights")
-    pred_fn = _predict_nn if use_complex else _predict_logistic
+    if model.get("state_dict"):
+        pred_fn = _predict_tabtransformer
+    else:
+        use_complex = not resources.get("lite_mode") and model.get("nn_weights")
+        pred_fn = _predict_nn if use_complex else _predict_logistic
 
     gnn_state = model.get("gnn_state")
     if (
