@@ -53,6 +53,7 @@ from .model_fitting import (
     fit_catboost_classifier,
     _compute_decay_weights,
     fit_quantile_model,
+    fit_heteroscedastic_regressor,
     FocalLoss,
 )
 from .meta_strategy import train_meta_model
@@ -158,6 +159,17 @@ def _load_logreg_params(model: dict) -> dict | None:
                     np.asarray(pnl_raw.get("intercept", 0.0)).reshape(-1)[0]
                 ),
             }
+        pnl_var_raw = params.get("pnl_logvar_model")
+        pnl_var_model = None
+        if isinstance(pnl_var_raw, dict):
+            pnl_var_model = {
+                "coefficients": np.asarray(
+                    pnl_var_raw.get("coefficients", []), dtype=float
+                ),
+                "intercept": float(
+                    np.asarray(pnl_var_raw.get("intercept", 0.0)).reshape(-1)[0]
+                ),
+            }
         return {
             "feature_names": model.get("feature_names", []),
             "coefficients": coef,
@@ -167,13 +179,29 @@ def _load_logreg_params(model: dict) -> dict | None:
             "clip_low": np.asarray(params.get("clip_low", np.full(n, -np.inf)), dtype=float),
             "clip_high": np.asarray(params.get("clip_high", np.full(n, np.inf)), dtype=float),
             "pnl_model": pnl_model,
+            "pnl_logvar_model": pnl_var_model,
         }
     except Exception:
         return None
 
 
-def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
-    """Predict expected profit by combining classification and regression."""
+def predict_expected_value(
+    model: dict, X: np.ndarray, return_variance: bool = False
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Predict expected profit and optionally variance.
+
+    Parameters
+    ----------
+    model : dict
+        Model parameters as loaded from ``model.json``.
+    X : np.ndarray
+        Feature matrix.
+    return_variance : bool, optional
+        If ``True`` also return the predicted log-variance of the profit
+        regressor.  The default is ``False`` which maintains the original
+        behaviour of returning only the expected value.
+    """
+
     params = _load_logreg_params(model)
     if not params:
         raise ValueError("invalid model")
@@ -186,7 +214,14 @@ def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
     pnl = np.zeros_like(prob)
     if pnl_params is not None:
         pnl = X_scaled @ pnl_params["coefficients"] + pnl_params["intercept"]
-    return prob * pnl
+    expected = prob * pnl
+    if not return_variance:
+        return expected
+    var_params = params.get("pnl_logvar_model")
+    log_var = np.zeros_like(expected)
+    if var_params is not None:
+        log_var = X_scaled @ var_params["coefficients"] + var_params["intercept"]
+    return expected, log_var
 
 
 if _HAS_TORCH:
@@ -2091,8 +2126,8 @@ def _train_lite_mode(
         def _fit_regression(target_names: list[str]) -> dict | None:
             for col in target_names:
                 if col in group.columns:
-                    y = pd.to_numeric(group[col], errors="coerce").to_numpy(dtype=float)
-                    reg = LinearRegression().fit(X_scaled_full, y, sample_weight=w_all)
+                    y_reg = pd.to_numeric(group[col], errors="coerce").to_numpy(dtype=float)
+                    reg = LinearRegression().fit(X_scaled_full, y_reg, sample_weight=w_all)
                     return {
                         "coefficients": reg.coef_.astype(float).tolist(),
                         "intercept": float(reg.intercept_),
@@ -2114,9 +2149,23 @@ def _train_lite_mode(
                 "take_profit",
             ]
         )
-        pnl_model = _fit_regression(
-            ["future_pnl", "pnl", "profit", "net_profit"]
-        )
+        pnl_model: dict[str, object] | None = None
+        pnl_logvar_model: dict[str, object] | None = None
+        for col in ["future_pnl", "pnl", "profit", "net_profit"]:
+            if col in group.columns:
+                y_reg = pd.to_numeric(group[col], errors="coerce").to_numpy(dtype=float)
+                mean_reg, logvar_reg = fit_heteroscedastic_regressor(
+                    X_scaled_full, y_reg, sample_weight=w_all
+                )
+                pnl_model = {
+                    "coefficients": getattr(mean_reg, "coef_", np.zeros(X_scaled_full.shape[1])).astype(float).tolist(),
+                    "intercept": float(getattr(mean_reg, "intercept_", 0.0)),
+                }
+                pnl_logvar_model = {
+                    "coefficients": getattr(logvar_reg, "coef_", np.zeros(X_scaled_full.shape[1])).astype(float).tolist(),
+                    "intercept": float(getattr(logvar_reg, "intercept_", 0.0)),
+                }
+                break
 
         params: dict[str, object] = {
             "coefficients": clf_full.coef_[0].astype(float).tolist(),
@@ -2159,6 +2208,8 @@ def _train_lite_mode(
             params["tp_model"] = tp_model
         if pnl_model and expected_value:
             params["pnl_model"] = pnl_model
+            if pnl_logvar_model is not None:
+                params["pnl_logvar_model"] = pnl_logvar_model
             params["prediction"] = "expected_value"
         params["n_samples"] = int(len(group))
         session_models[model_name] = params
@@ -2380,11 +2431,18 @@ def _train_lite_mode(
             )[:, 1]
 
         pnl_model: dict[str, object] | None = None
+        pnl_logvar_model: dict[str, object] | None = None
         if expected_value and pnl is not None:
-            reg = LinearRegression().fit(X_scaled, pnl, sample_weight=w)
+            mean_reg, logvar_reg = fit_heteroscedastic_regressor(
+                X_scaled, pnl, sample_weight=w
+            )
             pnl_model = {
-                "coefficients": reg.coef_.astype(float).tolist(),
-                "intercept": float(reg.intercept_),
+                "coefficients": getattr(mean_reg, "coef_", np.zeros(X_scaled.shape[1])).astype(float).tolist(),
+                "intercept": float(getattr(mean_reg, "intercept_", 0.0)),
+            }
+            pnl_logvar_model = {
+                "coefficients": getattr(logvar_reg, "coef_", np.zeros(X_scaled.shape[1])).astype(float).tolist(),
+                "intercept": float(getattr(logvar_reg, "intercept_", 0.0)),
             }
 
         params = {
@@ -2398,6 +2456,8 @@ def _train_lite_mode(
         }
         if pnl_model is not None:
             params["pnl_model"] = pnl_model
+            if pnl_logvar_model is not None:
+                params["pnl_logvar_model"] = pnl_logvar_model
             params["prediction"] = "expected_value"
         return params, _predict, clf, scaler, c_low, c_high
 
