@@ -26,6 +26,8 @@ from typing import Iterable, Tuple, Callable, Sequence
 
 import logging
 import math
+import base64
+import pickle
 import numpy as np
 import pandas as pd
 import psutil
@@ -41,6 +43,8 @@ from sklearn.metrics import (
     roc_auc_score,
     brier_score_loss,
 )
+
+from sklearn.impute import KNNImputer
 
 from scripts.features import _is_hammer, _is_doji, _is_engulfing
 from sklearn.pipeline import make_pipeline
@@ -133,8 +137,10 @@ def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
 def _load_logreg_params(model: dict) -> dict | None:
     """Extract linear model parameters for inference."""
     try:
+        imputer_raw: str | None = None
         if "session_models" in model:
             params = next(iter(model["session_models"].values()))
+            imputer_raw = model.get("imputer") or params.get("imputer")
         elif "models" in model:
             if "sgd" in model["models"]:
                 params = model["models"]["sgd"]
@@ -142,8 +148,10 @@ def _load_logreg_params(model: dict) -> dict | None:
                 params = model["models"]["logreg"]
             else:
                 params = model
+            imputer_raw = model.get("imputer") or params.get("imputer")
         else:
             params = model
+            imputer_raw = model.get("imputer")
         coef = np.asarray(params.get("coefficients", []), dtype=float)
         if coef.ndim > 1:
             coef = coef[0]
@@ -170,6 +178,12 @@ def _load_logreg_params(model: dict) -> dict | None:
                     np.asarray(pnl_var_raw.get("intercept", 0.0)).reshape(-1)[0]
                 ),
             }
+        imputer = None
+        if isinstance(imputer_raw, str):
+            try:
+                imputer = pickle.loads(base64.b64decode(imputer_raw))
+            except Exception:
+                imputer = None
         return {
             "feature_names": model.get("feature_names", []),
             "coefficients": coef,
@@ -180,6 +194,7 @@ def _load_logreg_params(model: dict) -> dict | None:
             "clip_high": np.asarray(params.get("clip_high", np.full(n, np.inf)), dtype=float),
             "pnl_model": pnl_model,
             "pnl_logvar_model": pnl_var_model,
+            "imputer": imputer,
         }
     except Exception:
         return None
@@ -205,8 +220,12 @@ def predict_expected_value(
     params = _load_logreg_params(model)
     if not params:
         raise ValueError("invalid model")
+    X_proc = X
+    imputer = params.get("imputer")
+    if imputer is not None:
+        X_proc = imputer.transform(X_proc)
     denom = np.where(params["feature_std"] == 0, 1, params["feature_std"])
-    X_scaled = (X - params["feature_mean"]) / denom
+    X_scaled = (X_proc - params["feature_mean"]) / denom
     X_scaled = _clip_apply(X_scaled, params["clip_low"], params["clip_high"])
     logits = X_scaled @ params["coefficients"] + params["intercept"]
     prob = _sigmoid(logits)
@@ -1289,6 +1308,8 @@ def _train_multi_output_clf(
     """Fit a multi-output ``SGDClassifier`` and persist model parameters."""
 
     X_all = df[feature_names].to_numpy(dtype=float)
+    imputer = KNNImputer()
+    X_all = imputer.fit_transform(X_all)
     y_all = df[label_cols].astype(int).to_numpy()
     w_all = df["sample_weight"].to_numpy(dtype=float)
 
@@ -1319,6 +1340,7 @@ def _train_multi_output_clf(
         "models": {"sgd": params},
         "feature_names": feature_names,
         "label_columns": label_cols,
+        "imputer": base64.b64encode(pickle.dumps(imputer)).decode("ascii"),
     }
     model["rank_features"] = bool(rank_features)
     if pca_components:
@@ -1601,6 +1623,8 @@ def _train_lite_mode(
     )
     pca_components = df.attrs.get("pca_components")
 
+    imputer_json: str | None = None
+
     pseudo_mask = df.get("pseudo", pd.Series(dtype=float)) > 0
     pseudo_orig = int(pseudo_mask.sum())
     pseudo_kept = 0
@@ -1675,6 +1699,12 @@ def _train_lite_mode(
             if c
             not in {"label", "profit", "net_profit", "hour", "day_of_week", "symbol"}
         ]
+    if feature_names:
+        X_all = df[feature_names].to_numpy(dtype=float)
+        _imputer = KNNImputer()
+        X_all = _imputer.fit_transform(X_all)
+        df[feature_names] = X_all
+        imputer_json = base64.b64encode(pickle.dumps(_imputer)).decode("ascii")
     # Compute mutual information for each feature and drop low-score features
     X_mi = df[feature_names].to_numpy(dtype=float)
     y_mi = df["label"].astype(int).to_numpy()
@@ -2311,6 +2341,8 @@ def _train_lite_mode(
         "dropped_noisy": int(dropped_noisy),
         "rank_features": bool(rank_features),
     }
+    if imputer_json is not None:
+        model["imputer"] = imputer_json
     if pca_components:
         model["pca_components"] = pca_components
     if expected_value:
