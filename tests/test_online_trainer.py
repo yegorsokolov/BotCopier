@@ -73,3 +73,25 @@ def test_regime_shift_triggers_reset(tmp_path: Path, caplog):
     assert events, "regime shift event not logged"
     assert trainer.clf is not old
 
+
+def test_learning_rate_decay_and_validation(tmp_path: Path):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2, lr=0.1, lr_decay=0.5)
+    batch = [
+        {"a": 2.0, "b": 1.0, "y": 1},
+        {"a": -1.0, "b": 2.0, "y": 0},
+    ]
+    X, y = trainer._vectorise(batch)
+    try:
+        acc0 = float(np.mean(trainer.clf.predict(X) == y))
+    except Exception:
+        acc0 = 0.0
+    trainer.update(batch)
+    X, y = trainer._vectorise(batch)
+    acc1 = float(np.mean(trainer.clf.predict(X) == y))
+    trainer.update(batch)
+    X, y = trainer._vectorise(batch)
+    acc2 = float(np.mean(trainer.clf.predict(X) == y))
+    assert trainer.lr_history[0] > trainer.lr_history[1]
+    assert acc2 >= acc1 >= acc0
+

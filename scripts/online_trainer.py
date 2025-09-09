@@ -151,11 +151,16 @@ class OnlineTrainer:
         model_path: Path | str = Path("model.json"),
         batch_size: int = 32,
         run_generator: bool = True,
+        lr: float = 0.01,
+        lr_decay: float = 1.0,
     ) -> None:
         self.model_path = Path(model_path)
         self.batch_size = batch_size
         self.run_generator = run_generator
-        self.clf = SGDClassifier(loss="log_loss")
+        self.lr = lr
+        self.lr_decay = lr_decay
+        self.lr_history: List[float] = []
+        self.clf = SGDClassifier(loss="log_loss", learning_rate="adaptive", eta0=self.lr)
         self.feature_names: List[str] = []
         self.feature_flags: Dict[str, bool] = {}
         self.model_type: str = "logreg"
@@ -344,10 +349,14 @@ class OnlineTrainer:
             X, y = self._vectorise(batch)
             self._dist_history.append(float(X.mean()))
             self._check_change_point()
+            # configure current learning rate
+            self.clf.eta0 = self.lr
             if not hasattr(self.clf, "classes_"):
                 self.clf.partial_fit(X, y, classes=np.array([0, 1]))
             else:
                 self.clf.partial_fit(X, y)
+            lr_used = self.clf.eta0
+            self.lr_history.append(lr_used)
             try:
                 probs = self.clf.predict_proba(X)
                 self.recent_probs.extend(probs[np.arange(len(y)), y])
@@ -369,9 +378,12 @@ class OnlineTrainer:
                     "event": "batch_update",
                     "size": len(batch),
                     "coefficients_changed": changed,
+                    "lr": lr_used,
                 },
                 extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
             )
+            # decay learning rate for next batch
+            self.lr *= self.lr_decay
             return changed
 
     # ------------------------------------------------------------------
@@ -518,6 +530,13 @@ def main(argv: List[str] | None = None) -> None:
     p.add_argument("--flight-port", type=int, default=8815, help="Arrow Flight port")
     p.add_argument("--model", type=Path, default=Path("model.json"))
     p.add_argument("--batch-size", type=int, default=32)
+    p.add_argument("--lr", type=float, default=0.01, help="Initial learning rate")
+    p.add_argument(
+        "--lr-decay",
+        type=float,
+        default=1.0,
+        help="Multiplicative learning rate decay per batch",
+    )
     p.add_argument("--flight-path", default="trades", help="Flight path name")
     p.add_argument("--baseline-file", type=Path, help="Baseline CSV for drift monitoring")
     p.add_argument("--recent-file", type=Path, help="Recent CSV for drift monitoring")
@@ -538,7 +557,12 @@ def main(argv: List[str] | None = None) -> None:
     )
     args = p.parse_args(argv)
 
-    trainer = OnlineTrainer(args.model, args.batch_size)
+    trainer = OnlineTrainer(
+        args.model,
+        args.batch_size,
+        lr=args.lr,
+        lr_decay=args.lr_decay,
+    )
     _sd_notify_ready()
     _start_watchdog_thread()
     if (
