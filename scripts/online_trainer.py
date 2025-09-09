@@ -74,6 +74,11 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
 
+try:  # optional change point detection
+    import ruptures as rpt  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    rpt = None  # type: ignore
+
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "online_trainer")})
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
@@ -165,6 +170,10 @@ class OnlineTrainer:
         self.conformal_upper: float | None = None
         self.gnn_state: Dict[str, Any] | None = None
         self.graph_dataset: GraphDataset | None = None
+        # rolling statistics for change point detection
+        self._dist_history: deque[float] = deque(maxlen=200)
+        self.cp_window = 50
+        self.cp_threshold = 5.0
         if self.model_path.exists():
             self._load()
         elif detect_resources:
@@ -297,9 +306,44 @@ class OnlineTrainer:
             acc = 0.0
         logger.info({"event": "validation", "size": len(y), "accuracy": acc})
 
+    def _handle_regime_shift(self) -> None:
+        action = "reset"
+        if os.getenv("ONLINE_TRAINER_FULL_RETRAIN"):
+            action = "full_retrain"
+            base = Path(__file__).resolve().parent
+            try:
+                subprocess.Popen([sys.executable, str(base / "auto_retrain.py")])
+            except Exception:
+                logger.exception("failed to start full retrain")
+        else:
+            self.clf = SGDClassifier(loss="log_loss")
+            self._prev_coef = None
+        logger.info({"event": "regime_shift", "action": action})
+
+    def _check_change_point(self) -> None:
+        arr = np.fromiter(self._dist_history, dtype=float)
+        if len(arr) < self.cp_window:
+            return
+        if rpt is not None:
+            try:
+                algo = rpt.Binseg(model="l2").fit(arr.reshape(-1, 1))
+                bkps = algo.predict(n_bkps=1)
+                if bkps and bkps[0] != len(arr):
+                    self._handle_regime_shift()
+                    self._dist_history.clear()
+                    return
+            except Exception:
+                pass
+        first, second = arr[: len(arr) // 2], arr[len(arr) // 2 :]
+        if len(first) and len(second) and abs(first.mean() - second.mean()) > self.cp_threshold:
+            self._handle_regime_shift()
+            self._dist_history.clear()
+
     def update(self, batch: List[Dict[str, Any]]) -> bool:
         with tracer.start_as_current_span("train_batch") as span:
             X, y = self._vectorise(batch)
+            self._dist_history.append(float(X.mean()))
+            self._check_change_point()
             if not hasattr(self.clf, "classes_"):
                 self.clf.partial_fit(X, y, classes=np.array([0, 1]))
             else:
