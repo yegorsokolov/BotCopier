@@ -52,6 +52,7 @@ from .model_fitting import (
 )
 from .meta_strategy import train_meta_model
 from .meta_adapt import _logistic_grad, _sigmoid
+from .data_validation import validate_logs
 
 try:  # Optional dependency
     import optuna
@@ -517,6 +518,17 @@ def _load_logs(
     if dows is not None:
         optional_cols.extend(["dow_sin", "dow_cos"])
     feature_cols = [c for c in optional_cols if c in df.columns]
+
+    # Validate log data and abort on failure
+    validation_result = validate_logs(df)
+    if not validation_result.get("success", False):
+        logging.warning("Log validation failed: %s", validation_result)
+        raise ValueError("log validation failed")
+    logging.info(
+        "Log validation succeeded: %s/%s expectations", 
+        validation_result.get("statistics", {}).get("successful_expectations", 0),
+        validation_result.get("statistics", {}).get("evaluated_expectations", 0),
+    )
 
     # ------------------------------------------------------------------
     # Create additional forward looking label columns based on future PnL
