@@ -419,6 +419,9 @@ def _load_logs(
     chunk_size: int | None = None,
     flight_uri: str | None = None,
     kafka_brokers: str | None = None,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], list[str]]:
     """Load trade logs from ``trades_raw.csv``.
 
@@ -496,6 +499,33 @@ def _load_logs(
     )
     if price_col is not None:
         prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
+        spreads = (
+            pd.to_numeric(df.get("spread", 0.0), errors="coerce").fillna(0.0)
+        )
+        if not spreads.any():
+            spreads = (prices.abs() * 0.001).fillna(0.0)
+        tp = prices + take_profit_mult * spreads
+        sl = prices - stop_loss_mult * spreads
+        horizon_idx = (
+            np.arange(len(df)) + int(hold_period)
+        ).clip(0, len(df) - 1)
+        meta = np.zeros(len(df), dtype=float)
+        for i in range(len(df)):
+            end = int(horizon_idx[i])
+            meta_i = 0.0
+            for j in range(i + 1, end + 1):
+                p = prices.iloc[j]
+                if p >= tp.iloc[i]:
+                    meta_i = 1.0
+                    break
+                if p <= sl.iloc[i]:
+                    meta_i = 0.0
+                    break
+            meta[i] = meta_i
+        df["take_profit"] = tp
+        df["stop_loss"] = sl
+        df["horizon"] = horizon_idx
+        df["meta_label"] = meta
         for horizon in (5, 20):
             label_name = f"label_h{horizon}"
             if label_name not in df.columns:
@@ -904,15 +934,27 @@ def _train_lite_mode(
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
     bayesian_ensembles: int = 0,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
+    use_meta_label: bool = False,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
     df, feature_names, _ = _load_logs(
-        data_dir, chunk_size=chunk_size, flight_uri=flight_uri
+        data_dir,
+        chunk_size=chunk_size,
+        flight_uri=flight_uri,
+        take_profit_mult=take_profit_mult,
+        stop_loss_mult=stop_loss_mult,
+        hold_period=hold_period,
     )
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
     feature_names = list(feature_names)
+
+    if use_meta_label and "meta_label" in df.columns:
+        df["label"] = df["meta_label"]
 
     meta_init: np.ndarray | None = None
     if meta_weights is not None:
@@ -1638,6 +1680,12 @@ def _train_lite_mode(
         "training_rows": int(len(df)),
         "dropped_noisy": int(dropped_noisy),
     }
+    model["meta_barriers"] = {
+        "take_profit_mult": float(take_profit_mult),
+        "stop_loss_mult": float(stop_loss_mult),
+        "hold_period": int(hold_period),
+        "use_meta_label": bool(use_meta_label),
+    }
     if meta_init is not None:
         model["meta_weights"] = meta_init.astype(float).tolist()
     w_stats = df["sample_weight"].to_numpy(dtype=float)
@@ -2007,15 +2055,26 @@ def _train_transformer(
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
     bayesian_ensembles: int = 0,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
+    use_meta_label: bool = False,
     **_,
 ) -> torch.nn.Module:
     """Train a tiny attention encoder on rolling feature windows."""
     if not _HAS_TORCH:  # pragma: no cover - requires optional dependency
         raise ImportError("PyTorch is required for transformer model")
 
-    df, feature_names, _ = _load_logs(data_dir)
+    df, feature_names, _ = _load_logs(
+        data_dir,
+        take_profit_mult=take_profit_mult,
+        stop_loss_mult=stop_loss_mult,
+        hold_period=hold_period,
+    )
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
+    if use_meta_label and "meta_label" in df.columns:
+        df["label"] = df["meta_label"]
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
     df, feature_names, _, _ = _extract_features(
@@ -2312,6 +2371,12 @@ def _train_transformer(
         "distilled": distilled,
         "models": {"logreg": distilled},
     }
+    model_json["meta_barriers"] = {
+        "take_profit_mult": float(take_profit_mult),
+        "stop_loss_mult": float(stop_loss_mult),
+        "hold_period": int(hold_period),
+        "use_meta_label": bool(use_meta_label),
+    }
     if bayes_info:
         model_json["bayesian_ensemble"] = bayes_info
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2338,15 +2403,26 @@ def _train_tab_transformer(
     drift_scores: dict[str, float] | None = None,
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
+    use_meta_label: bool = False,
     **_,
 ) -> TabTransformer:
     """Train a :class:`TabTransformer` on tabular features."""
     if not _HAS_TORCH:  # pragma: no cover - optional dependency
         raise ImportError("PyTorch is required for tabtransformer model")
 
-    df, feature_names, _ = _load_logs(data_dir)
+    df, feature_names, _ = _load_logs(
+        data_dir,
+        take_profit_mult=take_profit_mult,
+        stop_loss_mult=stop_loss_mult,
+        hold_period=hold_period,
+    )
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
+    if use_meta_label and "meta_label" in df.columns:
+        df["label"] = df["meta_label"]
     if "label" not in df.columns:
         raise ValueError("label column missing from data")
     df, feature_names, _, _ = _extract_features(
@@ -2386,6 +2462,12 @@ def _train_tab_transformer(
         "clip_high": c_high.tolist(),
         "state_dict": state,
         "metrics": {"accuracy": acc},
+        "meta_barriers": {
+            "take_profit_mult": float(take_profit_mult),
+            "stop_loss_mult": float(stop_loss_mult),
+            "hold_period": int(hold_period),
+            "use_meta_label": bool(use_meta_label),
+        },
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
@@ -2415,13 +2497,24 @@ def _train_tree_model(
     drift_scores: dict[str, float] | None = None,
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
+    use_meta_label: bool = False,
     **_: object,
 ) -> None:
     """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
-    df, feature_names, _ = _load_logs(data_dir)
+    df, feature_names, _ = _load_logs(
+        data_dir,
+        take_profit_mult=take_profit_mult,
+        stop_loss_mult=stop_loss_mult,
+        hold_period=hold_period,
+    )
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
     feature_names = list(feature_names)
+    if use_meta_label and "meta_label" in df.columns:
+        df["label"] = df["meta_label"]
     if replay_file:
         rdf = pd.read_csv(replay_file)
         rdf.columns = [c.lower() for c in rdf.columns]
@@ -2571,6 +2664,12 @@ def _train_tree_model(
         "feature_names": feature_names,
         "half_life_days": float(half_life_days),
         "validation_metrics": {"accuracy": acc, "profit": profit},
+        "meta_barriers": {
+            "take_profit_mult": float(take_profit_mult),
+            "stop_loss_mult": float(stop_loss_mult),
+            "hold_period": int(hold_period),
+            "use_meta_label": bool(use_meta_label),
+        },
     }
     if acc_u is not None and rec_u is not None:
         vm = model_json["validation_metrics"]
@@ -2609,6 +2708,10 @@ def train(
     drift_threshold: float = 0.0,
     drift_weight: float = 0.0,
     bayesian_ensembles: int = 0,
+    use_meta_label: bool = False,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -2643,6 +2746,10 @@ def train(
             drift_threshold=drift_threshold,
             drift_weight=drift_weight,
             bayesian_ensembles=bayesian_ensembles,
+            take_profit_mult=take_profit_mult,
+            stop_loss_mult=stop_loss_mult,
+            hold_period=hold_period,
+            use_meta_label=use_meta_label,
             **kwargs,
         )
     elif model_type == "tabtransformer":
@@ -2657,6 +2764,10 @@ def train(
             drift_scores=drift_scores,
             drift_threshold=drift_threshold,
             drift_weight=drift_weight,
+            take_profit_mult=take_profit_mult,
+            stop_loss_mult=stop_loss_mult,
+            hold_period=hold_period,
+            use_meta_label=use_meta_label,
             epochs=kwargs.get("epochs", 5),
             lr=kwargs.get("lr", 1e-3),
             dropout=kwargs.get("dropout", 0.0),
@@ -2676,6 +2787,10 @@ def train(
             drift_scores=drift_scores,
             drift_threshold=drift_threshold,
             drift_weight=drift_weight,
+            take_profit_mult=take_profit_mult,
+            stop_loss_mult=stop_loss_mult,
+            hold_period=hold_period,
+            use_meta_label=use_meta_label,
             **kwargs,
         )
     else:
@@ -2700,6 +2815,10 @@ def train(
             drift_threshold=drift_threshold,
             drift_weight=drift_weight,
             bayesian_ensembles=bayesian_ensembles,
+            take_profit_mult=take_profit_mult,
+            stop_loss_mult=stop_loss_mult,
+            hold_period=hold_period,
+            use_meta_label=use_meta_label,
             **kwargs,
         )
 
@@ -3062,6 +3181,29 @@ def main() -> None:
         default=10,
         help="number of epochs to train autoencoder",
     )
+    p.add_argument(
+        "--use-meta-label",
+        action="store_true",
+        help="use meta labels derived from triple-barrier method",
+    )
+    p.add_argument(
+        "--take-profit-mult",
+        type=float,
+        default=1.0,
+        help="multiplier for take-profit barrier",
+    )
+    p.add_argument(
+        "--stop-loss-mult",
+        type=float,
+        default=1.0,
+        help="multiplier for stop-loss barrier",
+    )
+    p.add_argument(
+        "--hold-period",
+        type=int,
+        default=20,
+        help="maximum holding period for meta labeling",
+    )
     args = p.parse_args()
     corr_windows = (
         [int(w) for w in args.neighbor_corr_windows.split(",") if w]
@@ -3114,6 +3256,10 @@ def main() -> None:
         autoencoder_epochs=args.autoencoder_epochs,
         uncertain_file=args.uncertain_file,
         uncertain_weight=args.uncertain_weight,
+        use_meta_label=args.use_meta_label,
+        take_profit_mult=args.take_profit_mult,
+        stop_loss_mult=args.stop_loss_mult,
+        hold_period=args.hold_period,
     )
 
 
