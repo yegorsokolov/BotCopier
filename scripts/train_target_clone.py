@@ -119,6 +119,112 @@ def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     return np.clip(X, low, high)
 
 
+if _HAS_TORCH:
+
+    class _TTBlock(torch.nn.Module):
+        """Attention block used by :class:`TabTransformer`."""
+
+        def __init__(
+            self, dim: int, heads: int, ff_dim: int, dropout: float
+        ) -> None:
+            super().__init__()
+            self.attn = torch.nn.MultiheadAttention(
+                dim, heads, dropout=dropout, batch_first=True
+            )
+            self.ff = torch.nn.Sequential(
+                torch.nn.Linear(dim, ff_dim),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(dropout),
+                torch.nn.Linear(ff_dim, dim),
+            )
+            self.norm1 = torch.nn.LayerNorm(dim)
+            self.norm2 = torch.nn.LayerNorm(dim)
+            self.drop1 = torch.nn.Dropout(dropout)
+            self.drop2 = torch.nn.Dropout(dropout)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - exercised via higher level tests
+            attn, _ = self.attn(x, x, x)
+            x = self.norm1(x + self.drop1(attn))
+            ff = self.ff(x)
+            return self.norm2(x + self.drop2(ff))
+
+
+    class TabTransformer(torch.nn.Module):
+        """Simple tabular transformer with multi-head attention layers."""
+
+        def __init__(
+            self,
+            num_features: int,
+            dim: int = 32,
+            heads: int = 4,
+            depth: int = 2,
+            ff_dim: int = 64,
+            dropout: float = 0.0,
+        ) -> None:
+            super().__init__()
+            self.embed = torch.nn.Linear(1, dim)
+            self.layers = torch.nn.ModuleList(
+                [_TTBlock(dim, heads, ff_dim, dropout) for _ in range(depth)]
+            )
+            self.norm = torch.nn.LayerNorm(dim)
+            self.head = torch.nn.Linear(num_features * dim, 1)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - exercised via helper
+            x = self.embed(x.unsqueeze(-1))
+            for layer in self.layers:
+                x = layer(x)
+            x = self.norm(x)
+            x = x.reshape(x.size(0), -1)
+            return self.head(x)
+
+
+    def fit_tab_transformer(
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        epochs: int = 10,
+        lr: float = 1e-3,
+        dropout: float = 0.0,
+        device: str = "cpu",
+    ) -> tuple[dict[str, list], Callable[[np.ndarray], np.ndarray], TabTransformer]:
+        """Train a :class:`TabTransformer` on ``X`` and ``y``."""
+        dev = torch.device(device)
+        model = TabTransformer(X.shape[1], dropout=dropout).to(dev)
+        ds = torch.utils.data.TensorDataset(
+            torch.tensor(X, dtype=torch.float32),
+            torch.tensor(y, dtype=torch.float32).unsqueeze(-1),
+        )
+        dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        model.train()
+        for _ in range(max(1, epochs)):
+            for xb, yb in dl:
+                xb, yb = xb.to(dev), yb.to(dev)
+                opt.zero_grad()
+                loss = loss_fn(model(xb), yb)
+                loss.backward()
+                opt.step()
+        model.eval()
+
+        def _predict(inp: np.ndarray) -> np.ndarray:
+            with torch.no_grad():
+                xt = torch.tensor(inp, dtype=torch.float32, device=dev)
+                logits = model(xt)
+                return torch.sigmoid(logits).cpu().numpy().ravel()
+
+        state = {k: v.detach().cpu().numpy().tolist() for k, v in model.state_dict().items()}
+        return state, _predict, model
+
+else:  # pragma: no cover - torch is optional
+
+    class TabTransformer:  # type: ignore
+        pass
+
+    def fit_tab_transformer(*_args, **_kwargs):  # type: ignore
+        raise ImportError("PyTorch is required for TabTransformer")
+
+
 def _apply_drift_pruning(
     df: pd.DataFrame,
     feature_names: list[str],
@@ -715,6 +821,10 @@ def _train_multi_output_clf(
     X_all, c_low, c_high = _clip_train_features(X_all)
     scaler = RobustScaler().fit(X_all)
     base = SGDClassifier(loss="log_loss")
+    try:  # sklearn >=1.4 metadata routing
+        base.set_fit_request(sample_weight=True)
+    except Exception:  # pragma: no cover - older sklearn
+        pass
     clf = MultiOutputClassifier(base)
     clf.fit(scaler.transform(X_all), y_all, sample_weight=w_all)
 
@@ -2212,6 +2322,78 @@ def _train_transformer(
     return model
 
 
+def _train_tab_transformer(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    epochs: int = 5,
+    lr: float = 1e-3,
+    dropout: float = 0.0,
+    device: str = "cpu",
+    calendar_file: Path | None = None,
+    symbol_graph: dict | str | Path | None = None,
+    news_sentiment: pd.DataFrame | None = None,
+    neighbor_corr_windows: Iterable[int] | None = None,
+    tick_encoder: Path | None = None,
+    drift_scores: dict[str, float] | None = None,
+    drift_threshold: float = 0.0,
+    drift_weight: float = 0.0,
+    **_,
+) -> TabTransformer:
+    """Train a :class:`TabTransformer` on tabular features."""
+    if not _HAS_TORCH:  # pragma: no cover - optional dependency
+        raise ImportError("PyTorch is required for tabtransformer model")
+
+    df, feature_names, _ = _load_logs(data_dir)
+    if not isinstance(df, pd.DataFrame):
+        df = pd.concat(list(df), ignore_index=True)
+    if "label" not in df.columns:
+        raise ValueError("label column missing from data")
+    df, feature_names, _, _ = _extract_features(
+        df,
+        feature_names,
+        symbol_graph=symbol_graph,
+        calendar_file=calendar_file,
+        news_sentiment=news_sentiment,
+        neighbor_corr_windows=neighbor_corr_windows,
+        tick_encoder=tick_encoder,
+    )
+
+    _apply_drift_pruning(
+        df, feature_names, drift_scores, drift_threshold, drift_weight
+    )
+
+    X = df[feature_names].to_numpy(dtype=float)
+    y = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
+    X, c_low, c_high = _clip_train_features(X)
+    scaler = RobustScaler().fit(X)
+    X_scaled = scaler.transform(X)
+
+    state, predict_fn, model = fit_tab_transformer(
+        X_scaled, y, epochs=epochs, lr=lr, dropout=dropout, device=device
+    )
+
+    probs = predict_fn(X_scaled)
+    preds = (probs >= 0.5).astype(int)
+    acc = float(accuracy_score(y, preds)) if len(y) else 0.0
+
+    model_json = {
+        "model_type": "tabtransformer",
+        "feature_names": feature_names,
+        "mean": scaler.center_.tolist(),
+        "std": scaler.scale_.tolist(),
+        "clip_low": c_low.tolist(),
+        "clip_high": c_high.tolist(),
+        "state_dict": state,
+        "metrics": {"accuracy": acc},
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model_json, f)
+
+    return model
+
+
 def _train_tree_model(
     data_dir: Path,
     out_dir: Path,
@@ -2463,6 +2645,23 @@ def train(
             bayesian_ensembles=bayesian_ensembles,
             **kwargs,
         )
+    elif model_type == "tabtransformer":
+        return _train_tab_transformer(
+            data_dir,
+            out_dir,
+            calendar_file=calendar_file,
+            symbol_graph=graph_path,
+            news_sentiment=ns_df,
+            neighbor_corr_windows=neighbor_corr_windows,
+            tick_encoder=tick_encoder,
+            drift_scores=drift_scores,
+            drift_threshold=drift_threshold,
+            drift_weight=drift_weight,
+            epochs=kwargs.get("epochs", 5),
+            lr=kwargs.get("lr", 1e-3),
+            dropout=kwargs.get("dropout", 0.0),
+            device=kwargs.get("device", "cpu"),
+        )
     elif model_type in {"xgboost", "lgbm", "catboost"}:
         _train_tree_model(
             data_dir,
@@ -2699,7 +2898,14 @@ def main() -> None:
     )
     p.add_argument(
         "--model-type",
-        choices=["logreg", "xgboost", "lgbm", "catboost", "transformer"],
+        choices=[
+            "logreg",
+            "xgboost",
+            "lgbm",
+            "catboost",
+            "transformer",
+            "tabtransformer",
+        ],
         default="logreg",
         help="which model architecture to train",
     )
@@ -2718,13 +2924,13 @@ def main() -> None:
         "--epochs",
         type=int,
         default=5,
-        help="number of training epochs for transformer",
+        help="number of training epochs for transformer models",
     )
     p.add_argument(
         "--lr",
         type=float,
         default=1e-3,
-        help="learning rate for transformer optimizer",
+        help="learning rate for transformer optimizers",
     )
     p.add_argument(
         "--dropout",
