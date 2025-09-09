@@ -54,3 +54,22 @@ def test_conformal_bounds_change(tmp_path: Path):
     lower2, upper2 = second.get("conformal_lower"), second.get("conformal_upper")
     assert (lower1, upper1) != (lower2, upper2)
 
+
+def test_regime_shift_triggers_reset(tmp_path: Path, caplog):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=5)
+    trainer.cp_window = 4
+    trainer.cp_threshold = 1.0
+    baseline = [{"a": 0.0, "b": 0.0, "y": 0} for _ in range(5)]
+    for _ in range(4):
+        trainer.update(baseline)
+    old = trainer.clf
+    shift = [{"a": 10.0, "b": 10.0, "y": 1} for _ in range(5)]
+    with caplog.at_level(logging.INFO):
+        trainer.update(shift)
+    events = [
+        r.msg for r in caplog.records if isinstance(r.msg, dict) and r.msg.get("event") == "regime_shift"
+    ]
+    assert events, "regime shift event not logged"
+    assert trainer.clf is not old
+
