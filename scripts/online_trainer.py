@@ -36,7 +36,7 @@ import numpy as np
 import psutil
 import pandas as pd
 from collections import deque
-from sklearn.linear_model import SGDClassifier
+from sklearn.linear_model import SGDClassifier, LogisticRegression
 
 try:  # detect resources to adapt behaviour on weaker hardware
     if __package__:
@@ -171,6 +171,9 @@ class OnlineTrainer:
         self.half_life_days = 0.0
         self.weight_decay: Dict[str, Any] | None = None
         self.recent_probs: deque[float] = deque(maxlen=1000)
+        self.calib_scores: deque[float] = deque(maxlen=1000)
+        self.calib_labels: deque[int] = deque(maxlen=1000)
+        self.calibrator: LogisticRegression | None = None
         self.conformal_lower: float | None = None
         self.conformal_upper: float | None = None
         self.gnn_state: Dict[str, Any] | None = None
@@ -223,6 +226,13 @@ class OnlineTrainer:
         self.conformal_lower = data.get("conformal_lower")
         self.conformal_upper = data.get("conformal_upper")
         self.gnn_state = data.get("gnn_state")
+        calib = data.get("calibration")
+        if calib and {"coef", "intercept"} <= calib.keys():
+            self.calibrator = LogisticRegression()
+            self.calibrator.classes_ = np.array([0, 1])
+            self.calibrator.coef_ = np.array([[calib["coef"]]])
+            self.calibrator.intercept_ = np.array([calib["intercept"]])
+            self.calibrator.n_features_in_ = 1
         if self.gnn_state and _HAS_TG and Path("symbol_graph.json").exists():
             try:
                 self.graph_dataset = GraphDataset(Path("symbol_graph.json"))
@@ -256,6 +266,11 @@ class OnlineTrainer:
             payload["conformal_upper"] = self.conformal_upper
         if self.gnn_state:
             payload["gnn_state"] = self.gnn_state
+        if self.calibrator is not None:
+            payload["calibration"] = {
+                "coef": float(self.calibrator.coef_[0][0]),
+                "intercept": float(self.calibrator.intercept_[0]),
+            }
         try:
             existing = json.loads(self.model_path.read_text())
         except Exception:
@@ -358,7 +373,21 @@ class OnlineTrainer:
             lr_used = self.clf.eta0
             self.lr_history.append(lr_used)
             try:
-                probs = self.clf.predict_proba(X)
+                raw_probs = self.clf.predict_proba(X)[:, 1]
+                self.calib_scores.extend(raw_probs.tolist())
+                self.calib_labels.extend(y.tolist())
+                if len(self.calib_labels) >= 2 and len(set(self.calib_labels)) > 1:
+                    scores = np.array(self.calib_scores).reshape(-1, 1)
+                    labels = np.array(self.calib_labels)
+                    try:
+                        self.calibrator = LogisticRegression().fit(scores, labels)
+                    except Exception:
+                        self.calibrator = None
+                if self.calibrator is not None:
+                    probs1 = self.calibrator.predict_proba(raw_probs.reshape(-1, 1))[:, 1]
+                else:
+                    probs1 = raw_probs
+                probs = np.column_stack([1 - probs1, probs1])
                 self.recent_probs.extend(probs[np.arange(len(y)), y])
                 arr = np.fromiter(self.recent_probs, dtype=float)
                 self.conformal_lower = float(np.quantile(arr, 0.05))
