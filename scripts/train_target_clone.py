@@ -19,6 +19,7 @@ import subprocess
 import time
 import shutil
 import importlib.util
+from collections import deque
 from pathlib import Path
 from datetime import datetime
 from typing import Iterable, Tuple, Callable, Sequence
@@ -499,9 +500,8 @@ def _load_logs(
     )
     if price_col is not None:
         prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
-        spreads = (
-            pd.to_numeric(df.get("spread", 0.0), errors="coerce").fillna(0.0)
-        )
+        spread_src = df["spread"] if "spread" in df.columns else pd.Series(0.0, index=df.index)
+        spreads = pd.to_numeric(spread_src, errors="coerce").fillna(0.0)
         if not spreads.any():
             spreads = (prices.abs() * 0.001).fillna(0.0)
         tp = prices + take_profit_mult * spreads
@@ -707,6 +707,29 @@ def _extract_features(
             "bollinger_lower",
             "atr",
         ]
+
+        # Fourier features from rolling windows of prices
+        fft_window = 16
+        fft_bins = 3
+        price_win: deque[float] = deque(maxlen=fft_window)
+        fft_mag = [[0.0] * len(price_series) for _ in range(fft_bins)]
+        fft_phase = [[0.0] * len(price_series) for _ in range(fft_bins)]
+        for idx, val in enumerate(price_series):
+            price_win.append(float(val))
+            if len(price_win) == fft_window:
+                fft_vals = np.fft.rfft(np.array(price_win, dtype=float))
+                for i in range(fft_bins):
+                    j = i + 1  # skip the DC component
+                    if j < len(fft_vals):
+                        comp = fft_vals[j]
+                        fft_mag[i][idx] = float(np.abs(comp))
+                        fft_phase[i][idx] = float(np.angle(comp))
+        for i in range(fft_bins):
+            df[f"fft_{i}_mag"] = fft_mag[i]
+            df[f"fft_{i}_phase"] = fft_phase[i]
+        feature_names = feature_names + [
+            f"fft_{i}_mag" for i in range(fft_bins)
+        ] + [f"fft_{i}_phase" for i in range(fft_bins)]
     base_cols: dict[str, str] = {}
     if price_col is not None:
         base_cols["price"] = price_col
