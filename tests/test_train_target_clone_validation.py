@@ -14,6 +14,7 @@ from scripts.train_target_clone import (
     TCNClassifier,
     _load_logs,
     _extract_features,
+    predict_expected_value,
 )
 
 
@@ -354,3 +355,35 @@ def test_tcn_predictions(tmp_path):
     assert np.all((preds >= 0.0) & (preds <= 1.0))
     acc = ((preds > 0.5) == y[win:]).mean()
     assert acc >= 0.5
+
+
+def test_expected_value_pipeline_outputs_expected_profit(tmp_path: Path) -> None:
+    rows = [
+        "label,profit,hour,spread\n",
+        "1,2,1,0.5\n",
+        "0,-1,2,0.5\n",
+        "1,3,3,0.5\n",
+        "0,-0.5,4,0.5\n",
+    ]
+    data = tmp_path / "trades_raw.csv"
+    data.write_text("".join(rows))
+    out_dir = tmp_path / "out"
+    train(data, out_dir, expected_value=True)
+    model = json.loads((out_dir / "model.json").read_text())
+    params = next(iter(model["session_models"].values()))
+    proc, fcols, _ = _load_logs(data)
+    if not isinstance(proc, pd.DataFrame):
+        proc = pd.concat(list(proc), ignore_index=True)
+    proc, fcols, _, _ = _extract_features(proc, fcols)
+    X = proc[model["feature_names"]].to_numpy(dtype=float)
+    preds = predict_expected_value(model, X)
+    mean = np.array(params["feature_mean"])
+    std = np.array(params["feature_std"])
+    X_scaled = (X - mean) / np.where(std == 0, 1, std)
+    coef = np.array(params["coefficients"])
+    logits = X_scaled @ coef + params["intercept"]
+    prob = 1 / (1 + np.exp(-logits))
+    pnl_coef = np.array(params["pnl_model"]["coefficients"])
+    pnl = X_scaled @ pnl_coef + params["pnl_model"]["intercept"]
+    expected_manual = prob * pnl
+    assert np.allclose(preds, expected_manual)

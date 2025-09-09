@@ -138,6 +138,17 @@ def _load_logreg_params(model: dict) -> dict | None:
         if coef.ndim > 1:
             coef = coef[0]
         n = int(coef.shape[0])
+        pnl_raw = params.get("pnl_model")
+        pnl_model = None
+        if isinstance(pnl_raw, dict):
+            pnl_model = {
+                "coefficients": np.asarray(
+                    pnl_raw.get("coefficients", []), dtype=float
+                ),
+                "intercept": float(
+                    np.asarray(pnl_raw.get("intercept", 0.0)).reshape(-1)[0]
+                ),
+            }
         return {
             "feature_names": model.get("feature_names", []),
             "coefficients": coef,
@@ -146,9 +157,27 @@ def _load_logreg_params(model: dict) -> dict | None:
             "feature_std": np.asarray(params.get("feature_std", np.ones(n)), dtype=float),
             "clip_low": np.asarray(params.get("clip_low", np.full(n, -np.inf)), dtype=float),
             "clip_high": np.asarray(params.get("clip_high", np.full(n, np.inf)), dtype=float),
+            "pnl_model": pnl_model,
         }
     except Exception:
         return None
+
+
+def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
+    """Predict expected profit by combining classification and regression."""
+    params = _load_logreg_params(model)
+    if not params:
+        raise ValueError("invalid model")
+    denom = np.where(params["feature_std"] == 0, 1, params["feature_std"])
+    X_scaled = (X - params["feature_mean"]) / denom
+    X_scaled = _clip_apply(X_scaled, params["clip_low"], params["clip_high"])
+    logits = X_scaled @ params["coefficients"] + params["intercept"]
+    prob = _sigmoid(logits)
+    pnl_params = params.get("pnl_model")
+    pnl = np.zeros_like(prob)
+    if pnl_params is not None:
+        pnl = X_scaled @ pnl_params["coefficients"] + pnl_params["intercept"]
+    return prob * pnl
 
 
 if _HAS_TORCH:
@@ -1210,6 +1239,7 @@ def _train_lite_mode(
     pseudo_weight: float = 0.5,
     pseudo_confidence_low: float = 0.1,
     pseudo_confidence_high: float = 0.9,
+    expected_value: bool = False,
     augment_data: float = 0.0,
     **_: object,
 ) -> None:
@@ -1956,6 +1986,9 @@ def _train_lite_mode(
                 "take_profit",
             ]
         )
+        pnl_model = _fit_regression(
+            ["future_pnl", "pnl", "profit", "net_profit"]
+        )
 
         params: dict[str, object] = {
             "coefficients": clf_full.coef_[0].astype(float).tolist(),
@@ -1996,6 +2029,9 @@ def _train_lite_mode(
             params["sl_model"] = sl_model
         if tp_model:
             params["tp_model"] = tp_model
+        if pnl_model and expected_value:
+            params["pnl_model"] = pnl_model
+            params["prediction"] = "expected_value"
         params["n_samples"] = int(len(group))
         session_models[model_name] = params
         cv_acc_all.append(mean_acc)
@@ -2095,6 +2131,8 @@ def _train_lite_mode(
         "pseudo_samples": int(pseudo_kept or pseudo_orig),
         "dropped_noisy": int(dropped_noisy),
     }
+    if expected_value:
+        model["combine"] = "probability_times_pnl"
     model["meta_barriers"] = {
         "take_profit_mult": float(take_profit_mult),
         "stop_loss_mult": float(stop_loss_mult),
@@ -2144,8 +2182,10 @@ def _train_lite_mode(
     # ------------------------------------------------------------------
     # Train alternative base models and a simple gating network
     # ------------------------------------------------------------------
-    def _fit_base_model(X: np.ndarray, y: np.ndarray, w: np.ndarray):
-        """Fit logistic regression and return params, predictor and model."""
+    def _fit_base_model(
+        X: np.ndarray, y: np.ndarray, w: np.ndarray, pnl: np.ndarray | None = None
+    ):
+        """Fit logistic classifier and optional PnL regressor."""
         if smote_threshold is not None:
             X, y, w = _maybe_smote(X, y, w, threshold=smote_threshold)
         X_clip, c_low, c_high = _clip_train_features(X)
@@ -2208,6 +2248,14 @@ def _train_lite_mode(
                 scaler.transform(_clip_apply(inp, c_low, c_high))
             )[:, 1]
 
+        pnl_model: dict[str, object] | None = None
+        if expected_value and pnl is not None:
+            reg = LinearRegression().fit(X_scaled, pnl, sample_weight=w)
+            pnl_model = {
+                "coefficients": reg.coef_.astype(float).tolist(),
+                "intercept": float(reg.intercept_),
+            }
+
         params = {
             "coefficients": coef.astype(float).tolist(),
             "intercept": float(intercept),
@@ -2217,6 +2265,9 @@ def _train_lite_mode(
             "conformal_lower": 0.0,
             "conformal_upper": 1.0,
         }
+        if pnl_model is not None:
+            params["pnl_model"] = pnl_model
+            params["prediction"] = "expected_value"
         return params, _predict, clf, scaler, c_low, c_high
 
     # Use spread as a crude volatility proxy; fall back to zeros
@@ -3384,6 +3435,7 @@ def train(
     pseudo_confidence_low: float = 0.1,
     pseudo_confidence_high: float = 0.9,
     augment_data: float = 0.0,
+    expected_value: bool = False,
     explain: bool = False,
     **kwargs,
 ) -> None:
@@ -3528,6 +3580,7 @@ def train(
             hold_period=hold_period,
             use_meta_label=use_meta_label,
             augment_data=augment_data,
+            expected_value=expected_value,
             threshold_objective=threshold_objective,
             quantile_model=quantile_model,
             **kwargs,
@@ -3749,6 +3802,11 @@ def main() -> None:
         type=float,
         default=0.0,
         help="ratio of synthetic data augmentation to apply",
+    )
+    p.add_argument(
+        "--expected-value",
+        action="store_true",
+        help="train PnL regressor and output expected value",
     )
     p.add_argument(
         "--half-life-days",
@@ -4033,6 +4091,7 @@ def main() -> None:
         pseudo_confidence_high=args.pseudo_confidence_high,
         pseudo_confidence_low=args.pseudo_confidence_low,
         augment_data=args.augment_data,
+        expected_value=args.expected_value,
         use_meta_label=args.use_meta_label,
         take_profit_mult=args.take_profit_mult,
         stop_loss_mult=args.stop_loss_mult,
