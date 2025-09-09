@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
+from statistics import NormalDist
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
@@ -55,6 +56,29 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
                             or r.get("proba")
                         )
                         else None
+                    ),
+                    "value": (
+                        float(
+                            r.get("expected_value")
+                            or r.get("value")
+                            or r.get("pnl")
+                            or 0
+                        )
+                        if (
+                            r.get("expected_value")
+                            or r.get("value")
+                            or r.get("pnl")
+                        )
+                        else None
+                    ),
+                    "log_variance": (
+                        float(r.get("log_variance") or r.get("logvar"))
+                        if (r.get("log_variance") or r.get("logvar"))
+                        else (
+                            math.log(float(r.get("variance")))
+                            if r.get("variance")
+                            else None
+                        )
                     ),
                     "executed_model_idx": (
                         int(float(r.get("executed_model_idx") or r.get("model_idx") or r.get("model") or -1))
@@ -141,6 +165,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
     bound_total = 0
     y_true: List[int] = []
     y_score: List[float] = []
+    nll_values: List[float] = []
+    es_pred_values: List[float] = []
     for idx, trade in enumerate(actual_trades):
         did = trade.get("decision_id")
         if did is not None and did not in trade_by_decision:
@@ -194,6 +220,16 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
                 matches_per_model[model_idx] = (
                 matches_per_model.get(model_idx, 0) + 1
             )
+            mu = pred.get("value")
+            log_v = pred.get("log_variance")
+            if mu is not None and log_v is not None:
+                var = math.exp(log_v)
+                nll = 0.5 * (math.log(2 * math.pi) + log_v + ((p - mu) ** 2) / var)
+                nll_values.append(nll)
+                sigma = math.sqrt(var)
+                nd = NormalDist()
+                z = nd.inv_cdf(0.05)
+                es_pred_values.append(mu - sigma * nd.pdf(z) / 0.05)
 
     for idx, trade in enumerate(actual_trades):
         if idx not in used:
@@ -265,6 +301,8 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
             roc_auc = roc_auc_score(y_true, y_score)
             pr_auc = average_precision_score(y_true, y_score)
     conformal = bound_in / bound_total if bound_total else None
+    nll_mean = float(np.mean(nll_values)) if nll_values else None
+    es_pred_mean = float(np.mean(es_pred_values)) if es_pred_values else None
     stats: Dict[str, object] = {
         "matched_events": matches,
         "predicted_events": len(predictions),
@@ -294,6 +332,10 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
         "brier_score": brier,
         "reliability_curve": reliability,
     }
+    if nll_mean is not None:
+        stats["neg_log_likelihood"] = nll_mean
+    if es_pred_mean is not None:
+        stats["expected_shortfall_pred"] = es_pred_mean
     if model_value_mean is not None:
         stats["model_value_mean"] = model_value_mean
     if model_value_std is not None:

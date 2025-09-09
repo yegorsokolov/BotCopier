@@ -11,7 +11,7 @@ try:  # pragma: no cover - optional dependency
     from schemas.trades import TradeEvent  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     TradeEvent = None  # type: ignore
-from sklearn.linear_model import LogisticRegression, QuantileRegressor
+from sklearn.linear_model import LogisticRegression, QuantileRegressor, LinearRegression
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
@@ -244,6 +244,69 @@ def fit_quantile_model(
         reg.fit(X, y)
         models[float(q)] = reg
     return models
+
+
+def fit_heteroscedastic_regressor(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    sample_weight: np.ndarray | None = None,
+    model_type: str = "linear",
+    **params: float | int,
+) -> tuple[object, object]:
+    """Fit a heteroscedastic regressor returning mean and log-variance models.
+
+    This trains two separate models: one predicting the conditional mean of ``y``
+    given ``X`` and another predicting the log of the conditional variance.  The
+    variance model is trained on the squared residuals from the mean model.  The
+    function supports simple linear regression as well as gradient boosting
+    regressors.  More sophisticated models (e.g. neural networks) can be added
+    by extending the ``model_type`` argument.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Feature matrix.
+    y : np.ndarray
+        Target values.
+    sample_weight : np.ndarray | None, optional
+        Optional sample weights.
+    model_type : str, optional
+        ``"gbrt"`` to use :class:`GradientBoostingRegressor` models or
+        ``"linear"`` to use :class:`LinearRegression`.  The default is
+        ``"linear"``.
+    **params : float | int
+        Additional keyword arguments passed to the regressor constructor.
+
+    Returns
+    -------
+    tuple[object, object]
+        ``(mean_model, log_var_model)`` where ``mean_model`` predicts the mean
+        of ``y`` and ``log_var_model`` predicts the log variance.
+    """
+
+    if model_type == "gbrt":
+        mean_model = GradientBoostingRegressor(**params)
+        mean_model.fit(X, y, sample_weight=sample_weight)
+        residuals = y - mean_model.predict(X)
+        log_var_model = GradientBoostingRegressor(**params)
+        log_var_model.fit(
+            X,
+            np.log(residuals**2 + 1e-6),
+            sample_weight=sample_weight,
+        )
+    else:
+        # Default to simple linear regression for compatibility with JSON
+        # serialisation used elsewhere in the project.
+        mean_model = LinearRegression().fit(X, y, sample_weight=sample_weight)
+        residuals = y - mean_model.predict(X)
+        log_var_model = LinearRegression().fit(
+            X,
+            np.log(residuals**2 + 1e-6),
+            sample_weight=sample_weight,
+        )
+
+    return mean_model, log_var_model
 
 
 def _compute_decay_weights(
