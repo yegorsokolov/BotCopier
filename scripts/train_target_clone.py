@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Iterable, Tuple, Callable, Sequence
 
 import logging
+import math
 import numpy as np
 import pandas as pd
 import psutil
@@ -40,6 +41,8 @@ from sklearn.metrics import (
     roc_auc_score,
     brier_score_loss,
 )
+
+from scripts.features import _is_hammer, _is_doji, _is_engulfing
 from sklearn.pipeline import make_pipeline
 from sklearn.feature_selection import mutual_info_classif
 from .splitters import PurgedWalkForward
@@ -822,6 +825,29 @@ def _extract_features(
             ]:
                 if col in df.columns and col not in feature_names:
                     feature_names.append(col)
+
+    if all(c in df.columns for c in ["open", "high", "low", "close"]):
+        opens = pd.to_numeric(df["open"], errors="coerce")
+        highs = pd.to_numeric(df["high"], errors="coerce")
+        lows = pd.to_numeric(df["low"], errors="coerce")
+        closes = pd.to_numeric(df["close"], errors="coerce")
+        h_flags: list[float] = []
+        d_flags: list[float] = []
+        e_flags: list[float] = []
+        prev_open = float("nan")
+        prev_close = float("nan")
+        for o, h, l, c in zip(opens, highs, lows, closes):
+            h_flags.append(1.0 if _is_hammer(o, h, l, c) else 0.0)
+            d_flags.append(1.0 if _is_doji(o, h, l, c) else 0.0)
+            if not math.isnan(prev_open) and not math.isnan(prev_close):
+                e_flags.append(1.0 if _is_engulfing(prev_open, prev_close, o, c) else 0.0)
+            else:
+                e_flags.append(0.0)
+            prev_open, prev_close = o, c
+        df["pattern_hammer"] = h_flags
+        df["pattern_doji"] = d_flags
+        df["pattern_engulfing"] = e_flags
+        feature_names.extend(["pattern_hammer", "pattern_doji", "pattern_engulfing"])
 
     if tick_encoder is not None and _HAS_TORCH:
         tick_cols = [c for c in df.columns if c.startswith("tick_")]

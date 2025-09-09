@@ -68,6 +68,42 @@ def _safe_float(val, default=0.0):
         return default
 
 
+def _is_hammer(open_p: float, high: float, low: float, close: float) -> bool:
+    """Return ``True`` if the candle resembles a hammer."""
+    if any(math.isnan(v) for v in [open_p, high, low, close]):
+        return False
+    body = abs(close - open_p)
+    upper = high - max(open_p, close)
+    lower = min(open_p, close) - low
+    total = high - low
+    if total <= 0:
+        return False
+    return lower >= 2 * body and upper <= body and body / total < 0.3
+
+
+def _is_doji(open_p: float, high: float, low: float, close: float, threshold: float = 0.1) -> bool:
+    """Return ``True`` if the candle is a doji."""
+    if any(math.isnan(v) for v in [open_p, high, low, close]):
+        return False
+    range_ = high - low
+    if range_ == 0:
+        return False
+    return abs(close - open_p) <= threshold * range_
+
+
+def _is_engulfing(prev_open: float, prev_close: float, open_p: float, close: float) -> bool:
+    """Return ``True`` if current candle engulfs the previous one."""
+    if any(math.isnan(v) for v in [prev_open, prev_close, open_p, close]):
+        return False
+    prev_body = abs(prev_close - prev_open)
+    body = abs(close - open_p)
+    if body <= prev_body:
+        return False
+    return (open_p < prev_close and close > prev_open) or (
+        open_p > prev_close and close < prev_open
+    )
+
+
 def _rsi(values, period):
     """Very small RSI implementation on ``values``."""
     if len(values) < 2:
@@ -279,6 +315,8 @@ def _extract_features(
     tp_targets = []
     lot_targets = []
     prices = []
+    open_history: list[float] = []
+    close_history: list[float] = []
     hours = []
     times = []
     imbalance_history: list[float] = []
@@ -422,6 +460,10 @@ def _extract_features(
         label = 1 if order_type == 0 else 0  # buy=1, sell=0
 
         price = _safe_float(r.get("price", 0))
+        open_p = _safe_float(r.get("open", price))
+        high_p = _safe_float(r.get("high", price))
+        low_p = _safe_float(r.get("low", price))
+        close_p = _safe_float(r.get("close", price))
         sl = _safe_float(r.get("sl", 0))
         tp = _safe_float(r.get("tp", 0))
         lots = _safe_float(r.get("lots", 0))
@@ -479,6 +521,14 @@ def _extract_features(
         exit_reason = str(r.get("exit_reason", "") or "").upper()
         duration_sec = int(float(r.get("duration_sec", 0) or 0))
 
+        hammer = 1.0 if _is_hammer(open_p, high_p, low_p, close_p) else 0.0
+        doji = 1.0 if _is_doji(open_p, high_p, low_p, close_p) else 0.0
+        engulf = (
+            1.0
+            if open_history and _is_engulfing(open_history[-1], close_history[-1], open_p, close_p)
+            else 0.0
+        )
+
         feat = {
             "symbol": symbol,
             "hour_sin": hour_sin,
@@ -505,6 +555,9 @@ def _extract_features(
             "exit_reason": exit_reason,
             "duration_sec": duration_sec,
             "event_id": int(float(r.get("event_id", 0) or 0)),
+            "pattern_hammer": hammer,
+            "pattern_doji": doji,
+            "pattern_engulfing": engulf,
         }
 
         if use_dom:
@@ -709,6 +762,8 @@ def _extract_features(
 
         prices.append(price)
         sym_prices.append(price)
+        open_history.append(open_p)
+        close_history.append(close_p)
         for sym, series in extra_series.items():
             if sym == symbol:
                 continue
