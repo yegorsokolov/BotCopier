@@ -25,7 +25,9 @@ def test_regime_labels_assigned(tmp_path: Path) -> None:
     regime_path = tmp_path / "regime_model.json"
     _write_regime_model(regime_path)
     df, feature_cols, _ = _load_logs(data)
-    df, feature_cols, _ = _extract_features(df, feature_cols, regime_model=regime_path)
+    df, feature_cols, _, _ = _extract_features(
+        df, feature_cols, regime_model=regime_path
+    )
     assert df["regime"].tolist() == [0, 1]
     assert df["regime_0"].tolist() == [1.0, 0.0]
     assert df["regime_1"].tolist() == [0.0, 1.0]

@@ -26,7 +26,7 @@ def test_scaler_robust_with_outliers(tmp_path):
     params = model["session_models"]["asian"]
 
     df, features, _ = _load_logs(data)
-    df, features, _ = _extract_features(df, features)
+    df, features, _, _ = _extract_features(df, features)
     X = df[features].to_numpy(dtype=float)
     clip_min = np.quantile(X, 0.01, axis=0)
     clip_max = np.quantile(X, 0.99, axis=0)
