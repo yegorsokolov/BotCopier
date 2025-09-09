@@ -64,10 +64,12 @@ except Exception:  # pragma: no cover
 
 try:  # Optional dependency
     import torch
+    from .explain import integrated_gradients
 
     _HAS_TORCH = True
 except Exception:  # pragma: no cover
     torch = None
+    integrated_gradients = None  # type: ignore
     _HAS_TORCH = False
 
 try:  # Optional dependency
@@ -2352,6 +2354,7 @@ def _train_transformer(
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
     use_meta_label: bool = False,
+    explain: bool = False,
     **_,
 ) -> torch.nn.Module:
     """Train a tiny attention encoder on rolling feature windows."""
@@ -2581,6 +2584,12 @@ def _train_transformer(
         teacher_logits = model(X.to(dev)).squeeze(-1)
         teacher_probs = torch.sigmoid(teacher_logits).cpu().numpy()
 
+    if explain:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        attrs = integrated_gradients(model, X.to(dev))
+        np.save(out_dir / "predictions.npy", teacher_probs)
+        np.save(out_dir / "attributions.npy", attrs.detach().cpu().numpy())
+
     bayes_info: dict | None = None
     if bayesian_ensembles and bayesian_ensembles > 1 and dropout > 0.0:
         model.train()
@@ -2728,6 +2737,7 @@ def _train_tab_transformer(
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
     use_meta_label: bool = False,
+    explain: bool = False,
     **_,
 ) -> TabTransformer:
     """Train a :class:`TabTransformer` on tabular features."""
@@ -2794,6 +2804,15 @@ def _train_tab_transformer(
     probs = predict_fn(X_scaled)
     preds = (probs >= 0.5).astype(int)
     acc = float(accuracy_score(y, preds)) if len(y) else 0.0
+
+    if explain:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        xt = torch.tensor(
+            X_scaled, dtype=torch.float32, device=next(model.parameters()).device
+        )
+        attrs = integrated_gradients(model, xt)
+        np.save(out_dir / "predictions.npy", probs)
+        np.save(out_dir / "attributions.npy", attrs.detach().cpu().numpy())
 
     model_json = {
         "model_type": "tabtransformer",
@@ -3095,6 +3114,7 @@ def train(
     pseudo_weight: float = 0.5,
     pseudo_confidence_low: float = 0.1,
     pseudo_confidence_high: float = 0.9,
+    explain: bool = False,
     **kwargs,
 ) -> None:
     """Public training entry point."""
@@ -3139,6 +3159,7 @@ def train(
             pseudo_weight=pseudo_weight,
             pseudo_confidence_low=pseudo_confidence_low,
             pseudo_confidence_high=pseudo_confidence_high,
+            explain=explain,
             **kwargs,
         )
     elif model_type == "tabtransformer":
@@ -3158,6 +3179,7 @@ def train(
             stop_loss_mult=stop_loss_mult,
             hold_period=hold_period,
             use_meta_label=use_meta_label,
+            explain=explain,
             epochs=kwargs.get("epochs", 5),
             lr=kwargs.get("lr", 1e-3),
             dropout=kwargs.get("dropout", 0.0),
@@ -3482,6 +3504,11 @@ def main() -> None:
         help="number of models for Bayesian ensemble averaging",
     )
     p.add_argument(
+        "--explain",
+        action="store_true",
+        help="save per-feature attribution arrays alongside predictions",
+    )
+    p.add_argument(
         "--quantile-model",
         action="store_true",
         help="train additional quantile regressors on future PnL",
@@ -3702,6 +3729,7 @@ def main() -> None:
         stop_loss_mult=args.stop_loss_mult,
         hold_period=args.hold_period,
         threshold_objective=args.threshold_objective,
+        explain=args.explain,
     )
 
 
