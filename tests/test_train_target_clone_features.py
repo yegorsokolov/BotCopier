@@ -121,6 +121,31 @@ def test_calendar_fields_utc_and_ranges() -> None:
         assert ((df[col] >= -1) & (df[col] <= 1)).all()
 
 
+def test_rank_feature_bounds() -> None:
+    df = pd.DataFrame(
+        {
+            "label": [0, 0, 0, 0],
+            "price": [1.0, 1.0, 2.0, 1.9],
+            "volume": [100, 110, 200, 150],
+            "symbol": ["AAA", "BBB", "AAA", "BBB"],
+            "event_time": [
+                "2020-01-01T00:00:00",
+                "2020-01-01T00:00:00",
+                "2020-01-01T00:01:00",
+                "2020-01-01T00:01:00",
+            ],
+        }
+    )
+    feature_cols = ["price", "volume"]
+    df, feature_cols, _, _ = _extract_features(
+        df, feature_cols, rank_features=True
+    )
+    assert "ret_rank" in feature_cols
+    assert "vol_rank" in feature_cols
+    assert df["ret_rank"].between(0, 1).all()
+    assert df["vol_rank"].between(0, 1).all()
+
+
 def test_mutual_info_feature_filter(tmp_path: Path) -> None:
     data = tmp_path / "trades_raw.csv"
     rows = [

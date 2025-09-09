@@ -774,6 +774,7 @@ def _extract_features(
     tick_encoder: Path | None = None,
     calendar_features: bool = True,
     pca_components: dict | None = None,
+    rank_features: bool = False,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]]:
     """Attach graph embeddings, calendar flags and correlation features."""
 
@@ -1131,6 +1132,24 @@ def _extract_features(
                         feature_names.append(col)
         except Exception:
             pass
+    if rank_features and "symbol" in df.columns:
+        idx_col = "event_time" if "event_time" in df.columns else None
+        group = df[idx_col] if idx_col else df.index
+        if price_col is not None:
+            prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
+            returns = prices.groupby(df["symbol"]).pct_change().fillna(0.0)
+            r_rank = returns.groupby(group).rank(method="min") - 1
+            r_count = returns.groupby(group).transform("count") - 1
+            df["ret_rank"] = np.where(r_count > 0, r_rank / r_count, 0.5)
+            if "ret_rank" not in feature_names:
+                feature_names.append("ret_rank")
+        if "volume" in df.columns:
+            vols = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+            v_rank = vols.groupby(group).rank(method="min") - 1
+            v_count = vols.groupby(group).transform("count") - 1
+            df["vol_rank"] = np.where(v_count > 0, v_rank / v_count, 0.5)
+            if "vol_rank" not in feature_names:
+                feature_names.append("vol_rank")
     # Generate pairwise interaction features from numeric columns
     # Disabled by default to keep the feature space stable across environments
     # where ``scikit-learn`` may or may not be installed.
@@ -1203,6 +1222,8 @@ def _train_multi_output_clf(
     label_cols: list[str],
     out_dir: Path,
     pca_components: dict | None = None,
+    *,
+    rank_features: bool = False,
 ) -> None:
     """Fit a multi-output ``SGDClassifier`` and persist model parameters."""
 
@@ -1238,6 +1259,7 @@ def _train_multi_output_clf(
         "feature_names": feature_names,
         "label_columns": label_cols,
     }
+    model["rank_features"] = bool(rank_features)
     if pca_components:
         model["pca_components"] = pca_components
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1310,6 +1332,7 @@ def _train_lite_mode(
     pseudo_confidence_low: float = 0.1,
     pseudo_confidence_high: float = 0.9,
     expected_value: bool = False,
+    rank_features: bool = False,
     augment_data: float = 0.0,
     **_: object,
 ) -> None:
@@ -1513,6 +1536,7 @@ def _train_lite_mode(
         neighbor_corr_windows=neighbor_corr_windows,
         regime_model=regime_model,
         tick_encoder=tick_encoder,
+        rank_features=rank_features,
     )
     pca_components = df.attrs.get("pca_components")
 
@@ -1714,7 +1738,12 @@ def _train_lite_mode(
     active_labels = [c for c in label_cols if df[c].nunique() > 1]
     if len(active_labels) > 1:
         _train_multi_output_clf(
-            df, feature_names, active_labels, out_dir, pca_components=pca_components
+            df,
+            feature_names,
+            active_labels,
+            out_dir,
+            pca_components=pca_components,
+            rank_features=rank_features,
         )
         return
 
@@ -2203,6 +2232,7 @@ def _train_lite_mode(
         "training_rows": int(len(df)),
         "pseudo_samples": int(pseudo_kept or pseudo_orig),
         "dropped_noisy": int(dropped_noisy),
+        "rank_features": bool(rank_features),
     }
     if pca_components:
         model["pca_components"] = pca_components
@@ -2616,6 +2646,7 @@ def _train_transformer(
     hold_period: int = 20,
     use_meta_label: bool = False,
     explain: bool = False,
+    rank_features: bool = False,
     **_,
 ) -> torch.nn.Module:
     """Train a tiny attention encoder on rolling feature windows."""
@@ -2663,6 +2694,7 @@ def _train_transformer(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
+        rank_features=rank_features,
     )
     pca_components = df.attrs.get("pca_components")
     pca_components = df.attrs.get("pca_components")
@@ -2961,6 +2993,7 @@ def _train_transformer(
         "synthetic_metrics": synthetic_info,
         "distilled": distilled,
         "models": {"logreg": distilled},
+        "rank_features": bool(rank_features),
     }
     if pca_components:
         model_json["pca_components"] = pca_components
@@ -3008,6 +3041,7 @@ def _train_tab_transformer(
     hold_period: int = 20,
     use_meta_label: bool = False,
     explain: bool = False,
+    rank_features: bool = False,
     **_,
 ) -> TabTransformer:
     """Train a :class:`TabTransformer` on tabular features."""
@@ -3055,6 +3089,7 @@ def _train_tab_transformer(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
+        rank_features=rank_features,
     )
 
     _apply_drift_pruning(
@@ -3099,6 +3134,7 @@ def _train_tab_transformer(
             "hold_period": int(hold_period),
             "use_meta_label": bool(use_meta_label),
         },
+        "rank_features": bool(rank_features),
     }
     if pca_components:
         model_json["pca_components"] = pca_components
@@ -3138,6 +3174,7 @@ def _train_tcn(
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
     use_meta_label: bool = False,
+    rank_features: bool = False,
     **_,
 ) -> TCNClassifier:
     """Train a :class:`TCNClassifier` on rolling feature windows."""
@@ -3185,6 +3222,7 @@ def _train_tcn(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
+        rank_features=rank_features,
     )
 
     _apply_drift_pruning(
@@ -3232,6 +3270,7 @@ def _train_tcn(
         "state_dict": state,
         "metrics": {"accuracy": acc},
         "window": int(window),
+        "rank_features": bool(rank_features),
     }
     if pca_components:
         model_json["pca_components"] = pca_components
@@ -3275,6 +3314,7 @@ def _train_tree_model(
     hold_period: int = 20,
     use_meta_label: bool = False,
     distill_teacher: bool = False,
+    rank_features: bool = False,
     **_: object,
 ) -> None:
     """Train tree-based models (XGBoost, LightGBM, CatBoost)."""
@@ -3375,6 +3415,7 @@ def _train_tree_model(
         news_sentiment=news_sentiment,
         neighbor_corr_windows=neighbor_corr_windows,
         tick_encoder=tick_encoder,
+        rank_features=rank_features,
     )
 
     _apply_drift_pruning(
@@ -3494,6 +3535,7 @@ def _train_tree_model(
             "hold_period": int(hold_period),
             "use_meta_label": bool(use_meta_label),
         },
+        "rank_features": bool(rank_features),
     }
     if pca_components:
         model_json["pca_components"] = pca_components
@@ -3556,6 +3598,7 @@ def train(
     pseudo_confidence_high: float = 0.9,
     augment_data: float = 0.0,
     expected_value: bool = False,
+    rank_features: bool = False,
     distill_teacher: bool = False,
     explain: bool = False,
     **kwargs,
@@ -3603,6 +3646,7 @@ def train(
             pseudo_confidence_low=pseudo_confidence_low,
             pseudo_confidence_high=pseudo_confidence_high,
             explain=explain,
+            rank_features=rank_features,
             **kwargs,
         )
     elif model_type == "tabtransformer":
@@ -3623,6 +3667,7 @@ def train(
             hold_period=hold_period,
             use_meta_label=use_meta_label,
             explain=explain,
+            rank_features=rank_features,
             epochs=kwargs.get("epochs", 5),
             lr=kwargs.get("lr", 1e-3),
             dropout=kwargs.get("dropout", 0.0),
@@ -3651,6 +3696,7 @@ def train(
             dropout=kwargs.get("dropout", 0.0),
             device=kwargs.get("device", "cpu"),
             focal_gamma=kwargs.get("focal_gamma"),
+            rank_features=rank_features,
         )
     elif model_type in {"xgboost", "lgbm", "catboost"}:
         _train_tree_model(
@@ -3672,6 +3718,7 @@ def train(
             hold_period=hold_period,
             use_meta_label=use_meta_label,
             distill_teacher=distill_teacher,
+            rank_features=rank_features,
             **kwargs,
         )
     else:
@@ -3705,6 +3752,7 @@ def train(
             expected_value=expected_value,
             threshold_objective=threshold_objective,
             quantile_model=quantile_model,
+            rank_features=rank_features,
             **kwargs,
         )
 
@@ -3929,6 +3977,11 @@ def main() -> None:
         "--expected-value",
         action="store_true",
         help="train PnL regressor and output expected value",
+    )
+    p.add_argument(
+        "--rank-features",
+        action="store_true",
+        help="include cross-sectional rank features",
     )
     p.add_argument(
         "--distill-teacher",
@@ -4219,6 +4272,7 @@ def main() -> None:
         pseudo_confidence_low=args.pseudo_confidence_low,
         augment_data=args.augment_data,
         expected_value=args.expected_value,
+        rank_features=args.rank_features,
         distill_teacher=args.distill_teacher,
         use_meta_label=args.use_meta_label,
         take_profit_mult=args.take_profit_mult,
