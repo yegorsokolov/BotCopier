@@ -47,6 +47,9 @@ except Exception:  # pragma: no cover
     _HAS_MLFLOW = False
 
 
+logger = logging.getLogger(__name__)
+
+
 def train(
     data_dir: Path,
     out_dir: Path,
@@ -170,24 +173,55 @@ def sync_with_server(
     server_url: str,
     poll_interval: float = 1.0,
     timeout: float = 30.0,
+    max_retries: int = 5,
 ) -> None:
-    """Send model weights to a federated server and retrieve aggregated ones."""
+    """Send model weights to a federated server and retrieve aggregated ones.
+
+    Raises
+    ------
+    RuntimeError
+        If communication with ``server_url`` fails after ``max_retries`` attempts.
+    """
     open_func = gzip.open if model_path.suffix == ".gz" else open
     try:
         with open_func(model_path, "rt") as f:
             model = json.load(f)
     except FileNotFoundError:
         return
+
     try:
         import requests
+    except Exception as exc:  # pragma: no cover - import failure is rare
+        logger.exception("requests dependency not available")
+        raise RuntimeError("requests library required to sync with server") from exc
 
-        payload = {
-            "weights": model.get("coefficients"),
-            "intercept": model.get("intercept"),
-        }
-        requests.post(f"{server_url}/update", json=payload, timeout=5)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+    payload = {
+        "weights": model.get("coefficients"),
+        "intercept": model.get("intercept"),
+    }
+
+    delay = poll_interval
+    for attempt in range(1, max_retries + 1):
+        try:
+            requests.post(f"{server_url}/update", json=payload, timeout=5)
+            break
+        except Exception as exc:
+            logger.exception(
+                "Failed to post update to %s (attempt %d/%d)",
+                server_url,
+                attempt,
+                max_retries,
+            )
+            if attempt == max_retries:
+                raise RuntimeError("Failed to post update to server") from exc
+            time.sleep(delay)
+            delay *= 2
+
+    deadline = time.time() + timeout
+    delay = poll_interval
+    attempt = 1
+    while time.time() < deadline and attempt <= max_retries:
+        try:
             r = requests.get(f"{server_url}/weights", timeout=5)
             data = r.json()
             model["coefficients"] = data.get("weights", model.get("coefficients"))
@@ -195,9 +229,21 @@ def sync_with_server(
                 model["intercept"] = data["intercept"]
             with open_func(model_path, "wt") as f:
                 json.dump(model, f)
-            break
-    except Exception:
-        pass
+            return
+        except Exception as exc:
+            logger.exception(
+                "Failed to fetch weights from %s (attempt %d/%d)",
+                server_url,
+                attempt,
+                max_retries,
+            )
+            if attempt == max_retries or time.time() + delay > deadline:
+                raise RuntimeError("Failed to retrieve weights from server") from exc
+            time.sleep(delay)
+            delay *= 2
+            attempt += 1
+
+    raise RuntimeError("Timed out retrieving weights from server")
 
 
 def main() -> None:
