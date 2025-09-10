@@ -139,6 +139,58 @@ def _macd_update(state, price, short=12, long=26, signal=9):
     return macd, ema_signal
 
 
+# Default parameters for the lightweight Kalman filter
+KALMAN_DEFAULT_PARAMS = {"process_var": 1e-5, "measurement_var": 1e-2}
+
+
+def _kalman_update(
+    state: dict,
+    measurement: float,
+    process_var: float | None = None,
+    measurement_var: float | None = None,
+):
+    """Update a simple 1D Kalman filter and return (level, trend).
+
+    The filter uses a constant velocity model with state vector ``[level, trend]``.
+    ``state`` should be a dictionary that persists between calls.
+    """
+
+    q = process_var if process_var is not None else KALMAN_DEFAULT_PARAMS["process_var"]
+    r = (
+        measurement_var
+        if measurement_var is not None
+        else KALMAN_DEFAULT_PARAMS["measurement_var"]
+    )
+
+    if "x" not in state or "P" not in state:
+        state["x"] = np.zeros(2)
+        state["P"] = np.eye(2)
+
+    x = state["x"]
+    P = state["P"]
+
+    F = np.array([[1.0, 1.0], [0.0, 1.0]])  # state transition
+    Q = q * np.array([[0.25, 0.5], [0.5, 1.0]])  # process covariance
+    H = np.array([[1.0, 0.0]])  # observation model
+    R = np.array([[r]])  # measurement covariance
+
+    # Prediction step
+    x = F @ x
+    P = F @ P @ F.T + Q
+
+    # Update step
+    z = np.array([measurement], dtype=float)
+    y = z - H @ x
+    S = H @ P @ H.T + R
+    K = P @ H.T @ np.linalg.inv(S)
+    x = x + K @ y
+    P = (np.eye(2) - K @ H) @ P
+
+    state["x"] = x
+    state["P"] = P
+    return float(x[0]), float(x[1])
+
+
 @jit(nopython=True)
 def _stochastic_k_nb(price: float, prices: np.ndarray) -> float:
     low = prices.min()
