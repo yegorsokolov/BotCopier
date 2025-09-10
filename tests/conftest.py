@@ -6,6 +6,8 @@ ALLOWED = {
     "test_generate_mql4_from_model.py",
     "test_batch_backtest.py",
     "test_full_pipeline.py",
+    "performance",
+    "test_benchmarks.py",
 }
 
 

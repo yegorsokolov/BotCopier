@@ -23,5 +23,14 @@ jobs:
         run: mypy .
       - name: Run tests
         run: pytest
+      - name: Verify tutorials
+        run: PYTHONPATH=. pytest --doctest-glob="docs/*.md" docs
+      - name: Run performance benchmarks
+        run: pytest tests/performance --benchmark-only --benchmark-autosave
+      - name: Upload benchmark data
+        uses: actions/upload-artifact@v3
+        with:
+          name: pytest-benchmarks
+          path: .benchmarks
       - name: Build documentation
         run: mkdocs build --strict
