@@ -37,6 +37,7 @@ transformers
 pytorch-forecasting; extra == "tft"
 torch
 torch_geometric
+mlflow
 
 # Optional extras
 uvloop; extra == "uvloop"  # faster asyncio event loop (stream_listener.py, metrics_collector.py)
