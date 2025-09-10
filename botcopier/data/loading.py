@@ -1,21 +1,21 @@
 """Data loading helpers for BotCopier."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Iterable, Tuple
 
-import logging
 import numpy as np
 import pandas as pd
 
+from botcopier.features.augmentation import _augment_dataframe, _augment_dtw_dataframe
+
 from ..scripts.data_validation import validate_logs
-from botcopier.features.engineering import (
-    _augment_dataframe,
-    _augment_dtw_dataframe,
-)
 
 
-def _compute_meta_labels(prices: np.ndarray, tp: np.ndarray, sl: np.ndarray, hold_period: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _compute_meta_labels(
+    prices: np.ndarray, tp: np.ndarray, sl: np.ndarray, hold_period: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Vectorized computation of take-profit/stop-loss hit times and labels.
 
     Parameters
@@ -158,7 +158,9 @@ def _load_logs(
     )
     if price_col is not None:
         prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
-        spread_src = df["spread"] if "spread" in df.columns else pd.Series(0.0, index=df.index)
+        spread_src = (
+            df["spread"] if "spread" in df.columns else pd.Series(0.0, index=df.index)
+        )
         spreads = pd.to_numeric(spread_src, errors="coerce").fillna(0.0)
         if not spreads.any():
             spreads = (prices.abs() * 0.001).fillna(0.0)
@@ -187,9 +189,11 @@ def _load_logs(
 
     cs = chunk_size or (50000 if lite_mode else None)
     if cs:
+
         def _iter():
             for start in range(0, len(df), cs):
                 yield df.iloc[start : start + cs]
+
         return _iter(), feature_cols, []
 
     return df, feature_cols, []

@@ -2,9 +2,10 @@ import json
 import logging
 from pathlib import Path
 
-from botcopier.data.loading import _load_logs
 import botcopier.features.engineering as fe
-from botcopier.features.engineering import configure_cache, clear_cache, FeatureConfig
+from botcopier.data.loading import _load_logs
+from botcopier.features.engineering import FeatureConfig, clear_cache, configure_cache
+from botcopier.features.technical import _extract_features
 from botcopier.training.pipeline import train
 
 
@@ -33,10 +34,10 @@ def test_regime_labels_assigned(tmp_path: Path, caplog) -> None:
     clear_cache()
     df, feature_cols, _ = _load_logs(data)
     with caplog.at_level(logging.INFO):
-        df, feature_cols, _, _ = fe._extract_features(
+        df, feature_cols, _, _ = _extract_features(
             df, feature_cols, regime_model=regime_path
         )
-        fe._extract_features(df, feature_cols, regime_model=regime_path)
+        _extract_features(df, feature_cols, regime_model=regime_path)
     assert "cache hit for _extract_features" in caplog.text
     assert df["regime"].tolist() == [0, 1]
     assert df["regime_0"].tolist() == [1.0, 0.0]
@@ -62,8 +63,8 @@ def test_per_regime_training(tmp_path: Path, caplog) -> None:
     clear_cache()
     with caplog.at_level(logging.INFO):
         df, feature_cols, _ = _load_logs(data)
-        fe._extract_features(df, feature_cols, regime_model=regime_path)
-        fe._extract_features(df, feature_cols, regime_model=regime_path)
+        _extract_features(df, feature_cols, regime_model=regime_path)
+        _extract_features(df, feature_cols, regime_model=regime_path)
     assert "cache hit for _extract_features" in caplog.text
     train(data, out_dir, regime_model=regime_path, per_regime=True, cache_dir=cache_dir)
     model = json.loads((out_dir / "model.json").read_text())

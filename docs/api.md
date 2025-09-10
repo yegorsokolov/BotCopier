@@ -8,6 +8,18 @@
 
 ::: botcopier.features.engineering
 
+## Data Augmentation
+
+::: botcopier.features.augmentation
+
+## Anomaly Utilities
+
+::: botcopier.features.anomaly
+
+## Technical Features
+
+::: botcopier.features.technical
+
 ## Training Pipeline
 
 ::: botcopier.training.pipeline
