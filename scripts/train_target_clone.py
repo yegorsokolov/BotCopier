@@ -824,13 +824,13 @@ def _augment_dataframe(df: pd.DataFrame, ratio: float) -> pd.DataFrame:
 
 
 def _dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
-    """Return Dynamic Time Warping distance between two sequences."""
+    """Dynamic Time Warping distance between two multi-dimensional sequences."""
     n, m = len(a), len(b)
     dtw = np.full((n + 1, m + 1), np.inf)
     dtw[0, 0] = 0.0
     for i in range(1, n + 1):
         for j in range(1, m + 1):
-            cost = abs(a[i - 1] - b[j - 1])
+            cost = np.linalg.norm(a[i - 1] - b[j - 1])
             dtw[i, j] = cost + min(dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1])
     return float(dtw[n, m])
 
@@ -857,13 +857,12 @@ def _dtw_augment_dataframe(
             max_start = n - window + 1
             for j in np.random.randint(0, max_start, size=min(5, max_start)):
                 seq2 = base_arr[j : j + window]
-                dist = _dtw_distance(seq1[:, 0], seq2[:, 0])
+                dist = _dtw_distance(seq1, seq2)
                 if dist < best_dist:
                     best_dist = dist
                     best_j = j
         if best_j is None:
             best_j = i1
-        seq2 = base_arr[best_j : best_j + window]
         lam = np.random.beta(0.4, 0.4)
         for t in range(window):
             row1 = df.iloc[i1 + t]
@@ -877,8 +876,6 @@ def _dtw_augment_dataframe(
             new_row["dtw_aug_ratio"] = lam
             aug_rows.append(new_row)
 
-    if not aug_rows:
-        return df
     aug_df = pd.DataFrame(aug_rows)
     logging.info(
         "Augmenting data with %d DTW-mixed rows (ratio %.3f)",
