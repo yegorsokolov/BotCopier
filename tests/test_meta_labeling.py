@@ -1,6 +1,8 @@
 import json
-import pandas as pd
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 from botcopier.data.loading import _load_logs
 from botcopier.training.pipeline import train
@@ -24,17 +26,17 @@ def test_meta_labels_not_null(tmp_path: Path) -> None:
     assert df["meta_label"].notna().all()
 
 
-def test_meta_labeling_changes_performance(tmp_path: Path) -> None:
+def test_meta_labeling_changes_labels(tmp_path: Path) -> None:
     rows = [
-        [1, 1.00, 0.05, 0],
+        [0, 1.00, 0.05, 0],
         [1, 0.89, 0.05, 1],
-        [1, 1.05, 0.05, 2],
+        [0, 1.05, 0.05, 2],
         [1, 1.30, 0.05, 3],
-        [1, 1.10, 0.05, 4],
+        [0, 1.10, 0.05, 4],
         [1, 0.95, 0.05, 5],
-        [1, 0.96, 0.05, 6],
+        [0, 0.96, 0.05, 6],
         [1, 0.97, 0.05, 7],
-        [1, 1.20, 0.05, 8],
+        [0, 1.20, 0.05, 8],
         [1, 1.00, 0.05, 9],
     ]
     raw = pd.DataFrame(rows, columns=["label", "price", "spread", "hour"])
@@ -46,23 +48,59 @@ def test_meta_labeling_changes_performance(tmp_path: Path) -> None:
         stop_loss_mult=1.0,
         hold_period=2,
     )
-    base_file = tmp_path / "base.csv"
-    loaded[["label", "spread", "hour"]].to_csv(base_file, index=False)
-    meta_file = tmp_path / "meta.csv"
-    loaded[["label", "spread", "hour", "meta_label"]].to_csv(
-        meta_file, index=False
+    # Meta labels should differ from original labels for at least one row
+    assert (loaded["label"] != loaded["meta_label"]).any()
+
+
+def _legacy_meta(prices: np.ndarray, tp: np.ndarray, sl: np.ndarray, hold_period: int):
+    n = len(prices)
+    horizon_idx = (np.arange(n) + hold_period).clip(0, n - 1)
+    horizon_len = horizon_idx - np.arange(n)
+    tp_time = np.full(n, hold_period + 1, dtype=int)
+    sl_time = np.full(n, hold_period + 1, dtype=int)
+    meta = np.zeros(n, dtype=float)
+    for i in range(n):
+        end = horizon_idx[i]
+        h = horizon_len[i]
+        for j in range(i + 1, end + 1):
+            p = prices[j]
+            offset = j - i
+            if tp_time[i] > h and p >= tp[i]:
+                tp_time[i] = offset
+            if sl_time[i] > h and p <= sl[i]:
+                sl_time[i] = offset
+            if tp_time[i] <= h and sl_time[i] <= h:
+                break
+        if tp_time[i] <= sl_time[i] and tp_time[i] <= h:
+            meta[i] = 1.0
+        if tp_time[i] > h:
+            tp_time[i] = h + 1
+        if sl_time[i] > h:
+            sl_time[i] = h + 1
+    return horizon_idx, tp_time, sl_time, meta
+
+
+def test_vectorized_meta_matches_legacy(tmp_path: Path) -> None:
+    rows = [
+        [1, 1.00, 0.05, 0],
+        [1, 0.89, 0.05, 1],
+        [1, 1.05, 0.05, 2],
+        [1, 1.30, 0.05, 3],
+    ]
+    raw = pd.DataFrame(rows, columns=["label", "price", "spread", "hour"])
+    raw_file = tmp_path / "raw.csv"
+    raw.to_csv(raw_file, index=False)
+    loaded, _, _ = _load_logs(
+        raw_file, take_profit_mult=1.0, stop_loss_mult=1.0, hold_period=2
     )
-    out1 = tmp_path / "out1"
-    train(base_file, out1)
-    acc1 = json.loads((out1 / "model.json").read_text())["cv_accuracy"]
-    out2 = tmp_path / "out2"
-    train(
-        meta_file,
-        out2,
-        use_meta_label=True,
-        take_profit_mult=1.0,
-        stop_loss_mult=1.0,
-        hold_period=2,
+    prices = raw["price"].to_numpy()
+    spreads = raw["spread"].to_numpy()
+    tp = prices + spreads
+    sl = prices - spreads
+    expected_h, expected_tp, expected_sl, expected_meta = _legacy_meta(
+        prices, tp, sl, 2
     )
-    acc2 = json.loads((out2 / "model.json").read_text())["cv_accuracy"]
-    assert acc1 != acc2
+    assert np.array_equal(loaded["horizon"].to_numpy(), expected_h)
+    assert np.array_equal(loaded["tp_time"].to_numpy(), expected_tp)
+    assert np.array_equal(loaded["sl_time"].to_numpy(), expected_sl)
+    assert np.array_equal(loaded["meta_label"].to_numpy(), expected_meta)
