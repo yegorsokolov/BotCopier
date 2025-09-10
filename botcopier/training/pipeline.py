@@ -24,9 +24,9 @@ except Exception:  # pragma: no cover - optional
     _HAS_POLARS = False
 from botcopier.data.loading import _load_logs
 from botcopier.features.engineering import (
+    FeatureConfig,
     _extract_features,
     configure_cache,
-    FeatureConfig,
 )
 from botcopier.models.registry import MODEL_REGISTRY, get_model
 
@@ -90,14 +90,27 @@ def train(
         probas = predict_fn(X)
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
-        model = {
-            "feature_names": feature_names,
-            "feature_mean": X.mean(axis=0).tolist(),
-            "feature_std": X.std(axis=0).tolist(),
-            "clip_low": np.min(X, axis=0).tolist(),
-            "clip_high": np.max(X, axis=0).tolist(),
-            **model_data,
-        }
+        model = {"feature_names": feature_names, **model_data}
+        if "feature_mean" not in model:
+            model["feature_mean"] = X.mean(axis=0).tolist()
+        if "feature_std" not in model:
+            model["feature_std"] = X.std(axis=0).tolist()
+        if "clip_low" not in model:
+            model["clip_low"] = np.min(X, axis=0).tolist()
+        if "clip_high" not in model:
+            model["clip_high"] = np.max(X, axis=0).tolist()
+        if "session_models" not in model:
+            sm_keys = [
+                "coefficients",
+                "intercept",
+                "feature_mean",
+                "feature_std",
+                "clip_low",
+                "clip_high",
+            ]
+            model["session_models"] = {
+                "asian": {k: model[k] for k in sm_keys if k in model}
+            }
         mode = kwargs.get("mode")
         if mode is not None:
             model["mode"] = mode
