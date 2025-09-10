@@ -415,6 +415,85 @@ if _HAS_TORCH:
         state = {k: v.detach().cpu().numpy().tolist() for k, v in model.state_dict().items()}
         return state, _predict, model
 
+    class CrossModalAttention(torch.nn.Module):
+        """Attend between price sequences and aligned news sentiment vectors."""
+
+        def __init__(
+            self,
+            price_dim: int,
+            news_dim: int,
+            hidden_dim: int = 32,
+            dropout: float = 0.0,
+        ) -> None:
+            super().__init__()
+            self.price_proj = torch.nn.Linear(price_dim, hidden_dim)
+            self.news_proj = torch.nn.Linear(news_dim, hidden_dim)
+            self.attn = torch.nn.MultiheadAttention(
+                hidden_dim, num_heads=2, dropout=dropout, batch_first=True
+            )
+            self.out = torch.nn.Linear(hidden_dim, 1)
+            self.dropout = torch.nn.Dropout(dropout)
+
+        def forward(
+            self, price_seq: torch.Tensor, news_seq: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            price_emb = self.price_proj(price_seq)
+            news_emb = self.news_proj(news_seq)
+            attn_out, attn_weights = self.attn(
+                price_emb,
+                news_emb,
+                news_emb,
+                need_weights=True,
+                average_attn_weights=False,
+            )
+            pooled = attn_out.mean(dim=1)
+            logits = self.out(self.dropout(pooled))
+            return logits, attn_weights
+
+    def fit_crossmodal(
+        price_seq: np.ndarray,
+        news_seq: np.ndarray,
+        y: np.ndarray,
+        *,
+        epochs: int = 5,
+        lr: float = 1e-3,
+        dropout: float = 0.0,
+        device: str = "cpu",
+    ) -> tuple[dict[str, list], Callable[[np.ndarray, np.ndarray], np.ndarray], CrossModalAttention]:
+        """Train a :class:`CrossModalAttention` model."""
+        dev = torch.device(device)
+        model = CrossModalAttention(
+            price_seq.shape[2], news_seq.shape[2], dropout=dropout
+        ).to(dev)
+        ds = torch.utils.data.TensorDataset(
+            torch.tensor(price_seq, dtype=torch.float32),
+            torch.tensor(news_seq, dtype=torch.float32),
+            torch.tensor(y, dtype=torch.float32).unsqueeze(-1),
+        )
+        dl = torch.utils.data.DataLoader(ds, batch_size=32, shuffle=True)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        loss_fn = torch.nn.BCEWithLogitsLoss()
+        model.train()
+        for _ in range(max(1, epochs)):
+            for px, nx, yb in dl:
+                px, nx, yb = px.to(dev), nx.to(dev), yb.to(dev)
+                opt.zero_grad()
+                logits, _ = model(px, nx)
+                loss = loss_fn(logits, yb)
+                loss.backward()
+                opt.step()
+        model.eval()
+
+        def _predict(p_arr: np.ndarray, n_arr: np.ndarray) -> np.ndarray:
+            with torch.no_grad():
+                pt = torch.tensor(p_arr, dtype=torch.float32, device=dev)
+                nt = torch.tensor(n_arr, dtype=torch.float32, device=dev)
+                logits, _ = model(pt, nt)
+                return torch.sigmoid(logits).cpu().numpy().ravel()
+
+        state = {k: v.detach().cpu().numpy().tolist() for k, v in model.state_dict().items()}
+        return state, _predict, model
+
     class TCNClassifier(torch.nn.Module):
         """Lightweight temporal convolutional network for sequence classification."""
 
@@ -507,6 +586,12 @@ else:  # pragma: no cover - torch is optional
 
     def fit_tcn(*_args, **_kwargs):  # type: ignore
         raise ImportError("PyTorch is required for TCNClassifier")
+
+    class CrossModalAttention:  # type: ignore
+        pass
+
+    def fit_crossmodal(*_args, **_kwargs):  # type: ignore
+        raise ImportError("PyTorch is required for CrossModalAttention")
 
 
 def _apply_drift_pruning(
@@ -3427,6 +3512,131 @@ def _train_tab_transformer(
     return model
 
 
+def _train_crossmodal(
+    data_dir: Path,
+    out_dir: Path,
+    *,
+    window: int = 16,
+    epochs: int = 5,
+    lr: float = 1e-3,
+    dropout: float = 0.0,
+    device: str = "cpu",
+    calendar_file: Path | None = None,
+    symbol_graph: dict | str | Path | None = None,
+    news_sentiment: pd.DataFrame | None = None,
+    neighbor_corr_windows: Iterable[int] | None = None,
+    tick_encoder: Path | None = None,
+    calendar_features: bool = True,
+    drift_scores: dict[str, float] | None = None,
+    drift_threshold: float = 0.0,
+    drift_weight: float = 0.0,
+    take_profit_mult: float = 1.0,
+    stop_loss_mult: float = 1.0,
+    hold_period: int = 20,
+    use_meta_label: bool = False,
+    rank_features: bool = False,
+    **_,
+) -> CrossModalAttention:
+    """Train a :class:`CrossModalAttention` model."""
+    if not _HAS_TORCH:  # pragma: no cover - optional dependency
+        raise ImportError("PyTorch is required for crossmodal model")
+
+    df, feature_names, _ = _load_logs(
+        data_dir,
+        take_profit_mult=take_profit_mult,
+        stop_loss_mult=stop_loss_mult,
+        hold_period=hold_period,
+    )
+    if not isinstance(df, pd.DataFrame):
+        df = pd.concat(list(df), ignore_index=True)
+    if use_meta_label and "meta_label" in df.columns:
+        df["label"] = df["meta_label"]
+    if "label" not in df.columns:
+        raise ValueError("label column missing from data")
+    df, feature_names, _, _ = _extract_features(
+        df,
+        feature_names,
+        symbol_graph=symbol_graph,
+        calendar_file=calendar_file,
+        calendar_features=calendar_features,
+        news_sentiment=news_sentiment,
+        neighbor_corr_windows=neighbor_corr_windows,
+        tick_encoder=tick_encoder,
+        rank_features=rank_features,
+    )
+    pca_components = df.attrs.get("pca_components")
+
+    _apply_drift_pruning(df, feature_names, drift_scores, drift_threshold, drift_weight)
+
+    sent_col = "sentiment_score"
+    if sent_col not in df.columns:
+        df[sent_col] = 0.0
+    if sent_col in feature_names:
+        feature_names.remove(sent_col)
+    X_all = df[feature_names].to_numpy(dtype=float)
+    ns_all = (
+        pd.to_numeric(df[sent_col], errors="coerce").fillna(0.0).to_numpy(dtype=float).reshape(-1, 1)
+    )
+    y_all = pd.to_numeric(df["label"], errors="coerce").to_numpy(dtype=float)
+
+    X_all, c_low, c_high = _clip_train_features(X_all)
+    scaler = RobustScaler().fit(X_all)
+    norm_X = scaler.transform(X_all)
+
+    price_seqs: list[np.ndarray] = []
+    news_seqs: list[np.ndarray] = []
+    ys: list[float] = []
+    for i in range(window, len(norm_X)):
+        price_seqs.append(norm_X[i - window : i])
+        news_seqs.append(ns_all[i - window : i])
+        ys.append(y_all[i])
+
+    if not price_seqs:
+        raise ValueError("not enough data for the specified window size")
+
+    price_arr = np.stack(price_seqs)
+    news_arr = np.stack(news_seqs)
+    y_arr = np.array(ys)
+
+    state, predict_fn, model = fit_crossmodal(
+        price_arr, news_arr, y_arr, epochs=epochs, lr=lr, dropout=dropout, device=device
+    )
+
+    probs = predict_fn(price_arr, news_arr)
+    preds = (probs >= 0.5).astype(int)
+    acc = float(accuracy_score(y_arr, preds)) if len(y_arr) else 0.0
+
+    model_json = {
+        "model_type": "crossmodal",
+        "feature_names": feature_names,
+        "sentiment_feature": sent_col,
+        "mean": scaler.center_.tolist(),
+        "std": scaler.scale_.tolist(),
+        "scaler_decay": float(scaler.decay),
+        "clip_low": c_low.tolist(),
+        "clip_high": c_high.tolist(),
+        "state_dict": state,
+        "metrics": {"accuracy": acc},
+        "window": int(window),
+        "rank_features": bool(rank_features),
+    }
+    if pca_components:
+        model_json["pca_components"] = pca_components
+    if calendar_features:
+        model_json["calendar_encoding"] = {
+            "hour": ["hour_sin", "hour_cos"],
+            "dayofweek": ["dow_sin", "dow_cos"],
+            "month": ["month_sin", "month_cos"],
+        }
+    if USE_KALMAN_FEATURES:
+        model_json["kalman"] = KALMAN_PARAMS
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with open(out_dir / "model.json", "w") as f:
+        json.dump(model_json, f)
+
+    return model
+
+
 def _train_tcn(
     data_dir: Path,
     out_dir: Path,
@@ -3957,6 +4167,30 @@ def train(
             dropout=kwargs.get("dropout", 0.0),
             device=kwargs.get("device", "cpu"),
         )
+    elif model_type == "crossmodal":
+        return _train_crossmodal(
+            data_dir,
+            out_dir,
+            calendar_file=calendar_file,
+            symbol_graph=graph_path,
+            news_sentiment=ns_df,
+            neighbor_corr_windows=neighbor_corr_windows,
+            tick_encoder=tick_encoder,
+            calendar_features=calendar_features,
+            drift_scores=drift_scores,
+            drift_threshold=drift_threshold,
+            drift_weight=drift_weight,
+            take_profit_mult=take_profit_mult,
+            stop_loss_mult=stop_loss_mult,
+            hold_period=hold_period,
+            use_meta_label=use_meta_label,
+            window=kwargs.get("window", 16),
+            epochs=kwargs.get("epochs", 5),
+            lr=kwargs.get("lr", 1e-3),
+            dropout=kwargs.get("dropout", 0.0),
+            device=kwargs.get("device", "cpu"),
+            rank_features=rank_features,
+        )
     elif model_type == "tcn":
         return _train_tcn(
             data_dir,
@@ -4300,6 +4534,7 @@ def main() -> None:
             "catboost",
             "transformer",
             "tabtransformer",
+            "crossmodal",
             "tcn",
         ],
         default="logreg",
