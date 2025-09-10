@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Sequence
 
@@ -32,6 +33,14 @@ except Exception:  # pragma: no cover
     torch = None  # type: ignore
     _HAS_TORCH = False
 
+try:  # optional mlflow dependency
+    import mlflow  # type: ignore
+
+    _HAS_MLFLOW = True
+except Exception:  # pragma: no cover
+    mlflow = None  # type: ignore
+    _HAS_MLFLOW = False
+
 
 def train(
     data_dir: Path,
@@ -39,6 +48,8 @@ def train(
     *,
     model_type: str = "logreg",
     cache_dir: Path | None = None,
+    tracking_uri: str | None = None,
+    experiment_name: str | None = None,
     **_: object,
 ) -> None:
     """Train a simple logistic regression model from trade logs."""
@@ -57,20 +68,38 @@ def train(
         X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
     else:  # pragma: no cover - defensive
         raise TypeError("Unsupported DataFrame type")
-    clf = LogisticRegression(max_iter=1000)
-    clf.fit(X, y)
-    model = {
-        "feature_names": feature_names,
-        "coefficients": clf.coef_.ravel().tolist(),
-        "intercept": float(clf.intercept_[0]),
-        "feature_mean": X.mean(axis=0).tolist(),
-        "feature_std": X.std(axis=0).tolist(),
-        "clip_low": np.min(X, axis=0).tolist(),
-        "clip_high": np.max(X, axis=0).tolist(),
-    }
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with open(out_dir / "model.json", "w") as f:
-        json.dump(model, f)
+
+    mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
+    if mlflow_active and not _HAS_MLFLOW:
+        raise RuntimeError("mlflow is required for tracking")
+    if mlflow_active:
+        if tracking_uri is not None:
+            mlflow.set_tracking_uri(tracking_uri)
+        if experiment_name is not None:
+            mlflow.set_experiment(experiment_name)
+
+    run_ctx = mlflow.start_run() if mlflow_active else nullcontext()
+    with run_ctx:
+        clf = LogisticRegression(max_iter=1000)
+        clf.fit(X, y)
+        score = clf.score(X, y)
+        model = {
+            "feature_names": feature_names,
+            "coefficients": clf.coef_.ravel().tolist(),
+            "intercept": float(clf.intercept_[0]),
+            "feature_mean": X.mean(axis=0).tolist(),
+            "feature_std": X.std(axis=0).tolist(),
+            "clip_low": np.min(X, axis=0).tolist(),
+            "clip_high": np.max(X, axis=0).tolist(),
+        }
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with open(out_dir / "model.json", "w") as f:
+            json.dump(model, f)
+        if mlflow_active:
+            mlflow.log_param("model_type", model_type)
+            mlflow.log_param("n_features", len(feature_names))
+            mlflow.log_metric("train_accuracy", float(score))
+            mlflow.log_artifact(str(out_dir / "model.json"), artifact_path="model")
 
 
 def detect_resources(*, lite_mode: bool = False, heavy_mode: bool = False) -> dict:
@@ -153,8 +182,15 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Train target clone model")
     p.add_argument("data_dir", type=Path)
     p.add_argument("out_dir", type=Path)
+    p.add_argument("--tracking-uri", dest="tracking_uri", type=str, default=None)
+    p.add_argument("--experiment-name", dest="experiment_name", type=str, default=None)
     args = p.parse_args()
-    train(args.data_dir, args.out_dir)
+    train(
+        args.data_dir,
+        args.out_dir,
+        tracking_uri=args.tracking_uri,
+        experiment_name=args.experiment_name,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
