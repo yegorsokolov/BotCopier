@@ -554,66 +554,86 @@ class OnlineTrainer:
 
 def main(argv: List[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Online incremental trainer")
-    p.add_argument("--csv", type=Path, help="Path to trades_raw.csv to follow")
-    p.add_argument("--flight-host", default="127.0.0.1", help="Arrow Flight host")
-    p.add_argument("--flight-port", type=int, default=8815, help="Arrow Flight port")
-    p.add_argument("--model", type=Path, default=Path("model.json"))
-    p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--lr", type=float, default=0.01, help="Initial learning rate")
-    p.add_argument(
-        "--lr-decay",
-        type=float,
-        default=1.0,
-        help="Multiplicative learning rate decay per batch",
-    )
-    p.add_argument("--flight-path", default="trades", help="Flight path name")
-    p.add_argument("--baseline-file", type=Path, help="Baseline CSV for drift monitoring")
-    p.add_argument("--recent-file", type=Path, help="Recent CSV for drift monitoring")
-    p.add_argument("--log-dir", type=Path, help="Log directory for retrain")
-    p.add_argument("--out-dir", type=Path, help="Output directory for retrain")
-    p.add_argument("--files-dir", type=Path, help="Files directory for retrain")
-    p.add_argument(
-        "--drift-threshold",
-        type=float,
-        default=float(os.getenv("DRIFT_THRESHOLD", "0.2")),
-        help="Drift threshold triggering retrain",
-    )
-    p.add_argument(
-        "--drift-interval",
-        type=float,
-        default=float(os.getenv("DRIFT_INTERVAL", "300")),
-        help="Seconds between drift checks",
-    )
+    p.add_argument("--csv", help="Path to trades_raw.csv to follow")
+    p.add_argument("--flight-host", help="Arrow Flight host")
+    p.add_argument("--flight-port", type=int, help="Arrow Flight port")
+    p.add_argument("--model")
+    p.add_argument("--batch-size", type=int)
+    p.add_argument("--lr", type=float, help="Initial learning rate")
+    p.add_argument("--lr-decay", type=float, help="Multiplicative learning rate decay per batch")
+    p.add_argument("--flight-path", help="Flight path name")
+    p.add_argument("--baseline-file", help="Baseline CSV for drift monitoring")
+    p.add_argument("--recent-file", help="Recent CSV for drift monitoring")
+    p.add_argument("--log-dir", help="Log directory for retrain")
+    p.add_argument("--out-dir", help="Output directory for retrain")
+    p.add_argument("--files-dir", help="Files directory for retrain")
+    p.add_argument("--drift-threshold", type=float, help="Drift threshold triggering retrain")
+    p.add_argument("--drift-interval", type=float, help="Seconds between drift checks")
     args = p.parse_args(argv)
 
+    from config.settings import DataConfig, TrainingConfig, save_params
+
+    data_cfg = DataConfig(
+        **{
+            k: getattr(args, k)
+            for k in [
+                "csv",
+                "baseline_file",
+                "recent_file",
+                "log_dir",
+                "out_dir",
+                "files_dir",
+            ]
+            if getattr(args, k) is not None
+        }
+    )
+    train_cfg = TrainingConfig(
+        **{
+            k: getattr(args, k)
+            for k in [
+                "model",
+                "batch_size",
+                "lr",
+                "lr_decay",
+                "flight_host",
+                "flight_port",
+                "flight_path",
+                "drift_threshold",
+                "drift_interval",
+            ]
+            if getattr(args, k) is not None
+        }
+    )
+    save_params(data_cfg, train_cfg)
+
     trainer = OnlineTrainer(
-        args.model,
-        args.batch_size,
-        lr=args.lr,
-        lr_decay=args.lr_decay,
+        train_cfg.model,
+        train_cfg.batch_size,
+        lr=train_cfg.lr,
+        lr_decay=train_cfg.lr_decay,
     )
     _sd_notify_ready()
     _start_watchdog_thread()
     if (
-        args.baseline_file
-        and args.recent_file
-        and args.log_dir
-        and args.out_dir
-        and args.files_dir
+        data_cfg.baseline_file
+        and data_cfg.recent_file
+        and data_cfg.log_dir
+        and data_cfg.out_dir
+        and data_cfg.files_dir
     ):
         trainer.start_drift_monitor(
-            args.baseline_file,
-            args.recent_file,
-            log_dir=args.log_dir,
-            out_dir=args.out_dir,
-            files_dir=args.files_dir,
-            threshold=args.drift_threshold,
-            interval=args.drift_interval,
+            data_cfg.baseline_file,
+            data_cfg.recent_file,
+            log_dir=data_cfg.log_dir,
+            out_dir=data_cfg.out_dir,
+            files_dir=data_cfg.files_dir,
+            threshold=train_cfg.drift_threshold,
+            interval=train_cfg.drift_interval,
         )
-    if args.csv:
-        trainer.tail_csv(args.csv)
+    if data_cfg.csv:
+        trainer.tail_csv(data_cfg.csv)
     else:
-        trainer.consume_flight(args.flight_host, args.flight_port, args.flight_path)
+        trainer.consume_flight(train_cfg.flight_host, train_cfg.flight_port, train_cfg.flight_path)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
