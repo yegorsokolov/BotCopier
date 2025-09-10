@@ -1,0 +1,13 @@
+site_name: BotCopier
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - API Reference: api.md
+  - Troubleshooting: troubleshooting.md
+  - Guides:
+      - Hardware-aware Training: hardware-training.md
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+plugins:
+  - mkdocstrings
