@@ -17,6 +17,8 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
+from models.registry import get_model, register_model
+
 # Optional model libraries and hyperparameter search
 try:  # pragma: no cover - optional dependency
     import optuna
@@ -208,6 +210,13 @@ def fit_catboost_classifier(
     if best_iter is not None:
         logging.info("best_iteration=%s", best_iter)
     return clf
+
+
+# Register model builders
+register_model("logistic", fit_logistic_regression)
+register_model("xgboost", fit_xgb_classifier)
+register_model("lgbm", fit_lgbm_classifier)
+register_model("catboost", fit_catboost_classifier)
 
 
 def fit_quantile_model(
@@ -823,90 +832,46 @@ def train_model(
         _, decay = _compute_decay_weights(event_times[train_idx], half_life_days)
         sw = decay
 
+    default_params: dict[str, dict[str, float | int]] = {
+        "logistic": {"C": C},
+        "xgboost": {
+            "learning_rate": 0.1,
+            "max_depth": 6,
+            "n_estimators": 100,
+            "subsample": 1.0,
+            "colsample_bytree": 1.0,
+        },
+        "lgbm": {"learning_rate": 0.1, "max_depth": -1, "n_estimators": 100},
+        "catboost": {"depth": 6, "learning_rate": 0.1, "iterations": 100},
+    }
+
+    suggest_funcs: dict[str, Callable[["optuna.Trial"], dict[str, float | int]]] = {
+        "logistic": lambda t: {"C": t.suggest_float("C", 1e-3, 10.0, log=True)},
+        "xgboost": lambda t: {
+            "learning_rate": t.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "max_depth": t.suggest_int("max_depth", 2, 8),
+            "n_estimators": t.suggest_int("n_estimators", 50, 200),
+            "subsample": t.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": t.suggest_float("colsample_bytree", 0.5, 1.0),
+        },
+        "lgbm": lambda t: {
+            "learning_rate": t.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "max_depth": t.suggest_int("max_depth", -1, 8),
+            "n_estimators": t.suggest_int("n_estimators", 50, 200),
+        },
+        "catboost": lambda t: {
+            "depth": t.suggest_int("depth", 2, 8),
+            "learning_rate": t.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "iterations": t.suggest_int("iterations", 50, 200),
+        },
+    }
+
     def _fit_single(model_type: str, trial: "optuna.Trial | None" = None):
-        params: dict[str, float | int] = {}
-        if model_type == "logistic":
-            if trial is not None:
-                C_val = trial.suggest_float("C", 1e-3, 10.0, log=True)
-            else:
-                C_val = C
-            params["C"] = C_val
-            clf = fit_logistic_regression(
-                X_train, y_train, sample_weight=sw, C=C_val
-            )
-        elif model_type == "xgboost":  # pragma: no cover - optional dependency
-            learning_rate = 0.1
-            max_depth = 6
-            n_estimators = 100
-            subsample = 1.0
-            colsample_bytree = 1.0
-            if trial is not None:
-                learning_rate = trial.suggest_float(
-                    "learning_rate", 0.01, 0.3, log=True
-                )
-                max_depth = trial.suggest_int("max_depth", 2, 8)
-                n_estimators = trial.suggest_int("n_estimators", 50, 200)
-                subsample = trial.suggest_float("subsample", 0.5, 1.0)
-                colsample_bytree = trial.suggest_float(
-                    "colsample_bytree", 0.5, 1.0
-                )
-            params.update(
-                {
-                    "learning_rate": learning_rate,
-                    "max_depth": max_depth,
-                    "n_estimators": n_estimators,
-                    "subsample": subsample,
-                    "colsample_bytree": colsample_bytree,
-                }
-            )
-            clf = xgb.XGBClassifier(
-                objective="binary:logistic",
-                eval_metric="logloss",
-                use_label_encoder=False,
-                verbosity=0,
-                **params,
-            )
-            clf.fit(X_train, y_train, sample_weight=sw)
-        elif model_type == "lgbm":  # pragma: no cover - optional dependency
-            learning_rate = 0.1
-            max_depth = -1
-            n_estimators = 100
-            if trial is not None:
-                learning_rate = trial.suggest_float(
-                    "learning_rate", 0.01, 0.3, log=True
-                )
-                max_depth = trial.suggest_int("max_depth", -1, 8)
-                n_estimators = trial.suggest_int("n_estimators", 50, 200)
-            params.update(
-                {
-                    "learning_rate": learning_rate,
-                    "max_depth": max_depth,
-                    "n_estimators": n_estimators,
-                }
-            )
-            clf = lgb.LGBMClassifier(**params)
-            clf.fit(X_train, y_train, sample_weight=sw)
-        elif model_type == "catboost":  # pragma: no cover - optional dependency
-            depth = 6
-            learning_rate = 0.1
-            iterations = 100
-            if trial is not None:
-                depth = trial.suggest_int("depth", 2, 8)
-                learning_rate = trial.suggest_float(
-                    "learning_rate", 0.01, 0.3, log=True
-                )
-                iterations = trial.suggest_int("iterations", 50, 200)
-            params.update(
-                {
-                    "depth": depth,
-                    "learning_rate": learning_rate,
-                    "iterations": iterations,
-                }
-            )
-            clf = cb.CatBoostClassifier(verbose=False, **params)
-            clf.fit(X_train, y_train, sample_weight=sw)
-        else:  # pragma: no cover - defensive
-            raise ValueError(f"Unsupported model type: {model_type}")
+        params = default_params.get(model_type, {}).copy()
+        if trial is not None and model_type in suggest_funcs:
+            params.update(suggest_funcs[model_type](trial))
+        builder = get_model(model_type)
+        clf = builder(X_train, y_train, sample_weight=sw, **params)
         preds = clf.predict(X_val)
         probas = (
             clf.predict_proba(X_val)[:, 1]

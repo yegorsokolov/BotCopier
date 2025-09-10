@@ -32,7 +32,6 @@ ENV/
 # Local configuration
 *.env
 
-/models
 
 # Pretrained encoders
 encoder/
