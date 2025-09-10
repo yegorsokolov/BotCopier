@@ -7,10 +7,15 @@ from typing import Iterable, Tuple, Sequence
 import logging
 import math
 
+from functools import wraps
+
+import json
+
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import LinearRegression
+from joblib import Memory
 
 from scripts.features import _is_hammer, _is_doji, _is_engulfing
 from scripts.features import (
@@ -44,6 +49,40 @@ except Exception:  # pragma: no cover - optional
 USE_KALMAN_FEATURES: bool = False
 KALMAN_PARAMS: dict = KALMAN_DEFAULT_PARAMS.copy()
 
+# global cache configuration
+_MEMORY = Memory(None, verbose=0)
+
+
+def configure_cache(cache_dir: Path | str | None) -> None:
+    """Configure joblib cache directory for expensive feature functions."""
+    global _MEMORY, _augment_dataframe, _augment_dtw_dataframe, _extract_features
+    _MEMORY = Memory(str(cache_dir) if cache_dir else None, verbose=0)
+
+    # rewrap cached functions whenever cache location changes
+    _augment_dataframe = _cache_with_logging(_augment_dataframe_impl, "_augment_dataframe")
+    _augment_dtw_dataframe = _cache_with_logging(
+        _augment_dtw_dataframe_impl, "_augment_dtw_dataframe"
+    )
+    _extract_features = _cache_with_logging(_extract_features_impl, "_extract_features")
+
+
+def clear_cache() -> None:
+    """Remove all cached feature computations."""
+    _MEMORY.clear()
+
+
+def _cache_with_logging(func, name: str):
+    cached_func = _MEMORY.cache(func)
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        if cached_func.check_call_in_cache(*args, **kwargs):
+            logging.info("cache hit for %s", name)
+        return cached_func(*args, **kwargs)
+
+    wrapper.clear_cache = cached_func.clear  # type: ignore[attr-defined]
+    return wrapper
+
 
 # ---------------------------------------------------------------------------
 # Feature clipping and anomaly scoring
@@ -72,7 +111,7 @@ def _score_anomalies(X: np.ndarray, params: dict | None) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _augment_dataframe(df: pd.DataFrame, ratio: float) -> pd.DataFrame:
+def _augment_dataframe_impl(df: pd.DataFrame, ratio: float) -> pd.DataFrame:
     """Return DataFrame with additional augmented rows using mixup and jitter."""
     if ratio <= 0 or df.empty:
         return df
@@ -128,7 +167,7 @@ def _dtw_path(a: np.ndarray, b: np.ndarray) -> Tuple[list[tuple[int, int]], floa
     return path, float(dp[n, m])
 
 
-def _augment_dtw_dataframe(df: pd.DataFrame, ratio: float, window: int = 3) -> pd.DataFrame:
+def _augment_dtw_dataframe_impl(df: pd.DataFrame, ratio: float, window: int = 3) -> pd.DataFrame:
     """Return DataFrame augmented by DTW-based sequence mixup."""
     if ratio <= 0 or len(df) < 2:
         return df
@@ -190,7 +229,7 @@ def _augment_dtw_dataframe(df: pd.DataFrame, ratio: float, window: int = 3) -> p
 # Main feature extraction
 # ---------------------------------------------------------------------------
 
-def _extract_features(
+def _extract_features_impl(
     df: pd.DataFrame,
     feature_names: list[str],
     *,
@@ -401,4 +440,11 @@ def _neutralize_against_market_index(
         logging.info("Neutralised %s: variance %.6f -> %.6f", col, var_before, var_after)
         df[col] = resid
     return df, feature_names
+  
+configure_cache(None)
 
+
+def train(*args, **kwargs):
+    from botcopier.training.pipeline import train as _train
+
+    return _train(*args, **kwargs)

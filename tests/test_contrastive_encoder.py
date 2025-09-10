@@ -1,11 +1,17 @@
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
 import torch
 
 from scripts.pretrain_contrastive import train as pretrain_encoder
-from botcopier.features.engineering import _extract_features, train
+from botcopier.features.engineering import (
+    _extract_features,
+    train,
+    configure_cache,
+    clear_cache,
+)
 from scripts.replay_decisions import _recompute
 
 
@@ -18,7 +24,10 @@ def _write_ticks(dir_path: Path, n: int = 50) -> None:
             f.write(f"{float(i)}\n")
 
 
-def test_contrastive_encoder_flow(tmp_path: Path):
+def test_contrastive_encoder_flow(tmp_path: Path, caplog):
+    cache_dir = tmp_path / "cache"
+    configure_cache(cache_dir)
+    clear_cache()
     tick_dir = tmp_path / "ticks"
     tick_dir.mkdir()
     _write_ticks(tick_dir)
@@ -30,7 +39,10 @@ def test_contrastive_encoder_flow(tmp_path: Path):
     dim = int(state["dim"])
     # verify feature extraction
     df = pd.DataFrame({f"tick_{i}": [float(i)] for i in range(window)})
-    df2, feats, _, _ = _extract_features(df.copy(), [], tick_encoder=enc_path)
+    with caplog.at_level(logging.INFO):
+        df2, feats, _, _ = _extract_features(df.copy(), [], tick_encoder=enc_path)
+        _extract_features(df.copy(), [], tick_encoder=enc_path)
+    assert "cache hit for _extract_features" in caplog.text
     for i in range(dim):
         assert f"enc_{i}" in feats
     # prepare training data
@@ -41,7 +53,13 @@ def test_contrastive_encoder_flow(tmp_path: Path):
     data_file = tmp_path / "trades_raw.csv"
     data_file.write_text("".join(lines))
     out_dir = tmp_path / "out"
-    train(data_file, out_dir, tick_encoder=enc_path, mi_threshold=0.0)
+    train(
+        data_file,
+        out_dir,
+        tick_encoder=enc_path,
+        mi_threshold=0.0,
+        cache_dir=cache_dir,
+    )
     trained = json.loads((out_dir / "model.json").read_text())
     assert "encoder" in trained
     assert trained["encoder"]["dim"] == dim

@@ -16,7 +16,7 @@ import psutil
 from sklearn.linear_model import LogisticRegression
 
 from botcopier.data.loading import _load_logs
-from botcopier.features.engineering import _extract_features
+from botcopier.features.engineering import _extract_features, configure_cache
 
 try:  # optional torch dependency flag
     import torch  # type: ignore
@@ -32,9 +32,12 @@ def train(
     out_dir: Path,
     *,
     model_type: str = "logreg",
+    cache_dir: Path | None = None,
     **_: object,
 ) -> None:
     """Train a simple logistic regression model from trade logs."""
+    if cache_dir is not None:
+        configure_cache(cache_dir)
     df, feature_names, _ = _load_logs(data_dir)
     df, feature_names, _, _ = _extract_features(df, feature_names)
     label_col = next((c for c in df.columns if c.startswith("label")), None)
