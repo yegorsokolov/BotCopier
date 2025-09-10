@@ -278,72 +278,102 @@ def main() -> None:
     ctx = span.get_span_context()
     logger.info("auto retrain start", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
     p = argparse.ArgumentParser(description="Retrain model when metrics degrade")
-    p.add_argument("--log-dir", required=True, help="directory with observer logs")
-    p.add_argument("--out-dir", required=True, help="output model directory")
-    p.add_argument("--files-dir", required=True, help="MT4 Files directory")
+    p.add_argument("--log-dir", help="directory with observer logs")
+    p.add_argument("--out-dir", help="output model directory")
+    p.add_argument("--files-dir", help="MT4 Files directory")
     p.add_argument("--metrics-file", help="path to metrics.csv")
     p.add_argument("--tick-file", help="tick or trades file for backtesting")
-    p.add_argument("--win-rate-threshold", type=float, default=0.4)
-    p.add_argument("--drawdown-threshold", type=float, default=0.2)
+    p.add_argument("--win-rate-threshold", type=float)
+    p.add_argument("--drawdown-threshold", type=float)
     p.add_argument("--baseline-file", help="CSV with baseline feature data")
     p.add_argument("--recent-file", help="CSV with recent feature data")
-    p.add_argument("--drift-method", choices=["psi", "ks"], default="psi")
-    p.add_argument("--drift-threshold", type=float, default=0.2)
-    p.add_argument(
-        "--uncertain-file",
-        help="CSV with labeled uncertain decisions to emphasize during training",
-    )
+    p.add_argument("--drift-method", choices=["psi", "ks"])
+    p.add_argument("--drift-threshold", type=float)
+    p.add_argument("--uncertain-file", help="CSV with labeled uncertain decisions")
     p.add_argument(
         "--uncertain-weight",
         type=float,
-        default=2.0,
         help="sample weight multiplier for labeled uncertainties",
     )
-    p.add_argument("--interval", type=float, help="seconds between checks (loop)" )
+    p.add_argument("--interval", type=float, help="seconds between checks (loop)")
     args = p.parse_args()
 
-    log_dir = Path(args.log_dir)
-    out_dir = Path(args.out_dir)
-    files_dir = Path(args.files_dir)
-    metrics_path = Path(args.metrics_file) if args.metrics_file else None
-    tick_path = Path(args.tick_file) if args.tick_file else None
-    baseline_path = Path(args.baseline_file) if args.baseline_file else None
-    recent_path = Path(args.recent_file) if args.recent_file else None
-    uncertain_path = Path(args.uncertain_file) if args.uncertain_file else None
+    from config.settings import DataConfig, TrainingConfig, save_params
 
-    if args.interval:
+    data_cfg = DataConfig(
+        **{
+            k: getattr(args, k)
+            for k in [
+                "log_dir",
+                "out_dir",
+                "files_dir",
+                "metrics_file",
+                "tick_file",
+                "baseline_file",
+                "recent_file",
+                "uncertain_file",
+            ]
+            if getattr(args, k) is not None
+        }
+    )
+    train_cfg = TrainingConfig(
+        **{
+            k: getattr(args, k)
+            for k in [
+                "win_rate_threshold",
+                "drawdown_threshold",
+                "drift_threshold",
+                "drift_method",
+                "uncertain_weight",
+                "interval",
+            ]
+            if getattr(args, k) is not None
+        }
+    )
+    save_params(data_cfg, train_cfg)
+
+    log_dir = data_cfg.log_dir
+    out_dir = data_cfg.out_dir
+    files_dir = data_cfg.files_dir
+    metrics_path = data_cfg.metrics_file
+    tick_path = data_cfg.tick_file
+    baseline_path = data_cfg.baseline_file
+    recent_path = data_cfg.recent_file
+    uncertain_path = data_cfg.uncertain_file
+
+    if train_cfg.interval:
         while True:
             retrain_if_needed(
                 log_dir,
                 out_dir,
                 files_dir,
                 metrics_file=metrics_path,
-                win_rate_threshold=args.win_rate_threshold,
-                drawdown_threshold=args.drawdown_threshold,
+                win_rate_threshold=train_cfg.win_rate_threshold,
+                drawdown_threshold=train_cfg.drawdown_threshold,
                 tick_file=tick_path,
                 baseline_file=baseline_path,
                 recent_file=recent_path,
-                drift_threshold=args.drift_threshold,
-                drift_method=args.drift_method,
+                drift_threshold=train_cfg.drift_threshold,
+                drift_method=train_cfg.drift_method,
                 uncertain_file=uncertain_path,
-                uncertain_weight=args.uncertain_weight,
+                uncertain_weight=train_cfg.uncertain_weight,
             )
-            time.sleep(args.interval)
+            time.sleep(train_cfg.interval)
     else:
         retrain_if_needed(
             log_dir,
             out_dir,
             files_dir,
             metrics_file=metrics_path,
-            win_rate_threshold=args.win_rate_threshold,
-            drawdown_threshold=args.drawdown_threshold,
+            win_rate_threshold=train_cfg.win_rate_threshold,
+            drawdown_threshold=train_cfg.drawdown_threshold,
             tick_file=tick_path,
             baseline_file=baseline_path,
             recent_file=recent_path,
-            drift_threshold=args.drift_threshold,
-            drift_method=args.drift_method,
+            drift_threshold=train_cfg.drift_threshold,
+            drift_method=train_cfg.drift_method,
             uncertain_file=uncertain_path,
-            uncertain_weight=args.uncertain_weight,
+            uncertain_weight=train_cfg.uncertain_weight,
         )
     logger.info("auto retrain finished", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
     span.end()

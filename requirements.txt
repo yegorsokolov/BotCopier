@@ -4,6 +4,9 @@ great_expectations
 scikit-learn
 river
 psutil
+pydantic
+pydantic-settings
+pyyaml
 pytest
 aiohttp
 prometheus_client

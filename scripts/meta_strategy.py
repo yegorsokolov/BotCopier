@@ -145,15 +145,33 @@ class RollingMetrics:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train meta gating model")
-    parser.add_argument("data", help="CSV file with regime features and best_model column")
-    parser.add_argument("out", help="Output JSON file for gating parameters")
-    parser.add_argument("--features", nargs="+", required=True, help="Feature column names")
-    parser.add_argument("--label", default="best_model", help="Label column name")
+    parser.add_argument("--data", help="CSV file with regime features and best_model column")
+    parser.add_argument("--out", help="Output JSON file for gating parameters")
+    parser.add_argument("--features", nargs="+", help="Feature column names")
+    parser.add_argument("--label", help="Label column name")
     args = parser.parse_args()
 
-    df = pd.read_csv(args.data)
-    params = train_meta_model(df, args.features, label_col=args.label)
-    out_path = Path(args.out)
+    from config.settings import DataConfig, TrainingConfig, save_params
+
+    data_cfg = DataConfig(
+        **{
+            k: getattr(args, k)
+            for k in ["data", "out"]
+            if getattr(args, k) is not None
+        }
+    )
+    train_cfg = TrainingConfig(
+        **{
+            k: getattr(args, k)
+            for k in ["features", "label"]
+            if getattr(args, k) is not None
+        }
+    )
+    save_params(data_cfg, train_cfg)
+
+    df = pd.read_csv(data_cfg.data)
+    params = train_meta_model(df, train_cfg.features, label_col=train_cfg.label)
+    out_path = Path(data_cfg.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(params, f)
