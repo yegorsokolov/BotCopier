@@ -14,7 +14,7 @@ jobs:
           python-version: '3.x'
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt dvc pre-commit mypy
+          pip install -r requirements.txt dvc pre-commit mypy mkdocs mkdocstrings[python]
       - name: Verify DVC data hashes
         run: dvc status
       - name: Run pre-commit
@@ -23,3 +23,5 @@ jobs:
         run: mypy .
       - name: Run tests
         run: pytest
+      - name: Build documentation
+        run: mkdocs build --strict
