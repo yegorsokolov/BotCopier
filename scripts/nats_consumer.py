@@ -55,7 +55,7 @@ async def _consume(js, subject, proto_cls, schema_version, csv_writer=None, db=N
         await m.ack()
 
 
-async def _run(args):
+async def async_main(args):
     nc = await nats.connect(args.servers)
     js = nc.jetstream()
     tasks = []
@@ -115,7 +115,7 @@ def main() -> int:
         logging.basicConfig(handlers=[JournalHandler()], level=level)
     except Exception:  # pragma: no cover - fallback to file logging
         logging.basicConfig(filename="nats_consumer.log", level=level)
-    asyncio.run(_run(args))
+    asyncio.run(async_main(args))
     return 0
 
 

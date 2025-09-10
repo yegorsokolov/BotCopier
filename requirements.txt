@@ -9,6 +9,7 @@ pydantic
 pydantic-settings
 pyyaml
 pytest
+pytest-asyncio
 aiohttp
 prometheus_client
 opentelemetry-sdk

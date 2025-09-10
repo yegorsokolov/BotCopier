@@ -61,25 +61,28 @@ async def _handle_conn(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
         await writer.wait_closed()
 
 
+async def async_main(args) -> None:
+    tracer = setup_logging("nats_stream", getattr(logging, args.log_level.upper(), logging.INFO))
+    log = logging.getLogger("nats_stream")
+    nc = await nats.connect(args.servers)
+    js = nc.jetstream()
+    host, port = args.listen.split(":")
+    server = await asyncio.start_server(
+        lambda r, w: _handle_conn(r, w, js, log, tracer), host, int(port)
+    )
+    async with server:
+        await server.serve_forever()
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Proxy observer messages to NATS")
-    p.add_argument("--listen", default="127.0.0.1:6000", help="host:port to accept messages from Observer_TBot")
+    p.add_argument(
+        "--listen", default="127.0.0.1:6000", help="host:port to accept messages from Observer_TBot"
+    )
     p.add_argument("--servers", default="nats://127.0.0.1:4222", help="NATS server URLs")
     p.add_argument("--log-level", default="INFO", help="logging level")
     args = p.parse_args()
-
-    tracer = setup_logging("nats_stream", getattr(logging, args.log_level.upper(), logging.INFO))
-    log = logging.getLogger("nats_stream")
-
-    async def _run() -> None:
-        nc = await nats.connect(args.servers)
-        js = nc.jetstream()
-        host, port = args.listen.split(":")
-        server = await asyncio.start_server(lambda r, w: _handle_conn(r, w, js, log, tracer), host, int(port))
-        async with server:
-            await server.serve_forever()
-
-    asyncio.run(_run())
+    asyncio.run(async_main(args))
     return 0
 
 
