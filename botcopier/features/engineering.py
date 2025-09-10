@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Tuple, Sequence
+from dataclasses import dataclass, field
+from contextlib import contextmanager
 
 import logging
 import math
@@ -51,18 +53,47 @@ except Exception:  # pragma: no cover - optional
     compute_gnn_embeddings = None  # type: ignore
     _HAS_TG = False
 
-# Expose Kalman configuration so callers can toggle via package
-USE_KALMAN_FEATURES: bool = False
-KALMAN_PARAMS: dict = KALMAN_DEFAULT_PARAMS.copy()
+@dataclass
+class FeatureConfig:
+    """Runtime configuration for feature engineering."""
 
-# global cache configuration
+    cache_dir: Path | str | None = None
+    kalman_params: dict = field(default_factory=lambda: KALMAN_DEFAULT_PARAMS.copy())
+    enabled_features: set[str] = field(default_factory=set)
+
+    def is_enabled(self, flag: str) -> bool:
+        return flag in self.enabled_features
+
+    @contextmanager
+    def override(self, **kwargs: object):
+        """Temporarily override configuration values.
+
+        Parameters are restored on exit and the cache is reconfigured to pick
+        up any cache directory changes.
+        """
+
+        old = {k: getattr(self, k) for k in kwargs}
+        try:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+            configure_cache(self)
+            yield self
+        finally:
+            for k, v in old.items():
+                setattr(self, k, v)
+            configure_cache(self)
+
+
+# global feature configuration and cache
+_CONFIG = FeatureConfig()
 _MEMORY = Memory(None, verbose=0)
 
 
-def configure_cache(cache_dir: Path | str | None) -> None:
+def configure_cache(config: FeatureConfig) -> None:
     """Configure joblib cache directory for expensive feature functions."""
-    global _MEMORY, _augment_dataframe, _augment_dtw_dataframe, _extract_features
-    _MEMORY = Memory(str(cache_dir) if cache_dir else None, verbose=0)
+    global _MEMORY, _augment_dataframe, _augment_dtw_dataframe, _extract_features, _CONFIG
+    _CONFIG = config
+    _MEMORY = Memory(str(config.cache_dir) if config.cache_dir else None, verbose=0)
 
     # rewrap cached functions whenever cache location changes
     _augment_dataframe = _cache_with_logging(_augment_dataframe_impl, "_augment_dataframe")
@@ -389,8 +420,8 @@ def _extract_features_impl(
         )
         feature_names.extend(["pattern_hammer", "pattern_doji", "pattern_engulfing"])
 
-    if USE_KALMAN_FEATURES:
-        params = KALMAN_PARAMS
+    if _CONFIG.is_enabled("kalman"):
+        params = _CONFIG.kalman_params
         if "close" in df.columns:
             price_state: dict = {}
             lvl_vals: list[float] = []
@@ -517,7 +548,7 @@ def _neutralize_against_market_index(
         df[col] = resid
     return df, feature_names
   
-configure_cache(None)
+configure_cache(_CONFIG)
 
 
 def train(*args, **kwargs):
