@@ -6,6 +6,8 @@ nav:
   - Troubleshooting: troubleshooting.md
   - Guides:
       - Hardware-aware Training: hardware-training.md
+  - Tutorials:
+      - Data Loading and Feature Engineering: data_loading_tutorial.md
 markdown_extensions:
   - admonition
   - pymdownx.superfences
