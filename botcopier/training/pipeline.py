@@ -13,6 +13,12 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 import psutil
+try:  # optional polars support
+    import polars as pl  # type: ignore
+    _HAS_POLARS = True
+except Exception:  # pragma: no cover - optional
+    pl = None  # type: ignore
+    _HAS_POLARS = False
 from sklearn.linear_model import LogisticRegression
 
 from botcopier.data.loading import _load_logs
@@ -43,8 +49,14 @@ def train(
     label_col = next((c for c in df.columns if c.startswith("label")), None)
     if label_col is None:
         raise ValueError("no label column found")
-    y = df[label_col].to_numpy(dtype=float)
-    X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
+    if isinstance(df, pd.DataFrame):
+        y = df[label_col].to_numpy(dtype=float)
+        X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
+    elif _HAS_POLARS and isinstance(df, pl.DataFrame):
+        y = df[label_col].to_numpy().astype(float)
+        X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
+    else:  # pragma: no cover - defensive
+        raise TypeError("Unsupported DataFrame type")
     clf = LogisticRegression(max_iter=1000)
     clf.fit(X, y)
     model = {
