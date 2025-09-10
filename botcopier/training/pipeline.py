@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import gzip
-import json
 import logging
 import shutil
 import time
@@ -29,7 +28,10 @@ from botcopier.features.technical import (
     _extract_features,
     _neutralize_against_market_index,
 )
+from pydantic import ValidationError
+
 from botcopier.models.registry import MODEL_REGISTRY, get_model
+from botcopier.models.schema import ModelParams
 
 try:  # optional torch dependency flag
     import torch  # type: ignore
@@ -119,8 +121,8 @@ def train(
         if mode is not None:
             model["mode"] = mode
         out_dir.mkdir(parents=True, exist_ok=True)
-        with open(out_dir / "model.json", "w") as f:
-            json.dump(model, f)
+        params = ModelParams(**model)
+        (out_dir / "model.json").write_text(params.model_dump_json())
         if mlflow_active:
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("n_features", len(feature_names))
@@ -186,8 +188,8 @@ def sync_with_server(
     open_func = gzip.open if model_path.suffix == ".gz" else open
     try:
         with open_func(model_path, "rt") as f:
-            model = json.load(f)
-    except FileNotFoundError:
+            params = ModelParams.model_validate_json(f.read())
+    except (FileNotFoundError, ValidationError):
         return
 
     try:
@@ -196,6 +198,7 @@ def sync_with_server(
         logger.exception("requests dependency not available")
         raise RuntimeError("requests library required to sync with server") from exc
 
+    model = params.model_dump()
     payload = {
         "weights": model.get("coefficients"),
         "intercept": model.get("intercept"),
@@ -229,7 +232,7 @@ def sync_with_server(
             if "intercept" in data:
                 model["intercept"] = data["intercept"]
             with open_func(model_path, "wt") as f:
-                json.dump(model, f)
+                f.write(ModelParams(**model).model_dump_json())
             return
         except Exception as exc:
             logger.exception(
