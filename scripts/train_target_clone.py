@@ -823,6 +823,71 @@ def _augment_dataframe(df: pd.DataFrame, ratio: float) -> pd.DataFrame:
     return pd.concat([df, aug_df], ignore_index=True)
 
 
+def _dtw_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """Return Dynamic Time Warping distance between two sequences."""
+    n, m = len(a), len(b)
+    dtw = np.full((n + 1, m + 1), np.inf)
+    dtw[0, 0] = 0.0
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            cost = abs(a[i - 1] - b[j - 1])
+            dtw[i, j] = cost + min(dtw[i - 1, j], dtw[i, j - 1], dtw[i - 1, j - 1])
+    return float(dtw[n, m])
+
+
+def _dtw_augment_dataframe(
+    df: pd.DataFrame, ratio: float, window: int = 5
+) -> pd.DataFrame:
+    """Augment dataframe by mixing similar sequences found via DTW."""
+    if ratio <= 0 or len(df) < window:
+        return df
+
+    n = len(df)
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    base_arr = df[num_cols].to_numpy(dtype=float) if num_cols else None
+    n_aug = max(1, int(n * ratio))
+
+    aug_rows: list[pd.Series] = []
+    for _ in range(n_aug):
+        i1 = np.random.randint(0, n - window + 1)
+        seq1 = base_arr[i1 : i1 + window] if base_arr is not None else None
+        best_j = None
+        best_dist = np.inf
+        if base_arr is not None:
+            max_start = n - window + 1
+            for j in np.random.randint(0, max_start, size=min(5, max_start)):
+                seq2 = base_arr[j : j + window]
+                dist = _dtw_distance(seq1[:, 0], seq2[:, 0])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_j = j
+        if best_j is None:
+            best_j = i1
+        seq2 = base_arr[best_j : best_j + window]
+        lam = np.random.beta(0.4, 0.4)
+        for t in range(window):
+            row1 = df.iloc[i1 + t]
+            row2 = df.iloc[best_j + t]
+            new_row = row1.copy()
+            if num_cols:
+                mix = lam * row1[num_cols].to_numpy(dtype=float) + (1 - lam) * row2[
+                    num_cols
+                ].to_numpy(dtype=float)
+                new_row[num_cols] = mix
+            new_row["dtw_aug_ratio"] = lam
+            aug_rows.append(new_row)
+
+    if not aug_rows:
+        return df
+    aug_df = pd.DataFrame(aug_rows)
+    logging.info(
+        "Augmenting data with %d DTW-mixed rows (ratio %.3f)",
+        len(aug_df),
+        len(aug_df) / n,
+    )
+    return pd.concat([df, aug_df], ignore_index=True)
+
+
 def _load_logs(
     data_dir: Path,
     *,
@@ -834,6 +899,7 @@ def _load_logs(
     stop_loss_mult: float = 1.0,
     hold_period: int = 20,
     augment_ratio: float = 0.0,
+    dtw_augment_ratio: float = 0.0,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], list[str]]:
     """Load trade logs from ``trades_raw.csv``.
 
@@ -956,6 +1022,8 @@ def _load_logs(
 
     if augment_ratio > 0:
         df = _augment_dataframe(df, augment_ratio)
+    if dtw_augment_ratio > 0:
+        df = _dtw_augment_dataframe(df, dtw_augment_ratio)
 
     # When ``chunk_size`` is provided (or lite_mode explicitly enabled), yield
     # DataFrame chunks instead of a single concatenated frame so callers can
@@ -1607,6 +1675,7 @@ def _train_lite_mode(
     pareto_weight: float | None = None,
     pareto_metric: str = "accuracy",
     augment_data: float = 0.0,
+    dtw_augment: float = 0.0,
     **_: object,
 ) -> None:
     """Train ``SGDClassifier`` on features from ``trades_raw.csv``."""
@@ -1618,6 +1687,7 @@ def _train_lite_mode(
         stop_loss_mult=stop_loss_mult,
         hold_period=hold_period,
         augment_ratio=augment_data,
+        dtw_augment_ratio=dtw_augment,
     )
     if not isinstance(df, pd.DataFrame):
         df = pd.concat(list(df), ignore_index=True)
@@ -4091,6 +4161,7 @@ def train(
     pseudo_confidence_low: float = 0.1,
     pseudo_confidence_high: float = 0.9,
     augment_data: float = 0.0,
+    dtw_augment: float = 0.0,
     expected_value: bool = False,
     rank_features: bool = False,
     distill_teacher: bool = False,
@@ -4269,6 +4340,7 @@ def train(
             hold_period=hold_period,
             use_meta_label=use_meta_label,
             augment_data=augment_data,
+            dtw_augment=dtw_augment,
             expected_value=expected_value,
             threshold_objective=threshold_objective,
             quantile_model=quantile_model,
@@ -4492,6 +4564,12 @@ def main() -> None:
         type=float,
         default=0.0,
         help="ratio of synthetic data augmentation to apply",
+    )
+    p.add_argument(
+        "--dtw-augment",
+        type=float,
+        default=0.0,
+        help="ratio of DTW mixup augmentation to apply",
     )
     p.add_argument(
         "--scaler-decay",
@@ -4819,6 +4897,7 @@ def main() -> None:
         pseudo_confidence_high=args.pseudo_confidence_high,
         pseudo_confidence_low=args.pseudo_confidence_low,
         augment_data=args.augment_data,
+        dtw_augment=args.dtw_augment,
         expected_value=args.expected_value,
         rank_features=args.rank_features,
         distill_teacher=args.distill_teacher,
