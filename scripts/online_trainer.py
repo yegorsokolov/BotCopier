@@ -29,7 +29,7 @@ from typing import Iterable, List, Dict, Any
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
     logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
-except Exception:  # pragma: no cover - fallback to file logging
+except ImportError:  # pragma: no cover - fallback to file logging
     logging.basicConfig(filename="online_trainer.log", level=logging.INFO)
 
 import numpy as np
@@ -37,13 +37,14 @@ import psutil
 import pandas as pd
 from collections import deque
 from sklearn.linear_model import SGDClassifier, LogisticRegression
+from sklearn.exceptions import NotFittedError
 
 try:  # detect resources to adapt behaviour on weaker hardware
     if __package__:
         from .train_target_clone import detect_resources  # type: ignore
     else:  # pragma: no cover - script executed directly
         from train_target_clone import detect_resources  # type: ignore
-except Exception:  # pragma: no cover - detection optional
+except ImportError:  # pragma: no cover - detection optional
     detect_resources = None  # type: ignore
 
 try:  # drift metrics utilities
@@ -51,14 +52,14 @@ try:  # drift metrics utilities
         from .drift_monitor import _compute_metrics, _update_model
     else:  # pragma: no cover - script executed directly
         from drift_monitor import _compute_metrics, _update_model  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover - optional dependency
     _compute_metrics = _update_model = None  # type: ignore
 
 try:  # optional graph embedding support
     from graph_dataset import GraphDataset, compute_gnn_embeddings
 
     _HAS_TG = True
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     GraphDataset = None  # type: ignore
     compute_gnn_embeddings = None  # type: ignore
     _HAS_TG = False
@@ -76,7 +77,7 @@ from opentelemetry.trace import format_span_id, format_trace_id
 
 try:  # optional change point detection
     import ruptures as rpt  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
+except ImportError:  # pragma: no cover - optional dependency
     rpt = None  # type: ignore
 
 resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "online_trainer")})
@@ -116,7 +117,7 @@ logger.setLevel(logging.INFO)
 
 try:  # optional systemd notification support
     from systemd import daemon
-except Exception:  # pragma: no cover - systemd not installed
+except ImportError:  # pragma: no cover - systemd not installed
     daemon = None
 
 
@@ -138,7 +139,7 @@ def _start_watchdog_thread() -> None:
             time.sleep(interval)
             try:
                 daemon.sd_notify("WATCHDOG=1")
-            except Exception:
+            except OSError:
                 pass
     threading.Thread(target=_loop, daemon=True).start()
 
@@ -189,7 +190,7 @@ class OnlineTrainer:
                 res = detect_resources()
                 self.training_mode = res.get("mode", self.training_mode)
                 self.feature_flags["order_book"] = res.get("heavy_mode", False)
-            except Exception:
+            except (OSError, RuntimeError, ValueError):
                 pass
         self.feature_flags.setdefault(
             "order_book", self.training_mode not in ("lite",)
@@ -211,7 +212,7 @@ class OnlineTrainer:
         """Restore coefficients from ``model.json`` if present."""
         try:
             data = json.loads(self.model_path.read_text())
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             return
         self.training_mode = data.get("mode") or data.get("training_mode", "lite")
         self.feature_names = data.get("feature_names", [])
@@ -236,7 +237,7 @@ class OnlineTrainer:
         if self.gnn_state and _HAS_TG and Path("symbol_graph.json").exists():
             try:
                 self.graph_dataset = GraphDataset(Path("symbol_graph.json"))
-            except Exception:
+            except (OSError, ValueError):
                 self.graph_dataset = None
         if self.feature_names and coef is not None and intercept is not None:
             n = len(self.feature_names)
@@ -273,7 +274,7 @@ class OnlineTrainer:
             }
         try:
             existing = json.loads(self.model_path.read_text())
-        except Exception:
+        except (OSError, json.JSONDecodeError):
             existing = {}
         existing.update(payload)
         self.model_path.write_text(json.dumps(existing))
@@ -310,7 +311,7 @@ class OnlineTrainer:
                         sym = str(rec.get("symbol", ""))
                         for i in range(emb_dim):
                             rec[f"graph_emb{i}"] = emb_map.get(sym, [0.0] * emb_dim)[i]
-            except Exception:
+            except (RuntimeError, ValueError):
                 pass
         for rec in batch:
             self._ensure_features(rec.keys())
@@ -322,7 +323,7 @@ class OnlineTrainer:
         try:
             preds = self.clf.predict(X)
             acc = float(np.mean(preds == y))
-        except Exception:
+        except (NotFittedError, ValueError):
             acc = 0.0
         logger.info({"event": "validation", "size": len(y), "accuracy": acc})
 
@@ -333,7 +334,7 @@ class OnlineTrainer:
             base = Path(__file__).resolve().parent
             try:
                 subprocess.Popen([sys.executable, str(base / "auto_retrain.py")])
-            except Exception:
+            except (OSError, subprocess.SubprocessError):
                 logger.exception("failed to start full retrain")
         else:
             self.clf = SGDClassifier(loss="log_loss")
@@ -352,7 +353,7 @@ class OnlineTrainer:
                     self._handle_regime_shift()
                     self._dist_history.clear()
                     return
-            except Exception:
+            except (RuntimeError, ValueError):
                 pass
         first, second = arr[: len(arr) // 2], arr[len(arr) // 2 :]
         if len(first) and len(second) and abs(first.mean() - second.mean()) > self.cp_threshold:
@@ -381,7 +382,7 @@ class OnlineTrainer:
                     labels = np.array(self.calib_labels)
                     try:
                         self.calibrator = LogisticRegression().fit(scores, labels)
-                    except Exception:
+                    except ValueError:
                         self.calibrator = None
                 if self.calibrator is not None:
                     probs1 = self.calibrator.predict_proba(raw_probs.reshape(-1, 1))[:, 1]
@@ -392,7 +393,7 @@ class OnlineTrainer:
                 arr = np.fromiter(self.recent_probs, dtype=float)
                 self.conformal_lower = float(np.quantile(arr, 0.05))
                 self.conformal_upper = float(np.quantile(arr, 0.95))
-            except Exception:
+            except ValueError:
                 pass
             coef = self.clf.coef_[0].tolist()
             intercept = float(self.clf.intercept_[0])
@@ -464,7 +465,7 @@ class OnlineTrainer:
                             ],
                             check=True,
                         )
-                except Exception:
+                except (OSError, subprocess.SubprocessError):
                     logger.exception("drift monitoring failed")
                 time.sleep(interval)
 
@@ -511,45 +512,47 @@ class OnlineTrainer:
         """Subscribe to an Arrow Flight stream of trade events."""
         try:  # pragma: no cover - optional dependency
             import pyarrow.flight as flight
-        except Exception as exc:  # pragma: no cover - pyarrow missing
+        except ImportError as exc:  # pragma: no cover - pyarrow missing
             raise RuntimeError("pyarrow is required for Flight consumption") from exc
 
         client = flight.FlightClient(f"grpc://{host}:{port}")
         ticket = flight.Ticket(path.encode())
         offset = 0
         batch: List[Dict[str, Any]] = []
-        while True:
-            load = psutil.cpu_percent(interval=None)
-            if load > self.cpu_threshold:
-                time.sleep(self.sleep_seconds)
-                continue
-            try:
-                reader = client.do_get(ticket)
-                table = reader.read_all()
-                reader.close()
-            except Exception:
-                time.sleep(1.0)
-                continue
-            if table.num_rows > offset:
-                for row in table.slice(offset).to_pylist():
-                    if "y" not in row and "label" not in row:
-                        continue
-                    row["y"] = row.get("y") or row.get("label")
-                    batch.append(row)
-                    if len(batch) >= self.batch_size:
-                        load = psutil.cpu_percent(interval=None)
-                        if load > self.cpu_threshold:
-                            time.sleep(self.sleep_seconds)
-                        self.update(batch)
-                        batch.clear()
-                offset = table.num_rows
-            if batch:
+        try:
+            while True:
                 load = psutil.cpu_percent(interval=None)
                 if load > self.cpu_threshold:
                     time.sleep(self.sleep_seconds)
-                self.update(batch)
-                batch.clear()
-            time.sleep(1.0)
+                    continue
+                try:
+                    with client.do_get(ticket) as reader:
+                        table = reader.read_all()
+                except (flight.FlightError, OSError):
+                    time.sleep(1.0)
+                    continue
+                if table.num_rows > offset:
+                    for row in table.slice(offset).to_pylist():
+                        if "y" not in row and "label" not in row:
+                            continue
+                        row["y"] = row.get("y") or row.get("label")
+                        batch.append(row)
+                        if len(batch) >= self.batch_size:
+                            load = psutil.cpu_percent(interval=None)
+                            if load > self.cpu_threshold:
+                                time.sleep(self.sleep_seconds)
+                            self.update(batch)
+                            batch.clear()
+                    offset = table.num_rows
+                if batch:
+                    load = psutil.cpu_percent(interval=None)
+                    if load > self.cpu_threshold:
+                        time.sleep(self.sleep_seconds)
+                    self.update(batch)
+                    batch.clear()
+                time.sleep(1.0)
+        finally:
+            client.close()
 
 
 def main(argv: List[str] | None = None) -> None:
