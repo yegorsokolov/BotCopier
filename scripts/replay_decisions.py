@@ -9,7 +9,7 @@ profit are printed at the end.
 
 Any mismatched decisions are written to ``divergences.csv`` and can
 optionally be tagged with a sample ``weight``. This file can then be fed
-back into :mod:`scripts.train_target_clone` via ``--replay-file`` to
+back into :mod:`botcopier.training.pipeline` via ``--replay-file`` to
 emphasise corrections during the next round of training.
 
 When sufficient hardware resources are available, ``detect_resources`` is
@@ -39,7 +39,7 @@ except Exception:  # pragma: no cover
 try:
     from train_target_clone import detect_resources, TabTransformer
 except Exception:  # pragma: no cover - script executed within package
-    from scripts.train_target_clone import detect_resources, TabTransformer  # type: ignore
+    from botcopier.training.pipeline import detect_resources, TabTransformer  # type: ignore
 
 try:  # optional graph embedding support
     from graph_dataset import GraphDataset, compute_gnn_embeddings

@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from scripts.train_target_clone import (
+from botcopier.training.pipeline import (
     _encode_with_autoencoder,
     _extract_features,
     _load_logs,

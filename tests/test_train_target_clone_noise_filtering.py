@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.datasets import make_classification
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_noise_filtering_reduces_dataset_size_and_changes_metrics(tmp_path: Path) -> None:

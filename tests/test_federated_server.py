@@ -8,7 +8,7 @@ import requests
 import uvicorn
 
 from scripts import federated_server
-from scripts.train_target_clone import sync_with_server
+from botcopier.training.pipeline import sync_with_server
 
 
 def _free_port() -> int:

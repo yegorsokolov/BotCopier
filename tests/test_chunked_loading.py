@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from scripts.train_target_clone import _load_logs, train
+from botcopier.data.loading import _load_logs
+from botcopier.training.pipeline import train
 
 
 def _write_log(path: Path, rows: int) -> None:

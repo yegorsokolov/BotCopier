@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_calendar_features(tmp_path: Path):

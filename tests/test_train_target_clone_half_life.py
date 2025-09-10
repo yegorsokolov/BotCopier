@@ -1,6 +1,6 @@
 import json
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_half_life_recorded(tmp_path):

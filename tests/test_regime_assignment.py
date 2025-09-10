@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-from scripts.train_target_clone import _load_logs, _extract_features, train
+from botcopier.data.loading import _load_logs
+from botcopier.features.engineering import _extract_features
+from botcopier.training.pipeline import train
 
 
 def _write_regime_model(path: Path) -> None:

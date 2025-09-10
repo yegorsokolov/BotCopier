@@ -12,7 +12,8 @@ import log_service_pb2_grpc  # type: ignore
 import trade_event_pb2  # type: ignore
 
 from scripts import grpc_log_service
-from scripts.train_target_clone import _load_logs, train
+from botcopier.data.loading import _load_logs
+from botcopier.training.pipeline import train
 
 
 def test_generated_features(tmp_path):

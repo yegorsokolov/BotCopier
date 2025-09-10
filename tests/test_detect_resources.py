@@ -11,7 +11,7 @@ except Exception:  # pragma: no cover - pyarrow not installed
     sys.modules.setdefault("pyarrow.flight", types.SimpleNamespace())
     sys.modules.setdefault("pyarrow.parquet", types.SimpleNamespace())
 
-import scripts.train_target_clone as tc
+from botcopier.training import pipeline as tc
 
 
 class DummyVM:

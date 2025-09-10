@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_pseudo_labelling_changes_dataset_and_metrics(tmp_path: Path) -> None:

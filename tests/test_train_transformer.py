@@ -7,7 +7,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_transformer_weights_and_generation(tmp_path):
@@ -62,7 +62,7 @@ def test_transformer_cli_dropout(tmp_path):
         [
             sys.executable,
             "-m",
-            "scripts.train_target_clone",
+            "botcopier.training.pipeline",
             str(data),
             str(out_dir),
             "--model-type",

@@ -3,7 +3,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from scripts.explain import integrated_gradients
-from scripts.train_target_clone import TabTransformer
+from botcopier.models.registry import TabTransformer
 
 
 def test_integrated_gradients_shapes():

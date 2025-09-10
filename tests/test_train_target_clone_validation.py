@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from sklearn.datasets import make_classification
 
-from scripts.train_target_clone import (
+from botcopier.training.pipeline import (
     train,
     _HAS_OPTUNA,
     _HAS_TORCH,

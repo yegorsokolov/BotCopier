@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.datasets import make_classification
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_anomaly_filtering_reduces_rows_and_changes_coefficients(tmp_path: Path) -> None:

@@ -2,7 +2,8 @@ import json
 import pandas as pd
 from pathlib import Path
 
-from scripts.train_target_clone import _load_logs, train
+from botcopier.data.loading import _load_logs
+from botcopier.training.pipeline import train
 
 
 def test_meta_labels_not_null(tmp_path: Path) -> None:
