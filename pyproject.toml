@@ -1,3 +1,67 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "botcopier"
+version = "0.1.0"
+description = "Utilities for observing live trading activity and exercising strategy logic."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "BotCopier Developers"}]
+dependencies = [
+    "numpy",
+    "pandas",
+    "great_expectations",
+    "scikit-learn",
+    "joblib",
+    "river",
+    "psutil",
+    "pydantic",
+    "pydantic-settings",
+    "pyyaml",
+    "typer",
+    "aiohttp",
+    "prometheus_client",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    "opentelemetry-exporter-jaeger",
+    "protobuf",
+    "grpcio",
+    "grpcio-tools",
+    "pyzmq",
+    "pyarrow",
+    "pycapnp",
+    "onnxruntime",
+    "skl2onnx",
+    "fastapi",
+    "uvicorn",
+    "websocket-client",
+    "requests",
+    "ruptures",
+    "nats-py",
+    "confluent-kafka[avro]",
+    "fastavro",
+    "imbalanced-learn",
+    "transformers",
+    "mlflow",
+]
+
+[project.optional-dependencies]
+tft = ["pytorch-forecasting"]
+uvloop = ["uvloop"]
+xgboost = ["xgboost"]
+shap = ["shap"]
+optuna = ["optuna"]
+rl = ["stable-baselines3", "sb3-contrib"]
+gpu = ["torch", "torch_geometric", "onnxruntime-gpu"]
+
+[project.scripts]
+botcopier-analyze-ticks = "botcopier.scripts.analyze_ticks:main"
+botcopier-flight-server = "botcopier.scripts.flight_server:main"
+botcopier-online-trainer = "botcopier.scripts.online_trainer:main"
+
 [tool.black]
 line-length = 88
 target-version = ['py310']
@@ -10,10 +74,9 @@ line_length = 88
 line-length = 88
 target-version = "py310"
 ignore = ["E402", "F401", "F821", "F841", "E741"]
-exclude = ["scripts", "tests", "proto"]
+exclude = ["botcopier/scripts", "tests", "proto"]
 
 [tool.mypy]
 python_version = "3.10"
 ignore_missing_imports = true
-exclude = ["^scripts/"]
-
+exclude = ["^botcopier/scripts/"]

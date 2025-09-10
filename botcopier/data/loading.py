@@ -8,7 +8,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from scripts.data_validation import validate_logs
+from ..scripts.data_validation import validate_logs
 from botcopier.features.engineering import (
     _augment_dataframe,
     _augment_dtw_dataframe,
