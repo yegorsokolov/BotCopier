@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Train a tiny PCA-based autoencoder on trade features and store weights in model.json."""
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pydantic import ValidationError
+
+from botcopier.models.schema import ModelParams
 
 
 def build_features(df: pd.DataFrame) -> np.ndarray:
@@ -55,14 +57,18 @@ def main() -> None:
     mean, std, W = train_autoencoder(X, latent_dim=args.latent)
 
     if args.model.exists():
-        model = json.loads(args.model.read_text())
+        try:
+            params = ModelParams.model_validate_json(args.model.read_text())
+            model = params.model_dump()
+        except ValidationError:
+            model = {}
     else:
         model = {}
     model["ae_weights"] = W.flatten().tolist()
     model["ae_mean"] = mean.tolist()
     model["ae_std"] = std.tolist()
     model["ae_shape"] = [int(W.shape[0]), int(W.shape[1])]
-    args.model.write_text(json.dumps(model, indent=2))
+    args.model.write_text(ModelParams(**model).model_dump_json(indent=2))
 
 
 if __name__ == "__main__":

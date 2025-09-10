@@ -26,6 +26,10 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Dict, Any
 
+from pydantic import ValidationError
+
+from botcopier.models.schema import ModelParams
+
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
     logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
@@ -211,9 +215,10 @@ class OnlineTrainer:
     def _load(self) -> None:
         """Restore coefficients from ``model.json`` if present."""
         try:
-            data = json.loads(self.model_path.read_text())
-        except (OSError, json.JSONDecodeError):
+            params = ModelParams.model_validate_json(self.model_path.read_text())
+        except (OSError, ValidationError):
             return
+        data = params.model_dump()
         self.training_mode = data.get("mode") or data.get("training_mode", "lite")
         self.feature_names = data.get("feature_names", [])
         self.feature_flags = data.get("feature_flags", {})
@@ -273,11 +278,12 @@ class OnlineTrainer:
                 "intercept": float(self.calibrator.intercept_[0]),
             }
         try:
-            existing = json.loads(self.model_path.read_text())
-        except (OSError, json.JSONDecodeError):
+            params = ModelParams.model_validate_json(self.model_path.read_text())
+            existing = params.model_dump()
+        except (OSError, ValidationError):
             existing = {}
         existing.update(payload)
-        self.model_path.write_text(json.dumps(existing))
+        self.model_path.write_text(ModelParams(**existing).model_dump_json())
     # ------------------------------------------------------------------
     # Incremental training
     # ------------------------------------------------------------------

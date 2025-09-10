@@ -14,6 +14,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import IsolationForest
+from pydantic import ValidationError
+
+from botcopier.models.schema import ModelParams
 
 try:  # pragma: no cover - fallback for package import
     from otel_logging import setup_logging
@@ -110,8 +113,9 @@ def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) 
     data: dict[str, object] = {}
     if model_json.exists():
         try:
-            data = json.loads(model_json.read_text())
-        except Exception:
+            params = ModelParams.model_validate_json(model_json.read_text())
+            data = params.model_dump()
+        except (ValidationError, OSError, ValueError):
             data = {}
     max_metric = max(metrics.values()) if metrics else 0.0
     data["drift_metric"] = max_metric
@@ -125,7 +129,7 @@ def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) 
         if isinstance(retrain_hist, list):
             entry = {"time": ts, **metrics}
             retrain_hist.append(entry)
-    model_json.write_text(json.dumps(data, indent=2))
+    model_json.write_text(ModelParams(**data).model_dump_json(indent=2))
 
 
 def _update_evaluation(eval_file: Path, metrics: dict[str, float]) -> None:

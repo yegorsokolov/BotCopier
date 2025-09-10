@@ -10,10 +10,11 @@ compiled directly.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 from pathlib import Path
 from typing import Sequence
+
+from botcopier.models.schema import ModelParams
 
 # Mapping from feature name to MQL4 runtime expression.
 # Add new feature mappings here as additional model features appear.
@@ -287,7 +288,8 @@ def insert_get_feature(
     model: Path, template: Path, calendar_file: Path | None = None
 ) -> None:
     """Insert generated GetFeature and session models into ``template``."""
-    data = json.loads(model.read_text())
+    params = ModelParams.model_validate_json(model.read_text())
+    data = params.model_dump()
     # If a distilled student exists and no explicit models are provided, expose
     # it under the ``models`` key so the template receives logistic coefficients.
     if "distilled" in data and not data.get("models"):
