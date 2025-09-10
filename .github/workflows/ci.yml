@@ -14,8 +14,12 @@ jobs:
           python-version: '3.x'
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt dvc
+          pip install -r requirements.txt dvc pre-commit mypy
       - name: Verify DVC data hashes
         run: dvc status
+      - name: Run pre-commit
+        run: pre-commit run --all-files
+      - name: Run mypy
+        run: mypy .
       - name: Run tests
         run: pytest
