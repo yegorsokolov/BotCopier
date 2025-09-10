@@ -106,7 +106,15 @@ except Exception:  # pragma: no cover
     SMOTE = None  # type: ignore
     _HAS_IMBLEARN = False
 
-from .features import _sma, _rsi, _bollinger, _macd_update, _atr
+from .features import (
+    _sma,
+    _rsi,
+    _bollinger,
+    _macd_update,
+    _atr,
+    _kalman_update,
+    KALMAN_DEFAULT_PARAMS,
+)
 
 try:  # Optional graph dependencies
     from .graph_dataset import GraphDataset, compute_gnn_embeddings
@@ -125,6 +133,11 @@ _CLIP_BOUNDS = (0.01, 0.99)
 # Default decay rate for adaptive feature scaling.  This value can be
 # overridden at runtime via the ``--scaler-decay`` command line option.
 SCALER_DECAY: float = 0.01
+
+
+# Global Kalman filter configuration toggled via CLI
+USE_KALMAN_FEATURES: bool = False
+KALMAN_PARAMS: dict = KALMAN_DEFAULT_PARAMS.copy()
 
 
 class AdaptiveScaler:
@@ -965,6 +978,31 @@ def _extract_features(
         df["pattern_engulfing"] = e_flags
         feature_names.extend(["pattern_hammer", "pattern_doji", "pattern_engulfing"])
 
+    if USE_KALMAN_FEATURES:
+        params = KALMAN_PARAMS
+        if "close" in df.columns:
+            price_state: dict = {}
+            lvl_vals: list[float] = []
+            tr_vals: list[float] = []
+            for p in pd.to_numeric(df["close"], errors="coerce").fillna(0.0):
+                lvl, tr = _kalman_update(price_state, float(p), **params)
+                lvl_vals.append(lvl)
+                tr_vals.append(tr)
+            df["kalman_price_level"] = lvl_vals
+            df["kalman_price_trend"] = tr_vals
+            feature_names.extend(["kalman_price_level", "kalman_price_trend"])
+        if "volume" in df.columns:
+            vol_state: dict = {}
+            lvl_vals: list[float] = []
+            tr_vals: list[float] = []
+            for v in pd.to_numeric(df["volume"], errors="coerce").fillna(0.0):
+                lvl, tr = _kalman_update(vol_state, float(v), **params)
+                lvl_vals.append(lvl)
+                tr_vals.append(tr)
+            df["kalman_volume_level"] = lvl_vals
+            df["kalman_volume_trend"] = tr_vals
+            feature_names.extend(["kalman_volume_level", "kalman_volume_trend"])
+
     if tick_encoder is not None and _HAS_TORCH:
         tick_cols = [c for c in df.columns if c.startswith("tick_")]
         if tick_cols:
@@ -1408,6 +1446,8 @@ def _train_multi_output_clf(
     model["rank_features"] = bool(rank_features)
     if pca_components:
         model["pca_components"] = pca_components
+    if USE_KALMAN_FEATURES:
+        model["kalman"] = KALMAN_PARAMS
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
@@ -2832,6 +2872,8 @@ def _train_lite_mode(
         "synthetic_weight": float(synthetic_weight),
     }
     model["synthetic_metrics"] = synthetic_info
+    if USE_KALMAN_FEATURES:
+        model["kalman"] = KALMAN_PARAMS
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model, f)
@@ -3240,6 +3282,8 @@ def _train_transformer(
         }
     if bayes_info:
         model_json["bayesian_ensemble"] = bayes_info
+    if USE_KALMAN_FEATURES:
+        model_json["kalman"] = KALMAN_PARAMS
     out_dir.mkdir(parents=True, exist_ok=True)
     _persist_encoder_meta(out_dir, model_json, tick_encoder)
     with open(out_dir / "model.json", "w") as f:
@@ -3374,6 +3418,8 @@ def _train_tab_transformer(
             "dayofweek": ["dow_sin", "dow_cos"],
             "month": ["month_sin", "month_cos"],
         }
+    if USE_KALMAN_FEATURES:
+        model_json["kalman"] = KALMAN_PARAMS
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model_json, f)
@@ -3511,6 +3557,8 @@ def _train_tcn(
             "dayofweek": ["dow_sin", "dow_cos"],
             "month": ["month_sin", "month_cos"],
         }
+    if USE_KALMAN_FEATURES:
+        model_json["kalman"] = KALMAN_PARAMS
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "model.json", "w") as f:
         json.dump(model_json, f)
@@ -3784,6 +3832,8 @@ def _train_tree_model(
     if distilled is not None:
         model_json["distilled"] = distilled
         model_json.setdefault("models", {})["logreg"] = distilled
+    if USE_KALMAN_FEATURES:
+        model_json["kalman"] = KALMAN_PARAMS
     out_dir.mkdir(parents=True, exist_ok=True)
     _persist_encoder_meta(out_dir, model_json, tick_encoder)
     with open(out_dir / "model.json", "w") as f:
@@ -4226,6 +4276,11 @@ def main() -> None:
         help="include cross-sectional rank features",
     )
     p.add_argument(
+        "--kalman-features",
+        action="store_true",
+        help="append Kalman filter state estimates to features",
+    )
+    p.add_argument(
         "--distill-teacher",
         action="store_true",
         help="fit lightweight student model on teacher probabilities",
@@ -4466,8 +4521,9 @@ def main() -> None:
         help="metric used to optimise decision threshold",
     )
     args = p.parse_args()
-    global SCALER_DECAY
+    global SCALER_DECAY, USE_KALMAN_FEATURES
     SCALER_DECAY = args.scaler_decay
+    USE_KALMAN_FEATURES = args.kalman_features
     corr_windows = (
         [int(w) for w in args.neighbor_corr_windows.split(",") if w]
         if args.neighbor_corr_windows
