@@ -15,6 +15,8 @@ import sqlite3
 import logging
 import subprocess
 import sys
+import signal
+from contextlib import closing, suppress
 from pathlib import Path
 from datetime import datetime
 
@@ -255,15 +257,14 @@ async def _writer_task(
     detector: ADWIN | None = None,
 ) -> None:
     db_file.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_file)
     cols = ",".join(FIELDS)
     placeholders = ",".join(["?"] * len(FIELDS))
-    conn.execute(
-        f"CREATE TABLE IF NOT EXISTS metrics ({','.join([f'{c} TEXT' for c in FIELDS])})"
-    )
-    insert_sql = f"INSERT INTO metrics ({cols}) VALUES ({placeholders})"
-    prev_est: float | None = None
-    try:
+    with closing(sqlite3.connect(db_file)) as conn:
+        conn.execute(
+            f"CREATE TABLE IF NOT EXISTS metrics ({','.join([f'{c} TEXT' for c in FIELDS])})"
+        )
+        insert_sql = f"INSERT INTO metrics ({cols}) VALUES ({placeholders})"
+        prev_est: float | None = None
         while True:
             row = await queue.get()
             if row is None:
@@ -329,8 +330,6 @@ async def _writer_task(
                                         logger.exception("retrain failed")
                             prev_est = detector.estimation
             queue.task_done()
-    finally:
-        conn.close()
 
 
 
@@ -354,6 +353,10 @@ def serve(
         queue: Queue = Queue()
         prom_updater: Callable[[dict], None]
         detector = ADWIN() if drift_metric else None
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
         watchdog_interval = None
         if daemon is not None:
             try:
@@ -363,6 +366,7 @@ def serve(
             if watchdog_interval:
                 asyncio.create_task(_watchdog_task(watchdog_interval))
 
+        prom_runner = None
         if prom_port is not None:
             from prometheus_client import (
                 Counter,
@@ -619,7 +623,7 @@ def serve(
                     continue
                 await asyncio.sleep(1)
 
-        asyncio.create_task(poll())
+        poll_task = asyncio.create_task(poll())
 
         async def history_handler(request: web.Request) -> web.Response:
             limit_param = request.query.get("limit", "100")
@@ -627,14 +631,11 @@ def serve(
                 limit = int(limit_param)
             except ValueError:
                 limit = 100
-            conn = sqlite3.connect(db_file)
-            try:
+            with sqlite3.connect(db_file) as conn:
                 rows = conn.execute(
                     "SELECT * FROM metrics ORDER BY ROWID DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
-            finally:
-                conn.close()
             rows = [dict(zip(FIELDS, r)) for r in reversed(rows)]
             return web.json_response(rows)
 
@@ -677,7 +678,18 @@ def serve(
         else:
             runner = None
 
-        await asyncio.Future()
+        await stop.wait()
+
+        poll_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await poll_task
+        if runner is not None:
+            await runner.cleanup()
+        if prom_runner is not None:
+            await prom_runner.cleanup()
+        await queue.join()
+        queue.put_nowait(None)
+        await writer_task
 
     asyncio.run(_run())
 
