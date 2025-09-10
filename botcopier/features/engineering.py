@@ -13,6 +13,12 @@ import json
 
 import numpy as np
 import pandas as pd
+try:  # optional polars dependency
+    import polars as pl  # type: ignore
+    _HAS_POLARS = True
+except Exception:  # pragma: no cover - optional
+    pl = None  # type: ignore
+    _HAS_POLARS = False
 from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import LinearRegression
 from joblib import Memory
@@ -230,7 +236,7 @@ def _augment_dtw_dataframe_impl(df: pd.DataFrame, ratio: float, window: int = 3)
 # ---------------------------------------------------------------------------
 
 def _extract_features_impl(
-    df: pd.DataFrame,
+    df: pd.DataFrame | 'pl.DataFrame',
     feature_names: list[str],
     *,
     symbol_graph: dict | str | Path | None = None,
@@ -244,7 +250,13 @@ def _extract_features_impl(
     pca_components: dict | None = None,
     rank_features: bool = False,
 ) -> tuple[pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]]:
-    """Attach graph embeddings, calendar flags and correlation features."""
+    """Attach graph embeddings, calendar flags and correlation features.
+
+    The function accepts either a :class:`pandas.DataFrame` or, when the
+    optional ``polars`` dependency is installed, a :class:`polars.DataFrame`.
+    Polars inputs are processed using vectorised expressions and converted
+    back to pandas for downstream compatibility.
+    """
     g_dataset: GraphDataset | None = None
     graph_data: dict | None = None
     if symbol_graph is not None:
@@ -261,7 +273,38 @@ def _extract_features_impl(
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
 
-    if "event_time" in df.columns:
+    use_polars = _HAS_POLARS and isinstance(df, pl.DataFrame)
+    if use_polars and "event_time" in df.columns:
+        df = df.with_columns(pl.col("event_time").cast(pl.Datetime("ns")))
+        if calendar_features:
+            df = df.with_columns(
+                [
+                    pl.col("event_time").dt.hour().alias("hour"),
+                    pl.col("event_time").dt.weekday().alias("dayofweek"),
+                    pl.col("event_time").dt.month().alias("month"),
+                ]
+            )
+            df = df.with_columns(
+                [
+                    (2 * np.pi * pl.col("hour") / 24.0).sin().alias("hour_sin"),
+                    (2 * np.pi * pl.col("hour") / 24.0).cos().alias("hour_cos"),
+                    (2 * np.pi * pl.col("dayofweek") / 7.0).sin().alias("dow_sin"),
+                    (2 * np.pi * pl.col("dayofweek") / 7.0).cos().alias("dow_cos"),
+                    (2 * np.pi * (pl.col("month") - 1) / 12.0).sin().alias("month_sin"),
+                    (2 * np.pi * (pl.col("month") - 1) / 12.0).cos().alias("month_cos"),
+                ]
+            )
+            for col in [
+                "hour_sin",
+                "hour_cos",
+                "dow_sin",
+                "dow_cos",
+                "month_sin",
+                "month_cos",
+            ]:
+                if col not in feature_names:
+                    feature_names.append(col)
+    elif "event_time" in df.columns:
         df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce", utc=True)
         if calendar_features:
             if "hour" not in df.columns:
@@ -290,27 +333,60 @@ def _extract_features_impl(
                 if col in df.columns and col not in feature_names:
                     feature_names.append(col)
 
-    if all(c in df.columns for c in ["open", "high", "low", "close"]):
-        opens = pd.to_numeric(df["open"], errors="coerce")
-        highs = pd.to_numeric(df["high"], errors="coerce")
-        lows = pd.to_numeric(df["low"], errors="coerce")
-        closes = pd.to_numeric(df["close"], errors="coerce")
-        h_flags: list[float] = []
-        d_flags: list[float] = []
-        e_flags: list[float] = []
-        prev_open = float("nan")
-        prev_close = float("nan")
-        for o, h, l, c in zip(opens, highs, lows, closes):
-            h_flags.append(1.0 if _is_hammer(o, h, l, c) else 0.0)
-            d_flags.append(1.0 if _is_doji(o, h, l, c) else 0.0)
-            if not math.isnan(prev_open) and not math.isnan(prev_close):
-                e_flags.append(1.0 if _is_engulfing(prev_open, prev_close, o, c) else 0.0)
-            else:
-                e_flags.append(0.0)
-            prev_open, prev_close = o, c
-        df["pattern_hammer"] = h_flags
-        df["pattern_doji"] = d_flags
-        df["pattern_engulfing"] = e_flags
+    if use_polars and all(c in df.columns for c in ["open", "high", "low", "close"]):
+        body = (pl.col("close") - pl.col("open")).abs()
+        upper = pl.col("high") - pl.max_horizontal("open", "close")
+        lower = pl.min_horizontal("open", "close") - pl.col("low")
+        total = pl.col("high") - pl.col("low")
+        hammer_expr = (
+            (lower >= 2 * body) & (upper <= body) & (total > 0) & ((body / total) < 0.3)
+        )
+        doji_expr = (body <= 0.1 * total) & (total != 0)
+        prev_open = pl.col("open").shift(1)
+        prev_close = pl.col("close").shift(1)
+        engulf_expr = (
+            (body > (prev_close - prev_open).abs())
+            & (((pl.col("open") < prev_close) & (pl.col("close") > prev_open))
+               | ((pl.col("open") > prev_close) & (pl.col("close") < prev_open)))
+        )
+        df = df.with_columns(
+            [
+                hammer_expr.cast(pl.Float64).fill_null(0.0).alias("pattern_hammer"),
+                doji_expr.cast(pl.Float64).fill_null(0.0).alias("pattern_doji"),
+                engulf_expr.cast(pl.Float64).fill_null(0.0).alias("pattern_engulfing"),
+            ]
+        )
+        feature_names.extend(["pattern_hammer", "pattern_doji", "pattern_engulfing"])
+        df = df.to_pandas()
+        use_polars = False
+    elif all(c in df.columns for c in ["open", "high", "low", "close"]):
+        opens = pd.to_numeric(df["open"], errors="coerce").to_numpy()
+        highs = pd.to_numeric(df["high"], errors="coerce").to_numpy()
+        lows = pd.to_numeric(df["low"], errors="coerce").to_numpy()
+        closes = pd.to_numeric(df["close"], errors="coerce").to_numpy()
+        body = np.abs(closes - opens)
+        upper = highs - np.maximum(opens, closes)
+        lower = np.minimum(opens, closes) - lows
+        total = highs - lows
+        with np.errstate(divide="ignore", invalid="ignore"):
+            hammer = (lower >= 2 * body) & (upper <= body) & (total > 0) & ((body / total) < 0.3)
+            doji = (body <= 0.1 * total) & (total != 0)
+        prev_open = np.roll(opens, 1)
+        prev_close = np.roll(closes, 1)
+        prev_open[0] = np.nan
+        prev_close[0] = np.nan
+        engulf = (
+            (body > np.abs(prev_close - prev_open))
+            & (
+                ((opens < prev_close) & (closes > prev_open))
+                | ((opens > prev_close) & (closes < prev_open))
+            )
+        )
+        df["pattern_hammer"] = np.where(np.isnan(hammer), 0.0, hammer.astype(float))
+        df["pattern_doji"] = np.where(np.isnan(doji), 0.0, doji.astype(float))
+        df["pattern_engulfing"] = np.where(
+            np.isnan(prev_open) | np.isnan(prev_close), 0.0, engulf.astype(float)
+        )
         feature_names.extend(["pattern_hammer", "pattern_doji", "pattern_engulfing"])
 
     if USE_KALMAN_FEATURES:
