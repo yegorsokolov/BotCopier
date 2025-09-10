@@ -33,7 +33,12 @@ import pandas as pd
 import psutil
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import SGDClassifier, LinearRegression, LogisticRegression
-from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier, StackingClassifier
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    VotingClassifier,
+    StackingClassifier,
+    IsolationForest,
+)
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn import set_config
 from sklearn.decomposition import PCA
@@ -204,6 +209,25 @@ def _clip_train_features(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndar
 def _clip_apply(X: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     """Apply precomputed clipping bounds to features."""
     return np.clip(X, low, high)
+
+
+def _score_anomalies(X: np.ndarray, params: dict | None) -> np.ndarray:
+    """Compute anomaly scores using autoencoder params or IsolationForest."""
+    if params and all(k in params for k in ("ae_weights", "ae_mean", "ae_std", "ae_shape")):
+        try:
+            W = np.asarray(params["ae_weights"], dtype=float).reshape(params["ae_shape"])
+            mean = np.asarray(params["ae_mean"], dtype=float)
+            std = np.asarray(params["ae_std"], dtype=float)
+            if W.shape[0] == X.shape[1]:
+                Xs = (X - mean) / (std + 1e-8)
+                recon = (Xs @ W) @ W.T
+                recon = recon * std + mean
+                return np.mean((X - recon) ** 2, axis=1)
+        except Exception:
+            pass
+    iso = IsolationForest(random_state=0)
+    iso.fit(X)
+    return -iso.score_samples(X)
 
 
 def _load_logreg_params(model: dict) -> dict | None:
@@ -1604,6 +1628,7 @@ def _train_lite_mode(
     pseudo_confidence_high: float = 0.9,
     expected_value: bool = False,
     rank_features: bool = False,
+    anomaly_threshold: float = 0.0,
     pareto_weight: float | None = None,
     pareto_metric: str = "accuracy",
     augment_data: float = 0.0,
@@ -1664,7 +1689,11 @@ def _train_lite_mode(
         model_path = Path("model.json")
     if model_path.exists():
         try:
-            model_params = _load_logreg_params(json.loads(model_path.read_text()))
+            raw_model = json.loads(model_path.read_text())
+            model_params = _load_logreg_params(raw_model) or {}
+            for k in ("ae_weights", "ae_mean", "ae_std", "ae_shape"):
+                if k in raw_model:
+                    model_params[k] = raw_model[k]
         except Exception:
             model_params = None
 
@@ -1895,6 +1924,26 @@ def _train_lite_mode(
         X_all = _imputer.fit_transform(X_all)
         df[feature_names] = X_all
         imputer_json = base64.b64encode(pickle.dumps(_imputer)).decode("ascii")
+        if anomaly_threshold > 0:
+            scores = _score_anomalies(X_all, model_params)
+            cutoff = float(np.quantile(scores, anomaly_threshold))
+            mask = scores <= cutoff
+            dropped = int((~mask).sum())
+            logging.info(
+                "Anomaly filter dropped %d rows above quantile %.3f (cutoff %.4f)",
+                dropped,
+                anomaly_threshold,
+                cutoff,
+            )
+            logging.info(
+                "Anomaly score stats mean=%.4f std=%.4f max=%.4f", 
+                float(np.mean(scores)),
+                float(np.std(scores)),
+                float(np.max(scores)),
+            )
+            if dropped:
+                df = df.loc[mask].reset_index(drop=True)
+                X_all = X_all[mask]
     # Compute mutual information for each feature and drop low-score features
     X_mi = df[feature_names].to_numpy(dtype=float)
     y_mi = df["label"].astype(int).to_numpy()
@@ -4093,6 +4142,7 @@ def train(
     augment_data: float = 0.0,
     expected_value: bool = False,
     rank_features: bool = False,
+    anomaly_threshold: float = 0.0,
     distill_teacher: bool = False,
     explain: bool = False,
     **kwargs,
@@ -4272,6 +4322,7 @@ def train(
             expected_value=expected_value,
             threshold_objective=threshold_objective,
             quantile_model=quantile_model,
+            anomaly_threshold=anomaly_threshold,
             rank_features=rank_features,
             **kwargs,
         )
@@ -4508,6 +4559,12 @@ def main() -> None:
         "--rank-features",
         action="store_true",
         help="include cross-sectional rank features",
+    )
+    p.add_argument(
+        "--anomaly-threshold",
+        type=float,
+        default=0.0,
+        help="quantile of anomaly score above which samples are dropped",
     )
     p.add_argument(
         "--kalman-features",
@@ -4819,6 +4876,7 @@ def main() -> None:
         pseudo_confidence_high=args.pseudo_confidence_high,
         pseudo_confidence_low=args.pseudo_confidence_low,
         augment_data=args.augment_data,
+        anomaly_threshold=args.anomaly_threshold,
         expected_value=args.expected_value,
         rank_features=args.rank_features,
         distill_teacher=args.distill_teacher,
