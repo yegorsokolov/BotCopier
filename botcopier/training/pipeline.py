@@ -23,7 +23,11 @@ except Exception:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
 from botcopier.data.loading import _load_logs
-from botcopier.features.engineering import _extract_features, configure_cache
+from botcopier.features.engineering import (
+    _extract_features,
+    configure_cache,
+    FeatureConfig,
+)
 from botcopier.models.registry import MODEL_REGISTRY, get_model
 
 try:  # optional torch dependency flag
@@ -55,7 +59,7 @@ def train(
 ) -> None:
     """Train a model selected from the registry."""
     if cache_dir is not None:
-        configure_cache(cache_dir)
+        configure_cache(FeatureConfig(cache_dir=cache_dir))
     df, feature_names, _ = _load_logs(data_dir)
     df, feature_names, _, _ = _extract_features(df, feature_names)
     label_col = next((c for c in df.columns if c.startswith("label")), None)

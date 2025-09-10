@@ -6,11 +6,12 @@ import pandas as pd
 import torch
 
 from scripts.pretrain_contrastive import train as pretrain_encoder
+import botcopier.features.engineering as fe
 from botcopier.features.engineering import (
-    _extract_features,
     train,
     configure_cache,
     clear_cache,
+    FeatureConfig,
 )
 from scripts.replay_decisions import _recompute
 
@@ -26,7 +27,7 @@ def _write_ticks(dir_path: Path, n: int = 50) -> None:
 
 def test_contrastive_encoder_flow(tmp_path: Path, caplog):
     cache_dir = tmp_path / "cache"
-    configure_cache(cache_dir)
+    configure_cache(FeatureConfig(cache_dir=cache_dir))
     clear_cache()
     tick_dir = tmp_path / "ticks"
     tick_dir.mkdir()
@@ -40,8 +41,8 @@ def test_contrastive_encoder_flow(tmp_path: Path, caplog):
     # verify feature extraction
     df = pd.DataFrame({f"tick_{i}": [float(i)] for i in range(window)})
     with caplog.at_level(logging.INFO):
-        df2, feats, _, _ = _extract_features(df.copy(), [], tick_encoder=enc_path)
-        _extract_features(df.copy(), [], tick_encoder=enc_path)
+        df2, feats, _, _ = fe._extract_features(df.copy(), [], tick_encoder=enc_path)
+        fe._extract_features(df.copy(), [], tick_encoder=enc_path)
     assert "cache hit for _extract_features" in caplog.text
     for i in range(dim):
         assert f"enc_{i}" in feats

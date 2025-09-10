@@ -5,11 +5,8 @@ from pathlib import Path
 import numpy as np
 
 from botcopier.data.loading import _load_logs
-from botcopier.features.engineering import (
-    _extract_features,
-    configure_cache,
-    clear_cache,
-)
+import botcopier.features.engineering as fe
+from botcopier.features.engineering import configure_cache, clear_cache, FeatureConfig
 from botcopier.training.pipeline import train
 
 
@@ -21,12 +18,12 @@ def test_multi_horizon_training(tmp_path: Path, caplog) -> None:
     data.write_text("".join(rows))
 
     cache_dir = tmp_path / "cache"
-    configure_cache(cache_dir)
+    configure_cache(FeatureConfig(cache_dir=cache_dir))
     clear_cache()
     df, feature_cols, _ = _load_logs(data)
     with caplog.at_level(logging.INFO):
-        df, feature_cols, _, _ = _extract_features(df, feature_cols)
-        _extract_features(df, feature_cols)
+        df, feature_cols, _, _ = fe._extract_features(df, feature_cols)
+        fe._extract_features(df, feature_cols)
     assert "cache hit for _extract_features" in caplog.text
     assert df["label_h5"].notna().all()
     assert df["label_h20"].notna().all()

@@ -4,11 +4,8 @@ import logging
 import pandas as pd
 
 from scripts.features import _extract_features as extract_rows_features
-from botcopier.features.engineering import (
-    _extract_features as extract_df_features,
-    configure_cache,
-    clear_cache,
-)
+import botcopier.features.engineering as fe
+from botcopier.features.engineering import configure_cache, clear_cache, FeatureConfig
 
 
 def _synthetic_rows():
@@ -73,14 +70,14 @@ def test_pattern_detection_rows():
 
 def test_pattern_detection_dataframe(tmp_path, caplog):
     cache_dir = tmp_path / "cache"
-    configure_cache(cache_dir)
+    configure_cache(FeatureConfig(cache_dir=cache_dir))
     clear_cache()
     rows = _synthetic_rows()
     df = pd.DataFrame(rows)
     feature_cols = ["price"]
     with caplog.at_level(logging.INFO):
-        df, feature_cols, *_ = extract_df_features(df, feature_cols)
-        extract_df_features(df, feature_cols)
+        df, feature_cols, *_ = fe._extract_features(df, feature_cols)
+        fe._extract_features(df, feature_cols)
     assert "cache hit for _extract_features" in caplog.text
     assert "pattern_hammer" in feature_cols
     assert "pattern_doji" in feature_cols
