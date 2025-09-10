@@ -5,8 +5,8 @@ import argparse
 import gzip
 import json
 import logging
-import time
 import shutil
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Sequence
@@ -14,16 +14,17 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 import psutil
+
 try:  # optional polars support
     import polars as pl  # type: ignore
+
     _HAS_POLARS = True
 except Exception:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
-from sklearn.linear_model import LogisticRegression
-
 from botcopier.data.loading import _load_logs
 from botcopier.features.engineering import _extract_features, configure_cache
+from botcopier.models.registry import MODEL_REGISTRY, get_model
 
 try:  # optional torch dependency flag
     import torch  # type: ignore
@@ -50,9 +51,9 @@ def train(
     cache_dir: Path | None = None,
     tracking_uri: str | None = None,
     experiment_name: str | None = None,
-    **_: object,
+    **kwargs: object,
 ) -> None:
-    """Train a simple logistic regression model from trade logs."""
+    """Train a model selected from the registry."""
     if cache_dir is not None:
         configure_cache(cache_dir)
     df, feature_names, _ = _load_logs(data_dir)
@@ -80,18 +81,22 @@ def train(
 
     run_ctx = mlflow.start_run() if mlflow_active else nullcontext()
     with run_ctx:
-        clf = LogisticRegression(max_iter=1000)
-        clf.fit(X, y)
-        score = clf.score(X, y)
+        builder = get_model(model_type)
+        model_data, predict_fn = builder(X, y)
+        probas = predict_fn(X)
+        preds = (probas >= 0.5).astype(float)
+        score = float((preds == y).mean())
         model = {
             "feature_names": feature_names,
-            "coefficients": clf.coef_.ravel().tolist(),
-            "intercept": float(clf.intercept_[0]),
             "feature_mean": X.mean(axis=0).tolist(),
             "feature_std": X.std(axis=0).tolist(),
             "clip_low": np.min(X, axis=0).tolist(),
             "clip_high": np.max(X, axis=0).tolist(),
+            **model_data,
         }
+        mode = kwargs.get("mode")
+        if mode is not None:
+            model["mode"] = mode
         out_dir.mkdir(parents=True, exist_ok=True)
         with open(out_dir / "model.json", "w") as f:
             json.dump(model, f)
@@ -105,16 +110,16 @@ def train(
 def detect_resources(*, lite_mode: bool = False, heavy_mode: bool = False) -> dict:
     """Detect available system resources."""
     vm = psutil.virtual_memory()
-    mem = getattr(vm, "available", getattr(vm, "total", 0)) / (1024 ** 3)
-    swap = psutil.swap_memory().total / (1024 ** 3)
-    disk = shutil.disk_usage("/").free / (1024 ** 3)
+    mem = getattr(vm, "available", getattr(vm, "total", 0)) / (1024**3)
+    swap = psutil.swap_memory().total / (1024**3)
+    disk = shutil.disk_usage("/").free / (1024**3)
     cores = psutil.cpu_count()
     cpu_mhz = getattr(psutil.cpu_freq(), "max", 0.0)
     gpu_mem_gb = 0.0
     has_gpu = False
     if _HAS_TORCH and hasattr(torch, "cuda") and torch.cuda.is_available():
         has_gpu = True
-        gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     model_type = "logreg"
     if has_gpu and gpu_mem_gb >= 8.0:
         model_type = "transformer"
@@ -182,12 +187,19 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Train target clone model")
     p.add_argument("data_dir", type=Path)
     p.add_argument("out_dir", type=Path)
+    p.add_argument(
+        "--model-type",
+        choices=list(MODEL_REGISTRY.keys()),
+        default="logreg",
+        help=f"model type to train ({', '.join(MODEL_REGISTRY.keys())})",
+    )
     p.add_argument("--tracking-uri", dest="tracking_uri", type=str, default=None)
     p.add_argument("--experiment-name", dest="experiment_name", type=str, default=None)
     args = p.parse_args()
     train(
         args.data_dir,
         args.out_dir,
+        model_type=args.model_type,
         tracking_uri=args.tracking_uri,
         experiment_name=args.experiment_name,
     )
