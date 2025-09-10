@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/BotCopier
-ExecStart=/usr/bin/python3 scripts/flight_server.py
+ExecStart=/usr/bin/env botcopier-flight-server
 Restart=on-failure
 Environment=PYTHONUNBUFFERED=1
 

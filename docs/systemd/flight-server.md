@@ -9,7 +9,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now flight-server.service
 ```
 
-The service runs `scripts/flight_server.py` from `/opt/BotCopier` and
+The service runs `botcopier-flight-server` from `/opt/BotCopier` and
 persists incoming trade and metric batches under `/opt/BotCopier/flight_logs`.
 Logs are mirrored to the systemd journal and can be viewed with:
 

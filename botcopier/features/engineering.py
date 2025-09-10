@@ -23,8 +23,8 @@ from sklearn.ensemble import IsolationForest
 from sklearn.linear_model import LinearRegression
 from joblib import Memory
 
-from scripts.features import _is_hammer, _is_doji, _is_engulfing
-from scripts.features import (
+from ..scripts.features import _is_hammer, _is_doji, _is_engulfing
+from ..scripts.features import (
     _sma,
     _rsi,
     _bollinger,
@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - optional
     _HAS_TORCH = False
 
 try:  # Optional graph dependency
-    from scripts.graph_dataset import GraphDataset, compute_gnn_embeddings
+    from ..scripts.graph_dataset import GraphDataset, compute_gnn_embeddings
 
     _HAS_TG = True
 except Exception:  # pragma: no cover - optional

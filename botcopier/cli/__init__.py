@@ -8,9 +8,9 @@ from typing import Optional
 import typer
 
 from botcopier.training.pipeline import train as train_pipeline
-from scripts.evaluation import evaluate as eval_predictions
-from scripts.online_trainer import run as run_online_trainer
-from scripts.drift_monitor import run as run_drift_monitor
+from ..scripts.evaluation import evaluate as eval_predictions
+from ..scripts.online_trainer import run as run_online_trainer
+from ..scripts.drift_monitor import run as run_drift_monitor
 
 app = typer.Typer(help="BotCopier unified command line interface")
 

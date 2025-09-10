@@ -4,10 +4,16 @@ Python utilities for observing live trading activity and exercising strategy log
 
 ## Installation
 
-Install the Python dependencies:
+Install the package and its dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip install .
+```
+
+Optionally include GPU extras:
+
+```bash
+pip install .[gpu]
 ```
 
 ## Usage
@@ -34,7 +40,7 @@ Start the Arrow Flight server to accept trade and metric batches and persist
 them to SQLite and Parquet:
 
 ```bash
-python scripts/flight_server.py --host 0.0.0.0 --port 8815
+botcopier-flight-server --host 0.0.0.0 --port 8815
 ```
 
 Clients such as ``Observer_TBot`` connect to this server.  When the server
