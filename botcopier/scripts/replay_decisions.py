@@ -20,8 +20,8 @@ should be used instead of the basic logistic regression.
 from __future__ import annotations
 
 import argparse
-import json
 import gzip
+import json
 import math
 from pathlib import Path
 from typing import Dict
@@ -31,15 +31,19 @@ import pandas as pd
 
 try:  # optional torch dependency for encoder
     import torch
+
     _HAS_TORCH = True
 except Exception:  # pragma: no cover
     torch = None  # type: ignore
     _HAS_TORCH = False
 
 try:
-    from train_target_clone import detect_resources, TabTransformer
+    from train_target_clone import TabTransformer, detect_resources
 except Exception:  # pragma: no cover - script executed within package
-    from botcopier.training.pipeline import detect_resources, TabTransformer  # type: ignore
+    from botcopier.training.pipeline import (  # type: ignore
+        TabTransformer,
+        detect_resources,
+    )
 
 try:  # optional graph embedding support
     from graph_dataset import GraphDataset, compute_gnn_embeddings
@@ -63,10 +67,19 @@ def _predict_logistic(model: Dict, features: Dict[str, float]) -> float:
     names = model.get("feature_names", [])
     coeffs = np.array(model.get("coefficients", []), dtype=float)
     intercept = float(model.get("intercept", 0.0))
-    mean = np.array(model.get("mean", [0.0] * len(names)), dtype=float)
-    std = np.array(model.get("std", [1.0] * len(names)), dtype=float)
+    mean = np.array(
+        model.get("feature_mean", model.get("mean", [0.0] * len(names))),
+        dtype=float,
+    )
+    std = np.array(
+        model.get("feature_std", model.get("std", [1.0] * len(names))),
+        dtype=float,
+    )
+    low = np.array(model.get("clip_low", [-np.inf] * len(names)), dtype=float)
+    high = np.array(model.get("clip_high", [np.inf] * len(names)), dtype=float)
 
     vec = np.array([float(features.get(n, 0.0)) for n in names])
+    vec = np.clip(vec, low, high)
     if vec.shape[0] != len(coeffs):
         coeffs = coeffs[: vec.shape[0]]
     std_safe = np.where(std == 0, 1, std)
@@ -84,9 +97,18 @@ def _predict_nn(model: Dict, features: Dict[str, float]) -> float:
     if not weights:
         return _predict_logistic(model, features)
     names = model.get("feature_names", [])
-    mean = np.array(model.get("mean", [0.0] * len(names)), dtype=float)
-    std = np.array(model.get("std", [1.0] * len(names)), dtype=float)
+    mean = np.array(
+        model.get("feature_mean", model.get("mean", [0.0] * len(names))),
+        dtype=float,
+    )
+    std = np.array(
+        model.get("feature_std", model.get("std", [1.0] * len(names))),
+        dtype=float,
+    )
+    low = np.array(model.get("clip_low", [-np.inf] * len(names)), dtype=float)
+    high = np.array(model.get("clip_high", [np.inf] * len(names)), dtype=float)
     vec = np.array([float(features.get(n, 0.0)) for n in names])
+    vec = np.clip(vec, low, high)
     std_safe = np.where(std == 0, 1, std)
     x = (vec - mean) / std_safe
     l1_w, l1_b, l2_w, l2_b = [np.array(w, dtype=float) for w in weights[:4]]
@@ -101,10 +123,16 @@ def _predict_tabtransformer(model: Dict, features: Dict[str, float]) -> float:
     if state is None or not _HAS_TORCH:
         return _predict_logistic(model, features)
     names = model.get("feature_names", [])
-    mean = np.array(model.get("mean", [0.0] * len(names)), dtype=float)
-    std = np.array(model.get("std", [1.0] * len(names)), dtype=float)
-    low = np.array(model.get("clip_low", [0.0] * len(names)), dtype=float)
-    high = np.array(model.get("clip_high", [0.0] * len(names)), dtype=float)
+    mean = np.array(
+        model.get("feature_mean", model.get("mean", [0.0] * len(names))),
+        dtype=float,
+    )
+    std = np.array(
+        model.get("feature_std", model.get("std", [1.0] * len(names))),
+        dtype=float,
+    )
+    low = np.array(model.get("clip_low", [-np.inf] * len(names)), dtype=float)
+    high = np.array(model.get("clip_high", [np.inf] * len(names)), dtype=float)
     vec = np.array([float(features.get(n, 0.0)) for n in names])
     vec = np.clip(vec, low, high)
     std_safe = np.where(std == 0, 1, std)
@@ -214,7 +242,11 @@ def _recompute(
     df["new_probability"] = new_probs
 
     actual = (df.get("profit", 0.0) > 0).astype(int)
-    old_pred = (old_probs >= threshold).astype(int) if old_probs is not None else pd.Series([1] * len(df))
+    old_pred = (
+        (old_probs >= threshold).astype(int)
+        if old_probs is not None
+        else pd.Series([1] * len(df))
+    )
     new_pred = (df["new_probability"] >= threshold).astype(int)
 
     accuracy_old = float((old_pred == actual).mean())
@@ -260,7 +292,10 @@ def main() -> int:
     )
     p.add_argument("--threshold", type=float, help="Override model threshold")
     p.add_argument(
-        "--max-divergences", type=int, default=20, help="Show at most this many divergences"
+        "--max-divergences",
+        type=int,
+        default=20,
+        help="Show at most this many divergences",
     )
     p.add_argument(
         "--output",
@@ -277,8 +312,10 @@ def main() -> int:
     args = p.parse_args()
 
     model = _load_model(args.model)
-    threshold = args.threshold if args.threshold is not None else float(
-        model.get("threshold", 0.5)
+    threshold = (
+        args.threshold
+        if args.threshold is not None
+        else float(model.get("threshold", 0.5))
     )
     df = _load_logs(args.log_file)
     stats = _recompute(df, model, threshold, args.model.parent)

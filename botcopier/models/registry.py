@@ -4,7 +4,10 @@ from __future__ import annotations
 from typing import Callable, Dict
 
 import numpy as np
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import RobustScaler
 
 try:  # Optional dependency
     import torch
@@ -32,23 +35,52 @@ def get_model(name: str) -> Callable:
         raise KeyError(f"Model '{name}' is not registered") from exc
 
 
+class _FeatureClipper(BaseEstimator, TransformerMixin):
+    """Clip features to provided ``low`` and ``high`` bounds."""
+
+    def __init__(self, low: np.ndarray, high: np.ndarray) -> None:
+        self.low = np.asarray(low, dtype=float)
+        self.high = np.asarray(high, dtype=float)
+
+    def fit(self, X: np.ndarray, y: np.ndarray | None = None) -> "_FeatureClipper":
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        return np.clip(X, self.low, self.high)
+
+
 def _fit_logreg(
     X: np.ndarray, y: np.ndarray
 ) -> tuple[dict[str, list | float], Callable[[np.ndarray], np.ndarray]]:
-    """Simple logistic regression builder."""
+    """Fit logistic regression within a preprocessing pipeline."""
 
-    clf = LogisticRegression(max_iter=1000)
-    clf.fit(X, y)
+    clip_low = np.quantile(X, 0.01, axis=0)
+    clip_high = np.quantile(X, 0.99, axis=0)
+    pipeline = Pipeline(
+        [
+            ("clip", _FeatureClipper(clip_low, clip_high)),
+            ("scale", RobustScaler()),
+            ("logreg", LogisticRegression(max_iter=1000)),
+        ]
+    )
+    pipeline.fit(X, y)
+    clf: LogisticRegression = pipeline.named_steps["logreg"]
+    scaler: RobustScaler = pipeline.named_steps["scale"]
+    clipper: _FeatureClipper = pipeline.named_steps["clip"]
 
     def _predict(arr: np.ndarray) -> np.ndarray:
-        return clf.predict_proba(arr)[:, 1]
+        return pipeline.predict_proba(arr)[:, 1]
 
     meta = {
         "coefficients": clf.coef_.ravel().tolist(),
         "intercept": float(clf.intercept_[0]),
         "training_rows": int(X.shape[0]),
+        "feature_mean": scaler.center_.tolist(),
+        "feature_std": scaler.scale_.tolist(),
+        "clip_low": clipper.low.tolist(),
+        "clip_high": clipper.high.tolist(),
     }
-    cv_acc = clf.score(X, y)
+    cv_acc = pipeline.score(X, y)
     meta["cv_accuracy"] = float(cv_acc)
     return meta, _predict
 
