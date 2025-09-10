@@ -1,9 +1,10 @@
 """Model builders and registry for BotCopier."""
 from __future__ import annotations
 
-from typing import Callable, Dict, Tuple
+from typing import Callable, Dict
 
 import numpy as np
+from sklearn.linear_model import LogisticRegression
 
 try:  # Optional dependency
     import torch
@@ -14,6 +15,45 @@ except Exception:  # pragma: no cover - optional
     _HAS_TORCH = False
 
 MODEL_REGISTRY: Dict[str, Callable] = {}
+
+
+def register_model(name: str, builder: Callable) -> None:
+    """Register ``builder`` under ``name``."""
+
+    MODEL_REGISTRY[name] = builder
+
+
+def get_model(name: str) -> Callable:
+    """Retrieve a registered model builder."""
+
+    try:
+        return MODEL_REGISTRY[name]
+    except KeyError as exc:  # pragma: no cover - defensive
+        raise KeyError(f"Model '{name}' is not registered") from exc
+
+
+def _fit_logreg(
+    X: np.ndarray, y: np.ndarray
+) -> tuple[dict[str, list | float], Callable[[np.ndarray], np.ndarray]]:
+    """Simple logistic regression builder."""
+
+    clf = LogisticRegression(max_iter=1000)
+    clf.fit(X, y)
+
+    def _predict(arr: np.ndarray) -> np.ndarray:
+        return clf.predict_proba(arr)[:, 1]
+
+    meta = {
+        "coefficients": clf.coef_.ravel().tolist(),
+        "intercept": float(clf.intercept_[0]),
+        "training_rows": int(X.shape[0]),
+    }
+    cv_acc = clf.score(X, y)
+    meta["cv_accuracy"] = float(cv_acc)
+    return meta, _predict
+
+
+register_model("logreg", _fit_logreg)
 
 if _HAS_TORCH:
 
@@ -41,7 +81,6 @@ if _HAS_TORCH:
             x = self.norm1(x + self.drop1(attn))
             ff = self.ff(x)
             return self.norm2(x + self.drop2(ff))
-
 
     class TabTransformer(torch.nn.Module):
         """Simple tabular transformer with multi-head attention layers."""
@@ -71,7 +110,6 @@ if _HAS_TORCH:
             x = x.reshape(x.size(0), -1)
             return self.head(x)
 
-
     def fit_tab_transformer(
         X: np.ndarray,
         y: np.ndarray,
@@ -80,8 +118,9 @@ if _HAS_TORCH:
         lr: float = 1e-3,
         dropout: float = 0.0,
         device: str = "cpu",
-    ) -> Tuple[dict[str, list], Callable[[np.ndarray], np.ndarray], TabTransformer]:
+    ) -> tuple[dict[str, list], Callable[[np.ndarray], np.ndarray]]:
         """Train a :class:`TabTransformer` on ``X`` and ``y``."""
+
         dev = torch.device(device)
         model = TabTransformer(X.shape[1], dropout=dropout).to(dev)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -102,7 +141,9 @@ if _HAS_TORCH:
                 return torch.sigmoid(model(arr_t)).cpu().numpy().squeeze(-1)
 
         state = model.state_dict()
-        return {k: v.cpu().tolist() for k, v in state.items()}, _predict, model
+        return {k: v.cpu().tolist() for k, v in state.items()}, _predict
+
+    register_model("transformer", fit_tab_transformer)
 else:  # pragma: no cover - torch optional
 
     class TabTransformer:  # type: ignore[misc]
@@ -112,4 +153,11 @@ else:  # pragma: no cover - torch optional
     def fit_tab_transformer(*_, **__):  # pragma: no cover - trivial
         raise ImportError("PyTorch is required for TabTransformer")
 
-__all__ = ["TabTransformer", "fit_tab_transformer", "MODEL_REGISTRY"]
+
+__all__ = [
+    "TabTransformer",
+    "fit_tab_transformer",
+    "register_model",
+    "get_model",
+    "MODEL_REGISTRY",
+]
