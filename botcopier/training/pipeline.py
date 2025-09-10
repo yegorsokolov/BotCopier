@@ -23,10 +23,11 @@ except Exception:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
 from botcopier.data.loading import _load_logs
-from botcopier.features.engineering import (
-    FeatureConfig,
+from botcopier.features.anomaly import _clip_train_features
+from botcopier.features.engineering import FeatureConfig, configure_cache
+from botcopier.features.technical import (
     _extract_features,
-    configure_cache,
+    _neutralize_against_market_index,
 )
 from botcopier.models.registry import MODEL_REGISTRY, get_model
 

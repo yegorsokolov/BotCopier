@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover - optional
 
 # Reuse data loading and feature extraction from training script
 from botcopier.data.loading import _load_logs
-from botcopier.features.engineering import _extract_features
+from botcopier.features.technical import _extract_features
 
 
 def cluster_features(
@@ -90,15 +90,22 @@ def main() -> None:
         default="kmeans",
         help="clustering algorithm",
     )
-    p.add_argument("--corr-symbols", help="comma separated correlated symbol pairs e.g. EURUSD:USDCHF")
-    p.add_argument("--calendar-file", help="CSV file with columns time,impact[,id] for events")
-    p.add_argument("--event-window", type=float, default=60.0, help="minutes around events to flag")
+    p.add_argument(
+        "--corr-symbols",
+        help="comma separated correlated symbol pairs e.g. EURUSD:USDCHF",
+    )
+    p.add_argument(
+        "--calendar-file", help="CSV file with columns time,impact[,id] for events"
+    )
+    p.add_argument(
+        "--event-window", type=float, default=60.0, help="minutes around events to flag"
+    )
     args = p.parse_args()
     if args.corr_symbols:
         corr_map = {}
-        for p_sym in args.corr_symbols.split(','):
-            if ':' in p_sym:
-                base, peer = p_sym.split(':', 1)
+        for p_sym in args.corr_symbols.split(","):
+            if ":" in p_sym:
+                base, peer = p_sym.split(":", 1)
                 corr_map.setdefault(base, []).append(peer)
     else:
         corr_map = None
