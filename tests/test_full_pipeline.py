@@ -23,10 +23,16 @@ def test_full_pipeline(tmp_path: Path) -> None:
 
     # Run training script
     out_dir = tmp_path / "out"
-    script = Path(__file__).resolve().parents[1] / "scripts" / "train_target_clone.py"
     env = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]))
     subprocess.run(
-        [sys.executable, str(script), str(data_file), str(out_dir)],
+        [
+            sys.executable,
+            "-m",
+            "botcopier.cli",
+            "train",
+            str(data_file),
+            str(out_dir),
+        ],
         check=True,
         env=env,
     )

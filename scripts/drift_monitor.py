@@ -140,6 +140,63 @@ def _update_evaluation(eval_file: Path, metrics: dict[str, float]) -> None:
     eval_file.write_text(json.dumps(data, indent=2))
 
 
+def run(
+    *,
+    baseline_file: Path,
+    recent_file: Path,
+    drift_threshold: float = 0.2,
+    model_json: Path = Path("model.json"),
+    log_dir: Path,
+    out_dir: Path,
+    files_dir: Path,
+    drift_scores: Path | None = None,
+    flag_file: Path | None = None,
+) -> None:
+    metrics = _compute_metrics(baseline_file, recent_file)
+    logger.info({"drift_metrics": metrics})
+    if drift_scores is not None:
+        scores = _isolation_forest_scores(baseline_file, recent_file)
+        try:
+            drift_scores.write_text(json.dumps(scores, indent=2))
+        except Exception:
+            logger.exception("failed to write drift scores")
+        logger.info({"feature_drift": scores})
+    method = max(metrics, key=metrics.get)
+    metric_val = metrics[method]
+    retrain = metric_val > drift_threshold
+    _update_model(model_json, metrics, retrain)
+    _update_evaluation(model_json.parent / "evaluation.json", metrics)
+    if retrain:
+        if flag_file is not None:
+            try:
+                flag_file.parent.mkdir(parents=True, exist_ok=True)
+                flag_file.write_text(datetime.utcnow().isoformat())
+            except Exception:
+                logger.exception("failed to write flag file")
+        base = Path(__file__).resolve().parent
+        subprocess.run(
+            [
+                sys.executable,
+                str(base / "auto_retrain.py"),
+                "--log-dir",
+                str(log_dir),
+                "--out-dir",
+                str(out_dir),
+                "--files-dir",
+                str(files_dir),
+                "--baseline-file",
+                str(baseline_file),
+                "--recent-file",
+                str(recent_file),
+                "--drift-method",
+                method,
+                "--drift-threshold",
+                str(drift_threshold),
+            ],
+            check=True,
+        )
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Monitor drift and trigger retraining")
     p.add_argument("--baseline-file", type=Path, required=True)
@@ -160,50 +217,17 @@ def main() -> int:
         help="optional file to touch when drift exceeds threshold",
     )
     args = p.parse_args()
-
-    metrics = _compute_metrics(args.baseline_file, args.recent_file)
-    logger.info({"drift_metrics": metrics})
-    if args.drift_scores is not None:
-        scores = _isolation_forest_scores(args.baseline_file, args.recent_file)
-        try:
-            args.drift_scores.write_text(json.dumps(scores, indent=2))
-        except Exception:
-            logger.exception("failed to write drift scores")
-        logger.info({"feature_drift": scores})
-    method = max(metrics, key=metrics.get)
-    metric_val = metrics[method]
-    retrain = metric_val > args.drift_threshold
-    _update_model(args.model_json, metrics, retrain)
-    _update_evaluation(args.model_json.parent / "evaluation.json", metrics)
-    if retrain:
-        if args.flag_file is not None:
-            try:
-                args.flag_file.parent.mkdir(parents=True, exist_ok=True)
-                args.flag_file.write_text(datetime.utcnow().isoformat())
-            except Exception:
-                logger.exception("failed to write flag file")
-        base = Path(__file__).resolve().parent
-        subprocess.run(
-            [
-                sys.executable,
-                str(base / "auto_retrain.py"),
-                "--log-dir",
-                str(args.log_dir),
-                "--out-dir",
-                str(args.out_dir),
-                "--files-dir",
-                str(args.files_dir),
-                "--baseline-file",
-                str(args.baseline_file),
-                "--recent-file",
-                str(args.recent_file),
-                "--drift-method",
-                method,
-                "--drift-threshold",
-                str(args.drift_threshold),
-            ],
-            check=True,
-        )
+    run(
+        baseline_file=args.baseline_file,
+        recent_file=args.recent_file,
+        drift_threshold=args.drift_threshold,
+        model_json=args.model_json,
+        log_dir=args.log_dir,
+        out_dir=args.out_dir,
+        files_dir=args.files_dir,
+        drift_scores=args.drift_scores,
+        flag_file=args.flag_file,
+    )
     return 0
 
 

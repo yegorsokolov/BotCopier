@@ -8,6 +8,7 @@ psutil
 pydantic
 pydantic-settings
 pyyaml
+typer
 pytest
 pytest-asyncio
 aiohttp
