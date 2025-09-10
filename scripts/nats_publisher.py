@@ -6,7 +6,7 @@ import json
 import nats
 from proto import trade_event_pb2, metric_event_pb2
 
-async def _publish(args) -> None:
+async def async_main(args) -> None:
     nc = await nats.connect(args.servers)
     js = nc.jetstream()
     with open(args.file) as f:
@@ -29,7 +29,7 @@ def main() -> int:
     p.add_argument("--servers", default="nats://127.0.0.1:4222", help="NATS server URLs")
     p.add_argument("--schema-version", type=int, default=1, help="schema version byte")
     args = p.parse_args()
-    asyncio.run(_publish(args))
+    asyncio.run(async_main(args))
     return 0
 
 
