@@ -3,7 +3,7 @@ import json
 import numpy as np
 from sklearn.preprocessing import RobustScaler
 
-from scripts.train_target_clone import train, _load_logs, _extract_features
+from botcopier.training.pipeline import train, _load_logs, _extract_features
 
 
 def test_scaler_robust_with_outliers(tmp_path):

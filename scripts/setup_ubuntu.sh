@@ -50,7 +50,7 @@ pip3 install --no-cache-dir pyarrow
 
 log "Detecting hardware resources and training mode"
 python3 - <<'PY' | tee hardware.log | while read line; do log "$line"; done
-from scripts.train_target_clone import detect_resources
+from botcopier.training.pipeline import detect_resources
 import json
 res = detect_resources()
 print(json.dumps(res))

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_cross_validation_metrics_written(tmp_path: Path) -> None:

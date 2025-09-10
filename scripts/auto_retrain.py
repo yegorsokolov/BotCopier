@@ -81,7 +81,7 @@ logger.setLevel(logging.INFO)
 def _load_train_module():
     import importlib
 
-    return importlib.import_module("scripts.train_target_clone")
+    return importlib.import_module("botcopier.training.pipeline")
 
 
 def _read_last_event_id(out_dir: Path) -> int:

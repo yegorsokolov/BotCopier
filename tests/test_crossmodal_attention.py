@@ -6,7 +6,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_crossmodal_attention_shape(tmp_path: Path):

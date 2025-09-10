@@ -6,7 +6,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from scripts import train_price_gan as tpg
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def _write_ticks(path: Path) -> None:

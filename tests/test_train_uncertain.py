@@ -2,7 +2,7 @@ import csv
 import json
 from pathlib import Path
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_train_with_uncertain_file(tmp_path, caplog):

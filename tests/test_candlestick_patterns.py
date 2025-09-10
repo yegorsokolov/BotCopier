@@ -3,7 +3,7 @@ from datetime import datetime
 import pandas as pd
 
 from scripts.features import _extract_features as extract_rows_features
-from scripts.train_target_clone import _extract_features as extract_df_features
+from botcopier.features.engineering import _extract_features as extract_df_features
 
 
 def _synthetic_rows():

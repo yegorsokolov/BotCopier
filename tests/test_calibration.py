@@ -11,7 +11,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import StandardScaler
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def _make_dataset(tmp_path: Path) -> Path:

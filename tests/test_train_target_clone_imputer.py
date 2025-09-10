@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import RobustScaler
 
-from scripts.train_target_clone import (
+from botcopier.training.pipeline import (
     train,
     _load_logs,
     _extract_features,

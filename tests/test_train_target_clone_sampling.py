@@ -2,7 +2,7 @@ import json
 import numpy as np
 import torch
 
-from scripts.train_target_clone import (
+from botcopier.training.pipeline import (
     _load_logs,
     _extract_features,
     _maybe_smote,

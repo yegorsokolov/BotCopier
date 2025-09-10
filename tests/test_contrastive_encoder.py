@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 
 from scripts.pretrain_contrastive import train as pretrain_encoder
-from scripts.train_target_clone import _extract_features, train
+from botcopier.features.engineering import _extract_features, train
 from scripts.replay_decisions import _recompute
 
 

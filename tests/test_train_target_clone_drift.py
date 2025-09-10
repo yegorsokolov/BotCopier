@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from scripts.train_target_clone import train
+from botcopier.training.pipeline import train
 
 
 def test_drift_pruning_changes_features(tmp_path: Path) -> None:
