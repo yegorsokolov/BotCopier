@@ -20,6 +20,8 @@ import grpc
 import numpy as np
 from google.protobuf import empty_pb2
 
+from logging_utils import setup_logging
+
 from proto import federated_buffer_pb2 as pb2
 from proto import federated_buffer_pb2_grpc as pb2_grpc
 
@@ -148,12 +150,15 @@ def main() -> None:
     p.add_argument("--file", help="path to JSON file for upload/download")
     args = p.parse_args()
 
+    logger = setup_logging(__name__)
+
     if args.mode == "server":
         server = serve(args.address)
-        print(f"Server started on {args.address}")
+        logger.info({"event": "server_started", "address": args.address})
         try:
             server.wait_for_termination()
         except KeyboardInterrupt:
+            logger.info("server shutdown requested")
             server.stop(0)
     elif args.mode == "upload":
         if not args.file:
@@ -176,7 +181,7 @@ def main() -> None:
         exps = client.download()
         if not args.file:
             for e in exps:
-                print(e)
+                logger.info("%s", e)
         else:
             batch = [
                 {

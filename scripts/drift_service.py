@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+from logging_utils import setup_logging
+
 
 def _run_monitor(args: argparse.Namespace) -> None:
     cmd = [
@@ -31,7 +33,8 @@ def _run_monitor(args: argparse.Namespace) -> None:
     ]
     if args.flag_file is not None:
         cmd += ["--flag-file", str(args.flag_file)]
-    subprocess.run(cmd, check=False)
+    with subprocess.Popen(cmd) as proc:
+        proc.wait()
 
 
 def main() -> int:
@@ -47,9 +50,17 @@ def main() -> int:
     p.add_argument("--interval", type=int, default=3600, help="seconds between checks")
     args = p.parse_args()
 
-    while True:
-        _run_monitor(args)
-        time.sleep(args.interval)
+    logger = setup_logging(__name__)
+
+    try:
+        while True:
+            try:
+                _run_monitor(args)
+            except subprocess.SubprocessError:
+                logger.exception("drift monitor failed")
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        logger.info("drift service stopping")
 
     return 0
 
