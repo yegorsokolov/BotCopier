@@ -15,6 +15,57 @@ from botcopier.features.engineering import (
 )
 
 
+def _compute_meta_labels(prices: np.ndarray, tp: np.ndarray, sl: np.ndarray, hold_period: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized computation of take-profit/stop-loss hit times and labels.
+
+    Parameters
+    ----------
+    prices : np.ndarray
+        Price series.
+    tp : np.ndarray
+        Take profit levels for each price.
+    sl : np.ndarray
+        Stop loss levels for each price.
+    hold_period : int
+        Maximum lookahead horizon.
+
+    Returns
+    -------
+    horizon_idx : np.ndarray
+        Index of the final lookahead point for each position.
+    tp_time : np.ndarray
+        Steps until take-profit is hit (``horizon_len + 1`` if never hit).
+    sl_time : np.ndarray
+        Steps until stop-loss is hit (``horizon_len + 1`` if never hit).
+    meta : np.ndarray
+        Meta label indicating whether take-profit was reached before
+        stop-loss within the horizon.
+    """
+
+    n = len(prices)
+    idx = np.arange(n)
+    horizon_idx = np.minimum(idx + int(hold_period), n - 1)
+    horizon_len = horizon_idx - idx
+
+    offsets = np.arange(1, int(hold_period) + 1)
+    future_idx = np.minimum(idx[:, None] + offsets, n - 1)
+    future_prices = prices[future_idx]
+
+    cummax = np.maximum.accumulate(future_prices, axis=1)
+    cummin = np.minimum.accumulate(future_prices, axis=1)
+
+    # searchsorted via counting elements below/above thresholds
+    tp_hit = (cummax < tp[:, None]).sum(axis=1)
+    sl_hit = (cummin > sl[:, None]).sum(axis=1)
+
+    tp_time = np.where(tp_hit < horizon_len, tp_hit + 1, horizon_len + 1)
+    sl_time = np.where(sl_hit < horizon_len, sl_hit + 1, horizon_len + 1)
+
+    meta = (tp_time <= sl_time) & (tp_time <= horizon_len)
+
+    return horizon_idx, tp_time, sl_time, meta.astype(float)
+
+
 def _load_logs(
     data_dir: Path,
     *,
@@ -113,23 +164,14 @@ def _load_logs(
             spreads = (prices.abs() * 0.001).fillna(0.0)
         tp = prices + take_profit_mult * spreads
         sl = prices - stop_loss_mult * spreads
-        horizon_idx = (np.arange(len(df)) + int(hold_period)).clip(0, len(df) - 1)
-        meta = np.zeros(len(df), dtype=float)
-        for i in range(len(df)):
-            end = int(horizon_idx[i])
-            meta_i = 0.0
-            for j in range(i + 1, end + 1):
-                p = prices.iloc[j]
-                if p >= tp.iloc[i]:
-                    meta_i = 1.0
-                    break
-                if p <= sl.iloc[i]:
-                    meta_i = 0.0
-                    break
-            meta[i] = meta_i
+        horizon_idx, tp_time, sl_time, meta = _compute_meta_labels(
+            prices.to_numpy(), tp.to_numpy(), sl.to_numpy(), int(hold_period)
+        )
         df["take_profit"] = tp
         df["stop_loss"] = sl
         df["horizon"] = horizon_idx
+        df["tp_time"] = tp_time
+        df["sl_time"] = sl_time
         df["meta_label"] = meta
         for horizon in (5, 20):
             label_name = f"label_h{horizon}"
