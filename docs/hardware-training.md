@@ -1,7 +1,7 @@
 # Hardware-aware Training
 
 The training utilities automatically inspect the host machine and adapt the
-model to available resources.  :mod:`scripts.train_target_clone` samples RAM,
+model to available resources.  `botcopier.cli train` samples RAM,
 CPU frequency, free disk space and GPU memory before any feature extraction
 occurs.  Based on these metrics a **mode** is selected and recorded in
 ``model.json`` together with a ``feature_flags`` section.
@@ -103,7 +103,7 @@ These records can be labeled offline with::
     python scripts/label_uncertain.py
 
 The resulting ``uncertain_decisions_labeled.csv`` is supplied to
-``scripts/train_target_clone.py`` via ``--uncertain-file``. During training the
+`botcopier.cli train` via ``--uncertain-file``. During training the
 script multiplies the weight of these rows (configurable with
 ``--uncertain-weight``) so the newly labeled examples influence the next model
 more heavily.
@@ -133,13 +133,13 @@ weight::
 
 Feed this back into training to emphasise corrections and scale them further::
 
-    python scripts/train_target_clone.py --replay-file divergences.csv --replay-weight 3
+    python -m botcopier.cli train --replay-file divergences.csv --replay-weight 3
 
 
 ## Time-decay Weighting
 
 Older trades can be down‑weighted so that recent market behaviour has more
-influence.  ``scripts/train_target_clone.py`` accepts ``--half-life-days`` which
+influence.  ``botcopier.cli train`` accepts ``--half-life-days`` which
 applies an exponential decay of ``0.5 ** (age_days / half_life_days)`` to each
 sample where ``age_days`` is the number of days since the most recent trade.
 The selected ``half_life_days`` value is stored in ``model.json`` for reference.
@@ -150,7 +150,7 @@ Cross-validation during training uses a ``PurgedWalkForward`` splitter which
 skips a configurable gap between the training window and the following
 validation fold.  This purging gap prevents leakage from adjacent samples so
 that no validation row ever precedes its training counterpart.  Adjust the gap
-via the ``--purge-gap`` option when invoking ``scripts/train_target_clone.py``.
+via the ``--purge-gap`` option when invoking ``botcopier.cli train``.
 
 
 ## Symbol Graph Embeddings
@@ -161,10 +161,9 @@ weighted graph and, when ``torch_geometric`` is available, trains a Node2Vec
 embedding for each node.  The resulting JSON contains adjacency information,
 simple metrics like degree and PageRank, and per-symbol embedding vectors.
 
-Supply this graph to ``scripts.train_target_clone.py`` via the
-``--symbol-graph`` option.  During feature extraction the trainer appends the
-active symbol's embedding components (``sym_emb_*``) to the feature vector and
-records them in ``feature_names``.  The strategy runner reads these embeddings from ``model.json`` so models can leverage cross‑symbol relationships.
+Supply this graph to ``botcopier.cli train`` via the ``--symbol-graph`` option.
+During feature extraction the trainer appends the active symbol's embedding components (``sym_emb_*``) to the feature vector and records them in ``feature_names``.
+The strategy runner reads these embeddings from ``model.json`` so models can leverage cross-symbol relationships.
 
 ## Bandit Router
 

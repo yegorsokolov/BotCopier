@@ -555,56 +555,55 @@ class OnlineTrainer:
             client.close()
 
 
-def main(argv: List[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description="Online incremental trainer")
-    p.add_argument("--csv", help="Path to trades_raw.csv to follow")
-    p.add_argument("--flight-host", help="Arrow Flight host")
-    p.add_argument("--flight-port", type=int, help="Arrow Flight port")
-    p.add_argument("--model")
-    p.add_argument("--batch-size", type=int)
-    p.add_argument("--lr", type=float, help="Initial learning rate")
-    p.add_argument("--lr-decay", type=float, help="Multiplicative learning rate decay per batch")
-    p.add_argument("--flight-path", help="Flight path name")
-    p.add_argument("--baseline-file", help="Baseline CSV for drift monitoring")
-    p.add_argument("--recent-file", help="Recent CSV for drift monitoring")
-    p.add_argument("--log-dir", help="Log directory for retrain")
-    p.add_argument("--out-dir", help="Output directory for retrain")
-    p.add_argument("--files-dir", help="Files directory for retrain")
-    p.add_argument("--drift-threshold", type=float, help="Drift threshold triggering retrain")
-    p.add_argument("--drift-interval", type=float, help="Seconds between drift checks")
-    args = p.parse_args(argv)
-
+def run(
+    *,
+    csv: str | None = None,
+    flight_host: str | None = None,
+    flight_port: int | None = None,
+    model: str | None = None,
+    batch_size: int | None = None,
+    lr: float | None = None,
+    lr_decay: float | None = None,
+    flight_path: str | None = None,
+    baseline_file: str | None = None,
+    recent_file: str | None = None,
+    log_dir: str | None = None,
+    out_dir: str | None = None,
+    files_dir: str | None = None,
+    drift_threshold: float | None = None,
+    drift_interval: float | None = None,
+) -> None:
     from config.settings import DataConfig, TrainingConfig, save_params
 
     data_cfg = DataConfig(
         **{
-            k: getattr(args, k)
-            for k in [
-                "csv",
-                "baseline_file",
-                "recent_file",
-                "log_dir",
-                "out_dir",
-                "files_dir",
-            ]
-            if getattr(args, k) is not None
+            k: v
+            for k, v in {
+                "csv": csv,
+                "baseline_file": baseline_file,
+                "recent_file": recent_file,
+                "log_dir": log_dir,
+                "out_dir": out_dir,
+                "files_dir": files_dir,
+            }.items()
+            if v is not None
         }
     )
     train_cfg = TrainingConfig(
         **{
-            k: getattr(args, k)
-            for k in [
-                "model",
-                "batch_size",
-                "lr",
-                "lr_decay",
-                "flight_host",
-                "flight_port",
-                "flight_path",
-                "drift_threshold",
-                "drift_interval",
-            ]
-            if getattr(args, k) is not None
+            k: v
+            for k, v in {
+                "model": model,
+                "batch_size": batch_size,
+                "lr": lr,
+                "lr_decay": lr_decay,
+                "flight_host": flight_host,
+                "flight_port": flight_port,
+                "flight_path": flight_path,
+                "drift_threshold": drift_threshold,
+                "drift_interval": drift_interval,
+            }.items()
+            if v is not None
         }
     )
     save_params(data_cfg, train_cfg)
@@ -636,7 +635,52 @@ def main(argv: List[str] | None = None) -> None:
     if data_cfg.csv:
         trainer.tail_csv(data_cfg.csv)
     else:
-        trainer.consume_flight(train_cfg.flight_host, train_cfg.flight_port, train_cfg.flight_path)
+        trainer.consume_flight(
+            train_cfg.flight_host, train_cfg.flight_port, train_cfg.flight_path
+        )
+
+
+def main(argv: List[str] | None = None) -> None:
+    p = argparse.ArgumentParser(description="Online incremental trainer")
+    p.add_argument("--csv", help="Path to trades_raw.csv to follow")
+    p.add_argument("--flight-host", help="Arrow Flight host")
+    p.add_argument("--flight-port", type=int, help="Arrow Flight port")
+    p.add_argument("--model")
+    p.add_argument("--batch-size", type=int)
+    p.add_argument("--lr", type=float, help="Initial learning rate")
+    p.add_argument(
+        "--lr-decay", type=float, help="Multiplicative learning rate decay per batch"
+    )
+    p.add_argument("--flight-path", help="Flight path name")
+    p.add_argument("--baseline-file", help="Baseline CSV for drift monitoring")
+    p.add_argument("--recent-file", help="Recent CSV for drift monitoring")
+    p.add_argument("--log-dir", help="Log directory for retrain")
+    p.add_argument("--out-dir", help="Output directory for retrain")
+    p.add_argument("--files-dir", help="Files directory for retrain")
+    p.add_argument(
+        "--drift-threshold", type=float, help="Drift threshold triggering retrain"
+    )
+    p.add_argument(
+        "--drift-interval", type=float, help="Seconds between drift checks"
+    )
+    args = p.parse_args(argv)
+    run(
+        csv=args.csv,
+        flight_host=args.flight_host,
+        flight_port=args.flight_port,
+        model=args.model,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        lr_decay=args.lr_decay,
+        flight_path=args.flight_path,
+        baseline_file=args.baseline_file,
+        recent_file=args.recent_file,
+        log_dir=args.log_dir,
+        out_dir=args.out_dir,
+        files_dir=args.files_dir,
+        drift_threshold=args.drift_threshold,
+        drift_interval=args.drift_interval,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point

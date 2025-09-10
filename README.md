@@ -61,7 +61,7 @@ MetaTrader.
 
 ## Memory usage
 
-The log loading helpers in `scripts/train_target_clone.py` and
+The log loading helpers in the training pipeline (`botcopier.cli train`) and
 `scripts/model_fitting.py` accept a `chunk_size` argument. Providing a positive
 value streams DataFrame chunks instead of materialising the entire log in
 memory, enabling training on machines with limited RAM.
