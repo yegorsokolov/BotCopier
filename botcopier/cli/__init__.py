@@ -10,6 +10,7 @@ import typer
 import yaml
 from pydantic_settings import BaseSettings
 
+from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 from botcopier.training.pipeline import train as train_pipeline
 
 from ..scripts.drift_monitor import run as run_drift_monitor
@@ -19,25 +20,28 @@ from ..scripts.online_trainer import run as run_online_trainer
 app = typer.Typer(help="BotCopier unified command line interface")
 
 
-def _load_config(path: Path) -> dict[str, Any]:
-    """Load configuration from ``path``.
-
-    Python modules are imported and any ``BaseSettings`` subclasses are
-    instantiated, while YAML/JSON files are parsed via ``yaml.safe_load``.
-    """
+def _load_config(path: Path) -> tuple[DataConfig, TrainingConfig]:
+    """Load configuration from ``path`` and return data/training sections."""
 
     if path.suffix in {".yml", ".yaml", ".json"}:
-        return yaml.safe_load(path.read_text()) or {}
+        raw = yaml.safe_load(path.read_text()) or {}
+        return DataConfig(**raw.get("data", {})), TrainingConfig(
+            **raw.get("training", {})
+        )
 
     spec = importlib.util.spec_from_file_location("_botcopier_config", path)
     if spec and spec.loader:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        config: dict[str, Any] = {}
+        data_kwargs: dict[str, Any] = {}
+        train_kwargs: dict[str, Any] = {}
         for obj in vars(module).values():
             if isinstance(obj, type) and issubclass(obj, BaseSettings):
-                config.update(obj().model_dump())
-        return config
+                if obj.__name__ == "DataConfig":
+                    data_kwargs = obj().model_dump()
+                elif obj.__name__ == "TrainingConfig":
+                    train_kwargs = obj().model_dump()
+        return DataConfig(**data_kwargs), TrainingConfig(**train_kwargs)
     raise typer.BadParameter(f"Unable to load configuration from {path}")
 
 
@@ -51,11 +55,18 @@ def main(
 ) -> None:
     """Configure global options for all commands."""
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO))
-    ctx.obj = {"config": _load_config(config) if config else {}}
+    if config:
+        data_cfg, train_cfg = _load_config(config)
+    else:
+        data_cfg, train_cfg = DataConfig(), TrainingConfig()
+    ctx.obj = {"config": {"data": data_cfg, "training": train_cfg}}
 
 
-def _cfg(ctx: typer.Context) -> dict[str, Any]:
-    return ctx.obj.get("config", {}) if ctx.obj else {}
+def _cfg(ctx: typer.Context) -> tuple[DataConfig, TrainingConfig]:
+    if ctx.obj and "config" in ctx.obj:
+        cfg = ctx.obj["config"]
+        return cfg.get("data", DataConfig()), cfg.get("training", TrainingConfig())
+    return DataConfig(), TrainingConfig()
 
 
 @app.command("train")
@@ -71,15 +82,24 @@ def train(
     cache_dir: Optional[Path] = typer.Option(None, help="Optional cache directory"),
 ) -> None:
     """Train a model from trade logs."""
-    cfg = _cfg(ctx)
-    data_dir = data_dir or cfg.get("data_dir")
-    out_dir = out_dir or cfg.get("out_dir")
-    model_type = model_type or cfg.get("model_type", "logreg")
-    cache_dir = cache_dir or cfg.get("cache_dir")
-    if data_dir is None or out_dir is None:
+    data_cfg, train_cfg = _cfg(ctx)
+    if data_dir:
+        data_cfg = data_cfg.model_copy(update={"data": data_dir})
+    if out_dir:
+        data_cfg = data_cfg.model_copy(update={"out": out_dir})
+    if model_type:
+        train_cfg = train_cfg.model_copy(update={"model_type": model_type})
+    if cache_dir:
+        train_cfg = train_cfg.model_copy(update={"cache_dir": cache_dir})
+    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    if data_cfg.data is None or data_cfg.out is None:
         raise typer.BadParameter("data_dir and out_dir must be provided")
+    save_params(data_cfg, train_cfg)
     train_pipeline(
-        Path(data_dir), Path(out_dir), model_type=model_type, cache_dir=cache_dir
+        Path(data_cfg.data),
+        Path(data_cfg.out),
+        model_type=train_cfg.model_type,
+        cache_dir=train_cfg.cache_dir,
     )
 
 
@@ -96,14 +116,25 @@ def evaluate(
     ),
 ) -> None:
     """Evaluate predictions against actual trade outcomes."""
-    cfg = _cfg(ctx)
-    pred_file = pred_file or cfg.get("pred_file")
-    actual_log = actual_log or cfg.get("actual_log")
-    window = window if window is not None else cfg.get("window", 60)
-    model_json = model_json or cfg.get("model_json")
-    if pred_file is None or actual_log is None:
+    data_cfg, train_cfg = _cfg(ctx)
+    if pred_file:
+        data_cfg = data_cfg.model_copy(update={"pred_file": pred_file})
+    if actual_log:
+        data_cfg = data_cfg.model_copy(update={"actual_log": actual_log})
+    if window is not None:
+        train_cfg = train_cfg.model_copy(update={"window": window})
+    if model_json:
+        train_cfg = train_cfg.model_copy(update={"model": model_json})
+    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    if data_cfg.pred_file is None or data_cfg.actual_log is None:
         raise typer.BadParameter("pred_file and actual_log must be provided")
-    stats = eval_predictions(Path(pred_file), Path(actual_log), window, model_json)
+    save_params(data_cfg, train_cfg)
+    stats = eval_predictions(
+        Path(data_cfg.pred_file),
+        Path(data_cfg.actual_log),
+        train_cfg.window,
+        train_cfg.model,
+    )
     typer.echo(json.dumps(stats, indent=2))
 
 
@@ -137,39 +168,40 @@ def online_train(
     ),
 ) -> None:
     """Continuously update a model from streaming trade events."""
-    cfg = _cfg(ctx)
-    csv = csv or cfg.get("csv")
-    flight_host = flight_host or cfg.get("flight_host")
-    flight_port = flight_port or cfg.get("flight_port")
-    model = model or cfg.get("model")
-    batch_size = batch_size or cfg.get("batch_size")
-    lr = lr or cfg.get("lr")
-    lr_decay = lr_decay or cfg.get("lr_decay")
-    flight_path = flight_path or cfg.get("flight_path")
-    baseline_file = baseline_file or cfg.get("baseline_file")
-    recent_file = recent_file or cfg.get("recent_file")
-    log_dir = log_dir or cfg.get("log_dir")
-    out_dir = out_dir or cfg.get("out_dir")
-    files_dir = files_dir or cfg.get("files_dir")
-    drift_threshold = drift_threshold or cfg.get("drift_threshold")
-    drift_interval = drift_interval or cfg.get("drift_interval")
-    run_online_trainer(
-        csv=csv,
-        flight_host=flight_host,
-        flight_port=flight_port,
-        model=model,
-        batch_size=batch_size,
-        lr=lr,
-        lr_decay=lr_decay,
-        flight_path=flight_path,
-        baseline_file=baseline_file,
-        recent_file=recent_file,
-        log_dir=log_dir,
-        out_dir=out_dir,
-        files_dir=files_dir,
-        drift_threshold=drift_threshold,
-        drift_interval=drift_interval,
-    )
+    data_cfg, train_cfg = _cfg(ctx)
+    updates_data = {
+        k: v
+        for k, v in {
+            "csv": csv,
+            "baseline_file": baseline_file,
+            "recent_file": recent_file,
+            "log_dir": log_dir,
+            "out_dir": out_dir,
+            "files_dir": files_dir,
+        }.items()
+        if v is not None
+    }
+    updates_train = {
+        k: v
+        for k, v in {
+            "model": model,
+            "batch_size": batch_size,
+            "lr": lr,
+            "lr_decay": lr_decay,
+            "flight_host": flight_host,
+            "flight_port": flight_port,
+            "flight_path": flight_path,
+            "drift_threshold": drift_threshold,
+            "drift_interval": drift_interval,
+        }.items()
+        if v is not None
+    }
+    if updates_data:
+        data_cfg = data_cfg.model_copy(update=updates_data)
+    if updates_train:
+        train_cfg = train_cfg.model_copy(update=updates_train)
+    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    run_online_trainer(data_cfg, train_cfg)
 
 
 @app.command("drift-monitor")
@@ -192,32 +224,48 @@ def drift_monitor(
     ),
 ) -> None:
     """Compute feature drift metrics and trigger retraining when needed."""
-    cfg = _cfg(ctx)
-    baseline_file = baseline_file or cfg.get("baseline_file")
-    recent_file = recent_file or cfg.get("recent_file")
-    drift_threshold = (
-        drift_threshold
-        if drift_threshold is not None
-        else cfg.get("drift_threshold", 0.2)
-    )
-    model_json = model_json or cfg.get("model_json", Path("model.json"))
-    log_dir = log_dir or cfg.get("log_dir")
-    out_dir = out_dir or cfg.get("out_dir")
-    files_dir = files_dir or cfg.get("files_dir")
-    drift_scores = drift_scores or cfg.get("drift_scores")
-    flag_file = flag_file or cfg.get("flag_file")
-    if baseline_file is None or recent_file is None:
-        raise typer.BadParameter("baseline_file and recent_file must be provided")
+    data_cfg, train_cfg = _cfg(ctx)
+    updates_data = {
+        k: v
+        for k, v in {
+            "baseline_file": baseline_file,
+            "recent_file": recent_file,
+            "log_dir": log_dir,
+            "out_dir": out_dir,
+            "files_dir": files_dir,
+            "drift_scores": drift_scores,
+            "flag_file": flag_file,
+        }.items()
+        if v is not None
+    }
+    if updates_data:
+        data_cfg = data_cfg.model_copy(update=updates_data)
+    if drift_threshold is not None:
+        train_cfg = train_cfg.model_copy(update={"drift_threshold": drift_threshold})
+    if model_json:
+        train_cfg = train_cfg.model_copy(update={"model": model_json})
+    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    if (
+        data_cfg.baseline_file is None
+        or data_cfg.recent_file is None
+        or data_cfg.log_dir is None
+        or data_cfg.out_dir is None
+        or data_cfg.files_dir is None
+    ):
+        raise typer.BadParameter(
+            "baseline_file, recent_file, log_dir, out_dir and files_dir must be provided"
+        )
+    save_params(data_cfg, train_cfg)
     run_drift_monitor(
-        baseline_file=baseline_file,
-        recent_file=recent_file,
-        drift_threshold=drift_threshold,
-        model_json=model_json,
-        log_dir=log_dir,
-        out_dir=out_dir,
-        files_dir=files_dir,
-        drift_scores=drift_scores,
-        flag_file=flag_file,
+        baseline_file=data_cfg.baseline_file,
+        recent_file=data_cfg.recent_file,
+        drift_threshold=train_cfg.drift_threshold,
+        model_json=train_cfg.model,
+        log_dir=data_cfg.log_dir,
+        out_dir=data_cfg.out_dir,
+        files_dir=data_cfg.files_dir,
+        drift_scores=data_cfg.drift_scores,
+        flag_file=data_cfg.flag_file,
     )
 
 

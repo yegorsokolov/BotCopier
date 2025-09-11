@@ -6,19 +6,19 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
+import os
 import time
 from pathlib import Path
 from typing import Dict, Optional
-
-import logging
-import os
 
 import numpy as np
 import pandas as pd
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
 try:  # Optional Jaeger exporter
     from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -28,14 +28,16 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import format_trace_id, format_span_id
+from opentelemetry.trace import format_span_id, format_trace_id
 
 from scripts.backtest_strategy import run_backtest
 from scripts.publish_model import publish
 
 STATE_FILE = "last_event_id"
 
-resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "auto_retrain")})
+resource = Resource.create(
+    {"service.name": os.getenv("OTEL_SERVICE_NAME", "auto_retrain")}
+)
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
@@ -53,7 +55,9 @@ tracer = trace.get_tracer(__name__)
 
 logger_provider = LoggerProvider(resource=resource)
 if endpoint:
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint))
+    )
 set_logger_provider(logger_provider)
 handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
 
@@ -127,7 +131,10 @@ def _psi(expected: pd.Series, actual: pd.Series, bins: int = 10) -> float:
     actual_perc = actual_counts / len(actual)
     eps = 1e-6
     return float(
-        np.sum((expected_perc - actual_perc) * np.log((expected_perc + eps) / (actual_perc + eps)))
+        np.sum(
+            (expected_perc - actual_perc)
+            * np.log((expected_perc + eps) / (actual_perc + eps))
+        )
     )
 
 
@@ -139,8 +146,12 @@ def _ks(expected: pd.Series, actual: pd.Series) -> float:
         expected_sorted = np.sort(expected)
         actual_sorted = np.sort(actual)
         all_vals = np.union1d(expected_sorted, actual_sorted)
-        cdf1 = np.searchsorted(expected_sorted, all_vals, side="right") / len(expected_sorted)
-        cdf2 = np.searchsorted(actual_sorted, all_vals, side="right") / len(actual_sorted)
+        cdf1 = np.searchsorted(expected_sorted, all_vals, side="right") / len(
+            expected_sorted
+        )
+        cdf2 = np.searchsorted(actual_sorted, all_vals, side="right") / len(
+            actual_sorted
+        )
         return float(np.max(np.abs(cdf1 - cdf2)))
     else:
         return float(ks_2samp(expected, actual).statistic)
@@ -226,7 +237,10 @@ def retrain_if_needed(
 
         needs_retrain = False
         if metrics:
-            if metrics["win_rate"] < win_rate_threshold or metrics["drawdown"] > drawdown_threshold:
+            if (
+                metrics["win_rate"] < win_rate_threshold
+                or metrics["drawdown"] > drawdown_threshold
+            ):
                 needs_retrain = True
         else:
             logger.info("no metrics available")
@@ -276,7 +290,9 @@ def retrain_if_needed(
 def main() -> None:
     span = tracer.start_span("auto_retrain")
     ctx = span.get_span_context()
-    logger.info("auto retrain start", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
+    logger.info(
+        "auto retrain start", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id}
+    )
     p = argparse.ArgumentParser(description="Retrain model when metrics degrade")
     p.add_argument("--log-dir", help="directory with observer logs")
     p.add_argument("--out-dir", help="output model directory")
@@ -298,7 +314,7 @@ def main() -> None:
     p.add_argument("--interval", type=float, help="seconds between checks (loop)")
     args = p.parse_args()
 
-    from config.settings import DataConfig, TrainingConfig, save_params
+    from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 
     data_cfg = DataConfig(
         **{
@@ -375,7 +391,10 @@ def main() -> None:
             uncertain_file=uncertain_path,
             uncertain_weight=train_cfg.uncertain_weight,
         )
-    logger.info("auto retrain finished", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
+    logger.info(
+        "auto retrain finished",
+        extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
+    )
     span.end()
 
 
