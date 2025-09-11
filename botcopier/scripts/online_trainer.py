@@ -79,6 +79,17 @@ except ImportError:  # pragma: no cover
     compute_gnn_embeddings = None  # type: ignore
     _HAS_TG = False
 
+try:  # optional feast support for feature parity
+    from feast import FeatureStore  # type: ignore
+
+    from botcopier.feature_store.feast_repo.feature_views import FEATURE_COLUMNS
+
+    _HAS_FEAST = True
+except Exception:  # pragma: no cover - optional
+    FeatureStore = None  # type: ignore
+    FEATURE_COLUMNS = []  # type: ignore
+    _HAS_FEAST = False
+
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
@@ -183,7 +194,7 @@ class OnlineTrainer:
         self.clf = SGDClassifier(
             loss="log_loss", learning_rate="adaptive", eta0=self.lr
         )
-        self.feature_names: List[str] = []
+        self.feature_names: List[str] = list(FEATURE_COLUMNS) if _HAS_FEAST else []
         self.feature_flags: Dict[str, bool] = {}
         self.model_type: str = "logreg"
         self._prev_coef: List[float] | None = None
@@ -199,6 +210,11 @@ class OnlineTrainer:
         self.conformal_lower: float | None = None
         self.conformal_upper: float | None = None
         self.gnn_state: Dict[str, Any] | None = None
+        if _HAS_FEAST:
+            repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
+            self.store = FeatureStore(repo_path=str(repo))
+        else:
+            self.store = None
         self.graph_dataset: GraphDataset | None = None
         # rolling statistics for change point detection
         self._dist_history: deque[float] = deque(maxlen=200)
@@ -304,6 +320,8 @@ class OnlineTrainer:
     # Incremental training
     # ------------------------------------------------------------------
     def _ensure_features(self, keys: Iterable[str]) -> None:
+        if _HAS_FEAST:
+            return
         if not self.feature_flags.get("order_book", False):
             keys = [k for k in keys if not k.startswith("book_")]
         new_feats = [k for k in keys if k not in self.feature_names and k != "y"]
@@ -335,9 +353,19 @@ class OnlineTrainer:
                             rec[f"graph_emb{i}"] = emb_map.get(sym, [0.0] * emb_dim)[i]
             except (RuntimeError, ValueError):
                 pass
-        for rec in batch:
-            self._ensure_features(rec.keys())
-        X = [[float(rec.get(f, 0.0)) for f in self.feature_names] for rec in batch]
+        if _HAS_FEAST and self.store is not None:
+            entity_rows = [{"symbol": rec.get("symbol", "")} for rec in batch]
+            feature_refs = [f"trade_features:{f}" for f in self.feature_names]
+            feat_dict = self.store.get_online_features(
+                features=feature_refs, entity_rows=entity_rows
+            ).to_dict()
+            X = [
+                [feat_dict[f][i] for f in self.feature_names] for i in range(len(batch))
+            ]
+        else:
+            for rec in batch:
+                self._ensure_features(rec.keys())
+            X = [[float(rec.get(f, 0.0)) for f in self.feature_names] for rec in batch]
         y = [int(rec["y"]) for rec in batch]
         return np.asarray(X), np.asarray(y)
 
