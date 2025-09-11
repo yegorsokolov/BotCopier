@@ -109,7 +109,14 @@ def train(
     ]
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
     logs, feature_names, _ = _load_logs(data_dir, **load_kwargs)
-    gpu_kwargs = {"use_gpu": True} if use_gpu else {}
+    gpu_kwargs: dict[str, object] = {}
+    if use_gpu:
+        if model_type == "xgboost":
+            gpu_kwargs.update({"tree_method": "gpu_hist", "predictor": "gpu_predictor"})
+        elif model_type == "catboost":
+            gpu_kwargs.update({"device": "gpu"})
+        elif model_type == "transformer":
+            gpu_kwargs.update({"device": "cuda"})
     fs_repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []

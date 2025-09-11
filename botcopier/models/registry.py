@@ -165,10 +165,23 @@ if _HAS_XGB:
         X: np.ndarray,
         y: np.ndarray,
         *,
-        use_gpu: bool = False,
+        tree_method: str | None = None,
+        predictor: str | None = None,
         **params: float | int | str,
     ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
-        """Fit an ``xgboost.XGBClassifier`` model."""
+        """Fit an ``xgboost.XGBClassifier`` model.
+
+        Parameters
+        ----------
+        tree_method:
+            Optional ``tree_method`` passed to :class:`xgboost.XGBClassifier`.
+            Passing ``"gpu_hist"`` enables GPU training when XGBoost is built
+            with CUDA support.
+        predictor:
+            Optional ``predictor`` argument.  When ``tree_method`` starts with
+            ``"gpu"`` and ``predictor`` is ``None`` this defaults to
+            ``"gpu_predictor"``.
+        """
 
         default_params: dict[str, object] = {
             "objective": "binary:logistic",
@@ -176,9 +189,12 @@ if _HAS_XGB:
             "use_label_encoder": False,
             "verbosity": 0,
         }
-        if use_gpu:
-            default_params.setdefault("tree_method", "gpu_hist")
-            default_params.setdefault("predictor", "gpu_predictor")
+        if tree_method is not None:
+            default_params.setdefault("tree_method", tree_method)
+            if tree_method.startswith("gpu") and predictor is None:
+                predictor = "gpu_predictor"
+        if predictor is not None:
+            default_params.setdefault("predictor", predictor)
         default_params.update(params)
         model = xgb.XGBClassifier(**default_params)
         model.fit(X, y)
@@ -207,14 +223,21 @@ if _HAS_CATBOOST:
         X: np.ndarray,
         y: np.ndarray,
         *,
-        use_gpu: bool = False,
+        device: str | None = None,
         **params: float | int | str,
     ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
-        """Fit a ``catboost.CatBoostClassifier`` model."""
+        """Fit a ``catboost.CatBoostClassifier`` model.
+
+        Parameters
+        ----------
+        device:
+            Device for training.  Passing ``"gpu"`` enables GPU training when
+            CatBoost is installed with CUDA support.
+        """
 
         default_params: dict[str, object] = {"verbose": False}
-        if use_gpu:
-            default_params.setdefault("device", "gpu")
+        if device is not None:
+            default_params.setdefault("device", device)
         default_params.update(params)
         model = cb.CatBoostClassifier(**default_params)
         model.fit(X, y)
