@@ -8,7 +8,7 @@ import shutil
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -66,19 +66,49 @@ def train(
     """Train a model selected from the registry."""
     if cache_dir is not None:
         configure_cache(FeatureConfig(cache_dir=cache_dir))
-    df, feature_names, _ = _load_logs(data_dir)
-    df, feature_names, _, _ = _extract_features(df, feature_names)
-    label_col = next((c for c in df.columns if c.startswith("label")), None)
-    if label_col is None:
-        raise ValueError("no label column found")
-    if isinstance(df, pd.DataFrame):
-        y = df[label_col].to_numpy(dtype=float)
-        X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
-    elif _HAS_POLARS and isinstance(df, pl.DataFrame):
-        y = df[label_col].to_numpy().astype(float)
-        X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
-    else:  # pragma: no cover - defensive
-        raise TypeError("Unsupported DataFrame type")
+    load_keys = [
+        "lite_mode",
+        "chunk_size",
+        "flight_uri",
+        "kafka_brokers",
+        "take_profit_mult",
+        "stop_loss_mult",
+        "hold_period",
+        "augment_ratio",
+        "dtw_augment",
+    ]
+    load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
+    logs, feature_names, _ = _load_logs(data_dir, **load_kwargs)
+    y_list: list[np.ndarray] = []
+    X_list: list[np.ndarray] = []
+    label_col: str | None = None
+    if isinstance(logs, Iterable) and not isinstance(logs, (pd.DataFrame,)) and not (
+        _HAS_POLARS and isinstance(logs, pl.DataFrame)
+    ):
+        for chunk in logs:
+            chunk, feature_names, _, _ = _extract_features(chunk, feature_names)
+            if label_col is None:
+                label_col = next((c for c in chunk.columns if c.startswith("label")), None)
+                if label_col is None:
+                    raise ValueError("no label column found")
+            y_list.append(chunk[label_col].to_numpy(dtype=float))
+            X_list.append(chunk[feature_names].fillna(0.0).to_numpy(dtype=float))
+        y = np.concatenate(y_list, axis=0)
+        X = np.vstack(X_list)
+    else:
+        df = logs  # type: ignore[assignment]
+        df, feature_names, _, _ = _extract_features(df, feature_names)
+        label_col = next((c for c in df.columns if c.startswith("label")), None)
+        if label_col is None:
+            raise ValueError("no label column found")
+        if isinstance(df, pd.DataFrame):
+            y = df[label_col].to_numpy(dtype=float)
+            X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
+        elif _HAS_POLARS and isinstance(df, pl.DataFrame):
+            y = df[label_col].to_numpy().astype(float)
+            X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
+        else:  # pragma: no cover - defensive
+            raise TypeError("Unsupported DataFrame type")
 
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
     if mlflow_active and not _HAS_MLFLOW:
