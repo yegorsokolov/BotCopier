@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from pydantic import ValidationError
 
+from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
 
 
@@ -33,8 +34,12 @@ def train_autoencoder(X: np.ndarray, latent_dim: int = 3):
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Train simple autoencoder and update model.json")
-    p.add_argument("input", type=Path, default=Path("tests/fixtures/trades_small.csv"), nargs="?")
+    p = argparse.ArgumentParser(
+        description="Train simple autoencoder and update model.json"
+    )
+    p.add_argument(
+        "input", type=Path, default=Path("tests/fixtures/trades_small.csv"), nargs="?"
+    )
     p.add_argument("--model", type=Path, default=Path("model.json"))
     p.add_argument("--latent", type=int, default=3)
     p.add_argument(
@@ -58,7 +63,7 @@ def main() -> None:
 
     if args.model.exists():
         try:
-            params = ModelParams.model_validate_json(args.model.read_text())
+            params = load_params(args.model)
             model = params.model_dump()
         except ValidationError:
             model = {}

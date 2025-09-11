@@ -29,6 +29,7 @@ from typing import Any, Dict, Iterable, List
 from pydantic import ValidationError
 
 from botcopier.config.settings import DataConfig, TrainingConfig, save_params
+from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
 
 try:  # prefer systemd journal if available
@@ -222,7 +223,7 @@ class OnlineTrainer:
     def _load(self) -> None:
         """Restore coefficients from ``model.json`` if present."""
         try:
-            params = ModelParams.model_validate_json(self.model_path.read_text())
+            params = load_params(self.model_path)
         except (OSError, ValidationError):
             return
         data = params.model_dump()
@@ -285,7 +286,7 @@ class OnlineTrainer:
                 "intercept": float(self.calibrator.intercept_[0]),
             }
         try:
-            params = ModelParams.model_validate_json(self.model_path.read_text())
+            params = load_params(self.model_path)
             existing = params.model_dump()
         except (OSError, ValidationError):
             existing = {}

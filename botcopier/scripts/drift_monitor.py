@@ -13,9 +13,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import IsolationForest
 from pydantic import ValidationError
+from sklearn.ensemble import IsolationForest
 
+from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
 
 try:  # pragma: no cover - fallback for package import
@@ -39,7 +40,10 @@ def _psi(expected: pd.Series, actual: pd.Series, bins: int = 10) -> float:
     actual_perc = actual_counts / len(actual)
     eps = 1e-6
     return float(
-        np.sum((expected_perc - actual_perc) * np.log((expected_perc + eps) / (actual_perc + eps)))
+        np.sum(
+            (expected_perc - actual_perc)
+            * np.log((expected_perc + eps) / (actual_perc + eps))
+        )
     )
 
 
@@ -51,8 +55,12 @@ def _ks(expected: pd.Series, actual: pd.Series) -> float:
         expected_sorted = np.sort(expected)
         actual_sorted = np.sort(actual)
         all_vals = np.union1d(expected_sorted, actual_sorted)
-        cdf1 = np.searchsorted(expected_sorted, all_vals, side="right") / len(expected_sorted)
-        cdf2 = np.searchsorted(actual_sorted, all_vals, side="right") / len(actual_sorted)
+        cdf1 = np.searchsorted(expected_sorted, all_vals, side="right") / len(
+            expected_sorted
+        )
+        cdf2 = np.searchsorted(actual_sorted, all_vals, side="right") / len(
+            actual_sorted
+        )
         return float(np.max(np.abs(cdf1 - cdf2)))
     else:
         return float(ks_2samp(expected, actual).statistic)
@@ -81,7 +89,9 @@ def _compute_metrics(baseline_file: Path, recent_file: Path) -> dict[str, float]
     }
 
 
-def _isolation_forest_scores(baseline_file: Path, recent_file: Path) -> dict[str, float]:
+def _isolation_forest_scores(
+    baseline_file: Path, recent_file: Path
+) -> dict[str, float]:
     """Return per-feature drift scores via :class:`IsolationForest`.
 
     The baseline distribution is used to fit an ``IsolationForest`` for each
@@ -113,7 +123,7 @@ def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) 
     data: dict[str, object] = {}
     if model_json.exists():
         try:
-            params = ModelParams.model_validate_json(model_json.read_text())
+            params = load_params(model_json)
             data = params.model_dump()
         except (ValidationError, OSError, ValueError):
             data = {}
