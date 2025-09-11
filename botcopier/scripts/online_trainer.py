@@ -18,30 +18,33 @@ import argparse
 import csv
 import json
 import logging
-import time
 import os
-import threading
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Iterable, List, Dict, Any
+from typing import Any, Dict, Iterable, List
 
 from pydantic import ValidationError
 
+from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 from botcopier.models.schema import ModelParams
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
+
     logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
 except ImportError:  # pragma: no cover - fallback to file logging
     logging.basicConfig(filename="online_trainer.log", level=logging.INFO)
 
-import numpy as np
-import psutil
-import pandas as pd
 from collections import deque
-from sklearn.linear_model import SGDClassifier, LogisticRegression
+
+import numpy as np
+import pandas as pd
+import psutil
 from sklearn.exceptions import NotFittedError
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 
 try:  # detect resources to adapt behaviour on weaker hardware
     if __package__:
@@ -70,8 +73,8 @@ except ImportError:  # pragma: no cover
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
@@ -84,7 +87,9 @@ try:  # optional change point detection
 except ImportError:  # pragma: no cover - optional dependency
     rpt = None  # type: ignore
 
-resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "online_trainer")})
+resource = Resource.create(
+    {"service.name": os.getenv("OTEL_SERVICE_NAME", "online_trainer")}
+)
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
@@ -138,6 +143,7 @@ def _start_watchdog_thread() -> None:
     except ValueError:
         usec = 0
     interval = usec / 2_000_000 if usec else 30
+
     def _loop() -> None:
         while True:
             time.sleep(interval)
@@ -145,6 +151,7 @@ def _start_watchdog_thread() -> None:
                 daemon.sd_notify("WATCHDOG=1")
             except OSError:
                 pass
+
     threading.Thread(target=_loop, daemon=True).start()
 
 
@@ -165,7 +172,9 @@ class OnlineTrainer:
         self.lr = lr
         self.lr_decay = lr_decay
         self.lr_history: List[float] = []
-        self.clf = SGDClassifier(loss="log_loss", learning_rate="adaptive", eta0=self.lr)
+        self.clf = SGDClassifier(
+            loss="log_loss", learning_rate="adaptive", eta0=self.lr
+        )
         self.feature_names: List[str] = []
         self.feature_flags: Dict[str, bool] = {}
         self.model_type: str = "logreg"
@@ -196,9 +205,7 @@ class OnlineTrainer:
                 self.feature_flags["order_book"] = res.get("heavy_mode", False)
             except (OSError, RuntimeError, ValueError):
                 pass
-        self.feature_flags.setdefault(
-            "order_book", self.training_mode not in ("lite",)
-        )
+        self.feature_flags.setdefault("order_book", self.training_mode not in ("lite",))
         self._apply_mode()
 
     def _apply_mode(self) -> None:
@@ -284,6 +291,7 @@ class OnlineTrainer:
             existing = {}
         existing.update(payload)
         self.model_path.write_text(ModelParams(**existing).model_dump_json())
+
     # ------------------------------------------------------------------
     # Incremental training
     # ------------------------------------------------------------------
@@ -362,7 +370,11 @@ class OnlineTrainer:
             except (RuntimeError, ValueError):
                 pass
         first, second = arr[: len(arr) // 2], arr[len(arr) // 2 :]
-        if len(first) and len(second) and abs(first.mean() - second.mean()) > self.cp_threshold:
+        if (
+            len(first)
+            and len(second)
+            and abs(first.mean() - second.mean()) > self.cp_threshold
+        ):
             self._handle_regime_shift()
             self._dist_history.clear()
 
@@ -391,7 +403,9 @@ class OnlineTrainer:
                     except ValueError:
                         self.calibrator = None
                 if self.calibrator is not None:
-                    probs1 = self.calibrator.predict_proba(raw_probs.reshape(-1, 1))[:, 1]
+                    probs1 = self.calibrator.predict_proba(raw_probs.reshape(-1, 1))[
+                        :, 1
+                    ]
                 else:
                     probs1 = raw_probs
                 probs = np.column_stack([1 - probs1, probs1])
@@ -561,57 +575,10 @@ class OnlineTrainer:
             client.close()
 
 
-def run(
-    *,
-    csv: str | None = None,
-    flight_host: str | None = None,
-    flight_port: int | None = None,
-    model: str | None = None,
-    batch_size: int | None = None,
-    lr: float | None = None,
-    lr_decay: float | None = None,
-    flight_path: str | None = None,
-    baseline_file: str | None = None,
-    recent_file: str | None = None,
-    log_dir: str | None = None,
-    out_dir: str | None = None,
-    files_dir: str | None = None,
-    drift_threshold: float | None = None,
-    drift_interval: float | None = None,
-) -> None:
-    from config.settings import DataConfig, TrainingConfig, save_params
+def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
+    """Run the online trainer with ``data_cfg`` and ``train_cfg``."""
+    from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 
-    data_cfg = DataConfig(
-        **{
-            k: v
-            for k, v in {
-                "csv": csv,
-                "baseline_file": baseline_file,
-                "recent_file": recent_file,
-                "log_dir": log_dir,
-                "out_dir": out_dir,
-                "files_dir": files_dir,
-            }.items()
-            if v is not None
-        }
-    )
-    train_cfg = TrainingConfig(
-        **{
-            k: v
-            for k, v in {
-                "model": model,
-                "batch_size": batch_size,
-                "lr": lr,
-                "lr_decay": lr_decay,
-                "flight_host": flight_host,
-                "flight_port": flight_port,
-                "flight_path": flight_path,
-                "drift_threshold": drift_threshold,
-                "drift_interval": drift_interval,
-            }.items()
-            if v is not None
-        }
-    )
     save_params(data_cfg, train_cfg)
 
     trainer = OnlineTrainer(
@@ -666,29 +633,41 @@ def main(argv: List[str] | None = None) -> None:
     p.add_argument(
         "--drift-threshold", type=float, help="Drift threshold triggering retrain"
     )
-    p.add_argument(
-        "--drift-interval", type=float, help="Seconds between drift checks"
-    )
+    p.add_argument("--drift-interval", type=float, help="Seconds between drift checks")
     args = p.parse_args(argv)
-    run(
-        csv=args.csv,
-        flight_host=args.flight_host,
-        flight_port=args.flight_port,
-        model=args.model,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        lr_decay=args.lr_decay,
-        flight_path=args.flight_path,
-        baseline_file=args.baseline_file,
-        recent_file=args.recent_file,
-        log_dir=args.log_dir,
-        out_dir=args.out_dir,
-        files_dir=args.files_dir,
-        drift_threshold=args.drift_threshold,
-        drift_interval=args.drift_interval,
+    data_cfg = DataConfig(
+        **{
+            k: getattr(args, k)
+            for k in [
+                "csv",
+                "baseline_file",
+                "recent_file",
+                "log_dir",
+                "out_dir",
+                "files_dir",
+            ]
+            if getattr(args, k) is not None
+        }
     )
+    train_cfg = TrainingConfig(
+        **{
+            k: getattr(args, k)
+            for k in [
+                "model",
+                "batch_size",
+                "lr",
+                "lr_decay",
+                "flight_host",
+                "flight_port",
+                "flight_path",
+                "drift_threshold",
+                "drift_interval",
+            ]
+            if getattr(args, k) is not None
+        }
+    )
+    run(data_cfg, train_cfg)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
     main()
-

@@ -63,7 +63,9 @@ def train_meta_model(
             classes = clf.classes_
         clf.partial_fit(X, y, classes=classes)
     else:
-        clf = LogisticRegression(multi_class="multinomial", solver="lbfgs", max_iter=200)
+        clf = LogisticRegression(
+            multi_class="multinomial", solver="lbfgs", max_iter=200
+        )
         clf.fit(X, y)
 
     coeffs = clf.coef_
@@ -121,11 +123,12 @@ class RollingMetrics:
 
     def update(self, model_idx: int, profit: float, correct: bool) -> None:
         """Update rolling statistics for ``model_idx``."""
-        self.profit[model_idx] = (1 - self.alpha) * self.profit[model_idx] + self.alpha * float(profit)
-        self.accuracy[model_idx] = (
-            (1 - self.alpha) * self.accuracy[model_idx]
-            + self.alpha * (1.0 if correct else 0.0)
-        )
+        self.profit[model_idx] = (1 - self.alpha) * self.profit[
+            model_idx
+        ] + self.alpha * float(profit)
+        self.accuracy[model_idx] = (1 - self.alpha) * self.accuracy[
+            model_idx
+        ] + self.alpha * (1.0 if correct else 0.0)
 
     def weights(self) -> np.ndarray:
         """Return exponential weights derived from recent performance."""
@@ -145,20 +148,18 @@ class RollingMetrics:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train meta gating model")
-    parser.add_argument("--data", help="CSV file with regime features and best_model column")
+    parser.add_argument(
+        "--data", help="CSV file with regime features and best_model column"
+    )
     parser.add_argument("--out", help="Output JSON file for gating parameters")
     parser.add_argument("--features", nargs="+", help="Feature column names")
     parser.add_argument("--label", help="Label column name")
     args = parser.parse_args()
 
-    from config.settings import DataConfig, TrainingConfig, save_params
+    from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 
     data_cfg = DataConfig(
-        **{
-            k: getattr(args, k)
-            for k in ["data", "out"]
-            if getattr(args, k) is not None
-        }
+        **{k: getattr(args, k) for k in ["data", "out"] if getattr(args, k) is not None}
     )
     train_cfg = TrainingConfig(
         **{
