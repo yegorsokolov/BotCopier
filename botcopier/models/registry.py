@@ -22,6 +22,22 @@ except Exception:  # pragma: no cover - optional
     torch = None  # type: ignore
     _HAS_TORCH = False
 
+try:  # Optional dependency
+    import xgboost as xgb  # type: ignore
+
+    _HAS_XGB = True
+except Exception:  # pragma: no cover - optional
+    xgb = None  # type: ignore
+    _HAS_XGB = False
+
+try:  # Optional dependency
+    import catboost as cb  # type: ignore
+
+    _HAS_CATBOOST = True
+except Exception:  # pragma: no cover - optional
+    cb = None  # type: ignore
+    _HAS_CATBOOST = False
+
 MODEL_REGISTRY: Dict[str, Callable] = {}
 
 MODEL_VERSION = ModelParams.model_fields["version"].default
@@ -142,6 +158,78 @@ def _fit_logreg(
 
 
 register_model("logreg", _fit_logreg)
+
+if _HAS_XGB:
+
+    def _fit_xgboost_classifier(
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        use_gpu: bool = False,
+        **params: float | int | str,
+    ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
+        """Fit an ``xgboost.XGBClassifier`` model."""
+
+        default_params: dict[str, object] = {
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "use_label_encoder": False,
+            "verbosity": 0,
+        }
+        if use_gpu:
+            default_params.setdefault("tree_method", "gpu_hist")
+            default_params.setdefault("predictor", "gpu_predictor")
+        default_params.update(params)
+        model = xgb.XGBClassifier(**default_params)
+        model.fit(X, y)
+
+        def _predict(arr: np.ndarray) -> np.ndarray:
+            return model.predict_proba(arr)[:, 1]
+
+        _predict.model = model  # type: ignore[attr-defined]
+        booster_bytes = model.get_booster().save_raw()
+        import base64
+
+        return {
+            "booster": base64.b64encode(booster_bytes).decode("utf-8"),
+            "xgb_params": model.get_params(),
+        }, _predict
+
+    register_model("xgboost", _fit_xgboost_classifier)
+else:  # pragma: no cover - optional dependency
+
+    def _fit_xgboost_classifier(*_, **__):  # type: ignore[dead-code]
+        raise ImportError("xgboost is required for this model")
+
+if _HAS_CATBOOST:
+
+    def _fit_catboost_classifier(
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        use_gpu: bool = False,
+        **params: float | int | str,
+    ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
+        """Fit a ``catboost.CatBoostClassifier`` model."""
+
+        default_params: dict[str, object] = {"verbose": False}
+        if use_gpu:
+            default_params.setdefault("device", "gpu")
+        default_params.update(params)
+        model = cb.CatBoostClassifier(**default_params)
+        model.fit(X, y)
+
+        def _predict(arr: np.ndarray) -> np.ndarray:
+            return model.predict_proba(arr)[:, 1]
+
+        _predict.model = model  # type: ignore[attr-defined]
+        return {"cat_params": model.get_params()}, _predict
+
+    register_model("catboost", _fit_catboost_classifier)
+else:  # pragma: no cover - optional dependency
+
+    def _fit_catboost_classifier(*_, **__):  # type: ignore[dead-code]
+        raise ImportError("catboost is required for this model")
 
 if _HAS_TORCH:
 
