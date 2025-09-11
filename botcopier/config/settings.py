@@ -53,6 +53,7 @@ class TrainingConfig(BaseSettings):
     label: str = "best_model"
     model_type: str = "logreg"
     window: int = 60
+    random_seed: int = 0
 
     model_config = {"env_prefix": "TRAIN_"}
 

@@ -20,11 +20,10 @@ import grpc
 import numpy as np
 from google.protobuf import empty_pb2
 
+from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
-
 from proto import federated_buffer_pb2 as pb2
 from proto import federated_buffer_pb2_grpc as pb2_grpc
-
 
 Experience = Tuple[np.ndarray, int, float, np.ndarray]
 
@@ -148,9 +147,11 @@ def main() -> None:
     p.add_argument("mode", choices=["server", "upload", "download"])
     p.add_argument("--address", default="127.0.0.1:50051")
     p.add_argument("--file", help="path to JSON file for upload/download")
+    p.add_argument("--random-seed", type=int, default=0)
     args = p.parse_args()
 
     logger = setup_logging(__name__)
+    set_seed(args.random_seed)
 
     if args.mode == "server":
         server = serve(args.address)
