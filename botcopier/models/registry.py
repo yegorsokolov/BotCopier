@@ -125,6 +125,7 @@ def _fit_logreg(
 
     def _predict(arr: np.ndarray) -> np.ndarray:
         return pipeline.predict_proba(arr)[:, 1]
+    _predict.model = pipeline  # type: ignore[attr-defined]
 
     meta = {
         "coefficients": clf.coef_.ravel().tolist(),
@@ -226,6 +227,8 @@ if _HAS_TORCH:
             with torch.no_grad():
                 arr_t = torch.tensor(arr, dtype=torch.float32, device=dev)
                 return torch.sigmoid(model(arr_t)).cpu().numpy().squeeze(-1)
+        _predict.model = model  # type: ignore[attr-defined]
+        _predict.device = dev  # type: ignore[attr-defined]
 
         state = model.state_dict()
         return {k: v.cpu().tolist() for k, v in state.items()}, _predict

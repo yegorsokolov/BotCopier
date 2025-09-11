@@ -288,6 +288,14 @@ def train(
         out_dir.mkdir(parents=True, exist_ok=True)
         params = ModelParams(**model)
         (out_dir / "model.json").write_text(params.model_dump_json())
+        model_obj = getattr(predict_fn, "model", None)
+        if model_obj is not None:
+            try:
+                from botcopier.onnx_utils import export_model
+
+                export_model(model_obj, X, out_dir / "model.onnx")
+            except Exception:  # pragma: no cover - best effort
+                logger.exception("Failed to export ONNX model")
         if mlflow_active:
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("n_features", len(feature_names))
