@@ -15,6 +15,7 @@ During processing the current load is checked with
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import json
 import logging
@@ -529,8 +530,8 @@ class OnlineTrainer:
                 batch.clear()
             time.sleep(1.0)
 
-    def consume_flight(self, host: str, port: int, path: str = "trades") -> None:
-        """Subscribe to an Arrow Flight stream of trade events."""
+    async def consume_flight(self, host: str, port: int, path: str = "trades") -> None:
+        """Subscribe to an Arrow Flight stream of trade events asynchronously."""
         try:  # pragma: no cover - optional dependency
             import pyarrow.flight as flight
         except ImportError as exc:  # pragma: no cover - pyarrow missing
@@ -544,13 +545,14 @@ class OnlineTrainer:
             while True:
                 load = psutil.cpu_percent(interval=None)
                 if load > self.cpu_threshold:
-                    time.sleep(self.sleep_seconds)
+                    await asyncio.sleep(self.sleep_seconds)
                     continue
                 try:
-                    with client.do_get(ticket) as reader:
-                        table = reader.read_all()
+                    table = await asyncio.to_thread(
+                        lambda: client.do_get(ticket).read_all()
+                    )
                 except (flight.FlightError, OSError):
-                    time.sleep(1.0)
+                    await asyncio.sleep(1.0)
                     continue
                 if table.num_rows > offset:
                     for row in table.slice(offset).to_pylist():
@@ -561,23 +563,23 @@ class OnlineTrainer:
                         if len(batch) >= self.batch_size:
                             load = psutil.cpu_percent(interval=None)
                             if load > self.cpu_threshold:
-                                time.sleep(self.sleep_seconds)
+                                await asyncio.sleep(self.sleep_seconds)
                             self.update(batch)
                             batch.clear()
                     offset = table.num_rows
                 if batch:
                     load = psutil.cpu_percent(interval=None)
                     if load > self.cpu_threshold:
-                        time.sleep(self.sleep_seconds)
+                        await asyncio.sleep(self.sleep_seconds)
                     self.update(batch)
                     batch.clear()
-                time.sleep(1.0)
+                await asyncio.sleep(1.0)
         finally:
             client.close()
 
 
-def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
-    """Run the online trainer with ``data_cfg`` and ``train_cfg``."""
+async def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
+    """Run the online trainer with ``data_cfg`` and ``train_cfg`` asynchronously."""
     from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 
     save_params(data_cfg, train_cfg)
@@ -607,14 +609,14 @@ def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
             interval=train_cfg.drift_interval,
         )
     if data_cfg.csv:
-        trainer.tail_csv(data_cfg.csv)
+        await asyncio.to_thread(trainer.tail_csv, data_cfg.csv)
     else:
-        trainer.consume_flight(
+        await trainer.consume_flight(
             train_cfg.flight_host, train_cfg.flight_port, train_cfg.flight_path
         )
 
 
-def main(argv: List[str] | None = None) -> None:
+async def async_main(argv: List[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Online incremental trainer")
     p.add_argument("--csv", help="Path to trades_raw.csv to follow")
     p.add_argument("--flight-host", help="Arrow Flight host")
@@ -667,7 +669,11 @@ def main(argv: List[str] | None = None) -> None:
             if getattr(args, k) is not None
         }
     )
-    run(data_cfg, train_cfg)
+    await run(data_cfg, train_cfg)
+
+
+def main(argv: List[str] | None = None) -> None:
+    asyncio.run(async_main(argv))
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry point
