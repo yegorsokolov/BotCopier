@@ -8,6 +8,8 @@ ALLOWED = {
     "test_full_pipeline.py",
     "performance",
     "test_benchmarks.py",
+    "test_nats_publisher_async.py",
+    "test_online_trainer_async.py",
 }
 
 
