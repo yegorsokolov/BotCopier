@@ -192,6 +192,49 @@ def _kalman_update(
 
 
 @jit(nopython=True)
+def _kalman_filter_series(
+    measurements: np.ndarray,
+    process_var: float,
+    measurement_var: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised Kalman filter for a series of ``measurements``.
+
+    This mirrors successive calls to :func:`_kalman_update` but executes
+    entirely within compiled code when Numba is available.
+    """
+    n = measurements.shape[0]
+    levels = np.empty(n, dtype=np.float64)
+    trends = np.empty(n, dtype=np.float64)
+
+    x = np.zeros(2, dtype=np.float64)
+    P = np.eye(2, dtype=np.float64)
+
+    F = np.array([[1.0, 1.0], [0.0, 1.0]], dtype=np.float64)
+    Q = process_var * np.array([[0.25, 0.5], [0.5, 1.0]], dtype=np.float64)
+    H = np.array([[1.0, 0.0]], dtype=np.float64)
+    R = np.array([[measurement_var]], dtype=np.float64)
+    I = np.eye(2, dtype=np.float64)
+
+    for i in range(n):
+        # Prediction
+        x = F @ x
+        P = F @ P @ F.T + Q
+
+        # Update with current measurement
+        z = measurements[i]
+        y = z - (H @ x)[0]
+        S = (H @ P @ H.T)[0, 0] + R[0, 0]
+        K = (P @ H.T) / S
+        x = x + K.flatten() * y
+        P = (I - K @ H) @ P
+
+        levels[i] = x[0]
+        trends[i] = x[1]
+
+    return levels, trends
+
+
+@jit(nopython=True)
 def _stochastic_k_nb(price: float, prices: np.ndarray) -> float:
     low = prices.min()
     high = prices.max()
