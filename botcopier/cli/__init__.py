@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar, cast
 
 import typer
 import yaml
 from pydantic_settings import BaseSettings
 
 from botcopier.config.settings import DataConfig, TrainingConfig, save_params
+from botcopier.exceptions import BotCopierError
 from botcopier.training.pipeline import train as train_pipeline
 
 from ..scripts.drift_monitor import run as run_drift_monitor
@@ -18,6 +21,42 @@ from ..scripts.evaluation import evaluate as eval_predictions
 from ..scripts.online_trainer import run as run_online_trainer
 
 app = typer.Typer(help="BotCopier unified command line interface")
+
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def error_handler(func: F) -> F:
+    """Decorator for CLI commands to provide structured error handling."""
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+        try:
+            return func(*args, **kwargs)
+        except BotCopierError as exc:
+            logging.error(
+                json.dumps(
+                    {
+                        "error": exc.__class__.__name__,
+                        "message": str(exc),
+                        "symbol": exc.symbol,
+                        "timestamp": getattr(exc, "timestamp", datetime.utcnow()),
+                    }
+                )
+            )
+            raise typer.Exit(code=1)
+        except Exception as exc:  # pragma: no cover - unexpected
+            logging.error(
+                json.dumps(
+                    {
+                        "error": exc.__class__.__name__,
+                        "message": str(exc),
+                    }
+                )
+            )
+            raise typer.Exit(code=1)
+
+    return cast(F, wrapper)
 
 
 def _load_config(path: Path) -> tuple[DataConfig, TrainingConfig]:
@@ -46,6 +85,7 @@ def _load_config(path: Path) -> tuple[DataConfig, TrainingConfig]:
 
 
 @app.callback()
+@error_handler
 def main(
     ctx: typer.Context,
     config: Optional[Path] = typer.Option(
@@ -70,6 +110,7 @@ def _cfg(ctx: typer.Context) -> tuple[DataConfig, TrainingConfig]:
 
 
 @app.command("train")
+@error_handler
 def train(
     ctx: typer.Context,
     data_dir: Optional[Path] = typer.Argument(
@@ -113,6 +154,7 @@ def train(
 
 
 @app.command("evaluate")
+@error_handler
 def evaluate(
     ctx: typer.Context,
     pred_file: Optional[Path] = typer.Argument(None, help="CSV file with predictions"),
@@ -148,6 +190,7 @@ def evaluate(
 
 
 @app.command("online-train")
+@error_handler
 def online_train(
     ctx: typer.Context,
     csv: Optional[Path] = typer.Option(None, help="Path to trades_raw.csv"),
@@ -210,10 +253,13 @@ def online_train(
     if updates_train:
         train_cfg = train_cfg.model_copy(update=updates_train)
     ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
-    run_online_trainer(data_cfg, train_cfg)
+    import asyncio
+
+    asyncio.run(run_online_trainer(data_cfg, train_cfg))
 
 
 @app.command("drift-monitor")
+@error_handler
 def drift_monitor(
     ctx: typer.Context,
     baseline_file: Optional[Path] = typer.Option(None, help="Baseline CSV file"),
@@ -278,4 +324,4 @@ def drift_monitor(
     )
 
 
-__all__ = ["app"]
+__all__ = ["app", "error_handler"]

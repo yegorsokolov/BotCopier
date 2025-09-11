@@ -3,10 +3,10 @@ import json
 import math
 from datetime import datetime
 from pathlib import Path
+from statistics import NormalDist
 from typing import Dict, List, Optional
 
 import numpy as np
-from statistics import NormalDist
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
@@ -15,14 +15,16 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+from botcopier.exceptions import DataError
 
-def _parse_time(value: str) -> datetime:
+
+def _parse_time(value: str, *, symbol: str = "") -> datetime:
     for fmt in ("%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M"):
         try:
             return datetime.strptime(value, fmt)
-        except Exception:
+        except ValueError:
             continue
-    raise ValueError(f"Unrecognised time format: {value}")
+    raise DataError("unrecognised time format", symbol=symbol, timestamp=value)
 
 
 def _load_predictions(pred_file: Path) -> List[Dict]:
@@ -31,11 +33,12 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
         preds = []
         for r in reader:
             ts = _parse_time(
-                r.get("timestamp") or r.get("time") or r[reader.fieldnames[0]]
+                r.get("timestamp") or r.get("time") or r[reader.fieldnames[0]],
+                symbol=r.get("symbol", ""),
             )
-            direction_raw = str(
-                r.get("direction") or r.get("order_type") or ""
-            ).strip().lower()
+            direction_raw = (
+                str(r.get("direction") or r.get("order_type") or "").strip().lower()
+            )
             if direction_raw in ("1", "buy"):
                 direction = 1
             elif direction_raw in ("0", "-1", "sell"):
@@ -50,11 +53,7 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
                     "lots": float(r.get("lots", 0) or 0),
                     "probability": (
                         float(r.get("probability") or r.get("prob") or r.get("proba"))
-                        if (
-                            r.get("probability")
-                            or r.get("prob")
-                            or r.get("proba")
-                        )
+                        if (r.get("probability") or r.get("prob") or r.get("proba"))
                         else None
                     ),
                     "value": (
@@ -64,11 +63,7 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
                             or r.get("pnl")
                             or 0
                         )
-                        if (
-                            r.get("expected_value")
-                            or r.get("value")
-                            or r.get("pnl")
-                        )
+                        if (r.get("expected_value") or r.get("value") or r.get("pnl"))
                         else None
                     ),
                     "log_variance": (
@@ -81,12 +76,25 @@ def _load_predictions(pred_file: Path) -> List[Dict]:
                         )
                     ),
                     "executed_model_idx": (
-                        int(float(r.get("executed_model_idx") or r.get("model_idx") or r.get("model") or -1))
-                        if (r.get("executed_model_idx") or r.get("model_idx") or r.get("model"))
+                        int(
+                            float(
+                                r.get("executed_model_idx")
+                                or r.get("model_idx")
+                                or r.get("model")
+                                or -1
+                            )
+                        )
+                        if (
+                            r.get("executed_model_idx")
+                            or r.get("model_idx")
+                            or r.get("model")
+                        )
                         else None
                     ),
                     "decision_id": (
-                        int(float(r.get("decision_id"))) if r.get("decision_id") else None
+                        int(float(r.get("decision_id")))
+                        if r.get("decision_id")
+                        else None
                     ),
                 }
             )
@@ -102,24 +110,19 @@ def _load_actual_trades(log_file: Path) -> List[Dict]:
             action = (r.get("action") or "").upper()
             ticket = r.get("ticket")
             ts = _parse_time(
-                r.get("event_time")
-                or r.get("time_event")
-                or r[reader.fieldnames[0]]
+                r.get("event_time") or r.get("time_event") or r[reader.fieldnames[0]],
+                symbol=r.get("symbol", ""),
             )
             if action == "OPEN":
                 open_map[ticket] = {
                     "open_time": ts,
                     "symbol": r.get("symbol", ""),
-                    "direction": 1
-                    if int(float(r.get("order_type", 0))) == 0
-                    else -1,
+                    "direction": 1 if int(float(r.get("order_type", 0))) == 0 else -1,
                     "lots": float(r.get("lots", 0) or 0),
                     "executed_model_idx": (
                         int(float(r.get("executed_model_idx", -1) or -1))
                     ),
-                    "decision_id": (
-                        int(float(r.get("decision_id", 0) or 0))
-                    ),
+                    "decision_id": (int(float(r.get("decision_id", 0) or 0))),
                 }
             elif action == "CLOSE" and ticket in open_map:
                 o = open_map.pop(ticket)
@@ -129,7 +132,9 @@ def _load_actual_trades(log_file: Path) -> List[Dict]:
     return trades
 
 
-def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optional[Path] = None) -> Dict:
+def evaluate(
+    pred_file: Path, actual_log: Path, window: int, model_json: Optional[Path] = None
+) -> Dict:
     predictions = _load_predictions(pred_file)
     actual_trades = _load_actual_trades(actual_log)
     conformal_lower = None
@@ -150,8 +155,12 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
             model_value_atoms = m.get("value_atoms")
             model_value_dist = m.get("value_distribution")
             model_value_quantiles = m.get("value_quantiles")
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError) as exc:
+            raise DataError(
+                "failed to read model metadata",
+                symbol="model",
+                timestamp=datetime.utcnow(),
+            ) from exc
     matches = 0
     gross_profit = 0.0
     gross_loss = 0.0
@@ -217,9 +226,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
             else:
                 gross_loss += -p
             if model_idx is not None:
-                matches_per_model[model_idx] = (
-                matches_per_model.get(model_idx, 0) + 1
-            )
+                matches_per_model[model_idx] = matches_per_model.get(model_idx, 0) + 1
             mu = pred.get("value")
             log_v = pred.get("log_variance")
             if mu is not None and log_v is not None:
@@ -295,7 +302,7 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
                 "prob_true": prob_true.tolist(),
                 "prob_pred": prob_pred.tolist(),
             }
-        except Exception:
+        except ValueError:
             pass
         if len(set(y_true)) > 1:
             roc_auc = roc_auc_score(y_true, y_score)
@@ -373,9 +380,7 @@ def _classification_metrics(
 
     preds = (probas >= 0.5).astype(int)
     accuracy = accuracy_score(y_true, preds)
-    roc_auc = (
-        roc_auc_score(y_true, probas) if len(set(y_true.tolist())) > 1 else None
-    )
+    roc_auc = roc_auc_score(y_true, probas) if len(set(y_true.tolist())) > 1 else None
     pr_auc = (
         average_precision_score(y_true, probas)
         if len(set(y_true.tolist())) > 1
@@ -388,7 +393,7 @@ def _classification_metrics(
             "prob_true": prob_true.tolist(),
             "prob_pred": prob_pred.tolist(),
         }
-    except Exception:
+    except ValueError:
         reliability = {"prob_true": [], "prob_pred": []}
 
     if profits is None:
@@ -432,4 +437,3 @@ def evaluate_model(
         preds = model.predict(X)
         probas = preds.astype(float)
     return _classification_metrics(y, probas, profits)
-
