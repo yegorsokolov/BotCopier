@@ -1,6 +1,8 @@
 # Data Flow
 
-The platform streams telemetry from ingestion to live trading. The diagram below shows the end-to-end flow.
+The platform streams telemetry from ingestion to live trading.
+
+## Sequence Diagram
 
 ```mermaid
 sequenceDiagram
