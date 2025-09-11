@@ -1,13 +1,12 @@
 [Unit]
-Description=BotCopier Online Trainer
+Description=BotCopier Model Service
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/BotCopier
-ExecStart=/usr/bin/python3 scripts/online_trainer.py --csv logs/trades_raw.csv --metrics-port 8003
+ExecStart=/usr/bin/env botcopier-serve-model --host 0.0.0.0 --port 8000 --metrics-port 8004
 Restart=on-failure
-WatchdogSec=60
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

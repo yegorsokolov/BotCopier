@@ -6,7 +6,7 @@ The endpoint accepts a batch of feature vectors and returns probabilities from t
 ## Run locally
 
 ```bash
-botcopier-serve-model --host 0.0.0.0 --port 8000
+botcopier-serve-model --host 0.0.0.0 --port 8000 --metrics-port 8004
 ```
 
 Example request:
@@ -25,3 +25,5 @@ A Docker target named `serve-model` is provided for deployment:
 docker build -f Dockerfile.ubuntu --target serve-model -t botcopier-model .
 docker run -p 8000:8000 botcopier-model
 ```
+
+Metrics are exposed on `/metrics` at the configured `--metrics-port`.

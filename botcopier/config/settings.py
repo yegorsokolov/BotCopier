@@ -46,6 +46,7 @@ class TrainingConfig(BaseSettings):
     flight_port: int = 8815
     flight_path: str = "trades"
     drift_interval: float = 300.0
+    metrics_port: int = 8003
     cache_dir: Optional[Path] = None
     model: Path = Path("model.json")
     features: List[str] = []

@@ -31,6 +31,28 @@ scrape_configs:
 
 CPU and memory utilisation metrics are collected using `psutil` and exported alongside bot performance gauges. Arrow Flight queue depth is reported via `bot_metric_queue_depth` and `bot_trade_queue_depth` gauges so backpressure on the message bus is visible.
 
+The online trainer and model serving APIs also export Prometheus metrics. Both expose counters for processed trades and errors, plus a `botcopier_latency_seconds` histogram labelled by operation.
+Examples:
+
+```bash
+curl http://localhost:8003/metrics  # online trainer
+curl http://localhost:8004/metrics  # model server
+```
+
+Prometheus scrape configuration:
+
+```yaml
+scrape_configs:
+  - job_name: botcopier-trainer
+    static_configs:
+      - targets: ['localhost:8003']
+  - job_name: botcopier-model
+    static_configs:
+      - targets: ['localhost:8004']
+```
+
+Sample alerting rules are provided in `prometheus-alerts.yaml` to flag high error rates, elevated latency and periods with no processed trades.
+
 ## Grafana dashboard
 
 Import `metrics_dashboard.json` from the `docs/` directory into Grafana to visualise the Prometheus data. The dashboard includes CPU and memory usage, Arrow Flight queue depth and error counters for socket and file write failures.
