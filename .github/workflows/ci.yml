@@ -20,9 +20,11 @@ jobs:
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Run unit tests
-        run: pytest -m "not integration"
+        run: pytest -m "not integration" --ignore=tests/property
       - name: Run integration tests
         run: pytest -m integration
+      - name: Run property tests
+        run: HYPOTHESIS_MAX_EXAMPLES=25 pytest tests/property
       - name: Run doctests
         run: PYTHONPATH=. pytest --doctest-glob='docs/*.md'
       - name: Build docs
