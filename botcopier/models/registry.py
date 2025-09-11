@@ -1,13 +1,18 @@
 """Model builders and registry for BotCopier."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Callable, Dict
 
 import numpy as np
+from pydantic import ValidationError
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
+
+from .schema import ModelParams
 
 try:  # Optional dependency
     import torch
@@ -18,6 +23,50 @@ except Exception:  # pragma: no cover - optional
     _HAS_TORCH = False
 
 MODEL_REGISTRY: Dict[str, Callable] = {}
+
+MODEL_VERSION = ModelParams.model_fields["version"].default
+MIGRATIONS: Dict[int, Callable[[dict], dict]] = {}
+
+
+def register_migration(version: int, fn: Callable[[dict], dict]) -> None:
+    """Register ``fn`` to upgrade from ``version`` to ``version + 1``."""
+
+    MIGRATIONS[version] = fn
+
+
+def _migrate_data(data: dict) -> dict:
+    version = data.get("version", 0)
+    while version < MODEL_VERSION:
+        migrate = MIGRATIONS.get(version)
+        if migrate is None:
+            break
+        data = migrate(data)
+        version = data.get("version", version + 1)
+    data["version"] = MODEL_VERSION
+    return data
+
+
+def load_params(path: Path) -> ModelParams:
+    """Load ``ModelParams`` from ``path`` upgrading older versions."""
+    if path.suffix == ".gz":
+        import gzip
+
+        with gzip.open(path, "rt") as fh:
+            raw = fh.read()
+    else:
+        raw = path.read_text()
+    try:
+        params = ModelParams.model_validate_json(raw)
+    except ValidationError:
+        data = json.loads(raw)
+        data = _migrate_data(data)
+        params = ModelParams(**data)
+    else:
+        if params.version != MODEL_VERSION:
+            data = _migrate_data(params.model_dump())
+            params = ModelParams(**data)
+    path.write_text(params.model_dump_json())
+    return params
 
 
 def register_model(name: str, builder: Callable) -> None:
@@ -198,4 +247,6 @@ __all__ = [
     "register_model",
     "get_model",
     "MODEL_REGISTRY",
+    "register_migration",
+    "load_params",
 ]

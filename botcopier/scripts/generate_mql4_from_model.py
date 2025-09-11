@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Sequence
 
+from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
 
 # Mapping from feature name to MQL4 runtime expression.
@@ -67,7 +68,9 @@ def build_switch(names: Sequence[str]) -> str:
                 _, a, b = name.split("_", 2)
             except ValueError:
                 raise KeyError(f"Invalid ratio feature name '{name}'") from None
-            expr = f'iClose("{a}", PERIOD_CURRENT, 0) / iClose("{b}", PERIOD_CURRENT, 0)'
+            expr = (
+                f'iClose("{a}", PERIOD_CURRENT, 0) / iClose("{b}", PERIOD_CURRENT, 0)'
+            )
         elif name.startswith("corr_"):
             try:
                 _, a, b = name.split("_", 2)
@@ -76,9 +79,11 @@ def build_switch(names: Sequence[str]) -> str:
             expr = f'RollingCorrelation("{a}", "{b}", 5)'
         elif name.startswith("graph_emb"):
             try:
-                idx = int(name[len("graph_emb"):])
+                idx = int(name[len("graph_emb") :])
             except ValueError:
-                raise KeyError(f"Invalid graph embedding feature name '{name}'") from None
+                raise KeyError(
+                    f"Invalid graph embedding feature name '{name}'"
+                ) from None
             expr = f"GraphEmbedding({idx})"
         elif name.startswith("spread_"):
             expr = FEATURE_MAP.get("spread", "0")
@@ -105,9 +110,7 @@ def _build_session_models(data: dict) -> str:
         coeffs = [params.get("intercept", 0.0)] + params.get("coefficients", [])
         coeff_str = ", ".join(f"{c}" for c in coeffs)
         lines.append(f"double g_coeffs_{name}[] = {{{coeff_str}}};")
-        lines.append(
-            f"double g_threshold_{name} = {params.get('threshold', 0.5)};"
-        )
+        lines.append(f"double g_threshold_{name} = {params.get('threshold', 0.5)};")
         mean = params.get("feature_mean", [])
         std = params.get("feature_std", [])
         mean_str = ", ".join(f"{m}" for m in mean)
@@ -163,7 +166,7 @@ def _build_symbol_embeddings(emb_map: dict) -> str:
     if emb_map:
         for sym, vec in emb_map.items():
             arr = ", ".join(str(v) for v in vec)
-            lines.append(f'double g_emb_{sym}[] = {{{arr}}};')
+            lines.append(f"double g_emb_{sym}[] = {{{arr}}};")
         lines.append("double GraphEmbedding(int idx)\n{")
         lines.append("    string s = Symbol();")
         for sym in emb_map.keys():
@@ -173,9 +176,7 @@ def _build_symbol_embeddings(emb_map: dict) -> str:
         lines.append("    return 0.0;")
         lines.append("}")
     else:
-        lines.append(
-            "double GraphEmbedding(int idx)\n{\n    return 0.0;\n}"
-        )
+        lines.append("double GraphEmbedding(int idx)\n{\n    return 0.0;\n}")
     return "\n".join(lines)
 
 
@@ -190,6 +191,7 @@ def _build_symbol_thresholds(thresh_map: dict) -> str:
     lines.append("    return g_threshold;")
     lines.append("}")
     return "\n".join(lines)
+
 
 def _build_transformer_params(data: dict) -> str:
     block_start = "// __TRANSFORMER_PARAMS_START__"
@@ -245,7 +247,9 @@ def _build_transformer_params(data: dict) -> str:
         + "};"
     )
     lines.append(
-        "double g_embed_bias[] = {" + ", ".join(_flt(x) for x in w.get("embed_bias", [])) + "};"
+        "double g_embed_bias[] = {"
+        + ", ".join(_flt(x) for x in w.get("embed_bias", []))
+        + "};"
     )
     lines.append(
         "double g_q_weight[] = {"
@@ -288,7 +292,7 @@ def insert_get_feature(
     model: Path, template: Path, calendar_file: Path | None = None
 ) -> None:
     """Insert generated GetFeature and session models into ``template``."""
-    params = ModelParams.model_validate_json(model.read_text())
+    params = load_params(model)
     data = params.model_dump()
     # If a distilled student exists and no explicit models are provided, expose
     # it under the ``models`` key so the template receives logistic coefficients.
@@ -320,7 +324,9 @@ def insert_get_feature(
     )
     output = re.sub(pattern, transformer_block, output)
     if data.get("model_type") == "transformer" and not data.get("distilled"):
-        output = output.replace("bool g_use_transformer = false;", "bool g_use_transformer = true;")
+        output = output.replace(
+            "bool g_use_transformer = false;", "bool g_use_transformer = true;"
+        )
     cal_path = str(calendar_file) if calendar_file else "calendar.csv"
     output = output.replace("__CALENDAR_FILE__", cal_path)
     template.write_text(output)
@@ -328,9 +334,14 @@ def insert_get_feature(
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--model", type=Path, default=Path("model.json"), help="Path to model.json")
     p.add_argument(
-        "--template", type=Path, default=Path("StrategyTemplate.mq4"), help="Template .mq4 file"
+        "--model", type=Path, default=Path("model.json"), help="Path to model.json"
+    )
+    p.add_argument(
+        "--template",
+        type=Path,
+        default=Path("StrategyTemplate.mq4"),
+        help="Template .mq4 file",
     )
     p.add_argument("--calendar-file", type=Path, help="CSV file with calendar events")
     args = p.parse_args()

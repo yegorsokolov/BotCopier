@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -12,7 +14,7 @@ class ModelParams(BaseModel):
     """
 
     feature_names: list[str] = Field(default_factory=list)
-    version: int = 1
+    version: Literal[1] = 1
 
     model_config = ConfigDict(extra="allow")
 

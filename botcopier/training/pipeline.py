@@ -21,6 +21,8 @@ try:  # optional polars support
 except Exception:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
+from pydantic import ValidationError
+
 from botcopier.data.loading import _load_logs
 from botcopier.features.anomaly import _clip_train_features
 from botcopier.features.engineering import FeatureConfig, configure_cache
@@ -28,12 +30,10 @@ from botcopier.features.technical import (
     _extract_features,
     _neutralize_against_market_index,
 )
+from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
+from botcopier.models.schema import ModelParams
 from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.splitters import PurgedWalkForward
-from pydantic import ValidationError
-
-from botcopier.models.registry import MODEL_REGISTRY, get_model
-from botcopier.models.schema import ModelParams
 
 try:  # optional torch dependency flag
     import torch  # type: ignore
@@ -85,13 +85,17 @@ def train(
     X_list: list[np.ndarray] = []
     profit_list: list[np.ndarray] = []
     label_col: str | None = None
-    if isinstance(logs, Iterable) and not isinstance(logs, (pd.DataFrame,)) and not (
-        _HAS_POLARS and isinstance(logs, pl.DataFrame)
+    if (
+        isinstance(logs, Iterable)
+        and not isinstance(logs, (pd.DataFrame,))
+        and not (_HAS_POLARS and isinstance(logs, pl.DataFrame))
     ):
         for chunk in logs:
             chunk, feature_names, _, _ = _extract_features(chunk, feature_names)
             if label_col is None:
-                label_col = next((c for c in chunk.columns if c.startswith("label")), None)
+                label_col = next(
+                    (c for c in chunk.columns if c.startswith("label")), None
+                )
                 if label_col is None:
                     raise ValueError("no label column found")
             y_list.append(chunk[label_col].to_numpy(dtype=float))
@@ -168,7 +172,11 @@ def train(
             agg = {
                 k: float(
                     np.nanmean(
-                        [m[k] for m in fold_metrics if isinstance(m.get(k), (int, float))]
+                        [
+                            m[k]
+                            for m in fold_metrics
+                            if isinstance(m.get(k), (int, float))
+                        ]
                     )
                 )
                 for k in fold_metrics[0].keys()
@@ -293,12 +301,11 @@ def sync_with_server(
     RuntimeError
         If communication with ``server_url`` fails after ``max_retries`` attempts.
     """
-    open_func = gzip.open if model_path.suffix == ".gz" else open
     try:
-        with open_func(model_path, "rt") as f:
-            params = ModelParams.model_validate_json(f.read())
+        params = load_params(model_path)
     except (FileNotFoundError, ValidationError):
         return
+    open_func = gzip.open if model_path.suffix == ".gz" else open
 
     try:
         import requests
