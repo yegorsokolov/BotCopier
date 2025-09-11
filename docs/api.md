@@ -1,30 +1,29 @@
 # API Reference
 
-## Data Loading
+## Data
 
 ::: botcopier.data.loading
 
-## Feature Engineering
+::: botcopier.data.schema
+
+## Features
 
 ::: botcopier.features.engineering
 
-## Data Augmentation
-
 ::: botcopier.features.augmentation
-
-## Anomaly Utilities
 
 ::: botcopier.features.anomaly
 
-## Technical Features
-
 ::: botcopier.features.technical
 
-## Training Pipeline
+::: botcopier.features.registry
+
+## Models
+
+::: botcopier.models.registry
+
+::: botcopier.models.schema
+
+## Training
 
 ::: botcopier.training.pipeline
-
-## Logging Utilities
-
-::: logging_utils
-

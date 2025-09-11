@@ -2,6 +2,8 @@
 
 The registry stores trained models along with metadata and provides utilities for loading and upgrading them.
 
+## Registry Diagram
+
 ```mermaid
 flowchart LR
     train[Training Pipeline] --> registry[(Model Registry)]

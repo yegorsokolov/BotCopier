@@ -1,11 +1,16 @@
 site_name: BotCopier
 nav:
   - Home: index.md
+  - Getting Started: getting_started.md
   - Architecture: architecture.md
   - Data Flow: data_flow.md
   - Model Registry: model_registry.md
   - CLI Usage: cli_usage.md
   - API Reference: api.md
+  - Contributing:
+      - Overview: contributing.md
+      - Coding Standards: coding_standards.md
+      - Testing: testing.md
   - Troubleshooting: troubleshooting.md
   - Guides:
       - Hardware-aware Training: hardware-training.md
