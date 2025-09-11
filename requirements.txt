@@ -7,6 +7,7 @@ river
 psutil
 pydantic
 pydantic-settings
+jinja2
 pyyaml
 typer
 pytest

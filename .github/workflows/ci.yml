@@ -29,5 +29,11 @@ jobs:
         run: PYTHONPATH=. pytest --doctest-glob='docs/*.md'
       - name: Build docs
         run: mkdocs build --strict
+      - name: Upload model cards
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: model-card
+          path: '**/model_card.md'
       - name: Push DVC data
         run: dvc push

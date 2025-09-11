@@ -33,6 +33,7 @@ from botcopier.features.technical import (
 from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
 from botcopier.models.schema import ModelParams
 from botcopier.scripts.evaluation import _classification_metrics
+from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.splitters import PurgedWalkForward
 from logging_utils import setup_logging
 
@@ -377,6 +378,7 @@ def train(
         params = ModelParams(**model)
         (out_dir / "model.json").write_text(params.model_dump_json())
         model_obj = getattr(predict_fn, "model", None)
+        generate_model_card(params, best_agg, out_dir / "model_card.md")
         if model_obj is not None:
             try:
                 from botcopier.onnx_utils import export_model
