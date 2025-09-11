@@ -14,7 +14,7 @@ jobs:
           python-version: '3.x'
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt pre-commit
+          pip install -r requirements.txt pre-commit mkdocs mkdocstrings[python]
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Run unit tests
@@ -23,3 +23,5 @@ jobs:
         run: pytest -m integration
       - name: Run doctests
         run: PYTHONPATH=. pytest --doctest-glob='docs/*.md'
+      - name: Build docs
+        run: mkdocs build --strict

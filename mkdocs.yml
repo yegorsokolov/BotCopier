@@ -2,6 +2,9 @@ site_name: BotCopier
 nav:
   - Home: index.md
   - Architecture: architecture.md
+  - Data Flow: data_flow.md
+  - Model Registry: model_registry.md
+  - CLI Usage: cli_usage.md
   - API Reference: api.md
   - Troubleshooting: troubleshooting.md
   - Guides:
