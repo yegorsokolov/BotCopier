@@ -201,6 +201,56 @@ def train(
             raise ValueError("Cross-validation metrics below thresholds")
         builder = get_model(model_type)
         model_data, predict_fn = builder(X, y, **(best_params or {}))
+
+        # --- SHAP based feature selection ---------------------------------
+        shap_threshold = float(kwargs.get("shap_threshold", 0.0))
+        try:
+            import shap  # type: ignore
+
+            explainer = None
+            if model_type == "logreg":
+                class _LRWrap:
+                    def __init__(self, coef: list[float], intercept: float) -> None:
+                        self.coef_ = np.asarray(coef, dtype=float).reshape(1, -1)
+                        self.intercept_ = np.asarray([intercept], dtype=float)
+
+                explainer = shap.LinearExplainer(
+                    _LRWrap(
+                        model_data.get("coefficients", []),
+                        float(model_data.get("intercept", 0.0)),
+                    ),
+                    X,
+                )
+            else:
+                # fall back to TreeExplainer if model exposes tree structure
+                if hasattr(model_data, "booster") or model_type in {
+                    "xgboost",
+                    "lightgbm",
+                    "random_forest",
+                }:
+                    try:
+                        explainer = shap.TreeExplainer(predict_fn)  # type: ignore[arg-type]
+                    except Exception:  # pragma: no cover - optional
+                        explainer = None
+
+            if explainer is not None:
+                shap_values = explainer.shap_values(X)
+                mean_abs = np.abs(shap_values).mean(axis=0)
+                ranking = sorted(
+                    zip(feature_names, mean_abs), key=lambda x: x[1], reverse=True
+                )
+                logger.info("SHAP importance ranking: %s", ranking)
+                if shap_threshold > 0.0:
+                    mask = mean_abs >= shap_threshold
+                    if mask.sum() < len(feature_names):
+                        X = X[:, mask]
+                        feature_names = [
+                            fn for fn, keep in zip(feature_names, mask) if keep
+                        ]
+                        model_data, predict_fn = builder(X, y, **(best_params or {}))
+        except Exception:  # pragma: no cover - shap is optional
+            logger.exception("Failed to compute SHAP values")
+
         probas = predict_fn(X)
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
