@@ -52,6 +52,14 @@ except ImportError:  # pragma: no cover
     mlflow = None  # type: ignore
     _HAS_MLFLOW = False
 
+try:  # optional ray dependency
+    import ray  # type: ignore
+
+    _HAS_RAY = True
+except ImportError:  # pragma: no cover
+    ray = None  # type: ignore
+    _HAS_RAY = False
+
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +73,13 @@ def train(
     tracking_uri: str | None = None,
     experiment_name: str | None = None,
     features: Sequence[str] | None = None,
+    distributed: bool = False,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
-    configure_cache(FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or [])))
+    configure_cache(
+        FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
+    )
     load_keys = [
         "lite_mode",
         "chunk_size",
@@ -151,23 +162,61 @@ def train(
         best_params: dict[str, object] | None = None
         best_fold_metrics: list[dict[str, object]] = []
         best_agg: dict[str, float] = {}
+        if distributed and not _HAS_RAY:
+            raise RuntimeError("ray is required for distributed execution")
         for params in param_grid:
             splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
             fold_metrics: list[dict[str, object]] = []
-            for fold, (tr_idx, val_idx) in enumerate(splitter.split(X)):
-                if len(np.unique(y[tr_idx])) < 2:
-                    continue
-                builder = get_model(model_type)
-                model_fold, pred_fn = builder(X[tr_idx], y[tr_idx], **params)
-                prob_val = pred_fn(X[val_idx])
-                returns = profits[val_idx] * (prob_val >= 0.5)
-                metrics = _classification_metrics(y[val_idx], prob_val, returns)
-                fold_metrics.append(metrics)
-                logger.info("Fold %d params %s metrics %s", fold + 1, params, metrics)
-                if mlflow_active:
-                    for k, v in metrics.items():
-                        if isinstance(v, (int, float)) and not np.isnan(v):
-                            mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
+            if distributed and _HAS_RAY:
+                X_ref = ray.put(X)
+                y_ref = ray.put(y)
+                profits_ref = ray.put(profits)
+
+                @ray.remote
+                def _run_fold(tr_idx, val_idx, fold):
+                    X = ray.get(X_ref)
+                    y = ray.get(y_ref)
+                    profits = ray.get(profits_ref)
+                    builder = get_model(model_type)
+                    model_fold, pred_fn = builder(X[tr_idx], y[tr_idx], **params)
+                    prob_val = pred_fn(X[val_idx])
+                    returns = profits[val_idx] * (prob_val >= 0.5)
+                    metrics = _classification_metrics(y[val_idx], prob_val, returns)
+                    return fold, metrics
+
+                futures = [
+                    _run_fold.remote(tr_idx, val_idx, fold)
+                    for fold, (tr_idx, val_idx) in enumerate(splitter.split(X))
+                    if len(np.unique(y[tr_idx])) >= 2
+                ]
+                results = ray.get(futures)
+                results.sort(key=lambda x: x[0])
+                for fold, metrics in results:
+                    fold_metrics.append(metrics)
+                    logger.info(
+                        "Fold %d params %s metrics %s", fold + 1, params, metrics
+                    )
+                    if mlflow_active:
+                        for k, v in metrics.items():
+                            if isinstance(v, (int, float)) and not np.isnan(v):
+                                mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
+            else:
+                for fold, (tr_idx, val_idx) in enumerate(splitter.split(X)):
+                    if len(np.unique(y[tr_idx])) < 2:
+                        continue
+                    builder = get_model(model_type)
+                    model_fold, pred_fn = builder(X[tr_idx], y[tr_idx], **params)
+                    prob_val = pred_fn(X[val_idx])
+                    returns = profits[val_idx] * (prob_val >= 0.5)
+                    metrics = _classification_metrics(y[val_idx], prob_val, returns)
+                    fold_metrics.append(metrics)
+                    logger.info(
+                        "Fold %d params %s metrics %s", fold + 1, params, metrics
+                    )
+                    if mlflow_active:
+                        for k, v in metrics.items():
+                            if isinstance(v, (int, float)) and not np.isnan(v):
+                                mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
             if not fold_metrics:
                 continue
             agg = {
@@ -209,6 +258,7 @@ def train(
 
             explainer = None
             if model_type == "logreg":
+
                 class _LRWrap:
                     def __init__(self, coef: list[float], intercept: float) -> None:
                         self.coef_ = np.asarray(coef, dtype=float).reshape(1, -1)
@@ -417,7 +467,9 @@ def sync_with_server(
                     max_retries,
                 )
                 if attempt == max_retries or time.time() + delay > deadline:
-                    raise RuntimeError("Failed to retrieve weights from server") from exc
+                    raise RuntimeError(
+                        "Failed to retrieve weights from server"
+                    ) from exc
                 time.sleep(delay)
                 delay *= 2
                 attempt += 1

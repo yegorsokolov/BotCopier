@@ -7,12 +7,13 @@ from typing import Iterable, List, Tuple
 import numpy as np
 import pandas as pd
 from pydantic import ValidationError  # type: ignore
+
 try:  # pragma: no cover - optional dependency
     from schemas.trades import TradeEvent  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     TradeEvent = None  # type: ignore
-from sklearn.linear_model import LogisticRegression, QuantileRegressor, LinearRegression
 from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression, LogisticRegression, QuantileRegressor
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
@@ -24,6 +25,14 @@ try:  # pragma: no cover - optional dependency
     import optuna
 except Exception:  # pragma: no cover - optional dependency
     optuna = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency
+    import ray
+
+    _HAS_RAY = True
+except Exception:  # pragma: no cover - optional dependency
+    ray = None  # type: ignore
+    _HAS_RAY = False
 
 try:  # pragma: no cover - optional dependency
     import xgboost as xgb
@@ -55,6 +64,7 @@ except Exception:  # pragma: no cover - optional dependency
     F = None  # type: ignore
 
 if torch is not None:  # pragma: no cover - simple wrapper
+
     class FocalLoss(torch.nn.Module):
         """Binary Focal Loss for imbalanced classification."""
 
@@ -80,6 +90,7 @@ else:  # pragma: no cover - torch optional
     class FocalLoss:  # type: ignore[misc]
         def __init__(self, *_, **__) -> None:
             raise ImportError("PyTorch is required for FocalLoss")
+
 
 SCHEMA_VERSION = 3
 START_EVENT_ID = 0
@@ -332,8 +343,8 @@ def _compute_decay_weights(
     """
 
     ref_time = event_times.max()
-    age_days = (
-        (ref_time - event_times).astype("timedelta64[s]").astype(float) / (24 * 3600)
+    age_days = (ref_time - event_times).astype("timedelta64[s]").astype(float) / (
+        24 * 3600
     )
     weights = 0.5 ** (age_days / half_life_days)
     return age_days, weights
@@ -377,16 +388,25 @@ def load_logs_db(db_file: Path) -> pd.DataFrame:
 
     if "open_time" in df_logs.columns:
         df_logs["trade_duration"] = (
-            pd.to_datetime(df_logs["event_time"]) - pd.to_datetime(df_logs["open_time"])
-        ).dt.total_seconds().fillna(0)
+            (
+                pd.to_datetime(df_logs["event_time"])
+                - pd.to_datetime(df_logs["open_time"])
+            )
+            .dt.total_seconds()
+            .fillna(0)
+        )
     if "duration_sec" in df_logs.columns:
         df_logs["duration_sec"] = (
-            pd.to_numeric(df_logs["duration_sec"], errors="coerce").fillna(0).astype(int)
+            pd.to_numeric(df_logs["duration_sec"], errors="coerce")
+            .fillna(0)
+            .astype(int)
         )
     else:
         df_logs["duration_sec"] = df_logs.get("trade_duration", 0).astype(int)
     if "exit_reason" in df_logs.columns:
-        df_logs["exit_reason"] = df_logs["exit_reason"].fillna("").astype(str).str.upper()
+        df_logs["exit_reason"] = (
+            df_logs["exit_reason"].fillna("").astype(str).str.upper()
+        )
     else:
         df_logs["exit_reason"] = ""
     for col in [
@@ -412,7 +432,9 @@ def load_logs_db(db_file: Path) -> pd.DataFrame:
     valid_actions = {"OPEN", "CLOSE", "MODIFY"}
     if "action" in df_logs.columns:
         df_logs["action"] = df_logs["action"].fillna("").str.upper()
-        df_logs = df_logs[(df_logs["action"] == "") | df_logs["action"].isin(valid_actions)]
+        df_logs = df_logs[
+            (df_logs["action"] == "") | df_logs["action"].isin(valid_actions)
+        ]
 
     invalid_rows = pd.DataFrame(columns=df_logs.columns)
     if "event_id" in df_logs.columns:
@@ -431,7 +453,9 @@ def load_logs_db(db_file: Path) -> pd.DataFrame:
         )
         if crit_mask.any():
             invalid_rows = pd.concat([invalid_rows, df_logs[crit_mask]])
-            logging.warning("Dropping %s rows with missing ticket/action", crit_mask.sum())
+            logging.warning(
+                "Dropping %s rows with missing ticket/action", crit_mask.sum()
+            )
         df_logs = df_logs[~crit_mask]
 
     if "lots" in df_logs.columns:
@@ -445,7 +469,9 @@ def load_logs_db(db_file: Path) -> pd.DataFrame:
         unreal_mask |= df_logs["price"].isna()
     if unreal_mask.any():
         invalid_rows = pd.concat([invalid_rows, df_logs[unreal_mask]])
-        logging.warning("Dropping %s rows with negative lots or NaN price", unreal_mask.sum())
+        logging.warning(
+            "Dropping %s rows with negative lots or NaN price", unreal_mask.sum()
+        )
     df_logs = df_logs[~unreal_mask]
 
     if not invalid_rows.empty:
@@ -485,9 +511,11 @@ def load_logs(
         info = client.get_flight_info(desc)
         reader = client.do_get(info.endpoints[0].ticket)
         if lite_mode or chunk_size:
+
             def _iter_batches():
                 for batch in reader:
                     yield pa.Table.from_batches([batch]).to_pandas()
+
             return _iter_batches(), [], []
         table = reader.read_all()
         df = table.to_pandas()
@@ -628,7 +656,9 @@ def load_logs(
                         SCHEMA_VERSION,
                     )
                     chunk.loc[ver_mask, "schema_version"] = SCHEMA_VERSION
-                chunk["event_time"] = pd.to_datetime(chunk.get("event_time"), errors="coerce")
+                chunk["event_time"] = pd.to_datetime(
+                    chunk.get("event_time"), errors="coerce"
+                )
                 if "broker_time" in chunk.columns:
                     chunk["broker_time"] = pd.to_datetime(
                         chunk.get("broker_time"), errors="coerce"
@@ -648,8 +678,10 @@ def load_logs(
                         chunk.get("open_time"), errors="coerce"
                     )
                     chunk["trade_duration"] = (
-                        chunk["event_time"] - chunk["open_time"]
-                    ).dt.total_seconds().fillna(0)
+                        (chunk["event_time"] - chunk["open_time"])
+                        .dt.total_seconds()
+                        .fillna(0)
+                    )
                 else:
                     chunk["trade_duration"] = 0.0
                 if "duration_sec" in chunk.columns:
@@ -671,8 +703,12 @@ def load_logs(
                     "trend_estimate",
                     "trend_variance",
                 ]:
-                    chunk[col] = pd.to_numeric(chunk.get(col, 0.0), errors="coerce").fillna(0.0)
-                chunk["exit_reason"] = chunk.get("exit_reason", "").fillna("").astype(str).str.upper()
+                    chunk[col] = pd.to_numeric(
+                        chunk.get(col, 0.0), errors="coerce"
+                    ).fillna(0.0)
+                chunk["exit_reason"] = (
+                    chunk.get("exit_reason", "").fillna("").astype(str).str.upper()
+                )
                 chunk["is_anomaly"] = pd.to_numeric(
                     chunk.get("is_anomaly", 0), errors="coerce"
                 ).fillna(0)
@@ -681,11 +717,12 @@ def load_logs(
                         chunk[col] = chunk[col].fillna("").astype(str)
                 valid_actions = {"OPEN", "CLOSE", "MODIFY"}
                 chunk["action"] = chunk["action"].fillna("").str.upper()
-                chunk = chunk[(chunk["action"] == "") | chunk["action"].isin(valid_actions)]
+                chunk = chunk[
+                    (chunk["action"] == "") | chunk["action"].isin(valid_actions)
+                ]
                 if "event_id" in chunk.columns:
-                    dup_mask = (
-                        chunk["event_id"].isin(seen_ids)
-                        | chunk.duplicated(subset="event_id", keep="first")
+                    dup_mask = chunk["event_id"].isin(seen_ids) | chunk.duplicated(
+                        subset="event_id", keep="first"
                     )
                     if dup_mask.any():
                         invalid = pd.concat([invalid, chunk[dup_mask]])
@@ -704,7 +741,8 @@ def load_logs(
                     if crit_mask.any():
                         invalid = pd.concat([invalid, chunk[crit_mask]])
                         logging.warning(
-                            "Dropping %s rows with missing ticket/action", crit_mask.sum()
+                            "Dropping %s rows with missing ticket/action",
+                            crit_mask.sum(),
                         )
                     chunk = chunk[~crit_mask]
                 if "lots" in chunk.columns:
@@ -719,12 +757,15 @@ def load_logs(
                 if unreal_mask.any():
                     invalid = pd.concat([invalid, chunk[unreal_mask]])
                     logging.warning(
-                        "Dropping %s rows with negative lots or NaN price", unreal_mask.sum()
+                        "Dropping %s rows with negative lots or NaN price",
+                        unreal_mask.sum(),
                     )
                 chunk = chunk[~unreal_mask]
                 if "magic" in chunk.columns:
                     chunk["magic"] = (
-                        pd.to_numeric(chunk["magic"], errors="coerce").fillna(0).astype(int)
+                        pd.to_numeric(chunk["magic"], errors="coerce")
+                        .fillna(0)
+                        .astype(int)
                     )
                 if "executed_model_idx" in chunk.columns:
                     chunk["executed_model_idx"] = (
@@ -738,7 +779,11 @@ def load_logs(
                         .fillna(0)
                         .astype(int)
                     )
-                if df_metrics is not None and key_col is not None and "magic" in chunk.columns:
+                if (
+                    df_metrics is not None
+                    and key_col is not None
+                    and "magic" in chunk.columns
+                ):
                     if key_col == "magic":
                         chunk = chunk.merge(df_metrics, how="left", on="magic")
                     else:
@@ -795,6 +840,7 @@ def train_model(
     C: float = 1.0,
     model_types: Iterable[str] | None = None,
     n_trials: int = 20,
+    distributed: bool = False,
 ) -> dict:
     """Train a classifier with time-decayed sample weights.
 
@@ -806,6 +852,8 @@ def train_model(
     the best performing model on the validation set.
     """
 
+    if distributed and not _HAS_RAY:
+        raise RuntimeError("ray is required for distributed execution")
     if model_types is None:
         model_types = ["logistic"]
     model_types = list(model_types)
@@ -888,16 +936,36 @@ def train_model(
         return clf, params, metrics
 
     if optuna is not None and len(model_types) > 1:
-        def objective(trial: "optuna.Trial") -> float:
-            m_type = trial.suggest_categorical("model_type", model_types)
-            clf, params, metrics = _fit_single(m_type, trial)
-            trial.set_user_attr("model", clf)
-            trial.set_user_attr("params", {**params, "model_type": m_type})
-            trial.set_user_attr("metrics", metrics)
-            return metrics["f1"]
+        if distributed and _HAS_RAY:
 
-        study = optuna.create_study(direction="maximize")
-        study.optimize(objective, n_trials=n_trials)
+            @ray.remote
+            def objective(trial: "optuna.Trial") -> float:
+                m_type = trial.suggest_categorical("model_type", model_types)
+                clf, params, metrics = _fit_single(m_type, trial)
+                trial.set_user_attr("model", clf)
+                trial.set_user_attr("params", {**params, "model_type": m_type})
+                trial.set_user_attr("metrics", metrics)
+                return metrics["f1"]
+
+            study = optuna.create_study(direction="maximize")
+
+            def _objective(trial: "optuna.Trial") -> float:
+                return ray.get(objective.remote(trial))
+
+            study.optimize(_objective, n_trials=n_trials)
+        else:
+
+            def objective(trial: "optuna.Trial") -> float:
+                m_type = trial.suggest_categorical("model_type", model_types)
+                clf, params, metrics = _fit_single(m_type, trial)
+                trial.set_user_attr("model", clf)
+                trial.set_user_attr("params", {**params, "model_type": m_type})
+                trial.set_user_attr("metrics", metrics)
+                return metrics["f1"]
+
+            study = optuna.create_study(direction="maximize")
+            study.optimize(objective, n_trials=n_trials)
+
         trial = study.best_trial
         clf = trial.user_attrs["model"]
         params = trial.user_attrs["params"]
@@ -912,7 +980,10 @@ def train_model(
 
     model: dict[str, object] = {
         "model_type": best_type,
-        "hyperparameters": {k: float(v) if isinstance(v, (int, float)) else v for k, v in hyperparams.items()},
+        "hyperparameters": {
+            k: float(v) if isinstance(v, (int, float)) else v
+            for k, v in hyperparams.items()
+        },
         "half_life_days": float(half_life_days),
         "validation_metrics": metrics,
     }
@@ -992,4 +1063,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
