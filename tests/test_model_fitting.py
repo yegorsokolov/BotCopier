@@ -1,8 +1,10 @@
 import csv
 from pathlib import Path
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
+pytest.importorskip("sklearn")
 from sklearn.preprocessing import StandardScaler
 from sklearn.datasets import make_classification
 from sklearn.metrics import log_loss
@@ -12,7 +14,15 @@ from scripts.model_fitting import (
     scale_features,
     fit_xgb_classifier,
     fit_quantile_model,
+    fit_catboost_classifier,
 )
+
+try:  # pragma: no cover - optional dependency
+    import torch
+
+    _HAS_CUDA = torch.cuda.is_available()
+except Exception:  # pragma: no cover - optional dependency
+    _HAS_CUDA = False
 
 
 def _write_log(path: Path) -> None:
@@ -104,6 +114,23 @@ def test_early_stopping_reduces_overfit(caplog) -> None:
     assert overfit_es < overfit_no
     assert any("best_iteration" in rec.message for rec in caplog.records)
     assert clf_es.best_iteration < 49
+
+
+@pytest.mark.skipif(not _HAS_CUDA, reason="CUDA is unavailable")
+def test_xgb_gpu_parameter_forwarding() -> None:
+    pytest.importorskip("xgboost")
+    X, y = make_classification(n_samples=50, n_features=4, random_state=0)
+    clf = fit_xgb_classifier(X, y, tree_method="gpu_hist")
+    assert clf.get_xgb_params().get("tree_method") == "gpu_hist"
+
+
+@pytest.mark.skipif(not _HAS_CUDA, reason="CUDA is unavailable")
+def test_catboost_gpu_parameter_forwarding() -> None:
+    pytest.importorskip("catboost")
+    X, y = make_classification(n_samples=50, n_features=4, random_state=0)
+    clf = fit_catboost_classifier(X, y, device="gpu")
+    params = clf.get_params()
+    assert params.get("device", params.get("task_type", "")).lower() == "gpu"
 
 
 def test_fit_quantile_model_produces_monotonic_quantiles() -> None:

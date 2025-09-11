@@ -85,6 +85,7 @@ def train(
     experiment_name: str | None = None,
     features: Sequence[str] | None = None,
     distributed: bool = False,
+    use_gpu: bool = False,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -104,6 +105,7 @@ def train(
     ]
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
     logs, feature_names, _ = _load_logs(data_dir, **load_kwargs)
+    gpu_kwargs = {"use_gpu": True} if use_gpu else {}
     fs_repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []
@@ -208,7 +210,9 @@ def train(
                     y = ray.get(y_ref)
                     profits = ray.get(profits_ref)
                     builder = get_model(model_type)
-                    model_fold, pred_fn = builder(X[tr_idx], y[tr_idx], **params)
+                    model_fold, pred_fn = builder(
+                        X[tr_idx], y[tr_idx], **gpu_kwargs, **params
+                    )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     metrics = _classification_metrics(y[val_idx], prob_val, returns)
@@ -235,7 +239,9 @@ def train(
                     if len(np.unique(y[tr_idx])) < 2:
                         continue
                     builder = get_model(model_type)
-                    model_fold, pred_fn = builder(X[tr_idx], y[tr_idx], **params)
+                    model_fold, pred_fn = builder(
+                        X[tr_idx], y[tr_idx], **gpu_kwargs, **params
+                    )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     metrics = _classification_metrics(y[val_idx], prob_val, returns)
@@ -279,7 +285,7 @@ def train(
         ):
             raise ValueError("Cross-validation metrics below thresholds")
         builder = get_model(model_type)
-        model_data, predict_fn = builder(X, y, **(best_params or {}))
+        model_data, predict_fn = builder(X, y, **gpu_kwargs, **(best_params or {}))
 
         # --- SHAP based feature selection ---------------------------------
         shap_threshold = float(kwargs.get("shap_threshold", 0.0))
@@ -327,7 +333,9 @@ def train(
                         feature_names = [
                             fn for fn, keep in zip(feature_names, mask) if keep
                         ]
-                        model_data, predict_fn = builder(X, y, **(best_params or {}))
+                        model_data, predict_fn = builder(
+                            X, y, **gpu_kwargs, **(best_params or {})
+                        )
         except Exception:  # pragma: no cover - shap is optional
             logger.exception("Failed to compute SHAP values")
 
@@ -520,6 +528,11 @@ def main() -> None:
     )
     p.add_argument("--tracking-uri", dest="tracking_uri", type=str, default=None)
     p.add_argument("--experiment-name", dest="experiment_name", type=str, default=None)
+    p.add_argument(
+        "--use-gpu",
+        action="store_true",
+        help="enable GPU acceleration for supported models",
+    )
     args = p.parse_args()
     train(
         args.data_dir,
@@ -527,6 +540,7 @@ def main() -> None:
         model_type=args.model_type,
         tracking_uri=args.tracking_uri,
         experiment_name=args.experiment_name,
+        use_gpu=args.use_gpu,
     )
 
 
