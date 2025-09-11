@@ -1,22 +1,13 @@
 # System Architecture
 
-## Data Flow
-
-The platform processes information from log ingestion through to live strategy deployment.
+The system consists of modular components for ingesting data, training models and deploying strategies.
 
 ```mermaid
-flowchart LR
-    A[Log Ingestion] --> B[OTel Collector]
-    B --> C[Processing Pipeline]
-    C --> D[Model Training]
-    D --> E[Strategy Deployment]
+flowchart TB
+    logs[Log Ingestion] --> collector[OTel Collector]
+    collector --> pipeline[Processing Pipeline]
+    pipeline --> registry[(Model Registry)]
+    registry --> deploy[Strategy Deployment]
 ```
 
-1. **Log Ingestion** captures trade and system events.
-2. The **OTel Collector** normalises and forwards telemetry.
-3. The **Processing Pipeline** enriches data and prepares features.
-4. **Model Training** produces strategies based on the processed data.
-5. **Strategy Deployment** pushes trained models to execution services.
-
-This flow ensures that incoming logs ultimately influence the models executing in production.
-
+See the [Data Flow](data_flow.md) page for a step-by-step walkthrough from ingestion to deployment.
