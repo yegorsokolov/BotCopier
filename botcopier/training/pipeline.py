@@ -18,7 +18,7 @@ try:  # optional polars support
     import polars as pl  # type: ignore
 
     _HAS_POLARS = True
-except Exception:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
 from pydantic import ValidationError
@@ -34,12 +34,13 @@ from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
 from botcopier.models.schema import ModelParams
 from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.splitters import PurgedWalkForward
+from logging_utils import setup_logging
 
 try:  # optional torch dependency flag
     import torch  # type: ignore
 
     _HAS_TORCH = True
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     torch = None  # type: ignore
     _HAS_TORCH = False
 
@@ -47,7 +48,7 @@ try:  # optional mlflow dependency
     import mlflow  # type: ignore
 
     _HAS_MLFLOW = True
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     mlflow = None  # type: ignore
     _HAS_MLFLOW = False
 
@@ -309,7 +310,7 @@ def sync_with_server(
 
     try:
         import requests
-    except Exception as exc:  # pragma: no cover - import failure is rare
+    except ImportError as exc:  # pragma: no cover - import failure is rare
         logger.exception("requests dependency not available")
         raise RuntimeError("requests library required to sync with server") from exc
 
@@ -319,53 +320,55 @@ def sync_with_server(
         "intercept": model.get("intercept"),
     }
 
-    delay = poll_interval
-    for attempt in range(1, max_retries + 1):
-        try:
-            requests.post(f"{server_url}/update", json=payload, timeout=5)
-            break
-        except Exception as exc:
-            logger.exception(
-                "Failed to post update to %s (attempt %d/%d)",
-                server_url,
-                attempt,
-                max_retries,
-            )
-            if attempt == max_retries:
-                raise RuntimeError("Failed to post update to server") from exc
-            time.sleep(delay)
-            delay *= 2
+    with requests.Session() as session:
+        delay = poll_interval
+        for attempt in range(1, max_retries + 1):
+            try:
+                session.post(f"{server_url}/update", json=payload, timeout=5)
+                break
+            except requests.RequestException as exc:
+                logger.exception(
+                    "Failed to post update to %s (attempt %d/%d)",
+                    server_url,
+                    attempt,
+                    max_retries,
+                )
+                if attempt == max_retries:
+                    raise RuntimeError("Failed to post update to server") from exc
+                time.sleep(delay)
+                delay *= 2
 
-    deadline = time.time() + timeout
-    delay = poll_interval
-    attempt = 1
-    while time.time() < deadline and attempt <= max_retries:
-        try:
-            r = requests.get(f"{server_url}/weights", timeout=5)
-            data = r.json()
-            model["coefficients"] = data.get("weights", model.get("coefficients"))
-            if "intercept" in data:
-                model["intercept"] = data["intercept"]
-            with open_func(model_path, "wt") as f:
-                f.write(ModelParams(**model).model_dump_json())
-            return
-        except Exception as exc:
-            logger.exception(
-                "Failed to fetch weights from %s (attempt %d/%d)",
-                server_url,
-                attempt,
-                max_retries,
-            )
-            if attempt == max_retries or time.time() + delay > deadline:
-                raise RuntimeError("Failed to retrieve weights from server") from exc
-            time.sleep(delay)
-            delay *= 2
-            attempt += 1
+        deadline = time.time() + timeout
+        delay = poll_interval
+        attempt = 1
+        while time.time() < deadline and attempt <= max_retries:
+            try:
+                r = session.get(f"{server_url}/weights", timeout=5)
+                data = r.json()
+                model["coefficients"] = data.get("weights", model.get("coefficients"))
+                if "intercept" in data:
+                    model["intercept"] = data["intercept"]
+                with open_func(model_path, "wt") as f:
+                    f.write(ModelParams(**model).model_dump_json())
+                return
+            except requests.RequestException as exc:
+                logger.exception(
+                    "Failed to fetch weights from %s (attempt %d/%d)",
+                    server_url,
+                    attempt,
+                    max_retries,
+                )
+                if attempt == max_retries or time.time() + delay > deadline:
+                    raise RuntimeError("Failed to retrieve weights from server") from exc
+                time.sleep(delay)
+                delay *= 2
+                attempt += 1
 
     raise RuntimeError("Timed out retrieving weights from server")
 
 
 def main() -> None:
+    setup_logging()
     p = argparse.ArgumentParser(description="Train target clone model")
     p.add_argument("data_dir", type=Path)
     p.add_argument("out_dir", type=Path)
