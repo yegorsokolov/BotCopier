@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 def test_replay_outputs(tmp_path):
@@ -14,8 +16,9 @@ def test_replay_outputs(tmp_path):
             {"decision_id": 2, "probability": 0.8, "f1": -1.0, "profit": -1.0},
         ]
     )
-    log_file = tmp_path / "decisions.csv"
-    decisions.to_csv(log_file, index=False, sep=";")
+    log_file = tmp_path / "decisions.parquet"
+    table = pa.Table.from_pandas(decisions)
+    pq.write_table(table, log_file)
     model = {
         "feature_names": ["f1"],
         "coefficients": [1.0],
