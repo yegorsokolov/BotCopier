@@ -348,7 +348,88 @@ def evaluate(pred_file: Path, actual_log: Path, window: int, model_json: Optiona
     return stats
 
 
-def evaluate_model(model, X, y) -> float:
-    preds = model.predict(X)
-    return accuracy_score(y, preds)
+def _classification_metrics(
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+) -> Dict[str, object]:
+    """Compute classification and calibration metrics.
+
+    Parameters
+    ----------
+    y_true:
+        Ground truth binary labels.
+    probas:
+        Predicted probabilities for the positive class.
+    profits:
+        Optional profit/return per sample used for Sharpe and Sortino ratios.
+
+    Returns
+    -------
+    dict
+        Dictionary containing accuracy, ROC-AUC, PR-AUC, Brier score, Sharpe
+        ratio, Sortino ratio and reliability curve data.
+    """
+
+    preds = (probas >= 0.5).astype(int)
+    accuracy = accuracy_score(y_true, preds)
+    roc_auc = (
+        roc_auc_score(y_true, probas) if len(set(y_true.tolist())) > 1 else None
+    )
+    pr_auc = (
+        average_precision_score(y_true, probas)
+        if len(set(y_true.tolist())) > 1
+        else None
+    )
+    brier = brier_score_loss(y_true, probas)
+    try:
+        prob_true, prob_pred = calibration_curve(y_true, probas, n_bins=10)
+        reliability = {
+            "prob_true": prob_true.tolist(),
+            "prob_pred": prob_pred.tolist(),
+        }
+    except Exception:
+        reliability = {"prob_true": [], "prob_pred": []}
+
+    if profits is None:
+        returns = np.where(preds == y_true, 1.0, -1.0)
+    else:
+        returns = profits
+    sharpe = 0.0
+    sortino = 0.0
+    if returns.size > 1:
+        mean = float(np.mean(returns))
+        std = float(np.std(returns, ddof=1))
+        if std > 0:
+            sharpe = mean / std
+        downside = returns[returns < 0]
+        if downside.size > 0:
+            downside_std = float(np.sqrt(np.mean(downside**2)))
+            if downside_std > 0:
+                sortino = mean / downside_std
+
+    profit = float(np.sum(returns))
+    return {
+        "accuracy": float(accuracy),
+        "roc_auc": None if roc_auc is None else float(roc_auc),
+        "pr_auc": None if pr_auc is None else float(pr_auc),
+        "brier_score": float(brier),
+        "sharpe_ratio": float(sharpe),
+        "sortino_ratio": float(sortino),
+        "reliability_curve": reliability,
+        "profit": profit,
+    }
+
+
+def evaluate_model(
+    model, X: np.ndarray, y: np.ndarray, profits: np.ndarray | None = None
+) -> Dict[str, object]:
+    """Evaluate ``model`` on ``X`` and ``y`` returning rich metrics."""
+
+    if hasattr(model, "predict_proba"):
+        probas = model.predict_proba(X)[:, 1]
+    else:
+        preds = model.predict(X)
+        probas = preds.astype(float)
+    return _classification_metrics(y, probas, profits)
 
