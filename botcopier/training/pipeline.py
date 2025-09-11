@@ -28,6 +28,8 @@ from botcopier.features.technical import (
     _extract_features,
     _neutralize_against_market_index,
 )
+from botcopier.scripts.evaluation import _classification_metrics
+from botcopier.scripts.splitters import PurgedWalkForward
 from pydantic import ValidationError
 
 from botcopier.models.registry import MODEL_REGISTRY, get_model
@@ -81,6 +83,7 @@ def train(
     logs, feature_names, _ = _load_logs(data_dir, **load_kwargs)
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []
+    profit_list: list[np.ndarray] = []
     label_col: str | None = None
     if isinstance(logs, Iterable) and not isinstance(logs, (pd.DataFrame,)) and not (
         _HAS_POLARS and isinstance(logs, pl.DataFrame)
@@ -93,8 +96,13 @@ def train(
                     raise ValueError("no label column found")
             y_list.append(chunk[label_col].to_numpy(dtype=float))
             X_list.append(chunk[feature_names].fillna(0.0).to_numpy(dtype=float))
+            if "profit" in chunk.columns:
+                profit_list.append(chunk["profit"].to_numpy(dtype=float))
         y = np.concatenate(y_list, axis=0)
         X = np.vstack(X_list)
+        profits = (
+            np.concatenate(profit_list, axis=0) if profit_list else np.zeros_like(y)
+        )
     else:
         df = logs  # type: ignore[assignment]
         df, feature_names, _, _ = _extract_features(df, feature_names)
@@ -104,9 +112,19 @@ def train(
         if isinstance(df, pd.DataFrame):
             y = df[label_col].to_numpy(dtype=float)
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
+            profits = (
+                df["profit"].to_numpy(dtype=float)
+                if "profit" in df.columns
+                else np.zeros_like(y)
+            )
         elif _HAS_POLARS and isinstance(df, pl.DataFrame):
             y = df[label_col].to_numpy().astype(float)
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
+            profits = (
+                df["profit"].to_numpy().astype(float)
+                if "profit" in df.columns
+                else np.zeros_like(y)
+            )
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
 
@@ -121,8 +139,59 @@ def train(
 
     run_ctx = mlflow.start_run() if mlflow_active else nullcontext()
     with run_ctx:
+        n_splits = int(kwargs.get("n_splits", 3))
+        gap = int(kwargs.get("cv_gap", 1))
+        param_grid = kwargs.get("param_grid") or [{}]
+        best_score = -np.inf
+        best_params: dict[str, object] | None = None
+        best_fold_metrics: list[dict[str, object]] = []
+        best_agg: dict[str, float] = {}
+        for params in param_grid:
+            splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
+            fold_metrics: list[dict[str, object]] = []
+            for fold, (tr_idx, val_idx) in enumerate(splitter.split(X)):
+                if len(np.unique(y[tr_idx])) < 2:
+                    continue
+                builder = get_model(model_type)
+                model_fold, pred_fn = builder(X[tr_idx], y[tr_idx], **params)
+                prob_val = pred_fn(X[val_idx])
+                returns = profits[val_idx] * (prob_val >= 0.5)
+                metrics = _classification_metrics(y[val_idx], prob_val, returns)
+                fold_metrics.append(metrics)
+                logger.info("Fold %d params %s metrics %s", fold + 1, params, metrics)
+                if mlflow_active:
+                    for k, v in metrics.items():
+                        if isinstance(v, (int, float)) and not np.isnan(v):
+                            mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
+            if not fold_metrics:
+                continue
+            agg = {
+                k: float(
+                    np.nanmean(
+                        [m[k] for m in fold_metrics if isinstance(m.get(k), (int, float))]
+                    )
+                )
+                for k in fold_metrics[0].keys()
+                if k != "reliability_curve"
+            }
+            score = agg.get("roc_auc", float("nan"))
+            if np.isnan(score):
+                score = agg.get("accuracy", 0.0)
+            logger.info("Aggregated metrics for params %s: %s", params, agg)
+            if score > best_score:
+                best_score = score
+                best_params = params
+                best_fold_metrics = fold_metrics
+                best_agg = agg
+        min_acc = float(kwargs.get("min_accuracy", 0.0))
+        min_profit = float(kwargs.get("min_profit", -np.inf))
+        if best_agg and (
+            best_agg.get("accuracy", 0.0) < min_acc
+            or best_agg.get("profit", 0.0) < min_profit
+        ):
+            raise ValueError("Cross-validation metrics below thresholds")
         builder = get_model(model_type)
-        model_data, predict_fn = builder(X, y)
+        model_data, predict_fn = builder(X, y, **(best_params or {}))
         probas = predict_fn(X)
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
@@ -147,6 +216,13 @@ def train(
             model["session_models"] = {
                 "asian": {k: model[k] for k in sm_keys if k in model}
             }
+        model["cv_accuracy"] = best_agg.get("accuracy", 0.0)
+        model["cv_profit"] = best_agg.get("profit", 0.0)
+        model["conformal_lower"] = 0.0
+        model["conformal_upper"] = 1.0
+        model["session_models"]["asian"]["cv_metrics"] = best_fold_metrics
+        model["session_models"]["asian"]["conformal_lower"] = 0.0
+        model["session_models"]["asian"]["conformal_upper"] = 1.0
         mode = kwargs.get("mode")
         if mode is not None:
             model["mode"] = mode
@@ -157,6 +233,8 @@ def train(
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("n_features", len(feature_names))
             mlflow.log_metric("train_accuracy", float(score))
+            for k, v in best_agg.items():
+                mlflow.log_metric(f"cv_{k}", float(v))
             mlflow.log_artifact(str(out_dir / "model.json"), artifact_path="model")
 
 

@@ -38,5 +38,5 @@ def test_end_to_end_pipeline():
     vec = DictVectorizer(sparse=False)
     X = vec.fit_transform(feats)
     clf = fit_logistic_regression(X, labels)
-    acc = evaluate_model(clf, X, labels)
-    assert acc == 1.0
+    metrics = evaluate_model(clf, X, labels)
+    assert metrics["accuracy"] == 1.0

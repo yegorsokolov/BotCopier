@@ -50,9 +50,15 @@ class _FeatureClipper(BaseEstimator, TransformerMixin):
 
 
 def _fit_logreg(
-    X: np.ndarray, y: np.ndarray
+    X: np.ndarray, y: np.ndarray, *, C: float = 1.0
 ) -> tuple[dict[str, list | float], Callable[[np.ndarray], np.ndarray]]:
-    """Fit logistic regression within a preprocessing pipeline."""
+    """Fit logistic regression within a preprocessing pipeline.
+
+    Parameters
+    ----------
+    C:
+        Inverse regularisation strength passed to :class:`~sklearn.linear_model.LogisticRegression`.
+    """
 
     clip_low = np.quantile(X, 0.01, axis=0)
     clip_high = np.quantile(X, 0.99, axis=0)
@@ -60,7 +66,7 @@ def _fit_logreg(
         [
             ("clip", _FeatureClipper(clip_low, clip_high)),
             ("scale", RobustScaler()),
-            ("logreg", LogisticRegression(max_iter=1000)),
+            ("logreg", LogisticRegression(max_iter=1000, C=C)),
         ]
     )
     pipeline.fit(X, y)
