@@ -28,6 +28,9 @@ from typing import Dict
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
+
+from botcopier.data.schema import DECISION_LOG_SCHEMA
 
 try:  # optional torch dependency for encoder
     import torch
@@ -148,7 +151,8 @@ def _predict_tabtransformer(model: Dict, features: Dict[str, float]) -> float:
 
 def _load_logs(log_file: Path) -> pd.DataFrame:
     """Load decision logs from ``log_file``."""
-    df = pd.read_csv(log_file, sep=";")
+    table = pq.read_table(log_file, schema=DECISION_LOG_SCHEMA)
+    df = table.to_pandas()
     df.columns = [c.lower() for c in df.columns]
     if "event_id" in df.columns and "decision_id" not in df.columns:
         df.rename(columns={"event_id": "decision_id"}, inplace=True)
