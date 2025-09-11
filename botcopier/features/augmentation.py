@@ -7,7 +7,10 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
+from .registry import register_feature
 
+
+@register_feature("augment_dataframe")
 def _augment_dataframe_impl(df: pd.DataFrame, ratio: float) -> pd.DataFrame:
     """Return DataFrame with additional augmented rows using mixup and jitter."""
     if ratio <= 0 or df.empty:
@@ -70,6 +73,7 @@ def _dtw_path(a: np.ndarray, b: np.ndarray) -> Tuple[list[tuple[int, int]], floa
     return path, float(dp[n, m])
 
 
+@register_feature("augment_dtw_dataframe")
 def _augment_dtw_dataframe_impl(
     df: pd.DataFrame, ratio: float, window: int = 3
 ) -> pd.DataFrame:
