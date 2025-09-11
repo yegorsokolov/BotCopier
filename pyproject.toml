@@ -57,7 +57,15 @@ optuna = ["optuna"]
 rl = ["stable-baselines3", "sb3-contrib"]
 gpu = ["torch", "torch_geometric", "onnxruntime-gpu"]
 
+[tool.setuptools.packages.find]
+include = ["botcopier*", "scripts", "schemas"]
+
+[tool.setuptools.package-data]
+schemas = ["*.avsc"]
+botcopier = ["model.json"]
+
 [project.scripts]
+botcopier-serve-model = "botcopier.scripts.serve_model:main"
 botcopier-analyze-ticks = "botcopier.scripts.analyze_ticks:main"
 botcopier-flight-server = "botcopier.scripts.flight_server:main"
 botcopier-online-trainer = "botcopier.scripts.online_trainer:main"

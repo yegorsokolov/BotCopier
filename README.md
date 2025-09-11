@@ -18,34 +18,18 @@ pip install .[gpu]
 
 ## Usage
 
-### Observer
+After installation, several command line tools are available:
 
-Collect trade events with the observer:
+- `botcopier-analyze-ticks` – compute metrics from exported tick history.
+- `botcopier-flight-server` – start an Arrow Flight server for trade and metric batches.
+- `botcopier-online-trainer` – continuously update a model from streaming events.
+- `botcopier-serve-model` – expose the distilled model via a FastAPI service.
 
-```bash
-python observer.py
-```
-
-### Strategy runner
-
-Execute strategies against the recorded data:
+Example:
 
 ```bash
-python strategy_runner.py --model path/to/model.json
+botcopier-serve-model --host 0.0.0.0 --port 8000
 ```
-
-### Flight server
-
-Start the Arrow Flight server to accept trade and metric batches and persist
-them to SQLite and Parquet:
-
-```bash
-botcopier-flight-server --host 0.0.0.0 --port 8815
-```
-
-Clients such as ``Observer_TBot`` connect to this server.  When the server
-cannot be reached, the observer writes CSV lines to
-``trades_fallback.csv`` or ``metrics_fallback.csv`` so that no data is lost.
 
 ## Testing
 
@@ -62,7 +46,7 @@ distil it into a simple logistic regression.  After the transformer is trained
 on rolling feature windows, its probabilities for each training sample are used
 as soft targets for a linear student.  The distilled coefficients and teacher
 evaluation metrics are saved in ``model.json`` and are embedded into
-``StrategyTemplate.mq4`` by ``scripts/generate_mql4_from_model.py`` for use in
+``StrategyTemplate.mq4`` by ``botcopier/scripts/generate_mql4_from_model.py`` for use in
 MetaTrader.
 
 ## Memory usage

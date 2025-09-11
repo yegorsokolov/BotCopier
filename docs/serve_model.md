@@ -1,12 +1,12 @@
 # Model Serving
 
-`serve_model.py` runs a FastAPI application that loads `model.json` and exposes a `/predict` endpoint.
+`botcopier.scripts.serve_model` runs a FastAPI application that loads `model.json` and exposes a `/predict` endpoint.
 The endpoint accepts a batch of feature vectors and returns probabilities from the model.
 
 ## Run locally
 
 ```bash
-uvicorn scripts.serve_model:app --reload
+botcopier-serve-model --host 0.0.0.0 --port 8000
 ```
 
 Example request:
