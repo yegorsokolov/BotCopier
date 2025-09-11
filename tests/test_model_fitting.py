@@ -116,7 +116,9 @@ def test_early_stopping_reduces_overfit(caplog) -> None:
     assert clf_es.best_iteration < 49
 
 
-@pytest.mark.skipif(not _HAS_CUDA, reason="CUDA is unavailable")
+@pytest.mark.skipif(
+    not _HAS_CUDA, reason="CUDA is unavailable or torch not installed"
+)
 def test_xgb_gpu_parameter_forwarding() -> None:
     pytest.importorskip("xgboost")
     X, y = make_classification(n_samples=50, n_features=4, random_state=0)
@@ -124,7 +126,9 @@ def test_xgb_gpu_parameter_forwarding() -> None:
     assert clf.get_xgb_params().get("tree_method") == "gpu_hist"
 
 
-@pytest.mark.skipif(not _HAS_CUDA, reason="CUDA is unavailable")
+@pytest.mark.skipif(
+    not _HAS_CUDA, reason="CUDA is unavailable or torch not installed"
+)
 def test_catboost_gpu_parameter_forwarding() -> None:
     pytest.importorskip("catboost")
     X, y = make_classification(n_samples=50, n_features=4, random_state=0)
