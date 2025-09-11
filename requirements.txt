@@ -43,6 +43,7 @@ mlflow
 uvloop; extra == "uvloop"  # faster asyncio event loop (stream_listener.py, metrics_collector.py)
 xgboost; extra == "xgboost"
 shap; extra == "shap"
+ray[tune]; extra == "ray"
 # Hyperparameter search
 optuna; extra == "optuna"
 stable-baselines3; extra == "rl"

@@ -54,6 +54,7 @@ uvloop = ["uvloop"]
 xgboost = ["xgboost"]
 shap = ["shap"]
 optuna = ["optuna"]
+ray = ["ray[tune]"]
 rl = ["stable-baselines3", "sb3-contrib"]
 gpu = ["torch", "torch_geometric", "onnxruntime-gpu"]
 
