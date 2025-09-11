@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Optional, List
-
 import logging
-from pydantic_settings import BaseSettings
+from pathlib import Path
+from typing import List, Optional
+
 import yaml
+from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,14 @@ class TrainingConfig(BaseSettings):
     model: Path = Path("model.json")
     features: List[str] = []
     label: str = "best_model"
+    random_seed: int = 0
 
     model_config = {"env_prefix": "TRAIN_"}
 
 
-def save_params(data: DataConfig, training: TrainingConfig, path: Path = Path("params.yaml")) -> None:
+def save_params(
+    data: DataConfig, training: TrainingConfig, path: Path = Path("params.yaml")
+) -> None:
     """Persist resolved configuration values to ``params.yaml``."""
     try:
         existing = yaml.safe_load(path.read_text()) or {}
@@ -64,6 +67,7 @@ def save_params(data: DataConfig, training: TrainingConfig, path: Path = Path("p
         k: str(v) if isinstance(v, Path) else v for k, v in data.model_dump().items()
     }
     existing["training"] = {
-        k: str(v) if isinstance(v, Path) else v for k, v in training.model_dump().items()
+        k: str(v) if isinstance(v, Path) else v
+        for k, v in training.model_dump().items()
     }
     path.write_text(yaml.safe_dump(existing, sort_keys=False))

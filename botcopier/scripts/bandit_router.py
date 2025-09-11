@@ -17,9 +17,11 @@ import random
 import threading
 from typing import List
 
+import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
-import uvicorn
+
+from botcopier.utils.random import set_seed
 
 
 class BanditRouter:
@@ -123,12 +125,12 @@ def main() -> None:
     parser.add_argument(
         "--models", type=int, default=1, help="number of models to route between"
     )
-    parser.add_argument(
-        "--method", choices=["thompson", "ucb"], default="thompson"
-    )
+    parser.add_argument("--method", choices=["thompson", "ucb"], default="thompson")
     parser.add_argument("--state-file", default="bandit_state.json")
+    parser.add_argument("--random-seed", type=int, default=0)
     args = parser.parse_args()
 
+    set_seed(args.random_seed)
     router = BanditRouter(args.models, args.method, args.state_file)
     app = create_app(router)
     uvicorn.run(app, host=args.host, port=args.port)

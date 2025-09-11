@@ -38,6 +38,7 @@ from botcopier.metrics import (
 )
 from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
+from botcopier.utils.random import set_seed
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
@@ -184,12 +185,14 @@ class OnlineTrainer:
         run_generator: bool = True,
         lr: float = 0.01,
         lr_decay: float = 1.0,
+        seed: int = 0,
     ) -> None:
         self.model_path = Path(model_path)
         self.batch_size = batch_size
         self.run_generator = run_generator
         self.lr = lr
         self.lr_decay = lr_decay
+        self.seed = seed
         self.lr_history: List[float] = []
         self.clf = SGDClassifier(
             loss="log_loss", learning_rate="adaptive", eta0=self.lr
@@ -314,6 +317,7 @@ class OnlineTrainer:
         except (OSError, ValidationError):
             existing = {}
         existing.update(payload)
+        existing.setdefault("metadata", {})["seed"] = self.seed
         self.model_path.write_text(ModelParams(**existing).model_dump_json())
 
     # ------------------------------------------------------------------
@@ -629,11 +633,13 @@ async def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
 
     save_params(data_cfg, train_cfg)
 
+    set_seed(train_cfg.random_seed)
     trainer = OnlineTrainer(
         train_cfg.model,
         train_cfg.batch_size,
         lr=train_cfg.lr,
         lr_decay=train_cfg.lr_decay,
+        seed=train_cfg.random_seed,
     )
     start_metrics_server(train_cfg.metrics_port)
     _sd_notify_ready()
@@ -684,6 +690,7 @@ async def async_main(argv: List[str] | None = None) -> None:
     )
     p.add_argument("--drift-interval", type=float, help="Seconds between drift checks")
     p.add_argument("--metrics-port", type=int, help="Prometheus metrics port")
+    p.add_argument("--random-seed", type=int)
     args = p.parse_args(argv)
     data_cfg = DataConfig(
         **{
@@ -713,6 +720,7 @@ async def async_main(argv: List[str] | None = None) -> None:
                 "drift_threshold",
                 "drift_interval",
                 "metrics_port",
+                "random_seed",
             ]
             if getattr(args, k) is not None
         }

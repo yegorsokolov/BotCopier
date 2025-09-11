@@ -2,8 +2,8 @@
 """Train a simple RL agent from trade logs."""
 
 import argparse
-import json
 import gzip
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -14,17 +14,19 @@ except ImportError:
     from model_fitting import load_logs
 
 import logging
+import os
+
 import pandas as pd
 
-import os
 try:  # pragma: no cover - optional dependency
     import pyarrow.flight as flight
 except Exception:  # pragma: no cover - optional dependency
     flight = None  # type: ignore
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
 try:  # Optional Jaeger exporter
     from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -39,7 +41,9 @@ from opentelemetry.trace import format_span_id, format_trace_id
 try:
     import stable_baselines3 as sb3  # type: ignore
     try:
-        from stable_baselines3.common.buffers import PrioritizedReplayBuffer  # type: ignore
+        from stable_baselines3.common.buffers import (
+            PrioritizedReplayBuffer,  # type: ignore
+        )
         HAS_PRB = True
     except Exception:  # pragma: no cover - optional dependency
         PrioritizedReplayBuffer = None  # type: ignore
@@ -72,9 +76,12 @@ except Exception:  # pragma: no cover - executed when run from repo root
     try:
         from scripts.federated_buffer import FederatedBufferClient  # type: ignore
     except Exception:  # pragma: no cover - federated buffer optional
-        FederatedBufferClient = None  # type: ignore
+    FederatedBufferClient = None  # type: ignore
 
 import numpy as np
+
+from botcopier.utils.random import set_seed
+
 try:  # pragma: no cover - optional dependency
     import requests
 except Exception:  # pragma: no cover - optional dependency
@@ -308,8 +315,10 @@ def train(
     metrics_url: str | None = None,
     intrinsic_reward: bool = False,
     intrinsic_reward_weight: float = 0.0,
+    random_seed: int = 0,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
+    set_seed(random_seed)
     states, actions, rewards_ext, next_states, vec = _build_dataset(
         data_dir, flight_uri, kafka_brokers
     )
@@ -869,6 +878,7 @@ def train(
         model["init_model"] = start_model.name if start_model is not None else None
         model["init_model_id"] = init_model_data.get("model_id")
 
+    model.setdefault("metadata", {})["seed"] = random_seed
     model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
     open_func = gzip.open if compress_model else open
     with open_func(model_path, "wt") as f:
@@ -942,6 +952,7 @@ def main() -> None:
             default=0.0,
             help="weight for intrinsic reward bonus",
         )
+        p.add_argument("--random-seed", type=int, default=0)
         args = p.parse_args()
         train(
             Path(args.data_dir),
@@ -968,6 +979,7 @@ def main() -> None:
             metrics_url=args.metrics_url,
             intrinsic_reward=args.intrinsic_reward,
             intrinsic_reward_weight=args.intrinsic_weight,
+            random_seed=args.random_seed,
         )
         logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
 

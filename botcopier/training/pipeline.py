@@ -35,6 +35,7 @@ from botcopier.models.schema import ModelParams
 from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.splitters import PurgedWalkForward
+from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
 
 try:  # optional feast dependency
@@ -90,6 +91,7 @@ def train(
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
+    set_seed(int(kwargs.get("random_seed", 0)))
     configure_cache(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
     )
@@ -375,6 +377,7 @@ def train(
         if mode is not None:
             model["mode"] = mode
         out_dir.mkdir(parents=True, exist_ok=True)
+        model.setdefault("metadata", {})["seed"] = int(kwargs.get("random_seed", 0))
         params = ModelParams(**model)
         (out_dir / "model.json").write_text(params.model_dump_json())
         model_obj = getattr(predict_fn, "model", None)
@@ -535,6 +538,7 @@ def main() -> None:
         action="store_true",
         help="enable GPU acceleration for supported models",
     )
+    p.add_argument("--random-seed", dest="random_seed", type=int, default=0)
     args = p.parse_args()
     train(
         args.data_dir,
@@ -543,6 +547,7 @@ def main() -> None:
         tracking_uri=args.tracking_uri,
         experiment_name=args.experiment_name,
         use_gpu=args.use_gpu,
+        random_seed=args.random_seed,
     )
 
 

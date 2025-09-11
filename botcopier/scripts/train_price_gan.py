@@ -23,6 +23,8 @@ import numpy as np
 import torch
 from torch import nn, optim
 
+from botcopier.utils.random import set_seed
+
 
 class Generator(nn.Module):
     """Simple fully connected generator."""
@@ -39,7 +41,9 @@ class Generator(nn.Module):
             nn.Linear(128, seq_len),
         )
 
-    def forward(self, z: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple pass
+    def forward(
+        self, z: torch.Tensor
+    ) -> torch.Tensor:  # pragma: no cover - simple pass
         return self.net(z)
 
 
@@ -57,7 +61,9 @@ class Discriminator(nn.Module):
             nn.Sigmoid(),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple pass
+    def forward(
+        self, x: torch.Tensor
+    ) -> torch.Tensor:  # pragma: no cover - simple pass
         return self.net(x)
 
 
@@ -108,9 +114,9 @@ def train_gan(seqs: np.ndarray, epochs: int, latent_dim: int) -> Generator:
             # Train discriminator
             z = torch.randn(bsz, latent_dim, device=device)
             fake = gen(z).detach()
-            loss_d = criterion(disc(real), torch.ones(bsz, 1, device=device)) + criterion(
-                disc(fake), torch.zeros(bsz, 1, device=device)
-            )
+            loss_d = criterion(
+                disc(real), torch.ones(bsz, 1, device=device)
+            ) + criterion(disc(fake), torch.zeros(bsz, 1, device=device))
             opt_d.zero_grad()
             loss_d.backward()
             opt_d.step()
@@ -172,8 +178,9 @@ def main() -> None:  # pragma: no cover - CLI entry point
     p.add_argument("--seq-len", type=int, default=20, help="Sequence length")
     p.add_argument("--epochs", type=int, default=200, help="Training epochs")
     p.add_argument("--latent-dim", type=int, default=16, help="Latent dimension")
+    p.add_argument("--random-seed", type=int, default=0)
     args = p.parse_args()
-
+    set_seed(args.random_seed)
     seqs = load_tick_sequences(Path(args.tick_file), args.seq_len)
     gen = train_gan(seqs, args.epochs, args.latent_dim)
     save_model(gen, Path(args.out))
