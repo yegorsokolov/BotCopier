@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "model.json"
 with open(MODEL_PATH, "r", encoding="utf-8") as f:
     MODEL = json.load(f)
+FEATURE_NAMES = MODEL.get("feature_names", [])
 
 app = FastAPI(title="BotCopier Model Server")
 
@@ -32,7 +33,9 @@ def _predict_one(features: List[float]) -> float:
 
     coeffs = MODEL.get("entry_coefficients", [])
     intercept = MODEL.get("entry_intercept", 0.0)
-    if len(features) != len(coeffs):
+    if len(coeffs) != len(FEATURE_NAMES):
+        raise ValueError("model definition inconsistent")
+    if len(features) != len(FEATURE_NAMES):
         raise ValueError("feature length mismatch")
     score = sum(c * f for c, f in zip(coeffs, features)) + intercept
     return 1.0 / (1.0 + math.exp(-score))
