@@ -25,7 +25,7 @@ from ..scripts.features import (
     _is_doji,
     _is_engulfing,
     _is_hammer,
-    _kalman_update,
+    _kalman_filter_series,
     _macd_update,
     _rsi,
     _sma,
@@ -204,25 +204,17 @@ def _extract_features_impl(
 
     if fe._CONFIG.is_enabled("kalman"):
         params = fe._CONFIG.kalman_params
+        p_var = params.get("process_var", KALMAN_DEFAULT_PARAMS["process_var"])
+        m_var = params.get("measurement_var", KALMAN_DEFAULT_PARAMS["measurement_var"])
         if "close" in df.columns:
-            price_state: dict = {}
-            lvl_vals: list[float] = []
-            tr_vals: list[float] = []
-            for p in pd.to_numeric(df["close"], errors="coerce").fillna(0.0):
-                lvl, tr = _kalman_update(price_state, float(p), **params)
-                lvl_vals.append(lvl)
-                tr_vals.append(tr)
+            closes = pd.to_numeric(df["close"], errors="coerce").fillna(0.0).to_numpy(float)
+            lvl_vals, tr_vals = _kalman_filter_series(closes, p_var, m_var)
             df["kalman_price_level"] = lvl_vals
             df["kalman_price_trend"] = tr_vals
             feature_names.extend(["kalman_price_level", "kalman_price_trend"])
         if "volume" in df.columns:
-            vol_state: dict = {}
-            lvl_vals: list[float] = []
-            tr_vals: list[float] = []
-            for v in pd.to_numeric(df["volume"], errors="coerce").fillna(0.0):
-                lvl, tr = _kalman_update(vol_state, float(v), **params)
-                lvl_vals.append(lvl)
-                tr_vals.append(tr)
+            vols = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0).to_numpy(float)
+            lvl_vals, tr_vals = _kalman_filter_series(vols, p_var, m_var)
             df["kalman_volume_level"] = lvl_vals
             df["kalman_volume_trend"] = tr_vals
             feature_names.extend(["kalman_volume_level", "kalman_volume_trend"])
