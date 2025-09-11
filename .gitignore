@@ -35,3 +35,5 @@ ENV/
 
 # Pretrained encoders
 encoder/
+/synthetic_prices.csv
+/model.json

@@ -1,2 +1,4 @@
-['core']
-    analytics = false
+[core]
+    remote = storage
+['remote "storage"']
+    url = ../../dvcstore
