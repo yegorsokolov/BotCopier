@@ -64,11 +64,11 @@ def train(
     cache_dir: Path | None = None,
     tracking_uri: str | None = None,
     experiment_name: str | None = None,
+    features: Sequence[str] | None = None,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
-    if cache_dir is not None:
-        configure_cache(FeatureConfig(cache_dir=cache_dir))
+    configure_cache(FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or [])))
     load_keys = [
         "lite_mode",
         "chunk_size",

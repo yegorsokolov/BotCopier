@@ -80,6 +80,12 @@ def train(
     ),
     model_type: Optional[str] = typer.Option(None, help="Model type"),
     cache_dir: Optional[Path] = typer.Option(None, help="Optional cache directory"),
+    features: Optional[list[str]] = typer.Option(
+        None,
+        "--feature",
+        "-f",
+        help="Enable feature plugin; can be passed multiple times",
+    ),
 ) -> None:
     """Train a model from trade logs."""
     data_cfg, train_cfg = _cfg(ctx)
@@ -91,6 +97,8 @@ def train(
         train_cfg = train_cfg.model_copy(update={"model_type": model_type})
     if cache_dir:
         train_cfg = train_cfg.model_copy(update={"cache_dir": cache_dir})
+    if features is not None:
+        train_cfg = train_cfg.model_copy(update={"features": list(features)})
     ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
     if data_cfg.data is None or data_cfg.out is None:
         raise typer.BadParameter("data_dir and out_dir must be provided")
@@ -100,6 +108,7 @@ def train(
         Path(data_cfg.out),
         model_type=train_cfg.model_type,
         cache_dir=train_cfg.cache_dir,
+        features=train_cfg.features,
     )
 
 

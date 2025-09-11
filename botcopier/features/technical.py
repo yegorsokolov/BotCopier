@@ -9,6 +9,8 @@ from typing import Iterable, Tuple
 import numpy as np
 import pandas as pd
 
+from .registry import FEATURE_REGISTRY, register_feature
+
 try:  # optional polars dependency
     import polars as pl  # type: ignore
 
@@ -52,6 +54,7 @@ except ImportError:  # pragma: no cover - optional
 logger = logging.getLogger(__name__)
 
 
+@register_feature("technical")
 def _extract_features_impl(
     df: pd.DataFrame | "pl.DataFrame",
     feature_names: list[str],
@@ -303,9 +306,40 @@ def _extract_features_impl(
     return df, feature_names, embeddings, gnn_state
 
 
-_extract_features = _extract_features_impl
+def _extract_features(
+    df: pd.DataFrame | "pl.DataFrame",
+    feature_names: list[str],
+    **kwargs,
+) -> tuple[
+    pd.DataFrame | "pl.DataFrame",
+    list[str],
+    dict[str, list[float]],
+    dict[str, list[list[float]]],
+]:
+    """Run enabled feature plugins and return augmented ``df`` and metadata."""
+    from .engineering import _CONFIG, _FEATURE_RESULTS  # late import to avoid circular deps
+
+    key = id(df)
+    if key in _FEATURE_RESULTS:
+        logger.info("cache hit for _extract_features")
+        return _FEATURE_RESULTS[key]  # type: ignore[return-value]
+
+    enabled = _CONFIG.enabled_features or {"technical"}
+    embeddings: dict[str, list[float]] = {}
+    gnn_state: dict[str, list[list[float]]] = {}
+    for name in enabled:
+        func = FEATURE_REGISTRY.get(name)
+        if func is None:
+            logger.warning("Feature plugin %s not found", name)
+            continue
+        df, feature_names, emb, gnn = func(df, feature_names, **kwargs)
+        embeddings.update(emb or {})
+        gnn_state.update(gnn or {})
+    _FEATURE_RESULTS[key] = (df, feature_names, embeddings, gnn_state)
+    return df, feature_names, embeddings, gnn_state
 
 
+@register_feature("neutralize")
 def _neutralize_against_market_index(
     df: pd.DataFrame, feature_names: list[str]
 ) -> tuple[pd.DataFrame, list[str]]:

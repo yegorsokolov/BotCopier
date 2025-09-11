@@ -16,6 +16,17 @@ Run ``botcopier --help`` to list available commands. Key subcommands include:
 - ``online-train`` – update a model continuously from streaming data.
 - ``drift-monitor`` – monitor feature drift against a baseline.
 
+## Feature plugins
+
+Features can be enabled individually when training. Use ``--feature`` repeatedly
+to specify plugin names:
+
+```bash
+botcopier train /path/to/logs /path/to/out --feature technical --feature custom
+```
+
+The same list may be supplied in a config file under ``training.features``.
+
 ## API
 
 ::: botcopier.cli

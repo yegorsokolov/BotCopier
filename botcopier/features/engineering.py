@@ -43,6 +43,7 @@ class FeatureConfig:
 
 _CONFIG = FeatureConfig()
 _MEMORY = Memory(None, verbose=0)
+_FEATURE_RESULTS: dict[int, tuple] = {}
 
 
 def configure_cache(config: FeatureConfig) -> None:
@@ -51,20 +52,23 @@ def configure_cache(config: FeatureConfig) -> None:
     _CONFIG = config
     _MEMORY = Memory(str(config.cache_dir) if config.cache_dir else None, verbose=0)
 
+    from .registry import FEATURE_REGISTRY
+
     _augmentation._augment_dataframe = _cache_with_logging(
         _augmentation._augment_dataframe_impl, "_augment_dataframe"
     )
+    FEATURE_REGISTRY["augment_dataframe"] = _augmentation._augment_dataframe
     _augmentation._augment_dtw_dataframe = _cache_with_logging(
         _augmentation._augment_dtw_dataframe_impl, "_augment_dtw_dataframe"
     )
-    _technical._extract_features = _cache_with_logging(
-        _technical._extract_features_impl, "_extract_features"
-    )
+    FEATURE_REGISTRY["augment_dtw_dataframe"] = _augmentation._augment_dtw_dataframe
+    FEATURE_REGISTRY["technical"] = _technical._extract_features_impl
 
 
 def clear_cache() -> None:
     """Remove all cached feature computations."""
     _MEMORY.clear()
+    _FEATURE_RESULTS.clear()
 
 
 def _cache_with_logging(func, name: str):
