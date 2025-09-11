@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - optional
 from pydantic import ValidationError
 
 from botcopier.data.loading import _load_logs
+from botcopier.data.feature_schema import FeatureSchema
 from botcopier.features.anomaly import _clip_train_features
 from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.features.technical import (
@@ -130,6 +131,7 @@ def train(
                 feature_names = list(FEATURE_COLUMNS)
             else:
                 chunk, feature_names, _, _ = _extract_features(chunk, feature_names)
+            FeatureSchema.validate(chunk[feature_names])
             if label_col is None:
                 label_col = next(
                     (c for c in chunk.columns if c.startswith("label")), None
@@ -157,6 +159,7 @@ def train(
             feature_names = list(FEATURE_COLUMNS)
         else:
             df, feature_names, _, _ = _extract_features(df, feature_names)
+        FeatureSchema.validate(df[feature_names])
         label_col = next((c for c in df.columns if c.startswith("label")), None)
         if label_col is None:
             raise ValueError("no label column found")
