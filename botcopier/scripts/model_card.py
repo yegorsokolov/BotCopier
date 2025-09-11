@@ -14,6 +14,12 @@ _TEMPLATE = """
 ## Model Parameters
 - **Version:** {{ params.version }}
 - **Features:** {{ params.feature_names | join(', ') }}
+{% if params.metadata %}
+## Metadata
+{% for key, value in params.metadata.items() %}
+- **{{ key }}:** {{ value }}
+{% endfor %}
+{% endif %}
 
 ## Metrics
 {% for key, value in metrics.items() %}- **{{ key }}:** {{ '%.4f' | format(value) if value is not none else 'N/A' }}
