@@ -14,7 +14,9 @@ jobs:
           python-version: '3.x'
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt pre-commit mkdocs mkdocstrings[python]
+          pip install -r requirements.txt pre-commit mkdocs mkdocstrings[python] dvc
+      - name: Pull DVC data
+        run: dvc pull
       - name: Run pre-commit
         run: pre-commit run --all-files
       - name: Run unit tests
@@ -25,3 +27,5 @@ jobs:
         run: PYTHONPATH=. pytest --doctest-glob='docs/*.md'
       - name: Build docs
         run: mkdocs build --strict
+      - name: Push DVC data
+        run: dvc push
