@@ -80,120 +80,192 @@ def _load_logs(
     dtw_augment: bool = False,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], list[str]]:
     """Load trade logs from ``trades_raw.csv``."""
-    if kafka_brokers:
-        raise NotImplementedError("kafka_brokers not supported")
-    if flight_uri:
-        raise NotImplementedError("flight_uri not supported")
-
     file = data_dir if data_dir.is_file() else data_dir / "trades_raw.csv"
-    df = pd.read_csv(file)
-    df.columns = [c.lower() for c in df.columns]
-    if "event_time" in df.columns:
-        df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce")
-    for col in df.columns:
-        if col == "event_time":
-            continue
-        df[col] = pd.to_numeric(df[col], errors="ignore")
-
-    hours: pd.Series
-    if "hour" in df.columns:
-        hours = pd.to_numeric(df["hour"], errors="coerce").fillna(0).astype(int)
-    elif "event_time" in df.columns:
-        hours = df["event_time"].dt.hour.fillna(0).astype(int)
-        df["hour"] = hours
-    else:
-        hours = pd.Series(0, index=df.index, dtype=int)
-    df["hour_sin"] = np.sin(2 * np.pi * hours / 24.0)
-    df["hour_cos"] = np.cos(2 * np.pi * hours / 24.0)
-
-    if "day_of_week" in df.columns:
-        dows = pd.to_numeric(df["day_of_week"], errors="coerce").fillna(0).astype(int)
-        df.drop(columns=["day_of_week"], inplace=True)
-    elif "event_time" in df.columns:
-        dows = df["event_time"].dt.dayofweek.fillna(0).astype(int)
-    else:
-        dows = None
-    if dows is not None:
-        df["dow_sin"] = np.sin(2 * np.pi * dows / 7.0)
-        df["dow_cos"] = np.cos(2 * np.pi * dows / 7.0)
-
-    if "event_time" in df.columns:
-        months = df["event_time"].dt.month.fillna(1).astype(int)
-        df["month_sin"] = np.sin(2 * np.pi * (months - 1) / 12.0)
-        df["month_cos"] = np.cos(2 * np.pi * (months - 1) / 12.0)
-        doms = df["event_time"].dt.day.fillna(1).astype(int)
-        df["dom_sin"] = np.sin(2 * np.pi * (doms - 1) / 31.0)
-        df["dom_cos"] = np.cos(2 * np.pi * (doms - 1) / 31.0)
-
-    optional_cols = [
-        "spread",
-        "slippage",
-        "equity",
-        "margin_level",
-        "volume",
-        "hour_sin",
-        "hour_cos",
-        "month_sin",
-        "month_cos",
-        "dom_sin",
-        "dom_cos",
-    ]
-    if dows is not None:
-        optional_cols.extend(["dow_sin", "dow_cos"])
-    feature_cols = [c for c in optional_cols if c in df.columns]
-
-    validation_result = validate_logs(df)
-    if not validation_result.get("success", False):
-        logging.warning("Log validation failed: %s", validation_result)
-        raise ValueError("log validation failed")
-    logging.info(
-        "Log validation succeeded: %s/%s expectations",
-        validation_result.get("statistics", {}).get("successful_expectations", 0),
-        validation_result.get("statistics", {}).get("evaluated_expectations", 0),
-    )
-
-    price_col = next(
-        (c for c in ["net_profit", "profit", "price", "bid", "ask"] if c in df.columns),
-        None,
-    )
-    if price_col is not None:
-        prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
-        spread_src = (
-            df["spread"] if "spread" in df.columns else pd.Series(0.0, index=df.index)
-        )
-        spreads = pd.to_numeric(spread_src, errors="coerce").fillna(0.0)
-        if not spreads.any():
-            spreads = (prices.abs() * 0.001).fillna(0.0)
-        tp = prices + take_profit_mult * spreads
-        sl = prices - stop_loss_mult * spreads
-        horizon_idx, tp_time, sl_time, meta = _compute_meta_labels(
-            prices.to_numpy(), tp.to_numpy(), sl.to_numpy(), int(hold_period)
-        )
-        df["take_profit"] = tp
-        df["stop_loss"] = sl
-        df["horizon"] = horizon_idx
-        df["tp_time"] = tp_time
-        df["sl_time"] = sl_time
-        df["meta_label"] = meta
-        for horizon in (5, 20):
-            label_name = f"label_h{horizon}"
-            if label_name not in df.columns:
-                pnl = prices.shift(-horizon) - prices
-                df[label_name] = (pnl > 0).astype(float).fillna(0.0)
-
-    if augment_ratio > 0:
-        if dtw_augment:
-            df = _augment_dtw_dataframe(df, augment_ratio)
-        else:
-            df = _augment_dataframe(df, augment_ratio)
-
     cs = chunk_size or (50000 if lite_mode else None)
-    if cs:
+
+    def _process(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+        df.columns = [c.lower() for c in df.columns]
+        if "event_time" in df.columns:
+            df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce")
+        for col in df.columns:
+            if col == "event_time":
+                continue
+            df[col] = pd.to_numeric(df[col], errors="ignore")
+
+        hours: pd.Series
+        if "hour" in df.columns:
+            hours = pd.to_numeric(df["hour"], errors="coerce").fillna(0).astype(int)
+        elif "event_time" in df.columns:
+            hours = df["event_time"].dt.hour.fillna(0).astype(int)
+            df["hour"] = hours
+        else:
+            hours = pd.Series(0, index=df.index, dtype=int)
+        df["hour_sin"] = np.sin(2 * np.pi * hours / 24.0)
+        df["hour_cos"] = np.cos(2 * np.pi * hours / 24.0)
+
+        if "day_of_week" in df.columns:
+            dows = pd.to_numeric(df["day_of_week"], errors="coerce").fillna(0).astype(int)
+            df.drop(columns=["day_of_week"], inplace=True)
+        elif "event_time" in df.columns:
+            dows = df["event_time"].dt.dayofweek.fillna(0).astype(int)
+        else:
+            dows = None
+        if dows is not None:
+            df["dow_sin"] = np.sin(2 * np.pi * dows / 7.0)
+            df["dow_cos"] = np.cos(2 * np.pi * dows / 7.0)
+
+        if "event_time" in df.columns:
+            months = df["event_time"].dt.month.fillna(1).astype(int)
+            df["month_sin"] = np.sin(2 * np.pi * (months - 1) / 12.0)
+            df["month_cos"] = np.cos(2 * np.pi * (months - 1) / 12.0)
+            doms = df["event_time"].dt.day.fillna(1).astype(int)
+            df["dom_sin"] = np.sin(2 * np.pi * (doms - 1) / 31.0)
+            df["dom_cos"] = np.cos(2 * np.pi * (doms - 1) / 31.0)
+
+        optional_cols = [
+            "spread",
+            "slippage",
+            "equity",
+            "margin_level",
+            "volume",
+            "hour_sin",
+            "hour_cos",
+            "month_sin",
+            "month_cos",
+            "dom_sin",
+            "dom_cos",
+        ]
+        if dows is not None:
+            optional_cols.extend(["dow_sin", "dow_cos"])
+        feature_cols = [c for c in optional_cols if c in df.columns]
+
+        validation_result = validate_logs(df)
+        if not validation_result.get("success", False):
+            logging.warning("Log validation failed: %s", validation_result)
+            raise ValueError("log validation failed")
+        logging.info(
+            "Log validation succeeded: %s/%s expectations",
+            validation_result.get("statistics", {}).get("successful_expectations", 0),
+            validation_result.get("statistics", {}).get("evaluated_expectations", 0),
+        )
+
+        price_col = next(
+            (c for c in ["net_profit", "profit", "price", "bid", "ask"] if c in df.columns),
+            None,
+        )
+        if price_col is not None:
+            prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
+            spread_src = (
+                df["spread"] if "spread" in df.columns else pd.Series(0.0, index=df.index)
+            )
+            spreads = pd.to_numeric(spread_src, errors="coerce").fillna(0.0)
+            if not spreads.any():
+                spreads = (prices.abs() * 0.001).fillna(0.0)
+            tp = prices + take_profit_mult * spreads
+            sl = prices - stop_loss_mult * spreads
+            horizon_idx, tp_time, sl_time, meta = _compute_meta_labels(
+                prices.to_numpy(), tp.to_numpy(), sl.to_numpy(), int(hold_period)
+            )
+            df["take_profit"] = tp
+            df["stop_loss"] = sl
+            df["horizon"] = horizon_idx
+            df["tp_time"] = tp_time
+            df["sl_time"] = sl_time
+            df["meta_label"] = meta
+            for horizon in (5, 20):
+                label_name = f"label_h{horizon}"
+                if label_name not in df.columns:
+                    pnl = prices.shift(-horizon) - prices
+                    df[label_name] = (pnl > 0).astype(float).fillna(0.0)
+
+        if augment_ratio > 0:
+            if dtw_augment:
+                df = _augment_dtw_dataframe(df, augment_ratio)
+            else:
+                df = _augment_dataframe(df, augment_ratio)
+
+        return df, feature_cols
+
+    if kafka_brokers:
+        from confluent_kafka import Consumer
+        import json
+
+        topic = data_dir.name if data_dir.is_file() else "trades_raw"
+        consumer = Consumer(
+            {
+                "bootstrap.servers": kafka_brokers,
+                "group.id": "botcopier",
+                "auto.offset.reset": "earliest",
+            }
+        )
+        consumer.subscribe([topic])
+
+        def _kafka_iter():
+            buffer: list[pd.DataFrame] = []
+            count = 0
+            while True:
+                msg = consumer.poll(1.0)
+                if msg is None:
+                    continue
+                if msg.error():
+                    break
+                data = json.loads(msg.value().decode("utf-8"))
+                df_msg = pd.DataFrame([data])
+                buffer.append(df_msg)
+                count += len(df_msg)
+                if not cs or count >= cs:
+                    df_chunk = pd.concat(buffer, ignore_index=True)
+                    df_chunk, fcols = _process(df_chunk)
+                    buffer.clear()
+                    count = 0
+                    yield df_chunk, fcols
+            if buffer:
+                df_chunk = pd.concat(buffer, ignore_index=True)
+                yield _process(df_chunk)
+            consumer.close()
+
+        kafka_stream = _kafka_iter()
+        first_chunk, feature_cols = next(kafka_stream)
 
         def _iter():
-            for start in range(0, len(df), cs):
-                yield df.iloc[start : start + cs]
+            yield first_chunk
+            for chunk, _ in kafka_stream:
+                yield chunk
 
         return _iter(), feature_cols, []
 
+    if flight_uri:
+        from pyarrow import flight
+
+        client = flight.FlightClient(flight_uri)
+        descriptor = flight.FlightDescriptor.for_path(str(file).encode())
+        info = client.get_flight_info(descriptor)
+        reader = client.do_get(info.endpoints[0].ticket)
+
+        first_batch = reader.read_next_batch()
+        first_chunk, feature_cols = _process(first_batch.to_pandas())
+
+        def _iter():
+            yield first_chunk
+            for batch in reader:
+                df_chunk, _ = _process(batch.to_pandas())
+                yield df_chunk
+
+        return _iter(), feature_cols, []
+
+    reader = pd.read_csv(file, chunksize=cs, iterator=cs is not None)
+    if cs:
+        first_df = next(reader)
+        first_df, feature_cols = _process(first_df)
+
+        def _iter():
+            yield first_df
+            for chunk in reader:
+                df_chunk, _ = _process(chunk)
+                yield df_chunk
+
+        return _iter(), feature_cols, []
+
+    df = reader  # type: ignore[assignment]
+    df, feature_cols = _process(df)
     return df, feature_cols, []
