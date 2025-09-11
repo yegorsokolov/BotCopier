@@ -3,8 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, List
 
+import logging
 from pydantic_settings import BaseSettings
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 class DataConfig(BaseSettings):
@@ -54,7 +57,8 @@ def save_params(data: DataConfig, training: TrainingConfig, path: Path = Path("p
     """Persist resolved configuration values to ``params.yaml``."""
     try:
         existing = yaml.safe_load(path.read_text()) or {}
-    except Exception:
+    except (FileNotFoundError, yaml.YAMLError) as exc:
+        logger.exception("Failed to load existing params from %s", path)
         existing = {}
     existing["data"] = {
         k: str(v) if isinstance(v, Path) else v for k, v in data.model_dump().items()

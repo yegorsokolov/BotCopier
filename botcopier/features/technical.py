@@ -13,7 +13,7 @@ try:  # optional polars dependency
     import polars as pl  # type: ignore
 
     _HAS_POLARS = True
-except Exception:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
 from sklearn.linear_model import LinearRegression
@@ -35,7 +35,7 @@ try:  # Optional torch dependency
     import torch
 
     _HAS_TORCH = True
-except Exception:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover - optional
     torch = None  # type: ignore
     _HAS_TORCH = False
 
@@ -43,10 +43,13 @@ try:  # Optional graph dependency
     from ..scripts.graph_dataset import GraphDataset, compute_gnn_embeddings
 
     _HAS_TG = True
-except Exception:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover - optional
     GraphDataset = None  # type: ignore
     compute_gnn_embeddings = None  # type: ignore
     _HAS_TG = False
+
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_features_impl(
@@ -80,7 +83,8 @@ def _extract_features_impl(
         if _HAS_TG and not isinstance(symbol_graph, dict):
             try:
                 g_dataset = GraphDataset(symbol_graph)
-            except Exception:
+            except (OSError, ValueError) as exc:
+                logger.exception("Failed to load graph dataset from %s", symbol_graph)
                 g_dataset = None
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
@@ -236,8 +240,8 @@ def _extract_features_impl(
                     X = df[use_cols].to_numpy(dtype=float)
                     df["tick_emb"] = X @ weight_t.to("cpu").numpy()
                     feature_names.append("tick_emb")
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.exception("Failed to load tick encoder from %s", tick_encoder)
 
     if neighbor_corr_windows is not None and len(neighbor_corr_windows) > 0:
         if "symbol" in df.columns and "price" in df.columns:
@@ -283,7 +287,8 @@ def _extract_features_impl(
     if g_dataset is not None and compute_gnn_embeddings is not None:
         try:
             embeddings, gnn_state = compute_gnn_embeddings(df, g_dataset)
-        except Exception:
+        except (RuntimeError, ValueError) as exc:
+            logger.exception("Failed to compute GNN embeddings")
             embeddings, gnn_state = {}, {}
         if embeddings and "symbol" in df.columns:
             emb_dim = len(next(iter(embeddings.values())))
