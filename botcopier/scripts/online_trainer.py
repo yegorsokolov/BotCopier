@@ -30,6 +30,12 @@ from typing import Any, Dict, Iterable, List
 from pydantic import ValidationError
 
 from botcopier.config.settings import DataConfig, TrainingConfig, save_params
+from botcopier.metrics import (
+    ERROR_COUNTER,
+    TRADE_COUNTER,
+    observe_latency,
+    start_metrics_server,
+)
 from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
 
@@ -381,62 +387,73 @@ class OnlineTrainer:
             self._dist_history.clear()
 
     def update(self, batch: List[Dict[str, Any]]) -> bool:
-        with tracer.start_as_current_span("train_batch") as span:
-            X, y = self._vectorise(batch)
-            self._dist_history.append(float(X.mean()))
-            self._check_change_point()
-            # configure current learning rate
-            self.clf.eta0 = self.lr
-            if not hasattr(self.clf, "classes_"):
-                self.clf.partial_fit(X, y, classes=np.array([0, 1]))
-            else:
-                self.clf.partial_fit(X, y)
-            lr_used = self.clf.eta0
-            self.lr_history.append(lr_used)
+        with observe_latency("train_batch"):
             try:
-                raw_probs = self.clf.predict_proba(X)[:, 1]
-                self.calib_scores.extend(raw_probs.tolist())
-                self.calib_labels.extend(y.tolist())
-                if len(self.calib_labels) >= 2 and len(set(self.calib_labels)) > 1:
-                    scores = np.array(self.calib_scores).reshape(-1, 1)
-                    labels = np.array(self.calib_labels)
+                with tracer.start_as_current_span("train_batch") as span:
+                    X, y = self._vectorise(batch)
+                    self._dist_history.append(float(X.mean()))
+                    self._check_change_point()
+                    # configure current learning rate
+                    self.clf.eta0 = self.lr
+                    if not hasattr(self.clf, "classes_"):
+                        self.clf.partial_fit(X, y, classes=np.array([0, 1]))
+                    else:
+                        self.clf.partial_fit(X, y)
+                    lr_used = self.clf.eta0
+                    self.lr_history.append(lr_used)
                     try:
-                        self.calibrator = LogisticRegression().fit(scores, labels)
+                        raw_probs = self.clf.predict_proba(X)[:, 1]
+                        self.calib_scores.extend(raw_probs.tolist())
+                        self.calib_labels.extend(y.tolist())
+                        if (
+                            len(self.calib_labels) >= 2
+                            and len(set(self.calib_labels)) > 1
+                        ):
+                            scores = np.array(self.calib_scores).reshape(-1, 1)
+                            labels = np.array(self.calib_labels)
+                            try:
+                                self.calibrator = LogisticRegression().fit(
+                                    scores, labels
+                                )
+                            except ValueError:
+                                self.calibrator = None
+                        if self.calibrator is not None:
+                            probs1 = self.calibrator.predict_proba(
+                                raw_probs.reshape(-1, 1)
+                            )[:, 1]
+                        else:
+                            probs1 = raw_probs
+                        probs = np.column_stack([1 - probs1, probs1])
+                        self.recent_probs.extend(probs[np.arange(len(y)), y])
+                        arr = np.fromiter(self.recent_probs, dtype=float)
+                        self.conformal_lower = float(np.quantile(arr, 0.05))
+                        self.conformal_upper = float(np.quantile(arr, 0.95))
                     except ValueError:
-                        self.calibrator = None
-                if self.calibrator is not None:
-                    probs1 = self.calibrator.predict_proba(raw_probs.reshape(-1, 1))[
-                        :, 1
-                    ]
-                else:
-                    probs1 = raw_probs
-                probs = np.column_stack([1 - probs1, probs1])
-                self.recent_probs.extend(probs[np.arange(len(y)), y])
-                arr = np.fromiter(self.recent_probs, dtype=float)
-                self.conformal_lower = float(np.quantile(arr, 0.05))
-                self.conformal_upper = float(np.quantile(arr, 0.95))
-            except ValueError:
-                pass
-            coef = self.clf.coef_[0].tolist()
-            intercept = float(self.clf.intercept_[0])
-            prev = self._prev_coef
-            self._prev_coef = coef + [intercept]
-            changed = prev != self._prev_coef
-            self._save()
-            self._log_validation(X, y)
-            ctx = span.get_span_context()
-            logger.info(
-                {
-                    "event": "batch_update",
-                    "size": len(batch),
-                    "coefficients_changed": changed,
-                    "lr": lr_used,
-                },
-                extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
-            )
-            # decay learning rate for next batch
-            self.lr *= self.lr_decay
-            return changed
+                        pass
+                    coef = self.clf.coef_[0].tolist()
+                    intercept = float(self.clf.intercept_[0])
+                    prev = self._prev_coef
+                    self._prev_coef = coef + [intercept]
+                    changed = prev != self._prev_coef
+                    self._save()
+                    self._log_validation(X, y)
+                    ctx = span.get_span_context()
+                    logger.info(
+                        {
+                            "event": "batch_update",
+                            "size": len(batch),
+                            "coefficients_changed": changed,
+                            "lr": lr_used,
+                        },
+                        extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
+                    )
+                    # decay learning rate for next batch
+                    self.lr *= self.lr_decay
+            except Exception:
+                ERROR_COUNTER.labels(type="update").inc()
+                raise
+        TRADE_COUNTER.inc(len(batch))
+        return changed
 
     # ------------------------------------------------------------------
     # Drift monitoring
@@ -590,6 +607,7 @@ async def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
         lr=train_cfg.lr,
         lr_decay=train_cfg.lr_decay,
     )
+    start_metrics_server(train_cfg.metrics_port)
     _sd_notify_ready()
     _start_watchdog_thread()
     if (
@@ -637,6 +655,7 @@ async def async_main(argv: List[str] | None = None) -> None:
         "--drift-threshold", type=float, help="Drift threshold triggering retrain"
     )
     p.add_argument("--drift-interval", type=float, help="Seconds between drift checks")
+    p.add_argument("--metrics-port", type=int, help="Prometheus metrics port")
     args = p.parse_args(argv)
     data_cfg = DataConfig(
         **{
@@ -665,6 +684,7 @@ async def async_main(argv: List[str] | None = None) -> None:
                 "flight_path",
                 "drift_threshold",
                 "drift_interval",
+                "metrics_port",
             ]
             if getattr(args, k) is not None
         }

@@ -8,6 +8,13 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from botcopier.metrics import (
+    ERROR_COUNTER,
+    TRADE_COUNTER,
+    observe_latency,
+    start_metrics_server,
+)
+
 # Load model.json at startup
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "model.json"
@@ -49,13 +56,15 @@ def _predict_one(features: List[float]) -> float:
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(req: PredictionRequest) -> PredictionResponse:
     """Return predictions for a batch of feature vectors."""
-
-    results: List[float] = []
-    for features in req.instances:
-        try:
-            results.append(_predict_one(features))
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with observe_latency("predict"):
+        results: List[float] = []
+        for features in req.instances:
+            try:
+                results.append(_predict_one(features))
+            except ValueError as exc:
+                ERROR_COUNTER.labels(type="predict").inc()
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        TRADE_COUNTER.inc(len(req.instances))
     return PredictionResponse(predictions=results)
 
 
@@ -65,7 +74,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Serve the distilled model")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface")
     parser.add_argument("--port", type=int, default=8000, help="Port number")
+    parser.add_argument(
+        "--metrics-port", type=int, default=8004, help="Prometheus metrics port"
+    )
     args = parser.parse_args()
+    start_metrics_server(args.metrics_port)
     uvicorn.run("botcopier.scripts.serve_model:app", host=args.host, port=args.port)
 
 
