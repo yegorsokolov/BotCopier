@@ -23,8 +23,8 @@ except ImportError:  # pragma: no cover - optional
     _HAS_POLARS = False
 from pydantic import ValidationError
 
-from botcopier.data.loading import _load_logs
 from botcopier.data.feature_schema import FeatureSchema
+from botcopier.data.loading import _load_logs
 from botcopier.features.anomaly import _clip_train_features
 from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.features.technical import (
@@ -206,7 +206,7 @@ def train(
         best_score = -np.inf
         best_params: dict[str, object] | None = None
         best_fold_metrics: list[dict[str, object]] = []
-        best_agg: dict[str, float] = {}
+        metrics: dict[str, float] = {}
         if distributed and not _HAS_RAY:
             raise RuntimeError("ray is required for distributed execution")
         for params in param_grid:
@@ -228,8 +228,8 @@ def train(
                     )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
-                    metrics = _classification_metrics(y[val_idx], prob_val, returns)
-                    return fold, metrics
+                    fold_metric = _classification_metrics(y[val_idx], prob_val, returns)
+                    return fold, fold_metric
 
                 futures = [
                     _run_fold.remote(tr_idx, val_idx, fold)
@@ -238,13 +238,13 @@ def train(
                 ]
                 results = ray.get(futures)
                 results.sort(key=lambda x: x[0])
-                for fold, metrics in results:
-                    fold_metrics.append(metrics)
+                for fold, fold_metric in results:
+                    fold_metrics.append(fold_metric)
                     logger.info(
-                        "Fold %d params %s metrics %s", fold + 1, params, metrics
+                        "Fold %d params %s metrics %s", fold + 1, params, fold_metric
                     )
                     if mlflow_active:
-                        for k, v in metrics.items():
+                        for k, v in fold_metric.items():
                             if isinstance(v, (int, float)) and not np.isnan(v):
                                 mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
             else:
@@ -257,13 +257,13 @@ def train(
                     )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
-                    metrics = _classification_metrics(y[val_idx], prob_val, returns)
-                    fold_metrics.append(metrics)
+                    fold_metric = _classification_metrics(y[val_idx], prob_val, returns)
+                    fold_metrics.append(fold_metric)
                     logger.info(
-                        "Fold %d params %s metrics %s", fold + 1, params, metrics
+                        "Fold %d params %s metrics %s", fold + 1, params, fold_metric
                     )
                     if mlflow_active:
-                        for k, v in metrics.items():
+                        for k, v in fold_metric.items():
                             if isinstance(v, (int, float)) and not np.isnan(v):
                                 mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
             if not fold_metrics:
@@ -289,12 +289,12 @@ def train(
                 best_score = score
                 best_params = params
                 best_fold_metrics = fold_metrics
-                best_agg = agg
+                metrics = agg
         min_acc = float(kwargs.get("min_accuracy", 0.0))
         min_profit = float(kwargs.get("min_profit", -np.inf))
-        if best_agg and (
-            best_agg.get("accuracy", 0.0) < min_acc
-            or best_agg.get("profit", 0.0) < min_profit
+        if metrics and (
+            metrics.get("accuracy", 0.0) < min_acc
+            or metrics.get("profit", 0.0) < min_profit
         ):
             raise ValueError("Cross-validation metrics below thresholds")
         builder = get_model(model_type)
@@ -376,8 +376,8 @@ def train(
             model["session_models"] = {
                 "asian": {k: model[k] for k in sm_keys if k in model}
             }
-        model["cv_accuracy"] = best_agg.get("accuracy", 0.0)
-        model["cv_profit"] = best_agg.get("profit", 0.0)
+        model["cv_accuracy"] = metrics.get("accuracy", 0.0)
+        model["cv_profit"] = metrics.get("profit", 0.0)
         model["conformal_lower"] = 0.0
         model["conformal_upper"] = 1.0
         model["session_models"]["asian"]["cv_metrics"] = best_fold_metrics
@@ -388,10 +388,10 @@ def train(
             model["mode"] = mode
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = int(kwargs.get("random_seed", 0))
-        params = ModelParams(**model)
-        (out_dir / "model.json").write_text(params.model_dump_json())
+        model_params = ModelParams(**model)
+        (out_dir / "model.json").write_text(model_params.model_dump_json())
         model_obj = getattr(predict_fn, "model", None)
-        generate_model_card(params, best_agg, out_dir / "model_card.md")
+        generate_model_card(model_params, metrics, out_dir / "model_card.md")
         if model_obj is not None:
             try:
                 from botcopier.onnx_utils import export_model
@@ -403,7 +403,7 @@ def train(
             mlflow.log_param("model_type", model_type)
             mlflow.log_param("n_features", len(feature_names))
             mlflow.log_metric("train_accuracy", float(score))
-            for k, v in best_agg.items():
+            for k, v in metrics.items():
                 mlflow.log_metric(f"cv_{k}", float(v))
             mlflow.log_artifact(str(out_dir / "model.json"), artifact_path="model")
 
