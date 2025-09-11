@@ -36,6 +36,17 @@ from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.splitters import PurgedWalkForward
 from logging_utils import setup_logging
 
+try:  # optional feast dependency
+    from feast import FeatureStore  # type: ignore
+
+    from botcopier.feature_store.feast_repo.feature_views import FEATURE_COLUMNS
+
+    _HAS_FEAST = True
+except Exception:  # pragma: no cover - optional
+    FeatureStore = None  # type: ignore
+    FEATURE_COLUMNS = []  # type: ignore
+    _HAS_FEAST = False
+
 try:  # optional torch dependency flag
     import torch  # type: ignore
 
@@ -93,6 +104,7 @@ def train(
     ]
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
     logs, feature_names, _ = _load_logs(data_dir, **load_kwargs)
+    fs_repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []
     profit_list: list[np.ndarray] = []
@@ -102,8 +114,17 @@ def train(
         and not isinstance(logs, (pd.DataFrame,))
         and not (_HAS_POLARS and isinstance(logs, pl.DataFrame))
     ):
+        store = FeatureStore(repo_path=str(fs_repo)) if _HAS_FEAST else None
+        feature_refs = [f"trade_features:{f}" for f in FEATURE_COLUMNS]
         for chunk in logs:
-            chunk, feature_names, _, _ = _extract_features(chunk, feature_names)
+            if _HAS_FEAST and store is not None:
+                feat_df = store.get_historical_features(
+                    entity_df=chunk, features=feature_refs
+                ).to_df()
+                chunk = chunk.merge(feat_df, on=["symbol", "event_time"], how="left")
+                feature_names = list(FEATURE_COLUMNS)
+            else:
+                chunk, feature_names, _, _ = _extract_features(chunk, feature_names)
             if label_col is None:
                 label_col = next(
                     (c for c in chunk.columns if c.startswith("label")), None
@@ -121,7 +142,16 @@ def train(
         )
     else:
         df = logs  # type: ignore[assignment]
-        df, feature_names, _, _ = _extract_features(df, feature_names)
+        if _HAS_FEAST:
+            store = FeatureStore(repo_path=str(fs_repo))
+            feature_refs = [f"trade_features:{f}" for f in FEATURE_COLUMNS]
+            feat_df = store.get_historical_features(
+                entity_df=df, features=feature_refs
+            ).to_df()
+            df = df.merge(feat_df, on=["symbol", "event_time"], how="left")
+            feature_names = list(FEATURE_COLUMNS)
+        else:
+            df, feature_names, _, _ = _extract_features(df, feature_names)
         label_col = next((c for c in df.columns if c.startswith("label")), None)
         if label_col is None:
             raise ValueError("no label column found")

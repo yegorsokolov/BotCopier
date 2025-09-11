@@ -15,6 +15,17 @@ from botcopier.metrics import (
     start_metrics_server,
 )
 
+try:  # optional feast dependency
+    from feast import FeatureStore  # type: ignore
+
+    from botcopier.feature_store.feast_repo.feature_views import FEATURE_COLUMNS
+
+    _HAS_FEAST = True
+except Exception:  # pragma: no cover - optional
+    FeatureStore = None  # type: ignore
+    FEATURE_COLUMNS = []  # type: ignore
+    _HAS_FEAST = False
+
 # Load model.json at startup
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "model.json"
@@ -23,15 +34,21 @@ try:
         MODEL = json.load(f)
 except FileNotFoundError:
     MODEL = {"feature_names": [], "entry_coefficients": [], "entry_intercept": 0.0}
-FEATURE_NAMES = MODEL.get("feature_names", [])
+FEATURE_NAMES = MODEL.get("feature_names", FEATURE_COLUMNS)
+
+if _HAS_FEAST:
+    FS_REPO = BASE_DIR / "feature_store" / "feast_repo"
+    STORE = FeatureStore(repo_path=str(FS_REPO))
+else:
+    STORE = None
 
 app = FastAPI(title="BotCopier Model Server")
 
 
 class PredictionRequest(BaseModel):
-    """Request payload containing feature batches."""
+    """Request payload containing entity identifiers."""
 
-    instances: List[List[float]]
+    symbols: List[str]
 
 
 class PredictionResponse(BaseModel):
@@ -55,16 +72,24 @@ def _predict_one(features: List[float]) -> float:
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(req: PredictionRequest) -> PredictionResponse:
-    """Return predictions for a batch of feature vectors."""
+    """Return predictions for a batch of symbols."""
+    if not _HAS_FEAST or STORE is None:
+        raise HTTPException(status_code=500, detail="feature store unavailable")
     with observe_latency("predict"):
+        feature_refs = [f"trade_features:{f}" for f in FEATURE_COLUMNS]
+        entity_rows = [{"symbol": s} for s in req.symbols]
+        feat_dict = STORE.get_online_features(
+            features=feature_refs, entity_rows=entity_rows
+        ).to_dict()
         results: List[float] = []
-        for features in req.instances:
+        for i in range(len(req.symbols)):
+            features = [feat_dict[f][i] for f in FEATURE_COLUMNS]
             try:
                 results.append(_predict_one(features))
             except ValueError as exc:
                 ERROR_COUNTER.labels(type="predict").inc()
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-        TRADE_COUNTER.inc(len(req.instances))
+        TRADE_COUNTER.inc(len(req.symbols))
     return PredictionResponse(predictions=results)
 
 
