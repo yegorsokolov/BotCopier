@@ -41,6 +41,12 @@ def main() -> None:
         action="store_true",
         help="enable Ray for distributed trials and folds",
     )
+    p.add_argument(
+        "--metric",
+        action="append",
+        dest="metrics",
+        help="classification metric to compute (repeatable)",
+    )
     args = p.parse_args()
 
     if args.distributed:
@@ -55,6 +61,7 @@ def main() -> None:
         tracking_uri=args.tracking_uri,
         experiment_name=args.experiment_name,
         distributed=args.distributed,
+        metrics=args.metrics,
     )
 
 

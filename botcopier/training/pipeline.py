@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import importlib.metadata as importlib_metadata
 import json
 import logging
 import shutil
@@ -14,7 +15,6 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 import psutil
-import importlib.metadata as importlib_metadata
 
 try:  # optional polars support
     import polars as pl  # type: ignore
@@ -105,6 +105,7 @@ def train(
     use_gpu: bool = False,
     random_seed: int = 0,
     n_jobs: int | None = None,
+    metrics: Sequence[str] | None = None,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -249,7 +250,9 @@ def train(
                     )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
-                    fold_metric = _classification_metrics(y[val_idx], prob_val, returns)
+                    fold_metric = _classification_metrics(
+                        y[val_idx], prob_val, returns, selected=metrics
+                    )
                     return fold, fold_metric
 
                 futures = [
@@ -278,7 +281,9 @@ def train(
                     )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
-                    fold_metric = _classification_metrics(y[val_idx], prob_val, returns)
+                    fold_metric = _classification_metrics(
+                        y[val_idx], prob_val, returns, selected=metrics
+                    )
                     fold_metrics.append(fold_metric)
                     logger.info(
                         "Fold %d params %s metrics %s", fold + 1, params, fold_metric
@@ -586,6 +591,12 @@ def main() -> None:
         help="enable GPU acceleration for supported models",
     )
     p.add_argument("--random-seed", dest="random_seed", type=int, default=0)
+    p.add_argument(
+        "--metric",
+        action="append",
+        dest="metrics",
+        help="classification metric to compute (repeatable)",
+    )
     args = p.parse_args()
     cfg = TrainingConfig(random_seed=args.random_seed)
     set_seed(cfg.random_seed)
@@ -597,6 +608,7 @@ def main() -> None:
         experiment_name=args.experiment_name,
         use_gpu=args.use_gpu,
         random_seed=cfg.random_seed,
+        metrics=args.metrics,
     )
 
 
