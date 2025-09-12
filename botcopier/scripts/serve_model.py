@@ -7,6 +7,8 @@ from typing import List
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+import numpy as np
+from sklearn.preprocessing import PowerTransformer
 
 from botcopier.metrics import (
     ERROR_COUNTER,
@@ -41,6 +43,24 @@ _EXPECTED_COLS = [fm.original_column for fm in FEATURE_METADATA]
 FEATURE_NAMES = MODEL.get("feature_names", _EXPECTED_COLS or FEATURE_COLUMNS)
 if FEATURE_METADATA and len(FEATURE_NAMES) != len(FEATURE_METADATA):
     raise ValueError("feature_names and feature_metadata mismatch")
+
+PT_INFO = MODEL.get("power_transformer")
+PT: PowerTransformer | None = None
+PT_IDX: List[int] = []
+if PT_INFO:
+    PT = PowerTransformer(method="yeo-johnson")
+    PT.lambdas_ = np.asarray(PT_INFO.get("lambdas", []), dtype=float)
+    PT.n_features_in_ = PT.lambdas_.shape[0]
+    from sklearn.preprocessing import StandardScaler
+    scaler = StandardScaler()
+    scaler.mean_ = np.asarray(PT_INFO.get("mean", []), dtype=float)
+    scaler.scale_ = np.asarray(PT_INFO.get("scale", []), dtype=float)
+    PT._scaler = scaler
+    PT_IDX = [
+        FEATURE_NAMES.index(f)
+        for f in PT_INFO.get("features", [])
+        if f in FEATURE_NAMES
+    ]
 
 if _HAS_FEAST:
     FS_REPO = BASE_DIR / "feature_store" / "feast_repo"
@@ -100,6 +120,11 @@ async def predict(req: PredictionRequest) -> PredictionResponse:
                     detail=f"missing feature '{exc.args[0]}'",
                 ) from exc
             try:
+                if PT is not None and PT_IDX:
+                    arr = np.asarray([features[j] for j in PT_IDX], dtype=float).reshape(1, -1)
+                    transformed = PT.transform(arr).ravel().tolist()
+                    for j, val in zip(PT_IDX, transformed):
+                        features[j] = float(val)
                 results.append(_predict_one(features))
             except ValueError as exc:
                 ERROR_COUNTER.labels(type="predict").inc()
