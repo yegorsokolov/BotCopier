@@ -824,6 +824,42 @@ def load_logs(
     return df_logs, data_commits, data_checksums
 
 
+def compute_vif(X: np.ndarray, feature_names: Iterable[str]) -> pd.Series:
+    """Return variance inflation factor for each feature.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Feature matrix of shape ``(n_samples, n_features)``.
+    feature_names : Iterable[str]
+        Names corresponding to the columns of ``X``.
+
+    Returns
+    -------
+    pd.Series
+        Series indexed by ``feature_names`` containing VIF values.
+    """
+
+    feature_names = list(feature_names)
+    if X.shape[1] != len(feature_names):
+        raise ValueError("feature_names length must match number of columns in X")
+
+    vifs: list[float] = []
+    for i in range(X.shape[1]):
+        y = X[:, i]
+        X_other = np.delete(X, i, axis=1)
+        if X_other.shape[1] == 0:
+            vifs.append(1.0)
+            continue
+        reg = LinearRegression()
+        reg.fit(X_other, y)
+        r2 = reg.score(X_other, y)
+        vif = float("inf") if np.isclose(1.0 - r2, 0.0) else 1.0 / (1.0 - r2)
+        vifs.append(float(vif))
+
+    return pd.Series(vifs, index=feature_names, name="VIF")
+
+
 def scale_features(scaler: StandardScaler, X: np.ndarray) -> np.ndarray:
     """Update ``scaler`` with ``X`` and return scaled data."""
     scaler.partial_fit(X)
@@ -841,6 +877,8 @@ def train_model(
     model_types: Iterable[str] | None = None,
     n_trials: int = 20,
     distributed: bool = False,
+    feature_names: Iterable[str] | None = None,
+    vif_threshold: float = 10.0,
 ) -> dict:
     """Train a classifier with time-decayed sample weights.
 
@@ -857,6 +895,22 @@ def train_model(
     if model_types is None:
         model_types = ["logistic"]
     model_types = list(model_types)
+
+    # Compute and filter features based on variance inflation factor
+    if feature_names is None:
+        feature_names = [f"f{i}" for i in range(X.shape[1])]
+    feature_names = list(feature_names)
+    vifs = compute_vif(X, feature_names)
+    mask = vifs <= vif_threshold
+    if not mask.all():
+        removed = vifs[~mask]
+        logging.info(
+            "Removing features with VIF > %s: %s",
+            vif_threshold,
+            ", ".join(f"{name}={val:.2f}" for name, val in removed.items()),
+        )
+        X = X[:, mask.to_numpy()]
+        feature_names = [fn for fn, keep in zip(feature_names, mask.to_numpy()) if keep]
 
     # Filter out models whose libraries are unavailable
     available: dict[str, bool] = {
@@ -986,6 +1040,7 @@ def train_model(
         },
         "half_life_days": float(half_life_days),
         "validation_metrics": metrics,
+        "feature_names": feature_names,
     }
 
     if best_type == "logistic":
