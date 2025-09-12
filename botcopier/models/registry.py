@@ -115,7 +115,11 @@ class _FeatureClipper(BaseEstimator, TransformerMixin):
 
 
 def _fit_logreg(
-    X: np.ndarray, y: np.ndarray, *, C: float = 1.0
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    C: float = 1.0,
+    sample_weight: np.ndarray | None = None,
 ) -> tuple[dict[str, list | float], Callable[[np.ndarray], np.ndarray]]:
     """Fit logistic regression within a preprocessing pipeline.
 
@@ -134,7 +138,8 @@ def _fit_logreg(
             ("logreg", LogisticRegression(max_iter=1000, C=C)),
         ]
     )
-    pipeline.fit(X, y)
+    fit_kwargs = {"logreg__sample_weight": sample_weight} if sample_weight is not None else {}
+    pipeline.fit(X, y, **fit_kwargs)
     clf: LogisticRegression = pipeline.named_steps["logreg"]
     scaler: RobustScaler = pipeline.named_steps["scale"]
     clipper: _FeatureClipper = pipeline.named_steps["clip"]
@@ -167,6 +172,7 @@ if _HAS_XGB:
         *,
         tree_method: str | None = None,
         predictor: str | None = None,
+        sample_weight: np.ndarray | None = None,
         **params: float | int | str,
     ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
         """Fit an ``xgboost.XGBClassifier`` model.
@@ -197,7 +203,10 @@ if _HAS_XGB:
             default_params.setdefault("predictor", predictor)
         default_params.update(params)
         model = xgb.XGBClassifier(**default_params)
-        model.fit(X, y)
+        fit_kwargs = {}
+        if sample_weight is not None:
+            fit_kwargs["sample_weight"] = sample_weight
+        model.fit(X, y, **fit_kwargs)
 
         def _predict(arr: np.ndarray) -> np.ndarray:
             return model.predict_proba(arr)[:, 1]
@@ -224,6 +233,7 @@ if _HAS_CATBOOST:
         y: np.ndarray,
         *,
         device: str | None = None,
+        sample_weight: np.ndarray | None = None,
         **params: float | int | str,
     ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
         """Fit a ``catboost.CatBoostClassifier`` model.
@@ -240,7 +250,10 @@ if _HAS_CATBOOST:
             default_params.setdefault("device", device)
         default_params.update(params)
         model = cb.CatBoostClassifier(**default_params)
-        model.fit(X, y)
+        fit_kwargs = {}
+        if sample_weight is not None:
+            fit_kwargs["sample_weight"] = sample_weight
+        model.fit(X, y, **fit_kwargs)
 
         def _predict(arr: np.ndarray) -> np.ndarray:
             return model.predict_proba(arr)[:, 1]
