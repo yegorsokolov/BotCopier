@@ -1,4 +1,3 @@
-import csv
 import json
 import math
 import logging
@@ -8,6 +7,7 @@ from statistics import NormalDist
 from typing import Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     accuracy_score,
@@ -31,116 +31,140 @@ def _parse_time(value: str, *, symbol: str = "") -> datetime:
     raise DataError("unrecognised time format", symbol=symbol, timestamp=value)
 
 
-def _load_predictions(pred_file: Path) -> List[Dict]:
-    with open(pred_file, newline="") as f:
-        reader = csv.DictReader(f, delimiter=";")
-        preds = []
-        for r in reader:
-            ts = _parse_time(
-                r.get("timestamp") or r.get("time") or r[reader.fieldnames[0]],
-                symbol=r.get("symbol", ""),
-            )
-            direction_raw = (
-                str(r.get("direction") or r.get("order_type") or "").strip().lower()
-            )
-            if direction_raw in ("1", "buy"):
-                direction = 1
-            elif direction_raw in ("0", "-1", "sell"):
-                direction = -1
-            else:
-                direction = 1
-            preds.append(
-                {
-                    "timestamp": ts,
-                    "symbol": r.get("symbol", ""),
-                    "direction": direction,
-                    "lots": float(r.get("lots", 0) or 0),
-                    "probability": (
-                        float(r.get("probability") or r.get("prob") or r.get("proba"))
-                        if (r.get("probability") or r.get("prob") or r.get("proba"))
-                        else None
-                    ),
-                    "value": (
-                        float(
-                            r.get("expected_value")
-                            or r.get("value")
-                            or r.get("pnl")
-                            or 0
-                        )
-                        if (r.get("expected_value") or r.get("value") or r.get("pnl"))
-                        else None
-                    ),
-                    "log_variance": (
-                        float(r.get("log_variance") or r.get("logvar"))
-                        if (r.get("log_variance") or r.get("logvar"))
-                        else (
-                            math.log(float(r.get("variance")))
-                            if r.get("variance")
-                            else None
-                        )
-                    ),
-                    "executed_model_idx": (
-                        int(
-                            float(
-                                r.get("executed_model_idx")
-                                or r.get("model_idx")
-                                or r.get("model")
-                                or -1
-                            )
-                        )
-                        if (
-                            r.get("executed_model_idx")
-                            or r.get("model_idx")
-                            or r.get("model")
-                        )
-                        else None
-                    ),
-                    "decision_id": (
-                        int(float(r.get("decision_id")))
-                        if r.get("decision_id")
-                        else None
-                    ),
-                }
-            )
-    return preds
+def _load_predictions(pred_file: Path) -> pd.DataFrame:
+    df = pd.read_csv(pred_file, delimiter=";")
+
+    ts_col = next((c for c in ["timestamp", "time"] if c in df.columns), df.columns[0])
+    sym_col = "symbol" if "symbol" in df.columns else None
+    if sym_col is None:
+        df["symbol"] = ""
+        sym_col = "symbol"
+    df["timestamp"] = df.apply(
+        lambda r: _parse_time(str(r[ts_col]), symbol=str(r.get(sym_col, ""))), axis=1
+    )
+
+    dir_col = next((c for c in ["direction", "order_type"] if c in df.columns), "direction")
+    df["direction"] = (
+        df.get(dir_col, "")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .map({"1": 1, "buy": 1, "0": -1, "-1": -1, "sell": -1})
+        .fillna(1)
+        .astype(int)
+    )
+
+    df["lots"] = pd.to_numeric(df.get("lots", 0), errors="coerce").fillna(0.0)
+
+    prob_col = next((c for c in ["probability", "prob", "proba"] if c in df.columns), None)
+    df["probability"] = (
+        pd.to_numeric(df[prob_col], errors="coerce") if prob_col else np.nan
+    )
+
+    val_col = next((c for c in ["expected_value", "value", "pnl"] if c in df.columns), None)
+    df["value"] = pd.to_numeric(df[val_col], errors="coerce") if val_col else np.nan
+
+    if "log_variance" in df.columns or "logvar" in df.columns:
+        log_col = "log_variance" if "log_variance" in df.columns else "logvar"
+        df["log_variance"] = pd.to_numeric(df[log_col], errors="coerce")
+    elif "variance" in df.columns:
+        df["log_variance"] = np.log(pd.to_numeric(df["variance"], errors="coerce"))
+    else:
+        df["log_variance"] = np.nan
+
+    model_col = next(
+        (c for c in ["executed_model_idx", "model_idx", "model"] if c in df.columns),
+        None,
+    )
+    if model_col:
+        df["executed_model_idx"] = pd.to_numeric(df[model_col], errors="coerce")
+    else:
+        df["executed_model_idx"] = np.nan
+
+    if "decision_id" in df.columns:
+        df["decision_id"] = pd.to_numeric(df["decision_id"], errors="coerce")
+    else:
+        df["decision_id"] = np.nan
+
+    cols = [
+        "timestamp",
+        "symbol",
+        "direction",
+        "lots",
+        "probability",
+        "value",
+        "log_variance",
+        "executed_model_idx",
+        "decision_id",
+    ]
+    return df[cols]
 
 
-def _load_actual_trades(log_file: Path) -> List[Dict]:
-    with open(log_file, newline="") as f:
-        reader = csv.DictReader(f, delimiter=";")
-        open_map: Dict[str, Dict] = {}
-        trades = []
-        for r in reader:
-            action = (r.get("action") or "").upper()
-            ticket = r.get("ticket")
-            ts = _parse_time(
-                r.get("event_time") or r.get("time_event") or r[reader.fieldnames[0]],
-                symbol=r.get("symbol", ""),
-            )
-            if action == "OPEN":
-                open_map[ticket] = {
-                    "open_time": ts,
-                    "symbol": r.get("symbol", ""),
-                    "direction": 1 if int(float(r.get("order_type", 0))) == 0 else -1,
-                    "lots": float(r.get("lots", 0) or 0),
-                    "executed_model_idx": (
-                        int(float(r.get("executed_model_idx", -1) or -1))
-                    ),
-                    "decision_id": (int(float(r.get("decision_id", 0) or 0))),
-                }
-            elif action == "CLOSE" and ticket in open_map:
-                o = open_map.pop(ticket)
-                profit = float(r.get("profit", 0) or 0)
-                trade = {**o, "close_time": ts, "profit": profit}
-                trades.append(trade)
-    return trades
+def _load_actual_trades(log_file: Path) -> pd.DataFrame:
+    df = pd.read_csv(log_file, delimiter=";")
+
+    ts_col = next((c for c in ["event_time", "time_event"] if c in df.columns), df.columns[0])
+    sym_col = "symbol" if "symbol" in df.columns else None
+    if sym_col is None:
+        df["symbol"] = ""
+        sym_col = "symbol"
+    df["timestamp"] = df.apply(
+        lambda r: _parse_time(str(r[ts_col]), symbol=str(r.get(sym_col, ""))), axis=1
+    )
+    df["action"] = df.get("action", "").astype(str).str.upper()
+    df["ticket"] = df.get("ticket").astype(str)
+
+    open_df = df[df["action"] == "OPEN"].copy()
+    close_df = df[df["action"] == "CLOSE"].copy()
+
+    open_df = open_df.rename(columns={"timestamp": "open_time"})
+    if "profit" in open_df.columns:
+        open_df = open_df.drop(columns=["profit"])
+    open_df["direction"] = (
+        pd.to_numeric(open_df.get("order_type", 0), errors="coerce")
+        .fillna(0)
+        .astype(int)
+        .map({0: 1})
+        .fillna(-1)
+        .astype(int)
+    )
+    open_df["lots"] = pd.to_numeric(open_df.get("lots", 0), errors="coerce").fillna(0.0)
+    open_df["executed_model_idx"] = pd.to_numeric(
+        open_df.get("executed_model_idx"), errors="coerce"
+    )
+    open_df["decision_id"] = pd.to_numeric(
+        open_df.get("decision_id"), errors="coerce"
+    )
+
+    close_df = close_df.rename(columns={"timestamp": "close_time"})
+    close_df["profit"] = pd.to_numeric(close_df.get("profit", 0), errors="coerce").fillna(0.0)
+
+    trades = pd.merge(
+        open_df,
+        close_df[["ticket", "close_time", "profit"]],
+        on="ticket",
+        how="inner",
+    )
+    cols = [
+        "open_time",
+        "close_time",
+        "symbol",
+        "direction",
+        "lots",
+        "executed_model_idx",
+        "decision_id",
+        "ticket",
+        "profit",
+    ]
+    return trades[cols]
 
 
 def evaluate(
     pred_file: Path, actual_log: Path, window: int, model_json: Optional[Path] = None
 ) -> Dict:
     predictions = _load_predictions(pred_file)
-    actual_trades = _load_actual_trades(actual_log)
+    trades = _load_actual_trades(actual_log)
+
     conformal_lower = None
     conformal_upper = None
     model_value_mean = None
@@ -165,159 +189,170 @@ def evaluate(
                 symbol="model",
                 timestamp=datetime.utcnow(),
             ) from exc
-    matches = 0
-    gross_profit = 0.0
-    gross_loss = 0.0
-    profits: List[float] = []
-    trade_times: List[datetime] = []
-    used = set()
-    predictions_per_model: Dict[int, int] = {}
-    matches_per_model: Dict[int, int] = {}
-    trade_by_decision: Dict[int, Dict] = {}
+
+    # Initial merge on decision_id when available
+    if (
+        predictions["decision_id"].notna().any()
+        and trades["decision_id"].notna().any()
+    ):
+        merged = predictions.merge(
+            trades[["decision_id", "open_time", "close_time", "profit", "ticket"]],
+            on="decision_id",
+            how="left",
+        )
+    else:
+        merged = predictions.copy()
+        merged["open_time"] = pd.NaT
+        merged["close_time"] = pd.NaT
+        merged["profit"] = np.nan
+        merged["ticket"] = pd.NA
+    matched_tickets = merged["ticket"].dropna().unique()
+
+    # Match remaining predictions by timestamp within window
+    unmatched_mask = merged["ticket"].isna()
+    if unmatched_mask.any():
+        remaining_trades = trades[~trades["ticket"].isin(matched_tickets)]
+        pred_unmatched = merged.loc[unmatched_mask, predictions.columns]
+        asof = pd.merge_asof(
+            pred_unmatched.sort_values("timestamp"),
+            remaining_trades.sort_values("open_time"),
+            left_on="timestamp",
+            right_on="open_time",
+            by=["symbol", "direction"],
+            tolerance=pd.Timedelta(seconds=window),
+            direction="forward",
+        )
+        asof_nonan = asof.dropna(subset=["ticket"])
+        asof_unique = asof_nonan.sort_values("timestamp").drop_duplicates(
+            "ticket", keep="first"
+        )
+        merged.loc[asof_unique.index, "open_time"] = asof_unique["open_time"].values
+        merged.loc[asof_unique.index, "close_time"] = asof_unique["close_time"].values
+        merged.loc[asof_unique.index, "profit"] = asof_unique["profit"].values
+        merged.loc[asof_unique.index, "ticket"] = asof_unique["ticket"].values
+        matched_tickets = np.concatenate([matched_tickets, asof_unique["ticket"].unique()])
+
+    unused_trades = trades[~trades["ticket"].isin(matched_tickets)]
+
+    matched_mask = merged["ticket"].notna()
+    matches = int(matched_mask.sum())
+    profits = merged.loc[matched_mask, "profit"].astype(float)
+    trade_times = merged.loc[matched_mask, "close_time"]
+
+    gross_profit = float(profits[profits >= 0].sum())
+    gross_loss = float(-profits[profits < 0].sum())
+
+    predictions_per_model = (
+        merged["executed_model_idx"].dropna().astype(int).value_counts().to_dict()
+    )
+    matches_per_model = (
+        merged.loc[matched_mask, "executed_model_idx"].dropna().astype(int).value_counts().to_dict()
+    )
+
+    mask_probs = merged["probability"].notna()
+    y_true = matched_mask.astype(int)
+    y_score = merged["probability"].fillna(0.0)
+    y_true_list = y_true[mask_probs].tolist()
+    y_score_list = y_score[mask_probs].tolist()
+    y_true_list.extend([1] * len(unused_trades))
+    y_score_list.extend([0.0] * len(unused_trades))
+
     bound_in = 0
     bound_total = 0
-    y_true: List[int] = []
-    y_score: List[float] = []
-    nll_values: List[float] = []
-    es_pred_values: List[float] = []
-    for idx, trade in enumerate(actual_trades):
-        did = trade.get("decision_id")
-        if did is not None and did not in trade_by_decision:
-            trade_by_decision[did] = {"index": idx, "trade": trade}
-    for pred in predictions:
-        model_idx = pred.get("executed_model_idx")
-        if model_idx is not None:
-            predictions_per_model[model_idx] = (
-                predictions_per_model.get(model_idx, 0) + 1
-            )
-        match_idx = None
-        if pred.get("decision_id") is not None:
-            entry = trade_by_decision.get(pred["decision_id"])
-            if entry and entry["index"] not in used:
-                match_idx = entry["index"]
-        if match_idx is None:
-            for idx, trade in enumerate(actual_trades):
-                if idx in used:
-                    continue
-                if trade["symbol"] != pred["symbol"]:
-                    continue
-                if trade["direction"] != pred["direction"]:
-                    continue
-                delta = (trade["open_time"] - pred["timestamp"]).total_seconds()
-                if 0 <= delta <= window:
-                    match_idx = idx
-                    break
+    if conformal_lower is not None and conformal_upper is not None:
+        bound_total = int(mask_probs.sum())
+        bound_in = int(
+            (
+                (merged.loc[mask_probs, "probability"] >= conformal_lower)
+                & (merged.loc[mask_probs, "probability"] <= conformal_upper)
+            ).sum()
+        )
 
-        label = 1 if match_idx is not None else 0
-        prob = pred.get("probability")
-        if prob is not None:
-            y_true.append(label)
-            y_score.append(prob)
-            if conformal_lower is not None and conformal_upper is not None:
-                bound_total += 1
-                if conformal_lower <= prob <= conformal_upper:
-                    bound_in += 1
+    mu = merged.loc[matched_mask, "value"]
+    log_v = merged.loc[matched_mask, "log_variance"]
+    valid = mu.notna() & log_v.notna()
+    var = np.exp(log_v[valid])
+    p = profits[valid]
+    nll_values = (
+        0.5 * (np.log(2 * np.pi) + log_v[valid] + ((p - mu[valid]) ** 2) / var)
+    )
+    nd = NormalDist()
+    z = nd.inv_cdf(0.05)
+    c = nd.pdf(z) / 0.05
+    es_pred_values = mu[valid] - np.sqrt(var) * c
 
-        if match_idx is not None:
-            used.add(match_idx)
-            matches += 1
-            trade = actual_trades[match_idx]
-            p = trade["profit"]
-            profits.append(p)
-            trade_times.append(trade["close_time"])
-            if p >= 0:
-                gross_profit += p
-            else:
-                gross_loss += -p
-            if model_idx is not None:
-                matches_per_model[model_idx] = matches_per_model.get(model_idx, 0) + 1
-            mu = pred.get("value")
-            log_v = pred.get("log_variance")
-            if mu is not None and log_v is not None:
-                var = math.exp(log_v)
-                nll = 0.5 * (math.log(2 * math.pi) + log_v + ((p - mu) ** 2) / var)
-                nll_values.append(nll)
-                sigma = math.sqrt(var)
-                nd = NormalDist()
-                z = nd.inv_cdf(0.05)
-                es_pred_values.append(mu - sigma * nd.pdf(z) / 0.05)
-
-    for idx, trade in enumerate(actual_trades):
-        if idx not in used:
-            y_true.append(1)
-            y_score.append(0.0)
     tp = matches
     fp = len(predictions) - matches
-    fn = len(actual_trades) - matches
+    fn = len(trades) - matches
     total = tp + fp + fn
     accuracy = tp / total if total else 0.0
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
     expectancy = (gross_profit - gross_loss) / matches if matches else 0.0
-    expected_return = sum(profits) / len(profits) if profits else 0.0
-    downside = [p for p in profits if p < 0]
-    downside_risk = -sum(downside) / len(downside) if downside else 0.0
+    expected_return = float(profits.mean()) if matches else 0.0
+    downside = profits[profits < 0]
+    downside_risk = float(-downside.mean()) if len(downside) else 0.0
     risk_reward = expected_return - downside_risk
-    cvar = 0.0
-    var_95 = 0.0
-    es_95 = 0.0
-    if profits:
-        sorted_profits = sorted(profits)
-        n_tail = max(1, int(math.ceil(len(sorted_profits) * 0.05)))
+
+    if matches:
+        sorted_profits = np.sort(profits.values)
+        n_tail = max(1, int(np.ceil(len(sorted_profits) * 0.05)))
         tail = sorted_profits[:n_tail]
-        cvar = sum(tail) / len(tail)
+        cvar = float(tail.mean())
         var_95 = float(np.quantile(profits, 0.05))
-        es_95 = float(np.mean([p for p in profits if p <= var_95]))
-    sharpe = 0.0
-    sortino = 0.0
-    if len(profits) > 1:
+        es_95 = float(profits[profits <= var_95].mean())
+    else:
+        cvar = var_95 = es_95 = 0.0
+
+    sharpe = sortino = 0.0
+    if matches > 1:
         mean = expected_return
-        variance = sum((p - mean) ** 2 for p in profits) / (len(profits) - 1)
+        variance = float(profits.var(ddof=1))
         std = math.sqrt(variance)
         if std > 0:
             sharpe = mean / std
-        downside_dev = 0.0
-        if downside:
-            downside_dev = math.sqrt(sum((p) ** 2 for p in downside) / len(downside))
-        if downside_dev > 0:
-            sortino = mean / downside_dev
-    annual_sharpe = 0.0
-    annual_sortino = 0.0
-    if trade_times and len(profits) > 1:
-        start = min(trade_times)
-        end = max(trade_times)
+        if len(downside):
+            downside_dev = math.sqrt(float((downside**2).mean()))
+            if downside_dev > 0:
+                sortino = mean / downside_dev
+
+    annual_sharpe = annual_sortino = 0.0
+    if matches > 1 and not trade_times.isna().all():
+        start = trade_times.min()
+        end = trade_times.max()
         years = (end - start).total_seconds() / (365 * 24 * 3600)
         if years <= 0:
             years = 1.0
-        trades_per_year = len(profits) / years
+        trades_per_year = matches / years
         factor = math.sqrt(trades_per_year)
         annual_sharpe = sharpe * factor
         annual_sortino = sortino * factor
-    roc_auc = None
-    pr_auc = None
-    brier = None
+
+    roc_auc = pr_auc = brier = None
     reliability = {"prob_true": [], "prob_pred": []}
-    if y_score:
-        brier = brier_score_loss(y_true, y_score)
+    if y_score_list:
+        brier = brier_score_loss(y_true_list, y_score_list)
         try:
-            prob_true, prob_pred = calibration_curve(y_true, y_score, n_bins=10)
+            prob_true, prob_pred = calibration_curve(y_true_list, y_score_list, n_bins=10)
             reliability = {
                 "prob_true": prob_true.tolist(),
                 "prob_pred": prob_pred.tolist(),
             }
         except ValueError:
             pass
-        if len(set(y_true)) > 1:
-            roc_auc = roc_auc_score(y_true, y_score)
-            pr_auc = average_precision_score(y_true, y_score)
+        if len(set(y_true_list)) > 1:
+            roc_auc = roc_auc_score(y_true_list, y_score_list)
+            pr_auc = average_precision_score(y_true_list, y_score_list)
+
     conformal = bound_in / bound_total if bound_total else None
-    nll_mean = float(np.mean(nll_values)) if nll_values else None
-    es_pred_mean = float(np.mean(es_pred_values)) if es_pred_values else None
+    nll_mean = float(nll_values.mean()) if len(nll_values) else None
+    es_pred_mean = float(es_pred_values.mean()) if len(es_pred_values) else None
+
     stats: Dict[str, object] = {
         "matched_events": matches,
         "predicted_events": len(predictions),
-        "actual_events": len(actual_trades),
+        "actual_events": len(trades),
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
