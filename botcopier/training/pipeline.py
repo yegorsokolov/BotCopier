@@ -92,6 +92,7 @@ def train(
     distributed: bool = False,
     use_gpu: bool = False,
     random_seed: int = 0,
+    n_jobs: int | None = None,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -141,7 +142,9 @@ def train(
                 chunk = chunk.merge(feat_df, on=["symbol", "event_time"], how="left")
                 feature_names = list(FEATURE_COLUMNS)
             else:
-                chunk, feature_names, _, _ = _extract_features(chunk, feature_names)
+                chunk, feature_names, _, _ = _extract_features(
+                    chunk, feature_names, n_jobs=n_jobs
+                )
             FeatureSchema.validate(chunk[feature_names], lazy=True)
             if label_col is None:
                 label_col = next(
@@ -169,7 +172,9 @@ def train(
             df = df.merge(feat_df, on=["symbol", "event_time"], how="left")
             feature_names = list(FEATURE_COLUMNS)
         else:
-            df, feature_names, _, _ = _extract_features(df, feature_names)
+            df, feature_names, _, _ = _extract_features(
+                df, feature_names, n_jobs=n_jobs
+            )
         FeatureSchema.validate(df[feature_names], lazy=True)
         label_col = next((c for c in df.columns if c.startswith("label")), None)
         if label_col is None:
