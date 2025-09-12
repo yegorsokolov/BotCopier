@@ -1,10 +1,10 @@
 import json
-import math
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 from statistics import NormalDist
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ from sklearn.metrics import (
 )
 
 from botcopier.exceptions import DataError
-
+from metrics.registry import get_metrics, register_metric
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,9 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
         lambda r: _parse_time(str(r[ts_col]), symbol=str(r.get(sym_col, ""))), axis=1
     )
 
-    dir_col = next((c for c in ["direction", "order_type"] if c in df.columns), "direction")
+    dir_col = next(
+        (c for c in ["direction", "order_type"] if c in df.columns), "direction"
+    )
     df["direction"] = (
         df.get(dir_col, "")
         .astype(str)
@@ -56,12 +58,16 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
 
     df["lots"] = pd.to_numeric(df.get("lots", 0), errors="coerce").fillna(0.0)
 
-    prob_col = next((c for c in ["probability", "prob", "proba"] if c in df.columns), None)
+    prob_col = next(
+        (c for c in ["probability", "prob", "proba"] if c in df.columns), None
+    )
     df["probability"] = (
         pd.to_numeric(df[prob_col], errors="coerce") if prob_col else np.nan
     )
 
-    val_col = next((c for c in ["expected_value", "value", "pnl"] if c in df.columns), None)
+    val_col = next(
+        (c for c in ["expected_value", "value", "pnl"] if c in df.columns), None
+    )
     df["value"] = pd.to_numeric(df[val_col], errors="coerce") if val_col else np.nan
 
     if "log_variance" in df.columns or "logvar" in df.columns:
@@ -103,7 +109,9 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
 def _load_actual_trades(log_file: Path) -> pd.DataFrame:
     df = pd.read_csv(log_file, delimiter=";")
 
-    ts_col = next((c for c in ["event_time", "time_event"] if c in df.columns), df.columns[0])
+    ts_col = next(
+        (c for c in ["event_time", "time_event"] if c in df.columns), df.columns[0]
+    )
     sym_col = "symbol" if "symbol" in df.columns else None
     if sym_col is None:
         df["symbol"] = ""
@@ -132,12 +140,12 @@ def _load_actual_trades(log_file: Path) -> pd.DataFrame:
     open_df["executed_model_idx"] = pd.to_numeric(
         open_df.get("executed_model_idx"), errors="coerce"
     )
-    open_df["decision_id"] = pd.to_numeric(
-        open_df.get("decision_id"), errors="coerce"
-    )
+    open_df["decision_id"] = pd.to_numeric(open_df.get("decision_id"), errors="coerce")
 
     close_df = close_df.rename(columns={"timestamp": "close_time"})
-    close_df["profit"] = pd.to_numeric(close_df.get("profit", 0), errors="coerce").fillna(0.0)
+    close_df["profit"] = pd.to_numeric(
+        close_df.get("profit", 0), errors="coerce"
+    ).fillna(0.0)
 
     trades = pd.merge(
         open_df,
@@ -191,10 +199,7 @@ def evaluate(
             ) from exc
 
     # Initial merge on decision_id when available
-    if (
-        predictions["decision_id"].notna().any()
-        and trades["decision_id"].notna().any()
-    ):
+    if predictions["decision_id"].notna().any() and trades["decision_id"].notna().any():
         merged = predictions.merge(
             trades[["decision_id", "open_time", "close_time", "profit", "ticket"]],
             on="decision_id",
@@ -230,7 +235,9 @@ def evaluate(
         merged.loc[asof_unique.index, "close_time"] = asof_unique["close_time"].values
         merged.loc[asof_unique.index, "profit"] = asof_unique["profit"].values
         merged.loc[asof_unique.index, "ticket"] = asof_unique["ticket"].values
-        matched_tickets = np.concatenate([matched_tickets, asof_unique["ticket"].unique()])
+        matched_tickets = np.concatenate(
+            [matched_tickets, asof_unique["ticket"].unique()]
+        )
 
     unused_trades = trades[~trades["ticket"].isin(matched_tickets)]
 
@@ -246,7 +253,11 @@ def evaluate(
         merged["executed_model_idx"].dropna().astype(int).value_counts().to_dict()
     )
     matches_per_model = (
-        merged.loc[matched_mask, "executed_model_idx"].dropna().astype(int).value_counts().to_dict()
+        merged.loc[matched_mask, "executed_model_idx"]
+        .dropna()
+        .astype(int)
+        .value_counts()
+        .to_dict()
     )
 
     mask_probs = merged["probability"].notna()
@@ -273,9 +284,7 @@ def evaluate(
     valid = mu.notna() & log_v.notna()
     var = np.exp(log_v[valid])
     p = profits[valid]
-    nll_values = (
-        0.5 * (np.log(2 * np.pi) + log_v[valid] + ((p - mu[valid]) ** 2) / var)
-    )
+    nll_values = 0.5 * (np.log(2 * np.pi) + log_v[valid] + ((p - mu[valid]) ** 2) / var)
     nd = NormalDist()
     z = nd.inv_cdf(0.05)
     c = nd.pdf(z) / 0.05
@@ -334,7 +343,9 @@ def evaluate(
     if y_score_list:
         brier = brier_score_loss(y_true_list, y_score_list)
         try:
-            prob_true, prob_pred = calibration_curve(y_true_list, y_score_list, n_bins=10)
+            prob_true, prob_pred = calibration_curve(
+                y_true_list, y_score_list, n_bins=10
+            )
             reliability = {
                 "prob_true": prob_true.tolist(),
                 "prob_pred": prob_pred.tolist(),
@@ -394,75 +405,112 @@ def evaluate(
     return stats
 
 
-def _classification_metrics(
-    y_true: np.ndarray,
-    probas: np.ndarray,
-    profits: np.ndarray | None = None,
-) -> Dict[str, object]:
-    """Compute classification and calibration metrics.
-
-    Parameters
-    ----------
-    y_true:
-        Ground truth binary labels.
-    probas:
-        Predicted probabilities for the positive class.
-    profits:
-        Optional profit/return per sample used for Sharpe and Sortino ratios.
-
-    Returns
-    -------
-    dict
-        Dictionary containing accuracy, ROC-AUC, PR-AUC, Brier score, Sharpe
-        ratio, Sortino ratio and reliability curve data.
-    """
-
+def _metric_accuracy(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
     preds = (probas >= 0.5).astype(int)
-    accuracy = accuracy_score(y_true, preds)
-    roc_auc = roc_auc_score(y_true, probas) if len(set(y_true.tolist())) > 1 else None
-    pr_auc = (
-        average_precision_score(y_true, probas)
+    return float(accuracy_score(y_true, preds))
+
+
+def _metric_roc_auc(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float | None:
+    return (
+        float(roc_auc_score(y_true, probas)) if len(set(y_true.tolist())) > 1 else None
+    )
+
+
+def _metric_pr_auc(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float | None:
+    return (
+        float(average_precision_score(y_true, probas))
         if len(set(y_true.tolist())) > 1
         else None
     )
-    brier = brier_score_loss(y_true, probas)
+
+
+def _metric_brier(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
+    return float(brier_score_loss(y_true, probas))
+
+
+def _metric_reliability(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> Dict[str, List[float]]:
     try:
         prob_true, prob_pred = calibration_curve(y_true, probas, n_bins=10)
-        reliability = {
-            "prob_true": prob_true.tolist(),
-            "prob_pred": prob_pred.tolist(),
-        }
+        return {"prob_true": prob_true.tolist(), "prob_pred": prob_pred.tolist()}
     except ValueError:
-        reliability = {"prob_true": [], "prob_pred": []}
+        return {"prob_true": [], "prob_pred": []}
 
+
+def _returns(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None
+) -> np.ndarray:
+    preds = (probas >= 0.5).astype(int)
     if profits is None:
-        returns = np.where(preds == y_true, 1.0, -1.0)
-    else:
-        returns = profits
-    sharpe = 0.0
-    sortino = 0.0
+        return np.where(preds == y_true, 1.0, -1.0)
+    return profits
+
+
+def _metric_sharpe(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
+    returns = _returns(y_true, probas, profits)
     if returns.size > 1:
         mean = float(np.mean(returns))
         std = float(np.std(returns, ddof=1))
         if std > 0:
-            sharpe = mean / std
+            return mean / std
+    return 0.0
+
+
+def _metric_sortino(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
+    returns = _returns(y_true, probas, profits)
+    if returns.size > 0:
+        mean = float(np.mean(returns))
         downside = returns[returns < 0]
         if downside.size > 0:
             downside_std = float(np.sqrt(np.mean(downside**2)))
             if downside_std > 0:
-                sortino = mean / downside_std
+                return mean / downside_std
+    return 0.0
 
-    profit = float(np.sum(returns))
-    return {
-        "accuracy": float(accuracy),
-        "roc_auc": None if roc_auc is None else float(roc_auc),
-        "pr_auc": None if pr_auc is None else float(pr_auc),
-        "brier_score": float(brier),
-        "sharpe_ratio": float(sharpe),
-        "sortino_ratio": float(sortino),
-        "reliability_curve": reliability,
-        "profit": profit,
-    }
+
+def _metric_profit(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
+    returns = _returns(y_true, probas, profits)
+    return float(np.sum(returns))
+
+
+# Register default metrics
+register_metric("accuracy", _metric_accuracy)
+register_metric("roc_auc", _metric_roc_auc)
+register_metric("pr_auc", _metric_pr_auc)
+register_metric("brier_score", _metric_brier)
+register_metric("reliability_curve", _metric_reliability)
+register_metric("sharpe_ratio", _metric_sharpe)
+register_metric("sortino_ratio", _metric_sortino)
+register_metric("profit", _metric_profit)
+
+
+def _classification_metrics(
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    selected: Sequence[str] | None = None,
+) -> Dict[str, object]:
+    """Compute classification and calibration metrics."""
+
+    results: Dict[str, object] = {}
+    for name, fn in get_metrics(selected).items():
+        results[name] = fn(y_true, probas, profits)
+    return results
 
 
 def bootstrap_metrics(
