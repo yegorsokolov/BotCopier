@@ -1,6 +1,7 @@
 import csv
 import json
 import math
+import logging
 from datetime import datetime
 from pathlib import Path
 from statistics import NormalDist
@@ -16,6 +17,9 @@ from sklearn.metrics import (
 )
 
 from botcopier.exceptions import DataError
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_time(value: str, *, symbol: str = "") -> datetime:
@@ -424,6 +428,71 @@ def _classification_metrics(
         "reliability_curve": reliability,
         "profit": profit,
     }
+
+
+def bootstrap_metrics(
+    y: np.ndarray,
+    probs: np.ndarray,
+    returns: np.ndarray,
+    n_boot: int = 1000,
+) -> Dict[str, Dict[str, float]]:
+    """Estimate metric confidence intervals via bootstrapping.
+
+    Parameters
+    ----------
+    y:
+        Ground truth binary labels.
+    probs:
+        Predicted probabilities for the positive class.
+    returns:
+        Profit/return per sample used for Sharpe, Sortino and profit metrics.
+    n_boot:
+        Number of bootstrap resamples.
+
+    Returns
+    -------
+    dict
+        Mapping of metric names to a dict with ``mean`` and 95%% confidence
+        interval bounds ``low`` and ``high``.
+    """
+
+    rng = np.random.default_rng(0)
+    n = y.shape[0]
+    keys = [
+        "accuracy",
+        "roc_auc",
+        "pr_auc",
+        "brier_score",
+        "sharpe_ratio",
+        "sortino_ratio",
+        "profit",
+    ]
+    collected: Dict[str, List[float]] = {k: [] for k in keys}
+
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        metrics = _classification_metrics(y[idx], probs[idx], returns[idx])
+        for k in keys:
+            v = metrics.get(k)
+            if v is not None:
+                collected[k].append(float(v))
+
+    results: Dict[str, Dict[str, float]] = {}
+    for k, vals in collected.items():
+        arr = np.asarray(vals, dtype=float)
+        mean = float(np.mean(arr))
+        low, high = np.quantile(arr, [0.025, 0.975])
+        results[k] = {"mean": mean, "low": float(low), "high": float(high)}
+
+    for k, v in results.items():
+        logger.info(
+            "%s: mean=%.6f, 95%% CI=(%.6f, %.6f)", k, v["mean"], v["low"], v["high"]
+        )
+
+    with open("metrics.json", "w") as f:
+        json.dump(results, f, indent=2)
+
+    return results
 
 
 def evaluate_model(
