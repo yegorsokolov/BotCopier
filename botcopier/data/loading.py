@@ -112,8 +112,16 @@ def _load_logs(
     hold_period: int = 20,
     augment_ratio: float = 0.0,
     dtw_augment: bool = False,
+    mmap_threshold: int = 50 * 1024 * 1024,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], dict[str, str]]:
     """Load trade logs from ``trades_raw.csv``.
+
+    Parameters
+    ----------
+    mmap_threshold : int, optional
+        If ``lite_mode`` is ``False`` and the input file exceeds this size in
+        bytes, a memory-mapped/pyarrow-based reader is used to avoid loading the
+        entire dataset into memory.
 
     Returns
     -------
@@ -123,6 +131,12 @@ def _load_logs(
     """
     file = data_dir if data_dir.is_file() else data_dir / "trades_raw.csv"
     cs = chunk_size or (50000 if lite_mode else None)
+    use_mmap = (
+        not lite_mode
+        and cs is None
+        and file.exists()
+        and file.stat().st_size > mmap_threshold
+    )
     data_hashes: dict[str, str] = {}
     if file.exists():
         data_hashes[str(file.resolve())] = hashlib.sha256(
@@ -310,6 +324,27 @@ def _load_logs(
                 yield df_chunk
 
         return _iter(), feature_cols, data_hashes
+
+    if use_mmap:
+        try:  # Prefer pyarrow.dataset for lazy access when available
+            import pyarrow.dataset as ds
+
+            dataset = ds.dataset(str(file), format="csv")
+            batches = dataset.to_batches()
+            first_batch = next(batches)
+            first_chunk, feature_cols = _process(first_batch.to_pandas())
+
+            def _iter():
+                yield first_chunk
+                for batch in batches:
+                    df_chunk, _ = _process(batch.to_pandas())
+                    yield df_chunk
+
+            return _iter(), feature_cols, data_hashes
+        except Exception:  # pragma: no cover - pyarrow.dataset missing
+            reader = pd.read_csv(file, memory_map=True)
+            df, feature_cols = _process(reader)
+            return df, feature_cols, data_hashes
 
     reader = pd.read_csv(file, chunksize=cs, iterator=cs is not None)
     if cs:
