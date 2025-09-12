@@ -35,3 +35,25 @@ def test_train_model_half_life_weights(tmp_path):
     assert proba_short > proba_long
     assert model_short["half_life_days"] == 0.5
     assert model_long["half_life_days"] == 1000
+
+
+def test_vif_filtering_reduces_features_and_changes_coefficients(tmp_path):
+    rng = np.random.default_rng(0)
+    n = 200
+    x1 = rng.normal(size=n)
+    x2 = x1 * 0.99 + rng.normal(scale=0.01, size=n)
+    x3 = rng.normal(size=n)
+    X = np.column_stack([x1, x2, x3])
+    y = (x1 + x3 + rng.normal(scale=0.1, size=n) > 0).astype(int)
+    times = np.arange(n, dtype="timedelta64[s]") + np.datetime64("2024-01-01")
+    feats = ["x1", "x2", "x3"]
+
+    model_no = train_model(
+        X, y, times, tmp_path / "no_vif", feature_names=feats, vif_threshold=float("inf")
+    )
+    model_vif = train_model(
+        X, y, times, tmp_path / "with_vif", feature_names=feats, vif_threshold=5.0
+    )
+
+    assert len(model_vif["coefficients"]) < len(model_no["coefficients"])
+    assert not np.isclose(model_vif["intercept"], model_no["intercept"])
