@@ -24,6 +24,11 @@ _TEMPLATE = """
 ## Metrics
 {% for key, value in metrics.items() %}- **{{ key }}:** {{ '%.4f' | format(value) if value is not none else 'N/A' }}
 {% endfor %}
+{% if dependencies_path %}
+
+## Environment
+See [dependencies]({{ dependencies_path }}) for the exact package versions.
+{% endif %}
 """
 
 
@@ -31,6 +36,8 @@ def generate_model_card(
     model_params: ModelParams,
     metrics: Mapping[str, object],
     output_path: Path,
+    *,
+    dependencies_path: Path | None = None,
 ) -> None:
     """Render and write a simple model card.
 
@@ -45,5 +52,8 @@ def generate_model_card(
     """
     env = Environment(autoescape=select_autoescape())
     template = env.from_string(_TEMPLATE)
-    content = template.render(params=model_params, metrics=metrics)
+    dep_ref = dependencies_path.name if dependencies_path else None
+    content = template.render(
+        params=model_params, metrics=metrics, dependencies_path=dep_ref
+    )
     Path(output_path).write_text(content)

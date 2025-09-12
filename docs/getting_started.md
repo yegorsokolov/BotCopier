@@ -8,6 +8,12 @@ Follow these steps to set up the BotCopier project locally.
    ```bash
    pip install -r requirements.txt
    ```
+   Training runs snapshot the environment to `dependencies.txt` in their output
+   directories. Reinstall from this file to reproduce the exact package
+   versions:
+   ```bash
+   pip install -r dependencies.txt
+   ```
 
 ## Documentation
 Build the documentation locally with:
