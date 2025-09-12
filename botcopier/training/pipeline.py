@@ -15,6 +15,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 import psutil
+from sklearn.preprocessing import PowerTransformer
 
 try:  # optional polars support
     import polars as pl  # type: ignore
@@ -232,6 +233,24 @@ def train(
         y = (profits > 0).astype(float)
     sample_weight = np.clip(profits, a_min=0.0, a_max=None)
 
+    # --- Power transformation for highly skewed features -----------------
+    skew_threshold = float(kwargs.get("skew_threshold", 1.0))
+    pt_meta: dict[str, list] | None = None
+    if X.size and feature_names:
+        df_skew = pd.DataFrame(X, columns=feature_names)
+        skewness = df_skew.skew(axis=0).abs()
+        skew_cols = skewness[skewness > skew_threshold].index.tolist()
+        if skew_cols:
+            pt = PowerTransformer(method="yeo-johnson")
+            idx = [feature_names.index(c) for c in skew_cols]
+            X[:, idx] = pt.fit_transform(X[:, idx])
+            pt_meta = {
+                "features": skew_cols,
+                "lambdas": pt.lambdas_.tolist(),
+                "mean": pt._scaler.mean_.tolist(),
+                "scale": pt._scaler.scale_.tolist(),
+            }
+
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
     if mlflow_active and not _HAS_MLFLOW:
         raise RuntimeError("mlflow is required for tracking")
@@ -429,6 +448,17 @@ def train(
             "feature_metadata": feature_metadata,
             **model_data,
         }
+        if pt_meta is not None:
+            keep = [f for f in pt_meta["features"] if f in feature_names]
+            if keep:
+                idx = [pt_meta["features"].index(f) for f in keep]
+                pt_meta = {
+                    "features": keep,
+                    "lambdas": [pt_meta["lambdas"][i] for i in idx],
+                    "mean": [pt_meta["mean"][i] for i in idx],
+                    "scale": [pt_meta["scale"][i] for i in idx],
+                }
+                model["power_transformer"] = pt_meta
         if "feature_mean" not in model:
             model["feature_mean"] = X.mean(axis=0).tolist()
         if "feature_std" not in model:
