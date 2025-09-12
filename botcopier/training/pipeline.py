@@ -34,7 +34,7 @@ from botcopier.features.technical import (
     _neutralize_against_market_index,
 )
 from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
-from botcopier.models.schema import ModelParams
+from botcopier.models.schema import FeatureMetadata, ModelParams
 from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.splitters import PurgedWalkForward
@@ -364,7 +364,12 @@ def train(
         probas = predict_fn(X)
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
-        model = {"feature_names": feature_names, **model_data}
+        feature_metadata = [FeatureMetadata(original_column=fn) for fn in feature_names]
+        model = {
+            "feature_names": feature_names,
+            "feature_metadata": feature_metadata,
+            **model_data,
+        }
         if "feature_mean" not in model:
             model["feature_mean"] = X.mean(axis=0).tolist()
         if "feature_std" not in model:
@@ -400,9 +405,7 @@ def train(
         model["data_hashes"] = data_hashes
         model_params = ModelParams(**model)
         (out_dir / "model.json").write_text(model_params.model_dump_json())
-        (out_dir / "data_hashes.json").write_text(
-            json.dumps(data_hashes, indent=2)
-        )
+        (out_dir / "data_hashes.json").write_text(json.dumps(data_hashes, indent=2))
         model_obj = getattr(predict_fn, "model", None)
         generate_model_card(model_params, metrics, out_dir / "model_card.md")
         if model_obj is not None:

@@ -14,6 +14,7 @@ from botcopier.metrics import (
     observe_latency,
     start_metrics_server,
 )
+from botcopier.models.schema import FeatureMetadata
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -34,7 +35,12 @@ try:
         MODEL = json.load(f)
 except FileNotFoundError:
     MODEL = {"feature_names": [], "entry_coefficients": [], "entry_intercept": 0.0}
-FEATURE_NAMES = MODEL.get("feature_names", FEATURE_COLUMNS)
+
+FEATURE_METADATA = [FeatureMetadata(**m) for m in MODEL.get("feature_metadata", [])]
+_EXPECTED_COLS = [fm.original_column for fm in FEATURE_METADATA]
+FEATURE_NAMES = MODEL.get("feature_names", _EXPECTED_COLS or FEATURE_COLUMNS)
+if FEATURE_METADATA and len(FEATURE_NAMES) != len(FEATURE_METADATA):
+    raise ValueError("feature_names and feature_metadata mismatch")
 
 if _HAS_FEAST:
     FS_REPO = BASE_DIR / "feature_store" / "feast_repo"
@@ -62,9 +68,10 @@ def _predict_one(features: List[float]) -> float:
 
     coeffs = MODEL.get("entry_coefficients", [])
     intercept = MODEL.get("entry_intercept", 0.0)
-    if len(coeffs) != len(FEATURE_NAMES):
+    expected = len(FEATURE_METADATA) or len(FEATURE_NAMES)
+    if len(coeffs) != expected:
         raise ValueError("model definition inconsistent")
-    if len(features) != len(FEATURE_NAMES):
+    if len(features) != expected:
         raise ValueError("feature length mismatch")
     score = sum(c * f for c, f in zip(coeffs, features)) + intercept
     return 1.0 / (1.0 + math.exp(-score))
@@ -76,14 +83,22 @@ async def predict(req: PredictionRequest) -> PredictionResponse:
     if not _HAS_FEAST or STORE is None:
         raise HTTPException(status_code=500, detail="feature store unavailable")
     with observe_latency("predict"):
-        feature_refs = [f"trade_features:{f}" for f in FEATURE_COLUMNS]
+        feature_cols = _EXPECTED_COLS or FEATURE_COLUMNS
+        feature_refs = [f"trade_features:{f}" for f in feature_cols]
         entity_rows = [{"symbol": s} for s in req.symbols]
         feat_dict = STORE.get_online_features(
             features=feature_refs, entity_rows=entity_rows
         ).to_dict()
         results: List[float] = []
         for i in range(len(req.symbols)):
-            features = [feat_dict[f][i] for f in FEATURE_COLUMNS]
+            try:
+                features = [feat_dict[f][i] for f in feature_cols]
+            except KeyError as exc:
+                ERROR_COUNTER.labels(type="predict").inc()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"missing feature '{exc.args[0]}'",
+                ) from exc
             try:
                 results.append(_predict_one(features))
             except ValueError as exc:
