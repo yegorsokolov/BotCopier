@@ -631,9 +631,8 @@ async def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
     """Run the online trainer with ``data_cfg`` and ``train_cfg`` asynchronously."""
     from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 
-    save_params(data_cfg, train_cfg)
-
     set_seed(train_cfg.random_seed)
+    save_params(data_cfg, train_cfg)
     trainer = OnlineTrainer(
         train_cfg.model,
         train_cfg.batch_size,
