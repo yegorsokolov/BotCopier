@@ -13,6 +13,39 @@ from botcopier.features.augmentation import _augment_dataframe, _augment_dtw_dat
 from ..scripts.data_validation import validate_logs
 
 
+def _drop_duplicates_and_outliers(
+    df: pd.DataFrame,
+) -> tuple[pd.DataFrame, int, int]:
+    """Remove duplicate rows and outliers from ``df``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, int, int]
+        The cleaned dataframe along with the counts of duplicate and
+        outlier rows removed.
+    """
+
+    deduped = df.drop_duplicates()
+    dup_count = len(df) - len(deduped)
+
+    numeric = deduped.select_dtypes(include=[np.number])
+    if numeric.empty:
+        return deduped, dup_count, 0
+
+    zscores = (numeric - numeric.mean()) / numeric.std(ddof=0)
+    zscores = zscores.replace([np.inf, -np.inf], 0).fillna(0)
+    outlier_mask = (np.abs(zscores) > 3).any(axis=1)
+    out_count = int(outlier_mask.sum())
+
+    cleaned = deduped.loc[~outlier_mask].copy()
+    return cleaned, dup_count, out_count
+
+
 def _compute_meta_labels(
     prices: np.ndarray, tp: np.ndarray, sl: np.ndarray, hold_period: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -92,6 +125,9 @@ def _load_logs(
                 continue
             df[col] = pd.to_numeric(df[col], errors="ignore")
 
+        df, dup_cnt, out_cnt = _drop_duplicates_and_outliers(df)
+        logging.info("Removed %d duplicate rows and %d outlier rows", dup_cnt, out_cnt)
+
         hours: pd.Series
         if "hour" in df.columns:
             hours = pd.to_numeric(df["hour"], errors="coerce").fillna(0).astype(int)
@@ -104,7 +140,9 @@ def _load_logs(
         df["hour_cos"] = np.cos(2 * np.pi * hours / 24.0)
 
         if "day_of_week" in df.columns:
-            dows = pd.to_numeric(df["day_of_week"], errors="coerce").fillna(0).astype(int)
+            dows = (
+                pd.to_numeric(df["day_of_week"], errors="coerce").fillna(0).astype(int)
+            )
             df.drop(columns=["day_of_week"], inplace=True)
         elif "event_time" in df.columns:
             dows = df["event_time"].dt.dayofweek.fillna(0).astype(int)
@@ -150,13 +188,19 @@ def _load_logs(
         )
 
         price_col = next(
-            (c for c in ["net_profit", "profit", "price", "bid", "ask"] if c in df.columns),
+            (
+                c
+                for c in ["net_profit", "profit", "price", "bid", "ask"]
+                if c in df.columns
+            ),
             None,
         )
         if price_col is not None:
             prices = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0)
             spread_src = (
-                df["spread"] if "spread" in df.columns else pd.Series(0.0, index=df.index)
+                df["spread"]
+                if "spread" in df.columns
+                else pd.Series(0.0, index=df.index)
             )
             spreads = pd.to_numeric(spread_src, errors="coerce").fillna(0.0)
             if not spreads.any():
@@ -187,8 +231,9 @@ def _load_logs(
         return df, feature_cols
 
     if kafka_brokers:
-        from confluent_kafka import Consumer
         import json
+
+        from confluent_kafka import Consumer
 
         topic = data_dir.name if data_dir.is_file() else "trades_raw"
         consumer = Consumer(
