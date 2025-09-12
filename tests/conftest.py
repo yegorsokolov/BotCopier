@@ -12,6 +12,8 @@ ALLOWED = {
     "test_online_trainer_async.py",
     "property",
     "test_invariants.py",
+    "optional",
+    "test_missing_dependencies.py",
 }
 
 
