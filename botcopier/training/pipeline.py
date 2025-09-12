@@ -14,6 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 import psutil
+import importlib.metadata as importlib_metadata
 
 try:  # optional polars support
     import polars as pl  # type: ignore
@@ -78,6 +79,17 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+
+
+def _write_dependency_snapshot(out_dir: Path) -> Path:
+    """Record the current Python package versions."""
+    packages = sorted(
+        f"{dist.metadata['Name']}=={dist.version}"
+        for dist in importlib_metadata.distributions()
+    )
+    dep_path = out_dir / "dependencies.txt"
+    dep_path.write_text("\n".join(packages))
+    return dep_path
 
 
 def train(
@@ -407,7 +419,13 @@ def train(
         (out_dir / "model.json").write_text(model_params.model_dump_json())
         (out_dir / "data_hashes.json").write_text(json.dumps(data_hashes, indent=2))
         model_obj = getattr(predict_fn, "model", None)
-        generate_model_card(model_params, metrics, out_dir / "model_card.md")
+        deps_file = _write_dependency_snapshot(out_dir)
+        generate_model_card(
+            model_params,
+            metrics,
+            out_dir / "model_card.md",
+            dependencies_path=deps_file,
+        )
         if model_obj is not None:
             try:
                 from botcopier.onnx_utils import export_model
