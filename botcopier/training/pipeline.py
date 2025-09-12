@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import json
 import logging
 import shutil
 import time
@@ -110,7 +111,8 @@ def train(
         "dtw_augment",
     ]
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
-    logs, feature_names, _ = _load_logs(data_dir, **load_kwargs)
+    logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
+    logger.info("Training data hashes: %s", data_hashes)
     gpu_kwargs: dict[str, object] = {}
     if use_gpu:
         if model_type == "xgboost":
@@ -390,8 +392,12 @@ def train(
             model["mode"] = mode
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = random_seed
+        model["data_hashes"] = data_hashes
         model_params = ModelParams(**model)
         (out_dir / "model.json").write_text(model_params.model_dump_json())
+        (out_dir / "data_hashes.json").write_text(
+            json.dumps(data_hashes, indent=2)
+        )
         model_obj = getattr(predict_fn, "model", None)
         generate_model_card(model_params, metrics, out_dir / "model_card.md")
         if model_obj is not None:
@@ -408,6 +414,9 @@ def train(
             for k, v in metrics.items():
                 mlflow.log_metric(f"cv_{k}", float(v))
             mlflow.log_artifact(str(out_dir / "model.json"), artifact_path="model")
+            mlflow.log_artifact(
+                str(out_dir / "data_hashes.json"), artifact_path="model"
+            )
 
 
 def detect_resources(*, lite_mode: bool = False, heavy_mode: bool = False) -> dict:

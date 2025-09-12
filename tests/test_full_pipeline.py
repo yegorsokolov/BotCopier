@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -29,3 +30,7 @@ def test_full_pipeline(tmp_path: Path) -> None:
     model = json.loads(model_path.read_text())
     for field in ("coefficients", "intercept", "feature_names"):
         assert field in model
+
+    expected_hash = hashlib.sha256(data_file.read_bytes()).hexdigest()
+    key = str(data_file.resolve())
+    assert model["data_hashes"][key] == expected_hash
