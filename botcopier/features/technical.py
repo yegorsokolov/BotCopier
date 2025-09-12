@@ -224,6 +224,37 @@ def _extract_features_impl(
         )
         feature_names.extend(["pattern_hammer", "pattern_doji", "pattern_engulfing"])
 
+    if fe._CONFIG.is_enabled("orderbook") and all(
+        c in df.columns for c in ["bid_depth", "ask_depth", "bid", "ask"]
+    ):
+        bid_depth = df["bid_depth"].apply(lambda x: np.asarray(x, dtype=float))
+        ask_depth = df["ask_depth"].apply(lambda x: np.asarray(x, dtype=float))
+
+        bid_top = bid_depth.apply(lambda a: float(a[0]) if a.size else 0.0)
+        ask_top = ask_depth.apply(lambda a: float(a[0]) if a.size else 0.0)
+        bid_vol = bid_depth.apply(lambda a: float(np.nansum(a)))
+        ask_vol = ask_depth.apply(lambda a: float(np.nansum(a)))
+        total_vol = bid_vol + ask_vol + 1e-9
+
+        bids = pd.to_numeric(df["bid"], errors="coerce").fillna(0.0)
+        asks = pd.to_numeric(df["ask"], errors="coerce").fillna(0.0)
+        df["depth_microprice"] = (asks * bid_top + bids * ask_top) / (
+            bid_top + ask_top + 1e-9
+        )
+        df["depth_vol_imbalance"] = (bid_vol - ask_vol) / total_vol
+        prev_bid_vol = bid_vol.shift(1).fillna(bid_vol.iloc[0])
+        prev_ask_vol = ask_vol.shift(1).fillna(ask_vol.iloc[0])
+        df["depth_order_flow_imbalance"] = (bid_vol - prev_bid_vol) - (
+            ask_vol - prev_ask_vol
+        )
+        feature_names.extend(
+            [
+                "depth_microprice",
+                "depth_vol_imbalance",
+                "depth_order_flow_imbalance",
+            ]
+        )
+
     if fe._CONFIG.is_enabled("kalman"):
         params = fe._CONFIG.kalman_params
         p_var = params.get("process_var", KALMAN_DEFAULT_PARAMS["process_var"])
@@ -347,10 +378,14 @@ def _extract_features(
         logger.info("cache hit for _extract_features")
         return _FEATURE_RESULTS[key]  # type: ignore[return-value]
 
-    enabled = _CONFIG.enabled_features or {"technical"}
+    plugins = ["technical"] + [
+        name
+        for name in _CONFIG.enabled_features
+        if name != "technical" and name in FEATURE_REGISTRY
+    ]
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
-    for name in enabled:
+    for name in plugins:
         func = FEATURE_REGISTRY.get(name)
         if func is None:
             logger.warning("Feature plugin %s not found", name)

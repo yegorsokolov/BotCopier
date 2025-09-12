@@ -22,6 +22,9 @@ class FeatureSchema(pa.DataFrameModel):
     book_bid_vol: Series[float] | None = Field(ge=0)
     book_ask_vol: Series[float] | None = Field(ge=0)
     book_imbalance: Series[float] | None = Field(ge=-1, le=1)
+    depth_microprice: Series[float] | None = Field()
+    depth_vol_imbalance: Series[float] | None = Field(ge=-1, le=1)
+    depth_order_flow_imbalance: Series[float] | None = Field()
     equity: Series[float] | None = Field(ge=0)
     margin_level: Series[float] | None = Field(ge=0)
 

@@ -92,6 +92,9 @@ def main(
         None, "--config", "-c", help="Path to optional config file"
     ),
     log_level: str = typer.Option("INFO", "--log-level", "-l", help="Logging level"),
+    orderbook_features: bool = typer.Option(
+        False, help="Include order book derived features"
+    ),
 ) -> None:
     """Configure global options for all commands."""
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO))
@@ -127,6 +130,9 @@ def train(
         "-f",
         help="Enable feature plugin; can be passed multiple times",
     ),
+    orderbook_features: bool = typer.Option(
+        False, help="Include order book derived features"
+    ),
     random_seed: Optional[int] = typer.Option(None, help="Random seed"),
 ) -> None:
     """Train a model from trade logs."""
@@ -141,6 +147,10 @@ def train(
         train_cfg = train_cfg.model_copy(update={"cache_dir": cache_dir})
     if features is not None:
         train_cfg = train_cfg.model_copy(update={"features": list(features)})
+    if orderbook_features:
+        feats = set(train_cfg.features or [])
+        feats.add("orderbook")
+        train_cfg = train_cfg.model_copy(update={"features": list(feats)})
     if random_seed is not None:
         train_cfg = train_cfg.model_copy(update={"random_seed": random_seed})
     ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
@@ -222,6 +232,9 @@ def online_train(
     drift_interval: Optional[float] = typer.Option(
         None, help="Seconds between drift checks"
     ),
+    orderbook_features: bool = typer.Option(
+        False, help="Include order book derived features"
+    ),
 ) -> None:
     """Continuously update a model from streaming trade events."""
     data_cfg, train_cfg = _cfg(ctx)
@@ -252,6 +265,10 @@ def online_train(
         }.items()
         if v is not None
     }
+    if orderbook_features:
+        feats = set(train_cfg.features or [])
+        feats.add("orderbook")
+        updates_train["features"] = list(feats)
     if updates_data:
         data_cfg = data_cfg.model_copy(update=updates_data)
     if updates_train:

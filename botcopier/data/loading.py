@@ -113,6 +113,7 @@ def _load_logs(
     augment_ratio: float = 0.0,
     dtw_augment: bool = False,
     mmap_threshold: int = 50 * 1024 * 1024,
+    depth_file: Path | None = None,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], dict[str, str]]:
     """Load trade logs from ``trades_raw.csv``.
 
@@ -130,6 +131,9 @@ def _load_logs(
         SHA256 hashes.
     """
     file = data_dir if data_dir.is_file() else data_dir / "trades_raw.csv"
+    if depth_file is None and not data_dir.is_file():
+        cand = data_dir / "depth_raw.csv"
+        depth_file = cand if cand.exists() else None
     cs = chunk_size or (50000 if lite_mode else None)
     use_mmap = (
         not lite_mode
@@ -142,6 +146,22 @@ def _load_logs(
         data_hashes[str(file.resolve())] = hashlib.sha256(
             file.read_bytes()
         ).hexdigest()
+    depth_df: pd.DataFrame | None = None
+    if depth_file and depth_file.exists():
+        import json
+
+        depth_df = pd.read_csv(
+            depth_file,
+            converters={
+                "bid_depth": lambda x: np.array(json.loads(x)) if isinstance(x, str) else x,
+                "ask_depth": lambda x: np.array(json.loads(x)) if isinstance(x, str) else x,
+            },
+        )
+        if "event_time" in depth_df.columns:
+            depth_df["event_time"] = pd.to_datetime(depth_df["event_time"], errors="coerce")
+        data_hashes[str(depth_file.resolve())] = hashlib.sha256(
+            depth_file.read_bytes()
+        ).hexdigest()
 
     def _process(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         df.columns = [c.lower() for c in df.columns]
@@ -151,6 +171,20 @@ def _load_logs(
             if col == "event_time":
                 continue
             df[col] = pd.to_numeric(df[col], errors="ignore")
+
+        if depth_df is not None:
+            if "event_time" in df.columns and "event_time" in depth_df.columns:
+                df = df.merge(depth_df, on="event_time", how="left")
+            else:
+                # Align by index if no event_time column
+                join_cols = [c for c in depth_df.columns if c not in df.columns]
+                df = pd.concat(
+                    [
+                        df.reset_index(drop=True),
+                        depth_df[join_cols].iloc[: len(df)].reset_index(drop=True),
+                    ],
+                    axis=1,
+                )
 
         df, dup_cnt, out_cnt = _drop_duplicates_and_outliers(df)
         logging.info("Removed %d duplicate rows and %d outlier rows", dup_cnt, out_cnt)
