@@ -14,6 +14,7 @@ class ModelParams(BaseModel):
     """
 
     feature_names: list[str] = Field(default_factory=list)
+    data_hashes: dict[str, str] = Field(default_factory=dict)
     version: Literal[1] = 1
 
     model_config = ConfigDict(extra="allow")

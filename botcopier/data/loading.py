@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Iterable, Tuple
+import hashlib
 
 import numpy as np
 import pandas as pd
@@ -111,10 +112,22 @@ def _load_logs(
     hold_period: int = 20,
     augment_ratio: float = 0.0,
     dtw_augment: bool = False,
-) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], list[str]]:
-    """Load trade logs from ``trades_raw.csv``."""
+) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], dict[str, str]]:
+    """Load trade logs from ``trades_raw.csv``.
+
+    Returns
+    -------
+    Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], dict[str, str]]
+        Loaded logs, feature names, and a mapping of source file paths to
+        SHA256 hashes.
+    """
     file = data_dir if data_dir.is_file() else data_dir / "trades_raw.csv"
     cs = chunk_size or (50000 if lite_mode else None)
+    data_hashes: dict[str, str] = {}
+    if file.exists():
+        data_hashes[str(file.resolve())] = hashlib.sha256(
+            file.read_bytes()
+        ).hexdigest()
 
     def _process(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         df.columns = [c.lower() for c in df.columns]
@@ -277,7 +290,7 @@ def _load_logs(
             for chunk, _ in kafka_stream:
                 yield chunk
 
-        return _iter(), feature_cols, []
+        return _iter(), feature_cols, data_hashes
 
     if flight_uri:
         from pyarrow import flight
@@ -296,7 +309,7 @@ def _load_logs(
                 df_chunk, _ = _process(batch.to_pandas())
                 yield df_chunk
 
-        return _iter(), feature_cols, []
+        return _iter(), feature_cols, data_hashes
 
     reader = pd.read_csv(file, chunksize=cs, iterator=cs is not None)
     if cs:
@@ -309,8 +322,8 @@ def _load_logs(
                 df_chunk, _ = _process(chunk)
                 yield df_chunk
 
-        return _iter(), feature_cols, []
+        return _iter(), feature_cols, data_hashes
 
     df = reader  # type: ignore[assignment]
     df, feature_cols = _process(df)
-    return df, feature_cols, []
+    return df, feature_cols, data_hashes
