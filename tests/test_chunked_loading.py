@@ -14,6 +14,7 @@ def _write_log(path: Path, rows: int) -> None:
             "spread": [1.0] * rows,
             "hour": [i % 24 for i in range(rows)],
             "volume": [100] * rows,
+            "row_id": list(range(rows)),
         }
     )
     df.to_csv(path, index=False)
@@ -36,3 +37,20 @@ def test_train_iterates_chunks(tmp_path):
     train(csv, out_dir, chunk_size=50_000, mode="standard")
     model = json.loads((out_dir / "model.json").read_text())
     assert model["mode"] == "standard"
+
+
+def test_load_logs_in_memory_small_file(tmp_path):
+    csv = tmp_path / "trades_raw.csv"
+    _write_log(csv, 10)
+    df, _, _ = _load_logs(tmp_path, lite_mode=False, mmap_threshold=10**9)
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 10
+
+
+def test_load_logs_memory_map_large_file(tmp_path):
+    csv = tmp_path / "trades_raw.csv"
+    _write_log(csv, 10)
+    chunks, _, _ = _load_logs(tmp_path, lite_mode=False, mmap_threshold=1)
+    assert not isinstance(chunks, pd.DataFrame)
+    sizes = [len(c) for c in chunks]
+    assert sizes == [10]
