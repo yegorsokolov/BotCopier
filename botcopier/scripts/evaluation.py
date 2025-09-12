@@ -168,7 +168,13 @@ def _load_actual_trades(log_file: Path) -> pd.DataFrame:
 
 
 def evaluate(
-    pred_file: Path, actual_log: Path, window: int, model_json: Optional[Path] = None
+    pred_file: Path,
+    actual_log: Path,
+    window: int,
+    model_json: Optional[Path] = None,
+    *,
+    fee_per_trade: float = 0.0,
+    slippage_bps: float = 0.0,
 ) -> Dict:
     predictions = _load_predictions(pred_file)
     trades = _load_actual_trades(actual_log)
@@ -244,6 +250,9 @@ def evaluate(
     matched_mask = merged["ticket"].notna()
     matches = int(matched_mask.sum())
     profits = merged.loc[matched_mask, "profit"].astype(float)
+    net_profits = profits - (
+        fee_per_trade + np.abs(profits) * slippage_bps * 1e-4
+    )
     trade_times = merged.loc[matched_mask, "close_time"]
 
     gross_profit = float(profits[profits >= 0].sum())
@@ -300,7 +309,9 @@ def evaluate(
     profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
     expectancy = (gross_profit - gross_loss) / matches if matches else 0.0
     expected_return = float(profits.mean()) if matches else 0.0
+    expected_return_net = float(net_profits.mean()) if matches else 0.0
     downside = profits[profits < 0]
+    downside_net = net_profits[net_profits < 0]
     downside_risk = float(-downside.mean()) if len(downside) else 0.0
     risk_reward = expected_return - downside_risk
 
@@ -315,6 +326,7 @@ def evaluate(
         cvar = var_95 = es_95 = 0.0
 
     sharpe = sortino = 0.0
+    sharpe_net = sortino_net = 0.0
     if matches > 1:
         mean = expected_return
         variance = float(profits.var(ddof=1))
@@ -325,8 +337,18 @@ def evaluate(
             downside_dev = math.sqrt(float((downside**2).mean()))
             if downside_dev > 0:
                 sortino = mean / downside_dev
+        mean_net = expected_return_net
+        variance_net = float(net_profits.var(ddof=1))
+        std_net = math.sqrt(variance_net)
+        if std_net > 0:
+            sharpe_net = mean_net / std_net
+        if len(downside_net):
+            downside_dev_net = math.sqrt(float((downside_net**2).mean()))
+            if downside_dev_net > 0:
+                sortino_net = mean_net / downside_dev_net
 
     annual_sharpe = annual_sortino = 0.0
+    annual_sharpe_net = annual_sortino_net = 0.0
     if matches > 1 and not trade_times.isna().all():
         start = trade_times.min()
         end = trade_times.max()
@@ -337,6 +359,8 @@ def evaluate(
         factor = math.sqrt(trades_per_year)
         annual_sharpe = sharpe * factor
         annual_sortino = sortino * factor
+        annual_sharpe_net = sharpe_net * factor
+        annual_sortino_net = sortino_net * factor
 
     roc_auc = pr_auc = brier = None
     reliability = {"prob_true": [], "prob_pred": []}
@@ -380,6 +404,10 @@ def evaluate(
         "sortino_ratio": sortino,
         "sharpe_ratio_annualised": annual_sharpe,
         "sortino_ratio_annualised": annual_sortino,
+        "sharpe_ratio_net": sharpe_net,
+        "sortino_ratio_net": sortino_net,
+        "sharpe_ratio_net_annualised": annual_sharpe_net,
+        "sortino_ratio_net_annualised": annual_sortino_net,
         "risk_reward": risk_reward,
         "conformal_coverage": conformal,
         "predictions_per_model": predictions_per_model,

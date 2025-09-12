@@ -106,6 +106,8 @@ def train(
     random_seed: int = 0,
     n_jobs: int | None = None,
     metrics: Sequence[str] | None = None,
+    fee_per_trade: float = 0.0,
+    slippage_bps: float = 0.0,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -165,12 +167,18 @@ def train(
                 )
                 if label_col is None:
                     raise ValueError("no label column found")
-            y_list.append(chunk[label_col].to_numpy(dtype=float))
             X_list.append(chunk[feature_names].fillna(0.0).to_numpy(dtype=float))
             if "profit" in chunk.columns:
-                profit_list.append(chunk["profit"].to_numpy(dtype=float))
+                p = chunk["profit"].to_numpy(dtype=float)
+                profit_list.append(p)
+                y_list.append((p > 0).astype(float))
+            elif label_col is not None:
+                y_list.append(chunk[label_col].to_numpy(dtype=float))
+            else:
+                raise ValueError("no profit or label column found")
         y = np.concatenate(y_list, axis=0)
         X = np.vstack(X_list)
+        has_profit = bool(profit_list)
         profits = (
             np.concatenate(profit_list, axis=0) if profit_list else np.zeros_like(y)
         )
@@ -189,27 +197,40 @@ def train(
                 df, feature_names, n_jobs=n_jobs
             )
         FeatureSchema.validate(df[feature_names], lazy=True)
-        label_col = next((c for c in df.columns if c.startswith("label")), None)
-        if label_col is None:
-            raise ValueError("no label column found")
         if isinstance(df, pd.DataFrame):
-            y = df[label_col].to_numpy(dtype=float)
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
-            profits = (
-                df["profit"].to_numpy(dtype=float)
-                if "profit" in df.columns
-                else np.zeros_like(y)
-            )
+            if "profit" in df.columns:
+                profits = df["profit"].to_numpy(dtype=float)
+                y = (profits > 0).astype(float)
+                has_profit = True
+            else:
+                label_col = next((c for c in df.columns if c.startswith("label")), None)
+                if label_col is None:
+                    raise ValueError("no label column found")
+                y = df[label_col].to_numpy(dtype=float)
+                profits = np.zeros_like(y)
+                has_profit = False
         elif _HAS_POLARS and isinstance(df, pl.DataFrame):
-            y = df[label_col].to_numpy().astype(float)
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
-            profits = (
-                df["profit"].to_numpy().astype(float)
-                if "profit" in df.columns
-                else np.zeros_like(y)
-            )
+            if "profit" in df.columns:
+                profits = df["profit"].to_numpy().astype(float)
+                y = (profits > 0).astype(float)
+                has_profit = True
+            else:
+                label_col = next((c for c in df.columns if c.startswith("label")), None)
+                if label_col is None:
+                    raise ValueError("no label column found")
+                y = df[label_col].to_numpy().astype(float)
+                profits = np.zeros_like(y)
+                has_profit = False
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
+
+    if has_profit and profits.size:
+        cost = fee_per_trade + np.abs(profits) * slippage_bps * 1e-4
+        profits = profits - cost
+        y = (profits > 0).astype(float)
+    sample_weight = np.clip(profits, a_min=0.0, a_max=None)
 
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
     if mlflow_active and not _HAS_MLFLOW:
@@ -225,6 +246,7 @@ def train(
         n_splits = int(kwargs.get("n_splits", 3))
         gap = int(kwargs.get("cv_gap", 1))
         param_grid = kwargs.get("param_grid") or [{}]
+        metric_names = metrics
         best_score = -np.inf
         best_params: dict[str, object] | None = None
         best_fold_metrics: list[dict[str, object]] = []
@@ -238,20 +260,26 @@ def train(
                 X_ref = ray.put(X)
                 y_ref = ray.put(y)
                 profits_ref = ray.put(profits)
+                weight_ref = ray.put(sample_weight)
 
                 @ray.remote
                 def _run_fold(tr_idx, val_idx, fold):
                     X = ray.get(X_ref)
                     y = ray.get(y_ref)
                     profits = ray.get(profits_ref)
+                    weights = ray.get(weight_ref)
                     builder = get_model(model_type)
                     model_fold, pred_fn = builder(
-                        X[tr_idx], y[tr_idx], **gpu_kwargs, **params
+                        X[tr_idx],
+                        y[tr_idx],
+                        sample_weight=weights[tr_idx],
+                        **gpu_kwargs,
+                        **params,
                     )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     fold_metric = _classification_metrics(
-                        y[val_idx], prob_val, returns, selected=metrics
+                        y[val_idx], prob_val, returns, selected=metric_names
                     )
                     return fold, fold_metric
 
@@ -277,12 +305,16 @@ def train(
                         continue
                     builder = get_model(model_type)
                     model_fold, pred_fn = builder(
-                        X[tr_idx], y[tr_idx], **gpu_kwargs, **params
+                        X[tr_idx],
+                        y[tr_idx],
+                        sample_weight=sample_weight[tr_idx],
+                        **gpu_kwargs,
+                        **params,
                     )
                     prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     fold_metric = _classification_metrics(
-                        y[val_idx], prob_val, returns, selected=metrics
+                        y[val_idx], prob_val, returns, selected=metric_names
                     )
                     fold_metrics.append(fold_metric)
                     logger.info(
@@ -324,7 +356,13 @@ def train(
         ):
             raise ValueError("Cross-validation metrics below thresholds")
         builder = get_model(model_type)
-        model_data, predict_fn = builder(X, y, **gpu_kwargs, **(best_params or {}))
+        model_data, predict_fn = builder(
+            X,
+            y,
+            sample_weight=sample_weight,
+            **gpu_kwargs,
+            **(best_params or {}),
+        )
 
         # --- SHAP based feature selection ---------------------------------
         shap_threshold = float(kwargs.get("shap_threshold", 0.0))
@@ -373,7 +411,11 @@ def train(
                             fn for fn, keep in zip(feature_names, mask) if keep
                         ]
                         model_data, predict_fn = builder(
-                            X, y, **gpu_kwargs, **(best_params or {})
+                            X,
+                            y,
+                            sample_weight=sample_weight,
+                            **gpu_kwargs,
+                            **(best_params or {}),
                         )
         except Exception:  # pragma: no cover - shap is optional
             logger.exception("Failed to compute SHAP values")
