@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - optional
     _HAS_POLARS = False
 from pydantic import ValidationError
 
+from botcopier.config.settings import TrainingConfig
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.data.loading import _load_logs
 from botcopier.features.anomaly import _clip_train_features
@@ -37,7 +38,6 @@ from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.utils.random import set_seed
-from botcopier.config.settings import TrainingConfig
 from logging_utils import setup_logging
 
 try:  # optional feast dependency
@@ -140,7 +140,7 @@ def train(
                 feature_names = list(FEATURE_COLUMNS)
             else:
                 chunk, feature_names, _, _ = _extract_features(chunk, feature_names)
-            FeatureSchema.validate(chunk[feature_names])
+            FeatureSchema.validate(chunk[feature_names], lazy=True)
             if label_col is None:
                 label_col = next(
                     (c for c in chunk.columns if c.startswith("label")), None
@@ -168,7 +168,7 @@ def train(
             feature_names = list(FEATURE_COLUMNS)
         else:
             df, feature_names, _, _ = _extract_features(df, feature_names)
-        FeatureSchema.validate(df[feature_names])
+        FeatureSchema.validate(df[feature_names], lazy=True)
         label_col = next((c for c in df.columns if c.startswith("label")), None)
         if label_col is None:
             raise ValueError("no label column found")

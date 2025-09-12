@@ -1,4 +1,11 @@
-"""Schema for engineered features produced by :func:`_extract_features`."""
+"""Pandera schema for engineered features.
+
+This schema validates the subset of feature columns produced by
+``_extract_features`` for which we know sensible value ranges.  The model uses
+`strict = False` to allow extra feature columns while ensuring that any
+specified fields are numeric and fall within the expected bounds.
+"""
+
 from __future__ import annotations
 
 import pandera as pa
@@ -7,7 +14,7 @@ from pandera.typing import Series
 
 
 class FeatureSchema(pa.DataFrameModel):
-    """Validation schema for feature columns."""
+    """Validation schema for known feature columns."""
 
     atr: Series[float] | None = Field(ge=0)
     sl_dist_atr: Series[float] | None = Field(ge=0)
