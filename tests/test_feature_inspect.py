@@ -9,6 +9,8 @@ from botcopier.scripts.feature_inspect import (
 
 
 def test_feature_importance_and_pdp_shapes(tmp_path):
+    """Saved importance ranks and PDP arrays match expected dimensions."""
+
     X, y = make_regression(n_samples=40, n_features=3, random_state=0)
     model = RandomForestRegressor(random_state=0).fit(X, y)
     feature_names = [f"f{i}" for i in range(X.shape[1])]

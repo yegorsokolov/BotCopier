@@ -133,13 +133,16 @@ __all__ = ["save_permutation_importance", "save_partial_dependence"]
 if __name__ == "__main__":
     # Minimal CLI to showcase the helpers; primarily useful for manual use.
     import argparse
+
     import joblib
     import numpy as np
     import pandas as pd
 
     parser = argparse.ArgumentParser(description="Inspect feature behaviour")
     parser.add_argument("model", type=Path, help="Path to a saved sklearn model")
-    parser.add_argument("data", type=Path, help="CSV file containing features and target")
+    parser.add_argument(
+        "data", type=Path, help="CSV file containing features and target"
+    )
     parser.add_argument(
         "--target", required=True, help="Name of the target column in the data"
     )
@@ -155,5 +158,6 @@ if __name__ == "__main__":
     model = joblib.load(args.model)
 
     save_permutation_importance(model, X, y, feature_names, args.out)
-    save_partial_dependence(model, X, range(len(feature_names)), feature_names, args.out)
-
+    save_partial_dependence(
+        model, X, range(len(feature_names)), feature_names, args.out
+    )
