@@ -6,6 +6,9 @@ import logging
 from pathlib import Path
 from typing import Iterable, Tuple
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+
 import numpy as np
 import pandas as pd
 
@@ -69,6 +72,7 @@ def _extract_features_impl(
     calendar_features: bool = True,
     pca_components: dict | None = None,
     rank_features: bool = False,
+    n_jobs: int | None = None,
 ) -> tuple[
     pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]
 ]:
@@ -91,6 +95,17 @@ def _extract_features_impl(
                 g_dataset = None
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
+
+    executor: ThreadPoolExecutor | None = None
+    gnn_future = None
+    if (
+        n_jobs is not None
+        and n_jobs > 1
+        and g_dataset is not None
+        and compute_gnn_embeddings is not None
+    ):
+        executor = ThreadPoolExecutor(max_workers=n_jobs)
+        gnn_future = executor.submit(compute_gnn_embeddings, df.copy(), g_dataset)
 
     use_polars = _HAS_POLARS and isinstance(df, pl.DataFrame)
     if use_polars and "event_time" in df.columns:
@@ -287,21 +302,29 @@ def _extract_features_impl(
             if "vol_rank" not in feature_names:
                 feature_names.append("vol_rank")
 
-    if g_dataset is not None and compute_gnn_embeddings is not None:
+    if gnn_future is not None:
+        try:
+            embeddings, gnn_state = gnn_future.result()
+        except (RuntimeError, ValueError) as exc:
+            logger.exception("Failed to compute GNN embeddings")
+            embeddings, gnn_state = {}, {}
+        finally:
+            executor.shutdown()
+    elif g_dataset is not None and compute_gnn_embeddings is not None:
         try:
             embeddings, gnn_state = compute_gnn_embeddings(df, g_dataset)
         except (RuntimeError, ValueError) as exc:
             logger.exception("Failed to compute GNN embeddings")
             embeddings, gnn_state = {}, {}
-        if embeddings and "symbol" in df.columns:
-            emb_dim = len(next(iter(embeddings.values())))
-            sym_series = df["symbol"].astype(str)
-            for i in range(emb_dim):
-                col = f"graph_emb{i}"
-                df[col] = sym_series.map(
-                    lambda s: embeddings.get(s, [0.0] * emb_dim)[i]
-                )
-            feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
+    if embeddings and "symbol" in df.columns:
+        emb_dim = len(next(iter(embeddings.values())))
+        sym_series = df["symbol"].astype(str)
+        for i in range(emb_dim):
+            col = f"graph_emb{i}"
+            df[col] = sym_series.map(
+                lambda s: embeddings.get(s, [0.0] * emb_dim)[i]
+            )
+        feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
 
     return df, feature_names, embeddings, gnn_state
 
