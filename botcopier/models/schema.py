@@ -1,8 +1,22 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class FeatureMetadata(BaseModel):
+    """Metadata describing how a feature was generated."""
+
+    original_column: str = Field(
+        ..., description="Source column name before any transformations"
+    )
+    transformations: list[str] = Field(
+        default_factory=list, description="Applied transformation names"
+    )
+    parameters: dict[str, Any] = Field(
+        default_factory=dict, description="Parameters for transformations"
+    )
 
 
 class ModelParams(BaseModel):
@@ -14,10 +28,11 @@ class ModelParams(BaseModel):
     """
 
     feature_names: list[str] = Field(default_factory=list)
+    feature_metadata: list[FeatureMetadata] = Field(default_factory=list)
     data_hashes: dict[str, str] = Field(default_factory=dict)
     version: Literal[1] = 1
 
     model_config = ConfigDict(extra="allow")
 
 
-__all__ = ["ModelParams"]
+__all__ = ["ModelParams", "FeatureMetadata"]
