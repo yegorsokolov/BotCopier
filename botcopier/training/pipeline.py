@@ -672,6 +672,8 @@ def train(
             model["depth_cnn"] = technical_features._DEPTH_CNN_STATE
         if getattr(technical_features, "_CSD_PARAMS", None) is not None:
             model["csd_params"] = technical_features._CSD_PARAMS
+        if getattr(technical_features, "_GRAPH_SNAPSHOT", None) is not None:
+            model["graph_snapshot"] = technical_features._GRAPH_SNAPSHOT
         if cluster_map:
             model["feature_clusters"] = cluster_map
         if calibration_info is not None:
