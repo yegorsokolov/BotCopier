@@ -57,6 +57,7 @@ class TrainingConfig(BaseSettings):
     online_model: str = "sgd"
     grad_clip: float = 1.0
     eval_hooks: List[str] = []
+    hrp_allocation: bool = False
 
     model_config = {"env_prefix": "TRAIN_"}
 
