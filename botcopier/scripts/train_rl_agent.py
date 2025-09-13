@@ -81,6 +81,11 @@ except Exception:  # pragma: no cover - executed when run from repo root
 import numpy as np
 
 from botcopier.utils.random import set_seed
+from botcopier.rl.options import (
+    OptionTradeEnv,
+    default_skills,
+    evaluate_option_policy,
+)
 
 try:  # pragma: no cover - optional dependency
     import requests
@@ -188,6 +193,65 @@ def _send_live_metrics(url: str, metrics: Dict) -> Dict:
     except Exception:
         pass
     return {}
+
+
+def train_options(
+    states: np.ndarray,
+    actions: np.ndarray,
+    rewards: np.ndarray,
+    out_dir: Path,
+    *,
+    learning_rate: float = 3e-4,
+    gamma: float = 0.99,
+    training_steps: int = 1000,
+    algo: str = "ppo",
+    compress_model: bool = False,
+    feature_names: List[str] | None = None,
+) -> Dict:
+    """Train a high-level option policy selecting among predefined skills."""
+
+    if not HAS_SB3:
+        raise ImportError("stable-baselines3 is required for option training")
+
+    skills = default_skills()
+    env = OptionTradeEnv(states, actions, rewards, skills)
+    algo_key = algo.lower().replace("-", "_")
+    algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN, "a2c": sb3.A2C}
+    model_cls = algo_map.get(algo_key, sb3.PPO)
+    model = model_cls(
+        "MlpPolicy",
+        env,
+        learning_rate=learning_rate,
+        gamma=gamma,
+        verbose=0,
+    )
+    model.learn(total_timesteps=training_steps)
+
+    total_reward = evaluate_option_policy(model, env)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    weights_path = out_dir / "option_policy"
+    model.save(str(weights_path))
+
+    model_info = {
+        "model_id": "option_rl_agent",
+        "algo": algo_key,
+        "trained_at": datetime.utcnow().isoformat(),
+        "feature_names": feature_names or [],
+        "options": ["entry", "exit", "risk"],
+        "option_weights_file": weights_path.with_suffix(".zip").name,
+        "total_reward": float(total_reward),
+        "training_steps": training_steps,
+        "learning_rate": learning_rate,
+        "gamma": gamma,
+    }
+
+    model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
+    open_func = gzip.open if compress_model else open
+    with open_func(model_path, "wt") as f:
+        json.dump(model_info, f, indent=2)
+
+    return model_info
 
 
 # -------------------------------
@@ -316,12 +380,27 @@ def train(
     intrinsic_reward: bool = False,
     intrinsic_reward_weight: float = 0.0,
     random_seed: int = 0,
+    use_options: bool = False,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     set_seed(random_seed)
     states, actions, rewards_ext, next_states, vec = _build_dataset(
         data_dir, flight_uri, kafka_brokers
     )
+    if use_options:
+        train_options(
+            states,
+            actions,
+            rewards_ext,
+            out_dir,
+            learning_rate=learning_rate,
+            gamma=gamma,
+            training_steps=training_steps,
+            algo=algo,
+            compress_model=compress_model,
+            feature_names=vec.get_feature_names_out().tolist(),
+        )
+        return
     n_features = states.shape[1]
 
     rewards = rewards_ext.copy()

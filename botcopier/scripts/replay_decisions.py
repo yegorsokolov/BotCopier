@@ -57,6 +57,21 @@ except Exception:  # pragma: no cover
     compute_gnn_embeddings = None  # type: ignore
     _HAS_TG = False
 
+try:  # optional stable-baselines3 dependency
+    import stable_baselines3 as sb3  # type: ignore
+    from botcopier.rl.options import (
+        OptionTradeEnv,
+        default_skills,
+        evaluate_option_policy,
+    )
+    _HAS_SB3 = True
+except Exception:  # pragma: no cover - optional dependency
+    sb3 = None  # type: ignore
+    OptionTradeEnv = None  # type: ignore
+    default_skills = None  # type: ignore
+    evaluate_option_policy = None  # type: ignore
+    _HAS_SB3 = False
+
 
 def _load_model(model_file: Path) -> Dict:
     """Load model parameters from ``model_file``."""
@@ -291,6 +306,26 @@ def _recompute(
     }
 
 
+def replay_option_policy(
+    states: np.ndarray,
+    actions: np.ndarray,
+    rewards: np.ndarray,
+    model: Dict,
+    model_dir: Path,
+) -> Dict:
+    """Replay decisions using an option policy saved in ``model``."""
+
+    if not _HAS_SB3 or sb3 is None or OptionTradeEnv is None or default_skills is None:
+        raise ImportError("stable-baselines3 is required for option policy replay")
+
+    skills = default_skills()
+    env = OptionTradeEnv(states, actions, rewards, skills)
+    weights_file = model_dir / model.get("option_weights_file", "")
+    policy = sb3.PPO.load(str(weights_file))
+    total_reward = evaluate_option_policy(policy, env)
+    return {"total_reward": float(total_reward)}
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="Replay decision logs with a new model")
     p.add_argument(
@@ -336,6 +371,17 @@ def main() -> int:
     )
     df = _load_logs(args.log_file)
     stats = _recompute(df, model, threshold, args.model.parent)
+
+    if model.get("options") and model.get("option_weights_file"):
+        try:
+            state_cols = model.get("feature_names", [])
+            states = df[state_cols].to_numpy(dtype=float)
+            acts = df.get("action", pd.Series([0] * len(df))).to_numpy(dtype=int)
+            rewards = np.ones(len(df), dtype=float)
+            opt_stats = replay_option_policy(states, acts, rewards, model, args.model.parent)
+            print(f"Option total reward: {opt_stats['total_reward']:.2f}")
+        except Exception:
+            pass
 
     if stats["divergences"]:
         out_df = pd.DataFrame(stats["divergences"])
