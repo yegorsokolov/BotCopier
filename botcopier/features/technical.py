@@ -63,11 +63,20 @@ except ImportError:  # pragma: no cover - optional
     compute_gnn_embeddings = None  # type: ignore
     _HAS_TG = False
 
+try:  # optional networkx dependency
+    import networkx as nx  # type: ignore
+
+    _HAS_NX = True
+except Exception:  # pragma: no cover - optional
+    nx = None  # type: ignore
+    _HAS_NX = False
+
 
 logger = logging.getLogger(__name__)
 
 
 _DEPTH_CNN_STATE: dict | None = None
+_GRAPH_SNAPSHOT: dict | None = None
 
 # Lookback windows for fractal metrics
 HURST_WINDOW = 50
@@ -77,6 +86,99 @@ FRACTAL_DIM_WINDOW = 50
 CSD_WINDOW = 16
 CSD_FREQ_BINS = 16
 _CSD_PARAMS: dict | None = None
+
+
+def _compute_entity_graph_features(
+    df: pd.DataFrame,
+    feature_names: list[str],
+    graph: "nx.Graph",
+) -> None:
+    """Compute simple graph-derived features for each symbol.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe with a ``symbol`` column.
+    feature_names : list[str]
+        List of feature names to append to.
+    graph : nx.Graph
+        Graph linking symbols, articles and entities.
+
+    Adds two columns to ``df``:
+
+    ``graph_article_count``
+        Number of articles reachable from the symbol through entity/sector
+        relationships.
+
+    ``graph_sentiment``
+        Mean sentiment across those articles.  Missing sentiments default to
+        ``0.0``.
+    """
+
+    global _GRAPH_SNAPSHOT
+
+    symbols = df.get("symbol")
+    if symbols is None or symbols.empty:
+        return
+
+    if not _HAS_NX:
+        return
+
+    counts: list[int] = []
+    sentiments: list[float] = []
+    for sym in symbols.astype(str):
+        count = 0
+        sent_vals: list[float] = []
+        if graph.has_node(sym):
+            entities = [
+                n
+                for n in graph.neighbors(sym)
+                if graph.nodes[n].get("type") in {"entity", "company"}
+            ]
+            for ent in entities:
+                articles = [
+                    a
+                    for a in graph.neighbors(ent)
+                    if graph.nodes[a].get("type") == "article"
+                ]
+                count += len(articles)
+                sent_vals.extend(graph.nodes[a].get("sentiment", 0.0) for a in articles)
+                sectors = [
+                    s
+                    for s in graph.neighbors(ent)
+                    if graph.nodes[s].get("type") == "sector"
+                ]
+                for sec in sectors:
+                    peers = [
+                        p
+                        for p in graph.neighbors(sec)
+                        if graph.nodes[p].get("type") in {"entity", "company"}
+                    ]
+                    for peer in peers:
+                        if peer == ent:
+                            continue
+                        peer_articles = [
+                            a
+                            for a in graph.neighbors(peer)
+                            if graph.nodes[a].get("type") == "article"
+                        ]
+                        count += len(peer_articles)
+                        sent_vals.extend(
+                            graph.nodes[a].get("sentiment", 0.0) for a in peer_articles
+                        )
+        counts.append(count)
+        sentiments.append(sum(sent_vals) / len(sent_vals) if sent_vals else 0.0)
+
+    df["graph_article_count"] = counts
+    df["graph_sentiment"] = sentiments
+    for col in ["graph_article_count", "graph_sentiment"]:
+        if col not in feature_names:
+            feature_names.append(col)
+
+    try:
+        _GRAPH_SNAPSHOT = nx.node_link_data(graph)
+    except Exception:  # pragma: no cover - best effort
+        _GRAPH_SNAPSHOT = None
 
 
 if _HAS_TORCH:
@@ -164,6 +266,7 @@ def _extract_features_impl(
     calendar_file: Path | None = None,
     event_window: float = 60.0,
     news_sentiment: pd.DataFrame | None = None,
+    entity_graph: "nx.Graph" | dict | str | Path | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
     regime_model: dict | str | Path | None = None,
     tick_encoder: Path | None = None,
@@ -521,6 +624,16 @@ def _extract_features_impl(
         for col in news_sentiment.columns:
             if col != "symbol" and col not in feature_names:
                 feature_names.append(col)
+
+    if entity_graph is not None and _HAS_NX and "symbol" in df.columns:
+        if not isinstance(entity_graph, nx.Graph):
+            if isinstance(entity_graph, (str, Path)):
+                with open(entity_graph) as f_eg:
+                    data = json.load(f_eg)
+            else:
+                data = entity_graph
+            entity_graph = nx.node_link_graph(data)  # type: ignore
+        _compute_entity_graph_features(df, feature_names, entity_graph)
 
     if rank_features and "symbol" in df.columns:
         idx_col = "event_time" if "event_time" in df.columns else None
