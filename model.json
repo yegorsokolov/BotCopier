@@ -5,6 +5,10 @@
     "csd": 16
   },
   "csd_freq_bins": 16,
+  "symbolic_indicators": {
+    "feature_names": [],
+    "formulas": []
+  },
   "automl_controller": {
     "q_values": {},
     "best_action": null

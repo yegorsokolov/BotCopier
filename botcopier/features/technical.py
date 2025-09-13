@@ -87,6 +87,64 @@ CSD_WINDOW = 16
 CSD_FREQ_BINS = 16
 _CSD_PARAMS: dict | None = None
 
+_SYMBOLIC_CACHE: dict | None = None
+
+
+def _load_symbolic_indicators(model_json: Path | str | None) -> dict:
+    path = Path(model_json or "model.json")
+    global _SYMBOLIC_CACHE
+    if _SYMBOLIC_CACHE is None or _SYMBOLIC_CACHE.get("_path") != path:
+        try:
+            data = json.loads(path.read_text())
+            inds = data.get("symbolic_indicators", {})
+        except Exception:
+            inds = {}
+        _SYMBOLIC_CACHE = {"_path": path, "data": inds}
+    return _SYMBOLIC_CACHE.get("data", {})
+
+
+_SYMBOLIC_FUNCS = {
+    "add": np.add,
+    "sub": np.subtract,
+    "mul": np.multiply,
+    "div": np.divide,
+    "sin": np.sin,
+    "cos": np.cos,
+    "tan": np.tan,
+    "log": np.log,
+    "sqrt": np.sqrt,
+    "abs": np.abs,
+    "neg": np.negative,
+    "max": np.maximum,
+    "min": np.minimum,
+}
+
+
+def _apply_symbolic_indicators(
+    df: pd.DataFrame, feature_names: list[str], model_json: Path | str | None
+) -> tuple[pd.DataFrame, list[str]]:
+    sym = _load_symbolic_indicators(model_json)
+    formulas = sym.get("formulas") or []
+    base_feats = sym.get("feature_names") or []
+    if not formulas or not base_feats:
+        return df, feature_names
+    env = {
+        name: pd.to_numeric(
+            df.get(name, pd.Series(0, index=df.index)), errors="coerce"
+        ).fillna(0.0)
+        for name in base_feats
+    }
+    env.update(_SYMBOLIC_FUNCS)
+    for idx, formula in enumerate(formulas):
+        col = f"sym_{idx}"
+        try:
+            df[col] = eval(formula, {"__builtins__": {}}, env)
+            if col not in feature_names:
+                feature_names.append(col)
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("Failed to evaluate symbolic indicator %s", formula)
+    return df, feature_names
+
 
 def _compute_entity_graph_features(
     df: pd.DataFrame,
@@ -275,6 +333,7 @@ def _extract_features_impl(
     pca_components: dict | None = None,
     rank_features: bool = False,
     n_jobs: int | None = None,
+    model_json: Path | str | None = None,
 ) -> tuple[
     pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]
 ]:
@@ -675,7 +734,7 @@ def _extract_features_impl(
             col = f"graph_emb{i}"
             df[col] = sym_series.map(lambda s: embeddings.get(s, [0.0] * emb_dim)[i])
         feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
-
+    df, feature_names = _apply_symbolic_indicators(df, feature_names, model_json)
     return df, feature_names, embeddings, gnn_state
 
 
