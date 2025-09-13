@@ -368,6 +368,20 @@ def train(
     else:
         cluster_map = {fn: [fn] for fn in feature_names}
 
+    # --- Baseline statistics for Mahalanobis distance ------------------
+    feat_mean: np.ndarray = np.mean(X, axis=0) if X.size else np.array([])
+    if X.shape[0] >= 2:
+        feat_cov = np.cov(X, rowvar=False)
+    else:
+        feat_cov = np.eye(X.shape[1]) if X.size else np.empty((0, 0))
+    cov_inv = np.linalg.pinv(feat_cov) if feat_cov.size else np.empty((0, 0))
+    diff_all = X - feat_mean if X.size else np.empty_like(X)
+    mahal_all = (
+        np.sqrt(np.einsum("ij,jk,ik->i", diff_all, cov_inv, diff_all))
+        if cov_inv.size
+        else np.array([])
+    )
+
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
     if mlflow_active and not _HAS_MLFLOW:
         raise RuntimeError("mlflow is required for tracking")
@@ -383,6 +397,19 @@ def train(
     with run_ctx:
         n_splits = int(kwargs.get("n_splits", 3))
         gap = int(kwargs.get("cv_gap", 1))
+        splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
+        splits = list(splitter.split(X))
+        val_dists = (
+            np.concatenate([mahal_all[val_idx] for _, val_idx in splits])
+            if mahal_all.size
+            else np.array([])
+        )
+        ood_threshold = (
+            float(np.percentile(val_dists, 99)) if val_dists.size else float("inf")
+        )
+        ood_rate = (
+            float(np.mean(val_dists > ood_threshold)) if val_dists.size else 0.0
+        )
         param_grid = kwargs.get("param_grid") or [{}]
         metric_names = metrics
         best_score = -np.inf
@@ -392,7 +419,6 @@ def train(
         if distributed and not _HAS_RAY:
             raise RuntimeError("ray is required for distributed execution")
         for params in param_grid:
-            splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
             fold_metrics: list[dict[str, object]] = []
             if distributed and _HAS_RAY:
                 X_ref = ray.put(X)
@@ -441,7 +467,7 @@ def train(
 
                 futures = [
                     _run_fold.remote(tr_idx, val_idx, fold)
-                    for fold, (tr_idx, val_idx) in enumerate(splitter.split(X))
+                    for fold, (tr_idx, val_idx) in enumerate(splits)
                     if len(np.unique(y[tr_idx])) >= 2
                 ]
                 results = ray.get(futures)
@@ -456,7 +482,7 @@ def train(
                             if isinstance(v, (int, float)) and not np.isnan(v):
                                 mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
             else:
-                for fold, (tr_idx, val_idx) in enumerate(splitter.split(X)):
+                for fold, (tr_idx, val_idx) in enumerate(splits):
                     if len(np.unique(y[tr_idx])) < 2:
                         continue
                     builder = get_model(model_type)
@@ -520,6 +546,7 @@ def train(
                 best_params = params
                 best_fold_metrics = fold_metrics
                 metrics = agg
+        metrics["ood_rate"] = ood_rate
         min_acc = float(kwargs.get("min_accuracy", 0.0))
         min_profit = float(kwargs.get("min_profit", -np.inf))
         if metrics and (
@@ -697,6 +724,11 @@ def train(
             model["clip_low"] = np.min(X, axis=0).tolist()
         if "clip_high" not in model:
             model["clip_high"] = np.max(X, axis=0).tolist()
+        model["ood"] = {
+            "mean": feat_mean.tolist(),
+            "covariance": feat_cov.tolist(),
+            "threshold": ood_threshold,
+        }
         if "session_models" not in model:
             sm_keys = [
                 "coefficients",
