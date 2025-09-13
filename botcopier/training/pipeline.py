@@ -122,6 +122,7 @@ def train(
     regime_features: Sequence[str] | None = None,
     fee_per_trade: float = 0.0,
     slippage_bps: float = 0.0,
+    grad_clip: float = 1.0,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -374,17 +375,21 @@ def train(
                             regime_features=R_local[tr_idx],
                             regime_feature_names=regime_feature_names,
                             sample_weight=weights[tr_idx],
+                            grad_clip=grad_clip,
                             **gpu_kwargs,
                             **params,
                         )
                         prob_val = pred_fn(X[val_idx], R_local[val_idx])
                     else:
+                        kwargs = dict(**gpu_kwargs, **params)
+                        if model_type != "transformer":
+                            kwargs["sample_weight"] = weights[tr_idx]
+                        if model_type in {"moe", "transformer"}:
+                            kwargs["grad_clip"] = grad_clip
                         model_fold, pred_fn = builder(
                             X[tr_idx],
                             y[tr_idx],
-                            sample_weight=weights[tr_idx],
-                            **gpu_kwargs,
-                            **params,
+                            **kwargs,
                         )
                         prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
@@ -421,17 +426,21 @@ def train(
                             regime_features=R[tr_idx],
                             regime_feature_names=regime_feature_names,
                             sample_weight=sample_weight[tr_idx],
+                            grad_clip=grad_clip,
                             **gpu_kwargs,
                             **params,
                         )
                         prob_val = pred_fn(X[val_idx], R[val_idx])
                     else:
+                        kwargs = dict(**gpu_kwargs, **params)
+                        if model_type != "transformer":
+                            kwargs["sample_weight"] = sample_weight[tr_idx]
+                        if model_type in {"moe", "transformer"}:
+                            kwargs["grad_clip"] = grad_clip
                         model_fold, pred_fn = builder(
                             X[tr_idx],
                             y[tr_idx],
-                            sample_weight=sample_weight[tr_idx],
-                            **gpu_kwargs,
-                            **params,
+                            **kwargs,
                         )
                         prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
@@ -485,16 +494,20 @@ def train(
                 regime_features=R,
                 regime_feature_names=regime_feature_names,
                 sample_weight=sample_weight,
+                grad_clip=grad_clip,
                 **gpu_kwargs,
                 **(best_params or {}),
             )
         else:
+            kwargs = dict(**gpu_kwargs, **(best_params or {}))
+            if model_type != "transformer":
+                kwargs["sample_weight"] = sample_weight
+            if model_type in {"moe", "transformer"}:
+                kwargs["grad_clip"] = grad_clip
             model_data, predict_fn = builder(
                 X,
                 y,
-                sample_weight=sample_weight,
-                **gpu_kwargs,
-                **(best_params or {}),
+                **kwargs,
             )
 
         # --- SHAP based feature selection ---------------------------------
@@ -543,12 +556,15 @@ def train(
                         feature_names = [
                             fn for fn, keep in zip(feature_names, mask) if keep
                         ]
+                        kwargs = dict(**gpu_kwargs, **(best_params or {}))
+                        if model_type != "transformer":
+                            kwargs["sample_weight"] = sample_weight
+                        if model_type in {"moe", "transformer"}:
+                            kwargs["grad_clip"] = grad_clip
                         model_data, predict_fn = builder(
                             X,
                             y,
-                            sample_weight=sample_weight,
-                            **gpu_kwargs,
-                            **(best_params or {}),
+                            **kwargs,
                         )
         except Exception:  # pragma: no cover - shap is optional
             logger.exception("Failed to compute SHAP values")
@@ -682,6 +698,7 @@ def train(
             mlflow.log_artifact(
                 str(out_dir / "data_hashes.json"), artifact_path="model"
             )
+        return model_obj
 
 
 def detect_resources(*, lite_mode: bool = False, heavy_mode: bool = False) -> dict:
@@ -831,6 +848,13 @@ def main() -> None:
         dest="metrics",
         help="classification metric to compute (repeatable)",
     )
+    p.add_argument(
+        "--grad-clip",
+        dest="grad_clip",
+        type=float,
+        default=1.0,
+        help="max gradient norm for PyTorch models",
+    )
     args = p.parse_args()
     cfg = TrainingConfig(random_seed=args.random_seed)
     set_seed(cfg.random_seed)
@@ -843,6 +867,7 @@ def main() -> None:
         use_gpu=args.use_gpu,
         random_seed=cfg.random_seed,
         metrics=args.metrics,
+        grad_clip=args.grad_clip,
     )
 
 
