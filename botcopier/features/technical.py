@@ -10,6 +10,7 @@ from typing import Iterable, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy import signal
 
 try:  # optional dask support
     import dask.dataframe as dd  # type: ignore
@@ -71,6 +72,11 @@ _DEPTH_CNN_STATE: dict | None = None
 # Lookback windows for fractal metrics
 HURST_WINDOW = 50
 FRACTAL_DIM_WINDOW = 50
+
+# Parameters for cross-spectral density features
+CSD_WINDOW = 16
+CSD_FREQ_BINS = 16
+_CSD_PARAMS: dict | None = None
 
 
 if _HAS_TORCH:
@@ -418,6 +424,81 @@ def _extract_features_impl(
         df["hurst"] = hurst_vals.to_numpy()
         df["fractal_dim"] = frac_vals.to_numpy()
         feature_names.extend(["hurst", "fractal_dim"])
+
+    if (
+        fe._CONFIG.is_enabled("csd")
+        and graph_data
+        and "symbol" in df.columns
+        and "price" in df.columns
+    ):
+        symbols = graph_data.get("symbols", [])
+        edge_index = graph_data.get("edge_index", [])
+        pairs: set[tuple[str, str]] = set()
+        if isinstance(edge_index, list) and len(edge_index) == 2:
+            for a, b in zip(edge_index[0], edge_index[1]):
+                if a < len(symbols) and b < len(symbols):
+                    sa, sb = symbols[a], symbols[b]
+                    if sa != sb:
+                        pairs.add(tuple(sorted((sa, sb))))
+        idx_col = "event_time" if "event_time" in df.columns else None
+        idx = df[idx_col] if idx_col else df.index
+        price_wide = (
+            df.assign(_idx=idx)
+            .pivot(index="_idx", columns="symbol", values="price")
+            .sort_index()
+            .ffill()
+            .fillna(0.0)
+        )
+        global _CSD_PARAMS
+        _CSD_PARAMS = {"window": CSD_WINDOW, "freq_bins": CSD_FREQ_BINS}
+        for a, b in pairs:
+            if a not in price_wide.columns or b not in price_wide.columns:
+                continue
+            sa = price_wide[a].to_numpy()
+            sb = price_wide[b].to_numpy()
+            freq_arr = np.zeros(len(price_wide))
+            coh_arr = np.zeros(len(price_wide))
+            for i in range(CSD_WINDOW - 1, len(price_wide)):
+                xa = sa[i - CSD_WINDOW + 1 : i + 1]
+                xb = sb[i - CSD_WINDOW + 1 : i + 1]
+                f, Pxy = signal.csd(
+                    xa, xb, nperseg=CSD_WINDOW, nfft=CSD_FREQ_BINS, scaling="spectrum"
+                )
+                _, Pxx = signal.csd(
+                    xa, xa, nperseg=CSD_WINDOW, nfft=CSD_FREQ_BINS, scaling="spectrum"
+                )
+                _, Pyy = signal.csd(
+                    xb, xb, nperseg=CSD_WINDOW, nfft=CSD_FREQ_BINS, scaling="spectrum"
+                )
+                coh = np.abs(Pxy) ** 2 / (Pxx * Pyy + 1e-9)
+                idx_max = int(np.argmax(coh))
+                freq_arr[i] = float(f[idx_max])
+                coh_arr[i] = float(np.real(coh[idx_max]))
+            freq_series = pd.Series(freq_arr, index=price_wide.index)
+            coh_series = pd.Series(coh_arr, index=price_wide.index)
+            col_freq_ab = f"csd_freq_{b}"
+            col_coh_ab = f"csd_coh_{b}"
+            col_freq_ba = f"csd_freq_{a}"
+            col_coh_ba = f"csd_coh_{a}"
+            mask_a = df["symbol"] == a
+            mask_b = df["symbol"] == b
+            times_a = df.loc[mask_a, idx_col] if idx_col else df.loc[mask_a].index
+            times_b = df.loc[mask_b, idx_col] if idx_col else df.loc[mask_b].index
+            df.loc[mask_a, col_freq_ab] = (
+                freq_series.reindex(times_a).fillna(0.0).to_numpy()
+            )
+            df.loc[mask_a, col_coh_ab] = (
+                coh_series.reindex(times_a).fillna(0.0).to_numpy()
+            )
+            df.loc[mask_b, col_freq_ba] = (
+                freq_series.reindex(times_b).fillna(0.0).to_numpy()
+            )
+            df.loc[mask_b, col_coh_ba] = (
+                coh_series.reindex(times_b).fillna(0.0).to_numpy()
+            )
+            for col in [col_freq_ab, col_coh_ab, col_freq_ba, col_coh_ba]:
+                if col not in feature_names:
+                    feature_names.append(col)
 
     if neighbor_corr_windows is not None and len(neighbor_corr_windows) > 0:
         if "symbol" in df.columns and "price" in df.columns:
