@@ -125,6 +125,7 @@ def train(
     fee_per_trade: float = 0.0,
     slippage_bps: float = 0.0,
     grad_clip: float = 1.0,
+    pretrain_mask: Path | None = None,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -271,7 +272,7 @@ def train(
         y = (profits > 0).astype(float)
     sample_weight = np.clip(profits, a_min=0.0, a_max=None)
     cluster_map: dict[str, list[str]] = {}
-
+    encoder_meta: dict[str, object] | None = None
     regime_feature_names = list(regime_features or [])
     R: np.ndarray | None = None
     if model_type == "moe":
@@ -283,6 +284,23 @@ def train(
         R = X[:, idx]
         X = np.delete(X, idx, axis=1)
         feature_names = [fn for i, fn in enumerate(feature_names) if i not in idx]
+
+    if pretrain_mask is not None and _HAS_TORCH:
+        enc_path = Path(pretrain_mask)
+        if enc_path.exists():
+            state = torch.load(enc_path, map_location="cpu")
+            arch = state.get("architecture", [])
+            if arch:
+                encoder = torch.nn.Linear(int(arch[0]), int(arch[1]))
+                encoder.load_state_dict(state["state_dict"])
+                encoder.eval()
+                with torch.no_grad():
+                    X = encoder(torch.as_tensor(X, dtype=torch.float32)).numpy()
+                feature_names = [f"enc_{i}" for i in range(X.shape[1])]
+                encoder_meta = {
+                    "architecture": arch,
+                    "mask_ratio": float(state.get("mask_ratio", 0.0)),
+                }
 
     # --- Power transformation for highly skewed features -----------------
     skew_threshold = float(kwargs.get("skew_threshold", 1.0))
@@ -635,6 +653,8 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if encoder_meta is not None:
+            model["masked_encoder"] = encoder_meta
         if getattr(technical_features, "_DEPTH_CNN_STATE", None) is not None:
             model["depth_cnn"] = technical_features._DEPTH_CNN_STATE
         if cluster_map:
