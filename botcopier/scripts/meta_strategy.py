@@ -3,11 +3,24 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression, SGDClassifier
+
+try:  # pragma: no cover - optional dependency
+    import stable_baselines3 as sb3  # type: ignore
+    try:  # gym is optional, gymnasium fallback
+        from gym import Env, spaces  # type: ignore
+    except Exception:  # pragma: no cover - gymnasium fallback
+        from gymnasium import Env, spaces  # type: ignore
+    HAS_SB3 = True
+except Exception:  # pragma: no cover - RL deps optional
+    sb3 = None  # type: ignore
+    Env = object  # type: ignore
+    spaces = None  # type: ignore
+    HAS_SB3 = False
 
 
 def train_meta_model(
@@ -144,6 +157,93 @@ class RollingMetrics:
         preds = np.array(list(outputs), dtype=float)
         w = self.weights()[: len(preds)]
         return float(np.dot(w, preds))
+
+
+class ThresholdEnv(Env):  # pragma: no cover - exercised via tests
+    """Simple environment that yields thresholds for trading decisions.
+
+    The observation at each step consists of regime features followed by the
+    current model probability.  The agent outputs a threshold in ``[0, 1]``. If
+    the model probability exceeds this threshold a trade is taken and the
+    realised profit at that timestep is used as the reward; otherwise the reward
+    is zero.
+    """
+
+    def __init__(self, features: np.ndarray, probs: np.ndarray, profits: np.ndarray):
+        self.features = np.asarray(features, dtype=np.float32)
+        self.probs = np.asarray(probs, dtype=np.float32)
+        self.profits = np.asarray(profits, dtype=np.float32)
+        self.n_steps = len(self.profits)
+        obs_dim = self.features.shape[1] + 1
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+        )
+        self.action_space = spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+        self._t = 0
+
+    def reset(self):  # type: ignore[override]
+        self._t = 0
+        return self._get_obs()
+
+    def _get_obs(self) -> np.ndarray:
+        feat = self.features[self._t]
+        prob = self.probs[self._t]
+        return np.concatenate([feat, [prob]]).astype(np.float32)
+
+    def step(self, action):  # type: ignore[override]
+        threshold = float(np.clip(action[0], 0.0, 1.0))
+        prob = self.probs[self._t]
+        reward = self.profits[self._t] if prob >= threshold else 0.0
+        self._t += 1
+        done = self._t >= self.n_steps
+        if not done:
+            obs = self._get_obs()
+        else:
+            obs = np.zeros_like(self._get_obs())
+        return obs, float(reward), done, {}
+
+
+class ThresholdAgent:
+    """Policy-gradient agent that outputs trade thresholds.
+
+    The agent observes regime features and current model probability and learns
+    a policy that maps these observations to a threshold.  A
+    :class:`stable_baselines3.PPO` model is used under the hood.  During
+    inference the :meth:`act` method returns the threshold and whether a trade
+    should be taken while logging the action.
+    """
+
+    def __init__(self) -> None:
+        self.model: Optional["sb3.PPO"] = None
+        self._logs: List[Dict[str, float]] = []
+
+    def train(
+        self,
+        features: np.ndarray,
+        probs: np.ndarray,
+        profits: np.ndarray,
+        training_steps: int = 1000,
+    ) -> None:
+        if not HAS_SB3:  # pragma: no cover - dependency missing
+            raise RuntimeError("stable-baselines3 not installed")
+        env = ThresholdEnv(features, probs, profits)
+        self.model = sb3.PPO("MlpPolicy", env, verbose=0)
+        self.model.learn(total_timesteps=training_steps)
+        self.env = env
+
+    def act(self, features: np.ndarray, prob: float) -> Tuple[float, bool]:
+        if not self.model:
+            raise RuntimeError("Agent has not been trained")
+        obs = np.concatenate([np.asarray(features, dtype=np.float32), [float(prob)]])
+        threshold, _ = self.model.predict(obs, deterministic=True)
+        thr = float(np.clip(threshold[0], 0.0, 1.0))
+        trade = float(prob) >= thr
+        self._logs.append({"threshold": thr, "prob": float(prob), "trade": float(trade)})
+        return thr, trade
+
+    def logs(self) -> List[Dict[str, float]]:
+        """Return logged actions."""
+        return list(self._logs)
 
 
 def main() -> None:
