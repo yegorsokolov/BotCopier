@@ -4,5 +4,9 @@
     "fractal_dim": 50,
     "csd": 16
   },
-  "csd_freq_bins": 16
+  "csd_freq_bins": 16,
+  "automl_controller": {
+    "q_values": {},
+    "best_action": null
+  }
 }
