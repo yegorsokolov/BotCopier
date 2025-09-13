@@ -54,6 +54,7 @@ from botcopier.models.schema import FeatureMetadata, ModelParams
 from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.splitters import PurgedWalkForward
+from botcopier.scripts.portfolio import hierarchical_risk_parity
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
 
@@ -126,6 +127,7 @@ def train(
     slippage_bps: float = 0.0,
     grad_clip: float = 1.0,
     pretrain_mask: Path | None = None,
+    hrp_allocation: bool = False,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -164,7 +166,9 @@ def train(
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []
     profit_list: list[np.ndarray] = []
+    returns_frames: list[pd.DataFrame] = []
     label_col: str | None = None
+    returns_df: pd.DataFrame | None = None
     if (
         isinstance(logs, Iterable)
         and not isinstance(logs, (pd.DataFrame,))
@@ -196,6 +200,10 @@ def train(
                 p = chunk["profit"].to_numpy(dtype=float)
                 profit_list.append(p)
                 y_list.append((p > 0).astype(float))
+                if {"event_time", "symbol"} <= set(chunk.columns):
+                    returns_frames.append(
+                        chunk[["event_time", "symbol", "profit"]]
+                    )
             elif label_col is not None:
                 y_list.append(chunk[label_col].to_numpy(dtype=float))
             else:
@@ -205,6 +213,9 @@ def train(
         has_profit = bool(profit_list)
         profits = (
             np.concatenate(profit_list, axis=0) if profit_list else np.zeros_like(y)
+        )
+        returns_df = (
+            pd.concat(returns_frames, ignore_index=True) if returns_frames else None
         )
     else:
         df = logs  # type: ignore[assignment]
@@ -241,6 +252,7 @@ def train(
                 profits = df["profit"].to_numpy(dtype=float)
                 y = (profits > 0).astype(float)
                 has_profit = True
+                returns_df = df[["event_time", "symbol", "profit"]]
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
@@ -248,12 +260,14 @@ def train(
                 y = df[label_col].to_numpy(dtype=float)
                 profits = np.zeros_like(y)
                 has_profit = False
+                returns_df = None
         elif _HAS_POLARS and isinstance(df, pl.DataFrame):
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy().astype(float)
                 y = (profits > 0).astype(float)
                 has_profit = True
+                returns_df = df[["event_time", "symbol", "profit"]].to_pandas()
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
@@ -261,6 +275,7 @@ def train(
                 y = df[label_col].to_numpy().astype(float)
                 profits = np.zeros_like(y)
                 has_profit = False
+                returns_df = None
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
 
@@ -705,6 +720,19 @@ def train(
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = random_seed
         model["data_hashes"] = data_hashes
+        if hrp_allocation and returns_df is not None:
+            try:
+                pivot = (
+                    returns_df.pivot_table(
+                        index="event_time", columns="symbol", values="profit", aggfunc="sum"
+                    ).fillna(0.0)
+                )
+                if pivot.shape[1] >= 1:
+                    weights, link = hierarchical_risk_parity(pivot)
+                    model["hrp_weights"] = weights.to_dict()
+                    model["hrp_dendrogram"] = link.tolist()
+            except Exception:  # pragma: no cover - best effort
+                logger.exception("Failed to compute HRP allocation")
         model_params = ModelParams(**model)
         (out_dir / "model.json").write_text(model_params.model_dump_json())
         (out_dir / "data_hashes.json").write_text(json.dumps(data_hashes, indent=2))
