@@ -44,6 +44,7 @@ torch_geometric
 mlflow
 
 # Optional extras
+opentelemetry-instrumentation; extra == "otel"
 uvloop; extra == "uvloop"  # faster asyncio event loop (stream_listener.py, metrics_collector.py)
 xgboost; extra == "xgboost"
 shap; extra == "shap"
