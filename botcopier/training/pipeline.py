@@ -53,8 +53,8 @@ from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
 from botcopier.models.schema import FeatureMetadata, ModelParams
 from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.model_card import generate_model_card
-from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.scripts.portfolio import hierarchical_risk_parity
+from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
 
@@ -201,9 +201,7 @@ def train(
                 profit_list.append(p)
                 y_list.append((p > 0).astype(float))
                 if {"event_time", "symbol"} <= set(chunk.columns):
-                    returns_frames.append(
-                        chunk[["event_time", "symbol", "profit"]]
-                    )
+                    returns_frames.append(chunk[["event_time", "symbol", "profit"]])
             elif label_col is not None:
                 y_list.append(chunk[label_col].to_numpy(dtype=float))
             else:
@@ -672,6 +670,8 @@ def train(
             model["masked_encoder"] = encoder_meta
         if getattr(technical_features, "_DEPTH_CNN_STATE", None) is not None:
             model["depth_cnn"] = technical_features._DEPTH_CNN_STATE
+        if getattr(technical_features, "_CSD_PARAMS", None) is not None:
+            model["csd_params"] = technical_features._CSD_PARAMS
         if cluster_map:
             model["feature_clusters"] = cluster_map
         if calibration_info is not None:
@@ -722,11 +722,9 @@ def train(
         model["data_hashes"] = data_hashes
         if hrp_allocation and returns_df is not None:
             try:
-                pivot = (
-                    returns_df.pivot_table(
-                        index="event_time", columns="symbol", values="profit", aggfunc="sum"
-                    ).fillna(0.0)
-                )
+                pivot = returns_df.pivot_table(
+                    index="event_time", columns="symbol", values="profit", aggfunc="sum"
+                ).fillna(0.0)
                 if pivot.shape[1] >= 1:
                     weights, link = hierarchical_risk_parity(pivot)
                     model["hrp_weights"] = weights.to_dict()

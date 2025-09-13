@@ -1,6 +1,8 @@
 {
   "feature_windows": {
     "hurst": 50,
-    "fractal_dim": 50
-  }
+    "fractal_dim": 50,
+    "csd": 16
+  },
+  "csd_freq_bins": 16
 }

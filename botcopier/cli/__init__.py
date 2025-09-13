@@ -95,6 +95,9 @@ def main(
     orderbook_features: bool = typer.Option(
         False, help="Include order book derived features"
     ),
+    csd_features: bool = typer.Option(
+        False, help="Include cross spectral density features"
+    ),
 ) -> None:
     """Configure global options for all commands."""
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO))
@@ -133,6 +136,9 @@ def train(
     orderbook_features: bool = typer.Option(
         False, help="Include order book derived features"
     ),
+    csd_features: bool = typer.Option(
+        False, help="Include cross spectral density features"
+    ),
     random_seed: Optional[int] = typer.Option(None, help="Random seed"),
     hrp_allocation: bool = typer.Option(
         False, help="Compute hierarchical risk parity allocation"
@@ -153,6 +159,10 @@ def train(
     if orderbook_features:
         feats = set(train_cfg.features or [])
         feats.add("orderbook")
+        train_cfg = train_cfg.model_copy(update={"features": list(feats)})
+    if csd_features:
+        feats = set(train_cfg.features or [])
+        feats.add("csd")
         train_cfg = train_cfg.model_copy(update={"features": list(feats)})
     if random_seed is not None:
         train_cfg = train_cfg.model_copy(update={"random_seed": random_seed})
@@ -248,6 +258,9 @@ def online_train(
     orderbook_features: bool = typer.Option(
         False, help="Include order book derived features"
     ),
+    csd_features: bool = typer.Option(
+        False, help="Include cross spectral density features"
+    ),
 ) -> None:
     """Continuously update a model from streaming trade events."""
     data_cfg, train_cfg = _cfg(ctx)
@@ -281,6 +294,10 @@ def online_train(
     if orderbook_features:
         feats = set(train_cfg.features or [])
         feats.add("orderbook")
+        updates_train["features"] = list(feats)
+    if csd_features:
+        feats = set(train_cfg.features or [])
+        feats.add("csd")
         updates_train["features"] = list(feats)
     if updates_data:
         data_cfg = data_cfg.model_copy(update=updates_data)
