@@ -57,6 +57,27 @@ def _bollinger(values, window, dev=2.0):
     return float(upper), float(sma), float(lower)
 
 
+def _hurst_exponent(values, window):
+    """Approximate Hurst exponent over the last ``window`` ``values``."""
+    if len(values) < 3:
+        return 0.5
+    w = min(window, len(values))
+    arr = np.array(values[-w:], dtype=float)
+    if arr.size < 3:
+        return 0.5
+    diffs = np.diff(arr)
+    if diffs.std(ddof=0) == 0:
+        return 0.5
+    rho = np.corrcoef(diffs[1:], diffs[:-1])[0, 1]
+    h = 0.5 + 0.5 * rho
+    return float(np.clip(h, 0.0, 1.0))
+
+
+def _fractal_dimension(values, window):
+    """Fractal dimension estimated from the Hurst exponent."""
+    return float(2.0 - _hurst_exponent(values, window))
+
+
 def _safe_float(val, default=0.0):
     """Convert ``val`` to float, treating ``None``/NaN as ``default``."""
     try:
