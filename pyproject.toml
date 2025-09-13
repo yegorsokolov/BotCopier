@@ -16,6 +16,7 @@ dependencies = [
     "dask[dataframe]",
     "great_expectations",
     "scikit-learn",
+    "gplearn",
     "joblib",
     "river",
     "psutil",
