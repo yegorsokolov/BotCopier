@@ -28,6 +28,14 @@ try:  # optional polars support
 except ImportError:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
+
+try:  # optional dask support
+    import dask.dataframe as dd  # type: ignore
+
+    _HAS_DASK = True
+except Exception:  # pragma: no cover - optional
+    dd = None  # type: ignore
+    _HAS_DASK = False
 from pydantic import ValidationError
 
 from botcopier.config.settings import TrainingConfig
@@ -131,6 +139,7 @@ def train(
         "hold_period",
         "augment_ratio",
         "dtw_augment",
+        "dask",
     ]
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
     logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
@@ -152,6 +161,7 @@ def train(
         isinstance(logs, Iterable)
         and not isinstance(logs, (pd.DataFrame,))
         and not (_HAS_POLARS and isinstance(logs, pl.DataFrame))
+        and not (_HAS_DASK and isinstance(logs, dd.DataFrame))
     ):
         store = FeatureStore(repo_path=str(fs_repo)) if _HAS_FEAST else None
         feature_refs = [f"trade_features:{f}" for f in FEATURE_COLUMNS]
@@ -203,7 +213,21 @@ def train(
                 df, feature_names, n_jobs=n_jobs
             )
         FeatureSchema.validate(df[feature_names], lazy=True)
-        if isinstance(df, pd.DataFrame):
+        if _HAS_DASK and isinstance(df, dd.DataFrame):
+            df = df.compute()
+            X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
+            if "profit" in df.columns:
+                profits = df["profit"].to_numpy(dtype=float)
+                y = (profits > 0).astype(float)
+                has_profit = True
+            else:
+                label_col = next((c for c in df.columns if c.startswith("label")), None)
+                if label_col is None:
+                    raise ValueError("no label column found")
+                y = df[label_col].to_numpy(dtype=float)
+                profits = np.zeros_like(y)
+                has_profit = False
+        elif isinstance(df, pd.DataFrame):
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy(dtype=float)
