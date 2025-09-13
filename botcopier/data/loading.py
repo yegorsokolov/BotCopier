@@ -114,6 +114,7 @@ def _load_logs(
     dtw_augment: bool = False,
     mmap_threshold: int = 50 * 1024 * 1024,
     depth_file: Path | None = None,
+    dask: bool = False,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], dict[str, str]]:
     """Load trade logs from ``trades_raw.csv``.
 
@@ -134,13 +135,15 @@ def _load_logs(
     if depth_file is None and not data_dir.is_file():
         cand = data_dir / "depth_raw.csv"
         depth_file = cand if cand.exists() else None
-    cs = chunk_size or (50000 if lite_mode else None)
+    cs = None if dask else chunk_size or (50000 if lite_mode else None)
     use_mmap = (
         not lite_mode
         and cs is None
         and file.exists()
         and file.stat().st_size > mmap_threshold
     )
+    if dask and (kafka_brokers or flight_uri or use_mmap or cs is not None):
+        raise NotImplementedError("dask mode only supports simple local CSV loading")
     data_hashes: dict[str, str] = {}
     if file.exists():
         data_hashes[str(file.resolve())] = hashlib.sha256(
@@ -391,8 +394,17 @@ def _load_logs(
                 df_chunk, _ = _process(chunk)
                 yield df_chunk
 
+        if dask:
+            import dask.dataframe as dd
+
+            ddfs = [dd.from_pandas(chunk, npartitions=1) for chunk in _iter()]
+            return dd.concat(ddfs, interleave_partitions=True), feature_cols, data_hashes
         return _iter(), feature_cols, data_hashes
 
     df = reader  # type: ignore[assignment]
     df, feature_cols = _process(df)
+    if dask:
+        import dask.dataframe as dd
+
+        df = dd.from_pandas(df, npartitions=1)
     return df, feature_cols, data_hashes

@@ -11,6 +11,13 @@ from contextlib import nullcontext
 
 import numpy as np
 import pandas as pd
+try:  # optional dask support
+    import dask.dataframe as dd  # type: ignore
+
+    _HAS_DASK = True
+except Exception:  # pragma: no cover - optional
+    dd = None  # type: ignore
+    _HAS_DASK = False
 
 from .registry import FEATURE_REGISTRY, register_feature
 
@@ -361,17 +368,31 @@ def _extract_features_impl(
 
 
 def _extract_features(
-    df: pd.DataFrame | "pl.DataFrame",
+    df: pd.DataFrame | "pl.DataFrame" | "dd.DataFrame",
     feature_names: list[str],
     **kwargs,
 ) -> tuple[
-    pd.DataFrame | "pl.DataFrame",
+    pd.DataFrame | "pl.DataFrame" | "dd.DataFrame",
     list[str],
     dict[str, list[float]],
     dict[str, list[list[float]]],
 ]:
     """Run enabled feature plugins and return augmented ``df`` and metadata."""
     from .engineering import _CONFIG, _FEATURE_RESULTS  # late import to avoid circular deps
+
+    if _HAS_DASK and isinstance(df, dd.DataFrame):
+        sample = df.head()  # compute small sample for metadata
+        sample_out, feature_names, embeddings, gnn_state = _extract_features(
+            sample, list(feature_names), **kwargs
+        )
+
+        def _apply(pdf: pd.DataFrame) -> pd.DataFrame:
+            out, _, _, _ = _extract_features(pdf, list(feature_names), **kwargs)
+            return out
+
+        meta = sample_out.iloc[0:0]
+        ddf = df.map_partitions(_apply, meta=meta)
+        return ddf, feature_names, embeddings, gnn_state
 
     key = id(df)
     if key in _FEATURE_RESULTS:
