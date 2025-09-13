@@ -52,7 +52,7 @@ def configure_cache(config: FeatureConfig) -> None:
     _CONFIG = config
     _MEMORY = Memory(str(config.cache_dir) if config.cache_dir else None, verbose=0)
 
-    from .registry import FEATURE_REGISTRY
+    from .plugins import FEATURE_REGISTRY
 
     _augmentation._augment_dataframe = _cache_with_logging(
         _augmentation._augment_dataframe_impl, "_augment_dataframe"
