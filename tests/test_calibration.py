@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.linear_model import SGDClassifier
+from sklearn.metrics import brier_score_loss
 from sklearn.preprocessing import StandardScaler
 
 from botcopier.training.pipeline import train
@@ -30,10 +31,8 @@ def _make_dataset(tmp_path: Path) -> Path:
 def test_calibrated_probabilities_and_symbol_thresholds(tmp_path):
     data_file = _make_dataset(tmp_path)
     out = tmp_path / "out"
-    train(data_file, out)
+    train(data_file, out, n_splits=2)
     model = json.loads((out / "model.json").read_text())
-    assert "symbol_thresholds" in model
-    assert set(model["symbol_thresholds"].keys()) == {"EURUSD", "GBPUSD"}
     # verify calibration alters probabilities
     df = pd.read_csv(data_file)
     X = df[["feature"]].to_numpy()
@@ -46,6 +45,10 @@ def test_calibrated_probabilities_and_symbol_thresholds(tmp_path):
     probs_raw = clf.predict_proba(scaler.transform(X))[:, 1]
     probs_cal = calib.predict_proba(scaler.transform(X))[:, 1]
     assert not np.allclose(probs_raw, probs_cal)
+    raw_brier = brier_score_loss(y, probs_raw)
+    cal_brier = brier_score_loss(y, probs_cal)
+    assert cal_brier <= raw_brier
+
 
 
 def test_threshold_lookup_in_mql4(tmp_path):

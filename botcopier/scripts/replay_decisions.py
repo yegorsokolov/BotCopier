@@ -87,11 +87,24 @@ def _predict_logistic(model: Dict, features: Dict[str, float]) -> float:
         coeffs = coeffs[: vec.shape[0]]
     std_safe = np.where(std == 0, 1, std)
     z = ((vec - mean) / std_safe) @ coeffs + intercept
-    cal_coef = model.get("calibration_coef")
-    cal_inter = model.get("calibration_intercept")
-    if cal_coef is not None and cal_inter is not None:
-        z = z * float(cal_coef) + float(cal_inter)
-    return float(1 / (1 + math.exp(-z)))
+    prob = float(1 / (1 + math.exp(-z)))
+    calib = model.get("calibration")
+    if isinstance(calib, dict):
+        if calib.get("method") == "isotonic":
+            x = np.asarray(calib.get("x", []), dtype=float)
+            y = np.asarray(calib.get("y", []), dtype=float)
+            if x.size and y.size:
+                prob = float(np.interp(prob, x, y, left=y[0], right=y[-1]))
+        elif {"coef", "intercept"} <= calib.keys():
+            z = z * float(calib["coef"]) + float(calib["intercept"])
+            prob = float(1 / (1 + math.exp(-z)))
+    else:
+        cal_coef = model.get("calibration_coef")
+        cal_inter = model.get("calibration_intercept")
+        if cal_coef is not None and cal_inter is not None:
+            z = z * float(cal_coef) + float(cal_inter)
+            prob = float(1 / (1 + math.exp(-z)))
+    return prob
 
 
 def _predict_nn(model: Dict, features: Dict[str, float]) -> float:

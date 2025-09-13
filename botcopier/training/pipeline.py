@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import psutil
 from sklearn.preprocessing import PowerTransformer
+from sklearn.calibration import CalibratedClassifierCV
 
 try:  # optional polars support
     import polars as pl  # type: ignore
@@ -489,6 +490,45 @@ def train(
         except Exception:  # pragma: no cover - shap is optional
             logger.exception("Failed to compute SHAP values")
 
+        # --- Probability calibration ---------------------------------------
+        calibration_info: dict[str, object] | None = None
+        if model_type != "moe":
+            base_model = getattr(predict_fn, "model", None)
+            if base_model is not None and X.size and y.size:
+                cal_splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
+                calibrator = CalibratedClassifierCV(
+                    base_model, method="isotonic", cv=cal_splitter
+                )
+                fit_kwargs = (
+                    {"sample_weight": sample_weight} if sample_weight.size else {}
+                )
+                try:
+                    calibrator.fit(X, y, **fit_kwargs)
+                except ValueError:
+                    try:
+                        calibrator = CalibratedClassifierCV(
+                            base_model, method="isotonic", cv="prefit"
+                        )
+                        calibrator.fit(X, y, **fit_kwargs)
+                    except ValueError:
+                        calibrator = None
+
+                if calibrator is not None:
+                    def _calibrated_predict(arr: np.ndarray) -> np.ndarray:
+                        return calibrator.predict_proba(arr)[:, 1]
+
+                    _calibrated_predict.model = calibrator  # type: ignore[attr-defined]
+                    predict_fn = _calibrated_predict
+                    try:
+                        iso = calibrator.calibrated_classifiers_[0].calibrators_[0]
+                        calibration_info = {
+                            "method": "isotonic",
+                            "x": iso.X_thresholds_.tolist(),
+                            "y": iso.y_thresholds_.tolist(),
+                        }
+                    except Exception:
+                        calibration_info = None
+
         if model_type == "moe" and R is not None:
             probas = predict_fn(X, R)
         else:
@@ -502,6 +542,8 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if calibration_info is not None:
+            model["calibration"] = calibration_info
         if pt_meta is not None:
             keep = [f for f in pt_meta["features"] if f in feature_names]
             if keep:
