@@ -103,10 +103,13 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
 
-try:  # optional change point detection
-    import ruptures as rpt  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
-    rpt = None  # type: ignore
+try:  # optional sequential drift detection
+    if __package__:
+        from .sequential_drift import PageHinkley
+    else:  # pragma: no cover - executed as script
+        from sequential_drift import PageHinkley  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    PageHinkley = None  # type: ignore
 
 resource = Resource.create(
     {"service.name": os.getenv("OTEL_SERVICE_NAME", "online_trainer")}
@@ -228,10 +231,8 @@ class OnlineTrainer:
         else:
             self.store = None
         self.graph_dataset: GraphDataset | None = None
-        # rolling statistics for change point detection
-        self._dist_history: deque[float] = deque(maxlen=200)
-        self.cp_window = 50
-        self.cp_threshold = 5.0
+        # sequential drift detector on rolling feature statistics
+        self.drift_detector = PageHinkley() if PageHinkley is not None else None
         if self.model_path.exists():
             self._load()
         elif detect_resources:
@@ -458,36 +459,17 @@ class OnlineTrainer:
             self._prev_coef = None
         logger.info({"event": "regime_shift", "action": action})
 
-    def _check_change_point(self) -> None:
-        arr = np.fromiter(self._dist_history, dtype=float)
-        if len(arr) < self.cp_window:
-            return
-        if rpt is not None:
-            try:
-                algo = rpt.Binseg(model="l2").fit(arr.reshape(-1, 1))
-                bkps = algo.predict(n_bkps=1)
-                if bkps and bkps[0] != len(arr):
-                    self._handle_regime_shift()
-                    self._dist_history.clear()
-                    return
-            except (RuntimeError, ValueError):
-                pass
-        first, second = arr[: len(arr) // 2], arr[len(arr) // 2 :]
-        if (
-            len(first)
-            and len(second)
-            and abs(first.mean() - second.mean()) > self.cp_threshold
-        ):
+    def _check_drift(self, value: float) -> None:
+        """Run sequential drift detector and handle regime shifts."""
+        if self.drift_detector is not None and self.drift_detector.update(value):
             self._handle_regime_shift()
-            self._dist_history.clear()
 
     def update(self, batch: List[Dict[str, Any]]) -> bool:
         with observe_latency("train_batch"):
             try:
                 with tracer.start_as_current_span("train_batch") as span:
                     X, y = self._vectorise(batch)
-                    self._dist_history.append(float(X.mean()))
-                    self._check_change_point()
+                    self._check_drift(float(X.mean()))
                     # configure current learning rate
                     if hasattr(self.clf, "eta0"):
                         self.clf.eta0 = self.lr
