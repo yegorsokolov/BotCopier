@@ -362,7 +362,7 @@ def evaluate(
         annual_sharpe_net = sharpe_net * factor
         annual_sortino_net = sortino_net * factor
 
-    roc_auc = pr_auc = brier = None
+    roc_auc = pr_auc = brier = ece = None
     reliability = {"prob_true": [], "prob_pred": []}
     if y_score_list:
         brier = brier_score_loss(y_true_list, y_score_list)
@@ -374,6 +374,13 @@ def evaluate(
                 "prob_true": prob_true.tolist(),
                 "prob_pred": prob_pred.tolist(),
             }
+            bins = np.linspace(0.0, 1.0, 11)
+            binids = np.digitize(y_score_list, bins[1:-1], right=True)
+            bin_counts = np.bincount(binids, minlength=10)
+            counts = bin_counts[bin_counts > 0]
+            ece = float(
+                np.sum(np.abs(prob_true - prob_pred) * (counts / len(y_score_list)))
+            )
         except ValueError:
             pass
         if len(set(y_true_list)) > 1:
@@ -415,6 +422,7 @@ def evaluate(
         "roc_auc": roc_auc,
         "pr_auc": pr_auc,
         "brier_score": brier,
+        "ece": ece,
         "reliability_curve": reliability,
     }
     if nll_mean is not None:
@@ -474,6 +482,22 @@ def _metric_reliability(
         return {"prob_true": [], "prob_pred": []}
 
 
+def _metric_ece(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
+    """Expected calibration error."""
+    bins = np.linspace(0.0, 1.0, 11)
+    binids = np.digitize(probas, bins[1:-1], right=True)
+    bin_counts = np.bincount(binids, minlength=10)
+    try:
+        prob_true, prob_pred = calibration_curve(y_true, probas, n_bins=10)
+        counts = bin_counts[bin_counts > 0]
+        ece = np.sum(np.abs(prob_true - prob_pred) * (counts / probas.shape[0]))
+        return float(ece)
+    except ValueError:
+        return 0.0
+
+
 def _returns(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None
 ) -> np.ndarray:
@@ -522,6 +546,7 @@ register_metric("roc_auc", _metric_roc_auc)
 register_metric("pr_auc", _metric_pr_auc)
 register_metric("brier_score", _metric_brier)
 register_metric("reliability_curve", _metric_reliability)
+register_metric("ece", _metric_ece)
 register_metric("sharpe_ratio", _metric_sharpe)
 register_metric("sortino_ratio", _metric_sortino)
 register_metric("profit", _metric_profit)
