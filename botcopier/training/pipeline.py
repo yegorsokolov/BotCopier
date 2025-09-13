@@ -98,6 +98,23 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _max_drawdown(returns: np.ndarray) -> float:
+    """Return the maximum drawdown of ``returns``."""
+    if returns.size == 0:
+        return 0.0
+    cum = np.cumsum(returns, dtype=float)
+    peak = np.maximum.accumulate(cum)
+    dd = peak - cum
+    return float(np.max(dd))
+
+
+def _var_95(returns: np.ndarray) -> float:
+    """Return the 95% Value at Risk of ``returns``."""
+    if returns.size == 0:
+        return 0.0
+    return float(-np.quantile(returns, 0.05))
+
+
 def _write_dependency_snapshot(out_dir: Path) -> Path:
     """Record the current Python package versions."""
     packages = sorted(
@@ -130,6 +147,8 @@ def train(
     pretrain_mask: Path | None = None,
     hrp_allocation: bool = False,
     strategy_search: bool = False,
+    max_drawdown: float | None = None,
+    var_limit: float | None = None,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -497,6 +516,8 @@ def train(
                     fold_metric = _classification_metrics(
                         y[val_idx], prob_val, returns, selected=metric_names
                     )
+                    fold_metric["max_drawdown"] = _max_drawdown(returns)
+                    fold_metric["var_95"] = _var_95(returns)
                     return fold, fold_metric
 
                 futures = [
@@ -548,6 +569,8 @@ def train(
                     fold_metric = _classification_metrics(
                         y[val_idx], prob_val, returns, selected=metric_names
                     )
+                    fold_metric["max_drawdown"] = _max_drawdown(returns)
+                    fold_metric["var_95"] = _var_95(returns)
                     fold_metrics.append(fold_metric)
                     logger.info(
                         "Fold %d params %s metrics %s", fold + 1, params, fold_metric
@@ -575,6 +598,12 @@ def train(
             if np.isnan(score):
                 score = agg.get("accuracy", 0.0)
             logger.info("Aggregated metrics for params %s: %s", params, agg)
+            risk_penalty = 0.0
+            if max_drawdown is not None:
+                risk_penalty += max(0.0, agg.get("max_drawdown", 0.0) - max_drawdown)
+            if var_limit is not None:
+                risk_penalty += max(0.0, agg.get("var_95", 0.0) - var_limit)
+            score -= risk_penalty
             if score > best_score:
                 best_score = score
                 best_params = params
@@ -787,6 +816,14 @@ def train(
         mode = kwargs.get("mode")
         if mode is not None:
             model["mode"] = mode
+        model["risk_params"] = {
+            "max_drawdown": max_drawdown,
+            "var_limit": var_limit,
+        }
+        model["risk_metrics"] = {
+            "max_drawdown": metrics.get("max_drawdown", 0.0),
+            "var_95": metrics.get("var_95", 0.0),
+        }
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = random_seed
         model["data_hashes"] = data_hashes

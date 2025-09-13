@@ -87,6 +87,23 @@ import numpy as np
 from botcopier.rl.options import OptionTradeEnv, default_skills, evaluate_option_policy
 from botcopier.utils.random import set_seed
 
+
+def _max_drawdown(returns: np.ndarray) -> float:
+    """Return the maximum drawdown of ``returns``."""
+    if returns.size == 0:
+        return 0.0
+    cum = np.cumsum(returns, dtype=float)
+    peak = np.maximum.accumulate(cum)
+    dd = peak - cum
+    return float(np.max(dd))
+
+
+def _var_95(returns: np.ndarray) -> float:
+    """Return the 95% Value at Risk of ``returns``."""
+    if returns.size == 0:
+        return 0.0
+    return float(-np.quantile(returns, 0.05))
+
 try:  # pragma: no cover - optional dependency
     import requests
 except Exception:  # pragma: no cover - optional dependency
@@ -391,6 +408,8 @@ def train(
     intrinsic_reward_weight: float = 0.0,
     random_seed: int = 0,
     use_options: bool = False,
+    max_drawdown: float | None = None,
+    var_limit: float | None = None,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     set_seed(random_seed)
@@ -435,6 +454,20 @@ def train(
     n_features = states.shape[1]
 
     rewards = rewards_ext.copy()
+    drawdown = _max_drawdown(rewards_ext)
+    var95 = _var_95(rewards_ext)
+    if max_drawdown is not None or var_limit is not None:
+        penalty = 0.0
+        if max_drawdown is not None and drawdown > max_drawdown:
+            penalty += drawdown - max_drawdown
+        if var_limit is not None and var95 > var_limit:
+            penalty += var95 - var_limit
+        if penalty > 0:
+            rewards = rewards - penalty
+    risk_info = {
+        "risk_params": {"max_drawdown": max_drawdown, "var_limit": var_limit},
+        "risk_metrics": {"max_drawdown": drawdown, "var_95": var95},
+    }
     if intrinsic_reward:
         if not HAS_SB3_CONTRIB:
             raise ImportError("sb3_contrib is required for intrinsic rewards")
@@ -576,6 +609,7 @@ def train(
             "accuracy": float("nan"),
             "num_samples": len(actions),
         }
+        model_info.update(risk_info)
         model_info["training_type"] = "offline_rl"
 
         model_path = out_dir / ("model.json.gz" if compress_model else "model.json")
@@ -799,6 +833,7 @@ def train(
             "weights_file": weights_path.with_suffix(".zip").name,
             "intrinsic_reward": intrinsic_reward,
         }
+        model_info.update(risk_info)
         model_info["replay_alpha"] = replay_alpha
         model_info["replay_beta"] = replay_beta
         model_info["n_step"] = n_step
@@ -1001,6 +1036,7 @@ def train(
         "avg_td_error": float(np.mean(episode_td)) if episode_td else 0.0,
         "td_errors": [float(e) for e in episode_td],
     }
+    model.update(risk_info)
     model["training_type"] = training_type
     if training_type != "offline_rl" and init_model_data is not None:
         model["init_model"] = start_model.name if start_model is not None else None
