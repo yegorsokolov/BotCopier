@@ -13,6 +13,7 @@ from sklearn.preprocessing import PowerTransformer
 from botcopier.metrics import (
     ERROR_COUNTER,
     TRADE_COUNTER,
+    OOD_COUNTER,
     observe_latency,
     start_metrics_server,
 )
@@ -62,6 +63,12 @@ if PT_INFO:
         if f in FEATURE_NAMES
     ]
 
+OOD_INFO = MODEL.get("ood", {})
+OOD_MEAN = np.asarray(OOD_INFO.get("mean", []), dtype=float)
+OOD_COV = np.asarray(OOD_INFO.get("covariance", []), dtype=float)
+OOD_INV = np.linalg.pinv(OOD_COV) if OOD_COV.size else np.empty((0, 0))
+OOD_THRESHOLD = float(OOD_INFO.get("threshold", float("inf")))
+
 if _HAS_FEAST:
     FS_REPO = BASE_DIR / "feature_store" / "feast_repo"
     STORE = FeatureStore(repo_path=str(FS_REPO))
@@ -85,7 +92,6 @@ class PredictionResponse(BaseModel):
 
 def _predict_one(features: List[float]) -> float:
     """Simple linear model with sigmoid activation."""
-
     coeffs = MODEL.get("entry_coefficients", [])
     intercept = MODEL.get("entry_intercept", 0.0)
     expected = len(FEATURE_METADATA) or len(FEATURE_NAMES)
@@ -93,6 +99,12 @@ def _predict_one(features: List[float]) -> float:
         raise ValueError("model definition inconsistent")
     if len(features) != expected:
         raise ValueError("feature length mismatch")
+    if OOD_MEAN.size and OOD_INV.size:
+        arr = np.asarray(features, dtype=float)
+        dist = float(np.sqrt((arr - OOD_MEAN) @ OOD_INV @ (arr - OOD_MEAN)))
+        if dist > OOD_THRESHOLD:
+            OOD_COUNTER.inc()
+            return 0.0
     score = sum(c * f for c, f in zip(coeffs, features)) + intercept
     return 1.0 / (1.0 + math.exp(-score))
 

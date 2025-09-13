@@ -23,6 +23,12 @@ TRADE_COUNTER = Counter(
     "Number of processed trades",
 )
 
+# Counter for out-of-distribution samples
+OOD_COUNTER = Counter(
+    "botcopier_ood_total",
+    "Number of OOD samples encountered",
+)
+
 
 def start_metrics_server(port: int) -> None:
     """Start the Prometheus metrics HTTP server on ``port``."""
