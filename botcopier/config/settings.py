@@ -56,6 +56,7 @@ class TrainingConfig(BaseSettings):
     random_seed: int = 0
     online_model: str = "sgd"
     grad_clip: float = 1.0
+    eval_hooks: List[str] = []
 
     model_config = {"env_prefix": "TRAIN_"}
 
