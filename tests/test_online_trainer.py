@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from scripts.online_trainer import OnlineTrainer
+from scripts.sequential_drift import PageHinkley
 
 
 def test_online_trainer_updates(tmp_path: Path):
@@ -58,8 +59,7 @@ def test_conformal_bounds_change(tmp_path: Path):
 def test_regime_shift_triggers_reset(tmp_path: Path, caplog):
     model_path = tmp_path / "model.json"
     trainer = OnlineTrainer(model_path=model_path, batch_size=5)
-    trainer.cp_window = 4
-    trainer.cp_threshold = 1.0
+    trainer.drift_detector = PageHinkley(delta=0.1, threshold=1.0, min_samples=5)
     baseline = [{"a": 0.0, "b": 0.0, "y": 0} for _ in range(5)]
     for _ in range(4):
         trainer.update(baseline)
