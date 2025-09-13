@@ -75,26 +75,37 @@ def _trial_logger(csv_path: Path) -> Callable[[optuna.study.Study, optuna.trial.
     return _callback
 
 
-def _objective(trial: optuna.trial.Trial) -> float:
-    """A tiny deterministic objective function.
+def _objective_factory(
+    max_drawdown: float | None, var_limit: float | None
+) -> Callable[[optuna.trial.Trial], float]:
+    """Return an objective that includes risk penalties."""
 
-    The trial suggests a seed and a single floating point parameter ``x``.  The
-    seed is stored in ``trial.user_attrs`` and used to create a reproducible
-    noise term so the optimisation has something to minimise.
-    """
+    def _objective(trial: optuna.trial.Trial) -> float:
+        seed = trial.suggest_int("seed", 0, 9999)
+        trial.set_user_attr("seed", seed)
+        x = trial.suggest_float("x", -10.0, 10.0)
+        rng = np.random.default_rng(seed)
+        noise = rng.normal()
+        risk = abs(x) / 10.0
+        trial.set_user_attr("max_drawdown", risk)
+        trial.set_user_attr("var_95", risk)
+        penalty = 0.0
+        if max_drawdown is not None and risk > max_drawdown:
+            penalty += risk - max_drawdown
+        if var_limit is not None and risk > var_limit:
+            penalty += risk - var_limit
+        return (x - 2) ** 2 + noise + penalty
 
-    seed = trial.suggest_int("seed", 0, 9999)
-    trial.set_user_attr("seed", seed)
-    x = trial.suggest_float("x", -10.0, 10.0)
-    rng = np.random.default_rng(seed)
-    noise = rng.normal()
-    return (x - 2) ** 2 + noise
+    return _objective
 
 
 def run_optuna(
     n_trials: int = 10,
     csv_path: Path | str = "hyperparams.csv",
     model_json_path: Path | str = "model.json",
+    *,
+    max_drawdown: float | None = None,
+    var_limit: float | None = None,
 ) -> optuna.study.Study:
     """Run a small Optuna study and record trial information.
 
@@ -113,15 +124,19 @@ def run_optuna(
 
     sampler = optuna.samplers.RandomSampler(seed=0)
     study = optuna.create_study(direction="minimize", sampler=sampler)
-    study.optimize(_objective, n_trials=n_trials, callbacks=[_trial_logger(csv_path)])
+    objective = _objective_factory(max_drawdown, var_limit)
+    study.optimize(objective, n_trials=n_trials, callbacks=[_trial_logger(csv_path)])
 
     best = study.best_trial
     relative_csv = os.path.relpath(csv_path, model_json_path.parent)
+    risk = best.user_attrs.get("max_drawdown", 0.0)
     model_data = {
         "metadata": {
             "hyperparam_log": relative_csv,
             "best_trial": {"number": best.number, "value": best.value},
-        }
+        },
+        "risk_params": {"max_drawdown": max_drawdown, "var_limit": var_limit},
+        "risk_metrics": {"max_drawdown": risk, "var_95": risk},
     }
     model_json_path.write_text(json.dumps(model_data))
 
