@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Callable, Dict, Sequence
 
 import numpy as np
 from pydantic import ValidationError
@@ -163,6 +163,96 @@ def _fit_logreg(
 
 
 register_model("logreg", _fit_logreg)
+
+if _HAS_TORCH:
+
+    class MixtureOfExperts(torch.nn.Module):
+        """Simple mixture of experts with a softmax gating network."""
+
+        def __init__(
+            self,
+            n_features: int,
+            n_regime_features: int,
+            n_experts: int,
+        ) -> None:
+            super().__init__()
+            self.experts = torch.nn.ModuleList(
+                [torch.nn.Linear(n_features, 1) for _ in range(n_experts)]
+            )
+            self.gating = torch.nn.Linear(n_regime_features, n_experts)
+
+        def forward(self, x: torch.Tensor, r: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            gate_logits = self.gating(r)
+            gate = torch.softmax(gate_logits, dim=1)
+            expert_logits = torch.cat([e(x) for e in self.experts], dim=1)
+            expert_prob = torch.sigmoid(expert_logits)
+            out = (gate * expert_prob).sum(dim=1, keepdim=True)
+            return out, gate
+
+    def _fit_moe(
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        regime_features: np.ndarray,
+        regime_feature_names: Sequence[str],
+        n_experts: int | None = None,
+        epochs: int = 50,
+        lr: float = 1e-2,
+        sample_weight: np.ndarray | None = None,
+        device: str = "cpu",
+    ) -> tuple[dict[str, object], Callable[[np.ndarray, np.ndarray], np.ndarray]]:
+        """Train a Mixture-of-Experts model on ``X`` and ``y``."""
+
+        n_experts = n_experts or regime_features.shape[1]
+        dev = torch.device(device)
+        model = MixtureOfExperts(X.shape[1], regime_features.shape[1], n_experts).to(dev)
+        opt = torch.optim.Adam(model.parameters(), lr=lr)
+        sw: torch.Tensor | None = None
+        if sample_weight is not None:
+            sw = torch.tensor(sample_weight, dtype=torch.float32, device=dev).unsqueeze(1)
+            loss_fn = torch.nn.BCELoss(weight=sw)
+        else:
+            loss_fn = torch.nn.BCELoss()
+
+        X_t = torch.tensor(X, dtype=torch.float32, device=dev)
+        R_t = torch.tensor(regime_features, dtype=torch.float32, device=dev)
+        y_t = torch.tensor(y, dtype=torch.float32, device=dev).unsqueeze(1)
+        model.train()
+        for _ in range(epochs):
+            opt.zero_grad()
+            out, _ = model(X_t, R_t)
+            loss = loss_fn(out, y_t)
+            loss.backward()
+            opt.step()
+
+        def _predict(arr: np.ndarray, reg: np.ndarray) -> np.ndarray:
+            with torch.no_grad():
+                arr_t = torch.tensor(arr, dtype=torch.float32, device=dev)
+                reg_t = torch.tensor(reg, dtype=torch.float32, device=dev)
+                out, _ = model(arr_t, reg_t)
+                return out.squeeze(1).cpu().numpy()
+
+        _predict.model = model  # type: ignore[attr-defined]
+
+        meta = {
+            "experts": [
+                {
+                    "weights": e.weight.detach().cpu().numpy().ravel().tolist(),
+                    "bias": float(e.bias.detach().cpu().item()),
+                }
+                for e in model.experts
+            ],
+            "regime_gating": {
+                "weights": model.gating.weight.detach().cpu().numpy().tolist(),
+                "bias": model.gating.bias.detach().cpu().numpy().tolist(),
+                "classes": list(range(n_experts)),
+                "feature_names": list(regime_feature_names),
+            },
+            "model_type": "moe",
+        }
+        return meta, _predict
+
+    register_model("moe", _fit_moe)
 
 if _HAS_XGB:
 

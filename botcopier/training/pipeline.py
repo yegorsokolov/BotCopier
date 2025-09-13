@@ -107,6 +107,7 @@ def train(
     random_seed: int = 0,
     n_jobs: int | None = None,
     metrics: Sequence[str] | None = None,
+    regime_features: Sequence[str] | None = None,
     fee_per_trade: float = 0.0,
     slippage_bps: float = 0.0,
     **kwargs: object,
@@ -233,6 +234,18 @@ def train(
         y = (profits > 0).astype(float)
     sample_weight = np.clip(profits, a_min=0.0, a_max=None)
 
+    regime_feature_names = list(regime_features or [])
+    R: np.ndarray | None = None
+    if model_type == "moe":
+        if not regime_feature_names:
+            regime_feature_names = [f for f in feature_names if f.startswith("regime_")]
+        if not regime_feature_names:
+            raise ValueError("regime_features must be provided for model_type='moe'")
+        idx = [feature_names.index(f) for f in regime_feature_names]
+        R = X[:, idx]
+        X = np.delete(X, idx, axis=1)
+        feature_names = [fn for i, fn in enumerate(feature_names) if i not in idx]
+
     # --- Power transformation for highly skewed features -----------------
     skew_threshold = float(kwargs.get("skew_threshold", 1.0))
     pt_meta: dict[str, list] | None = None
@@ -280,6 +293,7 @@ def train(
                 y_ref = ray.put(y)
                 profits_ref = ray.put(profits)
                 weight_ref = ray.put(sample_weight)
+                R_ref = ray.put(R) if model_type == "moe" else None
 
                 @ray.remote
                 def _run_fold(tr_idx, val_idx, fold):
@@ -287,15 +301,28 @@ def train(
                     y = ray.get(y_ref)
                     profits = ray.get(profits_ref)
                     weights = ray.get(weight_ref)
+                    R_local = ray.get(R_ref) if R_ref is not None else None
                     builder = get_model(model_type)
-                    model_fold, pred_fn = builder(
-                        X[tr_idx],
-                        y[tr_idx],
-                        sample_weight=weights[tr_idx],
-                        **gpu_kwargs,
-                        **params,
-                    )
-                    prob_val = pred_fn(X[val_idx])
+                    if model_type == "moe" and R_local is not None:
+                        model_fold, pred_fn = builder(
+                            X[tr_idx],
+                            y[tr_idx],
+                            regime_features=R_local[tr_idx],
+                            regime_feature_names=regime_feature_names,
+                            sample_weight=weights[tr_idx],
+                            **gpu_kwargs,
+                            **params,
+                        )
+                        prob_val = pred_fn(X[val_idx], R_local[val_idx])
+                    else:
+                        model_fold, pred_fn = builder(
+                            X[tr_idx],
+                            y[tr_idx],
+                            sample_weight=weights[tr_idx],
+                            **gpu_kwargs,
+                            **params,
+                        )
+                        prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     fold_metric = _classification_metrics(
                         y[val_idx], prob_val, returns, selected=metric_names
@@ -323,14 +350,26 @@ def train(
                     if len(np.unique(y[tr_idx])) < 2:
                         continue
                     builder = get_model(model_type)
-                    model_fold, pred_fn = builder(
-                        X[tr_idx],
-                        y[tr_idx],
-                        sample_weight=sample_weight[tr_idx],
-                        **gpu_kwargs,
-                        **params,
-                    )
-                    prob_val = pred_fn(X[val_idx])
+                    if model_type == "moe" and R is not None:
+                        model_fold, pred_fn = builder(
+                            X[tr_idx],
+                            y[tr_idx],
+                            regime_features=R[tr_idx],
+                            regime_feature_names=regime_feature_names,
+                            sample_weight=sample_weight[tr_idx],
+                            **gpu_kwargs,
+                            **params,
+                        )
+                        prob_val = pred_fn(X[val_idx], R[val_idx])
+                    else:
+                        model_fold, pred_fn = builder(
+                            X[tr_idx],
+                            y[tr_idx],
+                            sample_weight=sample_weight[tr_idx],
+                            **gpu_kwargs,
+                            **params,
+                        )
+                        prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     fold_metric = _classification_metrics(
                         y[val_idx], prob_val, returns, selected=metric_names
@@ -375,13 +414,24 @@ def train(
         ):
             raise ValueError("Cross-validation metrics below thresholds")
         builder = get_model(model_type)
-        model_data, predict_fn = builder(
-            X,
-            y,
-            sample_weight=sample_weight,
-            **gpu_kwargs,
-            **(best_params or {}),
-        )
+        if model_type == "moe" and R is not None:
+            model_data, predict_fn = builder(
+                X,
+                y,
+                regime_features=R,
+                regime_feature_names=regime_feature_names,
+                sample_weight=sample_weight,
+                **gpu_kwargs,
+                **(best_params or {}),
+            )
+        else:
+            model_data, predict_fn = builder(
+                X,
+                y,
+                sample_weight=sample_weight,
+                **gpu_kwargs,
+                **(best_params or {}),
+            )
 
         # --- SHAP based feature selection ---------------------------------
         shap_threshold = float(kwargs.get("shap_threshold", 0.0))
@@ -439,7 +489,10 @@ def train(
         except Exception:  # pragma: no cover - shap is optional
             logger.exception("Failed to compute SHAP values")
 
-        probas = predict_fn(X)
+        if model_type == "moe" and R is not None:
+            probas = predict_fn(X, R)
+        else:
+            probas = predict_fn(X)
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
         feature_metadata = [FeatureMetadata(original_column=fn) for fn in feature_names]
@@ -447,6 +500,7 @@ def train(
             "feature_names": feature_names,
             "feature_metadata": feature_metadata,
             **model_data,
+            "model_type": model_type,
         }
         if pt_meta is not None:
             keep = [f for f in pt_meta["features"] if f in feature_names]
