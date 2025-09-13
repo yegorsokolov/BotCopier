@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable, Tuple
 
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
-
 import numpy as np
 import pandas as pd
+
 try:  # optional dask support
     import dask.dataframe as dd  # type: ignore
 
@@ -64,6 +64,85 @@ except ImportError:  # pragma: no cover - optional
 logger = logging.getLogger(__name__)
 
 
+_DEPTH_CNN_STATE: dict | None = None
+
+
+if _HAS_TORCH:
+
+    class _DepthCNN(torch.nn.Module):
+        """Tiny CNN used to embed orderbook depth snapshots."""
+
+        def __init__(self, state: dict | None = None) -> None:
+            super().__init__()
+            self.conv1 = torch.nn.Conv2d(1, 8, kernel_size=(2, 3))
+            self.pool = torch.nn.AdaptiveAvgPool2d((1, 1))
+            self.conv2 = torch.nn.Conv2d(8, 4, kernel_size=(1, 1))
+            if state:
+                self._load(state)
+
+        def _load(self, state: dict) -> None:
+            self.conv1.weight.data = torch.tensor(state["conv1_weight"]).reshape_as(
+                self.conv1.weight
+            )
+            self.conv1.bias.data = torch.tensor(state["conv1_bias"])
+            self.conv2.weight.data = torch.tensor(state["conv2_weight"]).reshape_as(
+                self.conv2.weight
+            )
+            self.conv2.bias.data = torch.tensor(state["conv2_bias"])
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple
+            x = torch.relu(self.conv1(x))
+            x = self.pool(x)
+            x = torch.relu(self.conv2(x))
+            return x.view(x.size(0), -1)
+
+
+def _depth_cnn_features(
+    bids: pd.Series,
+    asks: pd.Series,
+    state: dict | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Compute CNN embeddings for bid/ask depth arrays."""
+    if not _HAS_TORCH:
+        return np.zeros((len(bids), 0)), {}
+
+    if state is None:
+        flat_vals = [b.ravel() for b in bids if b.size] + [
+            a.ravel() for a in asks if a.size
+        ]
+        all_vals = np.concatenate(flat_vals) if flat_vals else np.array([0.0])
+        mean = float(all_vals.mean())
+        std = float(all_vals.std() + 1e-6)
+        torch.manual_seed(0)
+        model = _DepthCNN()
+        state = {
+            "conv1_weight": model.conv1.weight.detach().cpu().numpy().tolist(),
+            "conv1_bias": model.conv1.bias.detach().cpu().numpy().tolist(),
+            "conv2_weight": model.conv2.weight.detach().cpu().numpy().tolist(),
+            "conv2_bias": model.conv2.bias.detach().cpu().numpy().tolist(),
+            "mean": mean,
+            "std": std,
+        }
+    else:
+        mean = float(state.get("mean", 0.0))
+        std = float(state.get("std", 1.0))
+        model = _DepthCNN(state)
+
+    model.eval()
+    emb_list: list[list[float]] = []
+    for b, a in zip(bids, asks):
+        if b.size == 0 or a.size == 0:
+            emb_list.append([0.0] * 4)
+            continue
+        depth = np.stack([b, a], axis=0)
+        depth = (depth - mean) / (std + 1e-9)
+        t = torch.tensor(depth, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        with torch.no_grad():
+            out = model(t).squeeze(0).cpu().numpy()
+        emb_list.append(out.tolist())
+    return np.asarray(emb_list, dtype=float), state
+
+
 @register_feature("technical")
 def _extract_features_impl(
     df: pd.DataFrame | "pl.DataFrame",
@@ -76,6 +155,7 @@ def _extract_features_impl(
     neighbor_corr_windows: Iterable[int] | None = None,
     regime_model: dict | str | Path | None = None,
     tick_encoder: Path | None = None,
+    depth_cnn: dict | None = None,
     calendar_features: bool = True,
     pca_components: dict | None = None,
     rank_features: bool = False,
@@ -262,18 +342,33 @@ def _extract_features_impl(
             ]
         )
 
+        if _HAS_TORCH:
+            global _DEPTH_CNN_STATE
+            emb, _DEPTH_CNN_STATE = _depth_cnn_features(
+                bid_depth, ask_depth, depth_cnn or _DEPTH_CNN_STATE
+            )
+            for i in range(emb.shape[1]):
+                col = f"depth_cnn_{i}"
+                df[col] = emb[:, i]
+                if col not in feature_names:
+                    feature_names.append(col)
+
     if fe._CONFIG.is_enabled("kalman"):
         params = fe._CONFIG.kalman_params
         p_var = params.get("process_var", KALMAN_DEFAULT_PARAMS["process_var"])
         m_var = params.get("measurement_var", KALMAN_DEFAULT_PARAMS["measurement_var"])
         if "close" in df.columns:
-            closes = pd.to_numeric(df["close"], errors="coerce").fillna(0.0).to_numpy(float)
+            closes = (
+                pd.to_numeric(df["close"], errors="coerce").fillna(0.0).to_numpy(float)
+            )
             lvl_vals, tr_vals = _kalman_filter_series(closes, p_var, m_var)
             df["kalman_price_level"] = lvl_vals
             df["kalman_price_trend"] = tr_vals
             feature_names.extend(["kalman_price_level", "kalman_price_trend"])
         if "volume" in df.columns:
-            vols = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0).to_numpy(float)
+            vols = (
+                pd.to_numeric(df["volume"], errors="coerce").fillna(0.0).to_numpy(float)
+            )
             lvl_vals, tr_vals = _kalman_filter_series(vols, p_var, m_var)
             df["kalman_volume_level"] = lvl_vals
             df["kalman_volume_trend"] = tr_vals
@@ -359,9 +454,7 @@ def _extract_features_impl(
         sym_series = df["symbol"].astype(str)
         for i in range(emb_dim):
             col = f"graph_emb{i}"
-            df[col] = sym_series.map(
-                lambda s: embeddings.get(s, [0.0] * emb_dim)[i]
-            )
+            df[col] = sym_series.map(lambda s: embeddings.get(s, [0.0] * emb_dim)[i])
         feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
 
     return df, feature_names, embeddings, gnn_state
@@ -378,7 +471,10 @@ def _extract_features(
     dict[str, list[list[float]]],
 ]:
     """Run enabled feature plugins and return augmented ``df`` and metadata."""
-    from .engineering import _CONFIG, _FEATURE_RESULTS  # late import to avoid circular deps
+    from .engineering import (  # late import to avoid circular deps
+        _CONFIG,
+        _FEATURE_RESULTS,
+    )
 
     if _HAS_DASK and isinstance(df, dd.DataFrame):
         sample = df.head()  # compute small sample for metadata
