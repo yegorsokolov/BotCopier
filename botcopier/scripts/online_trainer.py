@@ -187,6 +187,7 @@ class OnlineTrainer:
         lr: float = 0.01,
         lr_decay: float = 1.0,
         seed: int = 0,
+        online_model: str = "sgd",
     ) -> None:
         self.model_path = Path(model_path)
         self.batch_size = batch_size
@@ -195,12 +196,19 @@ class OnlineTrainer:
         self.lr_decay = lr_decay
         self.seed = seed
         self.lr_history: List[float] = []
-        self.clf = SGDClassifier(
-            loss="log_loss", learning_rate="adaptive", eta0=self.lr
-        )
+        self.online_model = online_model
+        if online_model == "confidence_weighted":
+            from botcopier.models.registry import ConfidenceWeighted
+
+            self.clf = ConfidenceWeighted()
+            self.model_type = "confidence_weighted"
+        else:
+            self.clf = SGDClassifier(
+                loss="log_loss", learning_rate="adaptive", eta0=self.lr
+            )
+            self.model_type = "logreg"
         self.feature_names: List[str] = list(FEATURE_COLUMNS) if _HAS_FEAST else []
         self.feature_flags: Dict[str, bool] = {}
-        self.model_type: str = "logreg"
         self._prev_coef: List[float] | None = None
         self.training_mode = "lite"
         self.cpu_threshold = 80.0
@@ -262,6 +270,8 @@ class OnlineTrainer:
         self.model_type = data.get("model_type", self.model_type)
         coef = data.get("coefficients")
         intercept = data.get("intercept")
+        variance = data.get("variance")
+        bias_var = data.get("bias_variance")
         self.half_life_days = float(data.get("half_life_days", 0.0))
         self.weight_decay = data.get("weight_decay")
         self.conformal_lower = data.get("conformal_lower")
@@ -270,13 +280,7 @@ class OnlineTrainer:
         calib = data.get("calibration")
         if isinstance(calib, dict):
             if calib.get("method") == "isotonic":
-                self.calibrator = IsotonicRegression(out_of_bounds="clip")
-                self.calibrator.X_thresholds_ = np.asarray(
-                    calib.get("x", []), dtype=float
-                )
-                self.calibrator.y_thresholds_ = np.asarray(
-                    calib.get("y", []), dtype=float
-                )
+                self.calibrator = None
             elif {"coef", "intercept"} <= calib.keys():
                 self.calibrator = LogisticRegression()
                 self.calibrator.classes_ = np.array([0, 1])
@@ -289,23 +293,50 @@ class OnlineTrainer:
             except (OSError, ValueError):
                 self.graph_dataset = None
         if self.feature_names and coef is not None and intercept is not None:
-            n = len(self.feature_names)
-            self.clf.partial_fit(np.zeros((1, n)), [0], classes=np.array([0, 1]))
-            self.clf.coef_ = np.array([coef])
-            self.clf.intercept_ = np.array([intercept])
-            self._prev_coef = list(coef) + [intercept]
+            if self.model_type == "confidence_weighted":
+                from botcopier.models.registry import ConfidenceWeighted
+
+                self.clf = ConfidenceWeighted()
+                self.clf.w = np.array(coef, dtype=float)
+                self.clf.b = float(intercept)
+                self.clf.sigma = (
+                    np.array(variance, dtype=float)
+                    if variance is not None
+                    else np.ones(len(coef), dtype=float)
+                )
+                self.clf.bias_sigma = float(bias_var) if bias_var is not None else 1.0
+                self.clf.classes_ = np.array([0, 1])
+                self._prev_coef = list(coef) + [self.clf.b]
+            else:
+                n = len(self.feature_names)
+                self.clf.partial_fit(np.zeros((1, n)), [0], classes=np.array([0, 1]))
+                self.clf.coef_ = np.array([coef])
+                self.clf.intercept_ = np.array([intercept])
+                self._prev_coef = list(coef) + [intercept]
         self._apply_mode()
 
     def _save(self) -> None:
         payload = {
             "feature_names": self.feature_names,
-            "coefficients": self.clf.coef_[0].tolist(),
-            "intercept": float(self.clf.intercept_[0]),
             "training_mode": self.training_mode,
             "mode": self.training_mode,
             "feature_flags": self.feature_flags,
             "model_type": self.model_type,
         }
+        if self.model_type == "confidence_weighted":
+            payload["coefficients"] = (
+                self.clf.w.tolist() if getattr(self.clf, "w", None) is not None else []
+            )
+            payload["intercept"] = float(getattr(self.clf, "b", 0.0))
+            payload["variance"] = (
+                self.clf.sigma.tolist()
+                if getattr(self.clf, "sigma", None) is not None
+                else []
+            )
+            payload["bias_variance"] = float(getattr(self.clf, "bias_sigma", 1.0))
+        else:
+            payload["coefficients"] = self.clf.coef_[0].tolist()
+            payload["intercept"] = float(self.clf.intercept_[0])
         if self.half_life_days:
             payload["half_life_days"] = self.half_life_days
         if self.weight_decay:
@@ -354,6 +385,12 @@ class OnlineTrainer:
             coef = np.zeros((1, n))
             coef[:, : self.clf.coef_.shape[1]] = self.clf.coef_
             self.clf.coef_ = coef
+        elif hasattr(self.clf, "w") and getattr(self.clf, "w") is not None:
+            add = len(new_feats)
+            self.clf.w = np.concatenate([self.clf.w, np.zeros(add)])
+            self.clf.sigma = np.concatenate(
+                [self.clf.sigma, np.ones(add) / getattr(self.clf, "r", 1.0)]
+            )
 
     def _vectorise(self, batch: List[Dict[str, Any]]):
         if (
@@ -396,7 +433,16 @@ class OnlineTrainer:
             acc = float(np.mean(preds == y))
         except (NotFittedError, ValueError):
             acc = 0.0
-        logger.info({"event": "validation", "size": len(y), "accuracy": acc})
+        conf = None
+        if hasattr(self.clf, "confidence_score"):
+            try:
+                conf = float(np.mean(self.clf.confidence_score(X)))
+            except Exception:
+                conf = None
+        log = {"event": "validation", "size": len(y), "accuracy": acc}
+        if conf is not None:
+            log["confidence"] = conf
+        logger.info(log)
 
     def _handle_regime_shift(self) -> None:
         action = "reset"
@@ -443,12 +489,13 @@ class OnlineTrainer:
                     self._dist_history.append(float(X.mean()))
                     self._check_change_point()
                     # configure current learning rate
-                    self.clf.eta0 = self.lr
+                    if hasattr(self.clf, "eta0"):
+                        self.clf.eta0 = self.lr
                     if not hasattr(self.clf, "classes_"):
                         self.clf.partial_fit(X, y, classes=np.array([0, 1]))
                     else:
                         self.clf.partial_fit(X, y)
-                    lr_used = self.clf.eta0
+                    lr_used = getattr(self.clf, "eta0", self.lr)
                     self.lr_history.append(lr_used)
                     try:
                         raw_probs = self.clf.predict_proba(X)[:, 1]
@@ -476,27 +523,35 @@ class OnlineTrainer:
                         else:
                             probs1 = raw_probs
                         probs = np.column_stack([1 - probs1, probs1])
-                        self.recent_probs.extend(probs[np.arange(len(y)), y])
+                        self.recent_probs.extend(probs1.tolist())
                         arr = np.fromiter(self.recent_probs, dtype=float)
                         self.conformal_lower = float(np.quantile(arr, 0.05))
                         self.conformal_upper = float(np.quantile(arr, 0.95))
                     except ValueError:
                         pass
-                    coef = self.clf.coef_[0].tolist()
-                    intercept = float(self.clf.intercept_[0])
+                    if self.model_type == "confidence_weighted":
+                        coef = self.clf.w.tolist()
+                        intercept = float(self.clf.b)
+                    else:
+                        coef = self.clf.coef_[0].tolist()
+                        intercept = float(self.clf.intercept_[0])
                     prev = self._prev_coef
                     self._prev_coef = coef + [intercept]
                     changed = prev != self._prev_coef
                     self._save()
                     self._log_validation(X, y)
                     ctx = span.get_span_context()
+                    log = {
+                        "event": "batch_update",
+                        "size": len(batch),
+                        "coefficients_changed": changed,
+                        "lr": lr_used,
+                    }
+                    conf = getattr(self.clf, "last_batch_confidence", None)
+                    if conf is not None:
+                        log["confidence"] = conf
                     logger.info(
-                        {
-                            "event": "batch_update",
-                            "size": len(batch),
-                            "coefficients_changed": changed,
-                            "lr": lr_used,
-                        },
+                        log,
                         extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
                     )
                     # decay learning rate for next batch
@@ -659,6 +714,7 @@ async def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
         lr=train_cfg.lr,
         lr_decay=train_cfg.lr_decay,
         seed=train_cfg.random_seed,
+        online_model=train_cfg.online_model,
     )
     start_metrics_server(train_cfg.metrics_port)
     _sd_notify_ready()
@@ -699,6 +755,11 @@ async def async_main(argv: List[str] | None = None) -> None:
         "--lr-decay", type=float, help="Multiplicative learning rate decay per batch"
     )
     p.add_argument("--flight-path", help="Flight path name")
+    p.add_argument(
+        "--online-model",
+        choices=["sgd", "confidence_weighted"],
+        help="Online model to use",
+    )
     p.add_argument("--baseline-file", help="Baseline CSV for drift monitoring")
     p.add_argument("--recent-file", help="Recent CSV for drift monitoring")
     p.add_argument("--log-dir", help="Log directory for retrain")
@@ -740,6 +801,7 @@ async def async_main(argv: List[str] | None = None) -> None:
                 "drift_interval",
                 "metrics_port",
                 "random_seed",
+                "online_model",
             ]
             if getattr(args, k) is not None
         }

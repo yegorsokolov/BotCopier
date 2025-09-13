@@ -54,6 +54,7 @@ class TrainingConfig(BaseSettings):
     model_type: str = "logreg"
     window: int = 60
     random_seed: int = 0
+    online_model: str = "sgd"
 
     model_config = {"env_prefix": "TRAIN_"}
 

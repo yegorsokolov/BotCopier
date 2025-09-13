@@ -114,6 +114,72 @@ class _FeatureClipper(BaseEstimator, TransformerMixin):
         return np.clip(X, self.low, self.high)
 
 
+class ConfidenceWeighted:
+    """Simple diagonal Confidence-Weighted classifier.
+
+    The implementation follows the AROW update rule maintaining a mean
+    weight vector and a diagonal covariance matrix.  It exposes a minimal
+    scikit-learn like interface with ``partial_fit`` and ``predict``
+    methods allowing it to be used by the online trainer.
+    """
+
+    def __init__(self, r: float = 1.0) -> None:
+        self.r = r
+        self.w: np.ndarray | None = None
+        self.b: float = 0.0
+        self.sigma: np.ndarray | None = None
+        self.bias_sigma: float = 1.0 / r
+        self.classes_: np.ndarray | None = None
+        self.last_batch_confidence: float | None = None
+
+    def _ensure_init(self, n_features: int, classes: np.ndarray | None) -> None:
+        if self.w is None:
+            self.w = np.zeros(n_features, dtype=float)
+            self.sigma = np.ones(n_features, dtype=float) / self.r
+            self.bias_sigma = 1.0 / self.r
+            if classes is not None:
+                self.classes_ = np.asarray(classes)
+
+    def partial_fit(
+        self, X: np.ndarray, y: np.ndarray, classes: np.ndarray | None = None
+    ) -> "ConfidenceWeighted":
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=int)
+        self._ensure_init(X.shape[1], classes)
+        assert self.w is not None and self.sigma is not None
+        conf: list[float] = []
+        for xi, yi in zip(X, y):
+            yi2 = 1 if yi == 1 else -1
+            wx = np.dot(self.w, xi) + self.b
+            m = yi2 * wx
+            v = float(np.dot(xi * xi, self.sigma) + self.bias_sigma)
+            beta = 1.0 / (v + self.r)
+            alpha = max(0.0, 1.0 - m) * beta
+            self.w += alpha * yi2 * self.sigma * xi
+            self.b += alpha * yi2 * self.bias_sigma
+            # keep variances constant to allow adaptation
+            conf.append(m / (np.sqrt(v) + 1e-12))
+        if conf:
+            self.last_batch_confidence = float(np.mean(conf))
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        assert self.w is not None
+        margin = X @ self.w + self.b
+        probs1 = 1.0 / (1.0 + np.exp(-margin))
+        return np.column_stack([1 - probs1, probs1])
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
+    def confidence_score(self, X: np.ndarray) -> np.ndarray:
+        """Return normalised margin for ``X``."""
+        assert self.w is not None and self.sigma is not None
+        margin = X @ self.w + self.b
+        var = X * X @ self.sigma + self.bias_sigma
+        return margin / (np.sqrt(var) + 1e-12)
+
+
 def _fit_logreg(
     X: np.ndarray,
     y: np.ndarray,
@@ -162,7 +228,34 @@ def _fit_logreg(
     return meta, _predict
 
 
+def _fit_confidence_weighted(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    r: float = 1.0,
+    sample_weight: np.ndarray | None = None,
+) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
+    """Fit a :class:`ConfidenceWeighted` classifier on ``X`` and ``y``."""
+
+    clf = ConfidenceWeighted(r=r)
+    clf.partial_fit(X, y, classes=np.array([0, 1]))
+
+    def _predict(arr: np.ndarray) -> np.ndarray:
+        return clf.predict_proba(arr)[:, 1]
+
+    _predict.model = clf  # type: ignore[attr-defined]
+    meta = {
+        "coefficients": clf.w.tolist() if clf.w is not None else [],
+        "intercept": float(clf.b),
+        "variance": clf.sigma.tolist() if clf.sigma is not None else [],
+        "bias_variance": float(clf.bias_sigma),
+        "model_type": "confidence_weighted",
+    }
+    return meta, _predict
+
+
 register_model("logreg", _fit_logreg)
+register_model("confidence_weighted", _fit_confidence_weighted)
 
 if _HAS_TORCH:
 
