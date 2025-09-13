@@ -90,7 +90,13 @@ def load_tick_sequences(path: Path, seq_len: int) -> np.ndarray:
     return np.stack(seqs)
 
 
-def train_gan(seqs: np.ndarray, epochs: int, latent_dim: int) -> Generator:
+def train_gan(
+    seqs: np.ndarray,
+    epochs: int,
+    latent_dim: int,
+    *,
+    grad_clip: float = 1.0,
+) -> Generator:
     """Train GAN on provided sequences."""
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -119,6 +125,7 @@ def train_gan(seqs: np.ndarray, epochs: int, latent_dim: int) -> Generator:
             ) + criterion(disc(fake), torch.zeros(bsz, 1, device=device))
             opt_d.zero_grad()
             loss_d.backward()
+            torch.nn.utils.clip_grad_norm_(disc.parameters(), grad_clip)
             opt_d.step()
 
             # Train generator
@@ -127,6 +134,7 @@ def train_gan(seqs: np.ndarray, epochs: int, latent_dim: int) -> Generator:
             loss_g = criterion(disc(fake), torch.ones(bsz, 1, device=device))
             opt_g.zero_grad()
             loss_g.backward()
+            torch.nn.utils.clip_grad_norm_(gen.parameters(), grad_clip)
             opt_g.step()
 
     gen.eval()

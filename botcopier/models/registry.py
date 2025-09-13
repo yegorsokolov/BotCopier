@@ -291,6 +291,7 @@ if _HAS_TORCH:
         n_experts: int | None = None,
         epochs: int = 50,
         lr: float = 1e-2,
+        grad_clip: float = 1.0,
         sample_weight: np.ndarray | None = None,
         device: str = "cpu",
     ) -> tuple[dict[str, object], Callable[[np.ndarray, np.ndarray], np.ndarray]]:
@@ -316,6 +317,7 @@ if _HAS_TORCH:
             out, _ = model(X_t, R_t)
             loss = loss_fn(out, y_t)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
 
         def _predict(arr: np.ndarray, reg: np.ndarray) -> np.ndarray:
@@ -513,6 +515,7 @@ if _HAS_TORCH:
         lr: float = 1e-3,
         dropout: float = 0.0,
         device: str = "cpu",
+        grad_clip: float = 1.0,
     ) -> tuple[dict[str, list], Callable[[np.ndarray], np.ndarray]]:
         """Train a :class:`TabTransformer` on ``X`` and ``y``."""
 
@@ -528,6 +531,7 @@ if _HAS_TORCH:
             out = model(X_t)
             loss = loss_fn(out, y_t)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
 
         def _predict(arr: np.ndarray) -> np.ndarray:
@@ -538,7 +542,16 @@ if _HAS_TORCH:
         _predict.device = dev  # type: ignore[attr-defined]
 
         state = model.state_dict()
-        return {k: v.cpu().tolist() for k, v in state.items()}, _predict
+        dim = model.embed.out_features
+        qkv = state["layers.0.attn.in_proj_weight"].cpu()
+        weights = {
+            "q_weight": qkv[:dim].tolist(),
+            "k_weight": qkv[dim : 2 * dim].tolist(),
+            "v_weight": qkv[2 * dim :].tolist(),
+            "out_weight": state["layers.0.attn.out_proj.weight"].cpu().tolist(),
+            "pos_embed_weight": state["embed.weight"].cpu().tolist(),
+        }
+        return {"weights": weights, "dropout": dropout}, _predict
 
     register_model("transformer", fit_tab_transformer)
 else:  # pragma: no cover - torch optional
