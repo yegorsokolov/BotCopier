@@ -8,5 +8,7 @@
   "automl_controller": {
     "q_values": {},
     "best_action": null
-  }
+  },
+  "options": ["entry", "exit", "risk"],
+  "option_weights_file": "option_policy.zip"
 }
