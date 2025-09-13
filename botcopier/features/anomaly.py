@@ -6,7 +6,7 @@ from typing import Tuple
 import numpy as np
 from sklearn.ensemble import IsolationForest
 
-from .registry import register_feature
+from .plugins import register_feature
 
 
 @register_feature("clip_train_features")

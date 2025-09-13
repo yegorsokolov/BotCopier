@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover - optional
     dd = None  # type: ignore
     _HAS_DASK = False
 
-from .registry import FEATURE_REGISTRY, register_feature
+from .plugins import FEATURE_REGISTRY, register_feature, load_plugins
 
 try:  # optional polars dependency
     import polars as pl  # type: ignore
@@ -753,6 +753,9 @@ def _extract_features(
         _CONFIG,
         _FEATURE_RESULTS,
     )
+
+    # Dynamically load any third-party plugins requested via configuration
+    load_plugins(_CONFIG.enabled_features)
 
     if _HAS_DASK and isinstance(df, dd.DataFrame):
         sample = df.head()  # compute small sample for metadata

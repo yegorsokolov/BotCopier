@@ -7,7 +7,7 @@ from typing import Tuple
 import numpy as np
 import pandas as pd
 
-from .registry import register_feature
+from .plugins import register_feature
 
 
 @register_feature("augment_dataframe")
