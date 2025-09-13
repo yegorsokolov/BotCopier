@@ -54,6 +54,7 @@ from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
+from opentelemetry import trace
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -130,6 +131,7 @@ def train(
     configure_cache(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
     )
+    tracer = trace.get_tracer(__name__)
     load_keys = [
         "lite_mode",
         "chunk_size",
@@ -143,7 +145,8 @@ def train(
         "dask",
     ]
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
-    logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
+    with tracer.start_as_current_span("data_load"):
+        logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
     logger.info("Training data hashes: %s", data_hashes)
     gpu_kwargs: dict[str, object] = {}
     if use_gpu:
@@ -154,6 +157,8 @@ def train(
         elif model_type == "transformer":
             gpu_kwargs.update({"device": "cuda"})
     fs_repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
+    span_ctx = tracer.start_as_current_span("feature_extraction")
+    span_ctx.__enter__()
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []
     profit_list: list[np.ndarray] = []
@@ -257,6 +262,8 @@ def train(
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
 
+    span_ctx.__exit__(None, None, None)
+
     if has_profit and profits.size:
         cost = fee_per_trade + np.abs(profits) * slippage_bps * 1e-4
         profits = profits - cost
@@ -338,6 +345,8 @@ def train(
         if experiment_name is not None:
             mlflow.set_experiment(experiment_name)
 
+    span_model = tracer.start_as_current_span("model_fit")
+    span_model.__enter__()
     run_ctx = mlflow.start_run() if mlflow_active else nullcontext()
     with run_ctx:
         n_splits = int(kwargs.get("n_splits", 3))
@@ -609,6 +618,9 @@ def train(
                     except Exception:
                         calibration_info = None
 
+        span_model.__exit__(None, None, None)
+        span_eval = tracer.start_as_current_span("evaluation")
+        span_eval.__enter__()
         if model_type == "moe" and R is not None:
             probas = predict_fn(X, R)
         else:
@@ -698,6 +710,7 @@ def train(
             mlflow.log_artifact(
                 str(out_dir / "data_hashes.json"), artifact_path="model"
             )
+        span_eval.__exit__(None, None, None)
         return model_obj
 
 
@@ -824,7 +837,6 @@ def sync_with_server(
 
 
 def main() -> None:
-    setup_logging()
     p = argparse.ArgumentParser(description="Train target clone model")
     p.add_argument("data_dir", type=Path)
     p.add_argument("out_dir", type=Path)
@@ -842,6 +854,13 @@ def main() -> None:
         help="enable GPU acceleration for supported models",
     )
     p.add_argument("--random-seed", dest="random_seed", type=int, default=0)
+    p.add_argument("--trace", action="store_true", help="Enable OpenTelemetry tracing")
+    p.add_argument(
+        "--trace-exporter",
+        choices=["otlp", "jaeger"],
+        default="otlp",
+        help="Tracing exporter to use",
+    )
     p.add_argument(
         "--metric",
         action="append",
@@ -856,6 +875,7 @@ def main() -> None:
         help="max gradient norm for PyTorch models",
     )
     args = p.parse_args()
+    setup_logging(enable_tracing=args.trace, exporter=args.trace_exporter)
     cfg = TrainingConfig(random_seed=args.random_seed)
     set_seed(cfg.random_seed)
     train(
