@@ -1,0 +1,14 @@
+syntax = "proto3";
+package tbot;
+
+message PredictRequest {
+  repeated double features = 1;
+}
+
+message PredictResponse {
+  double prediction = 1;
+}
+
+service PredictService {
+  rpc Predict (PredictRequest) returns (PredictResponse);
+}
