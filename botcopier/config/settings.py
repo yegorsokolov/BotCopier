@@ -58,6 +58,7 @@ class TrainingConfig(BaseSettings):
     grad_clip: float = 1.0
     eval_hooks: List[str] = []
     hrp_allocation: bool = False
+    strategy_search: bool = False
 
     model_config = {"env_prefix": "TRAIN_"}
 
