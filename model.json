@@ -1,0 +1,6 @@
+{
+  "feature_windows": {
+    "hurst": 50,
+    "fractal_dim": 50
+  }
+}

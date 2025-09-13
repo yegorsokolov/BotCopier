@@ -34,6 +34,8 @@ from ..scripts.features import (
     KALMAN_DEFAULT_PARAMS,
     _atr,
     _bollinger,
+    _fractal_dimension,
+    _hurst_exponent,
     _is_doji,
     _is_engulfing,
     _is_hammer,
@@ -65,6 +67,10 @@ logger = logging.getLogger(__name__)
 
 
 _DEPTH_CNN_STATE: dict | None = None
+
+# Lookback windows for fractal metrics
+HURST_WINDOW = 50
+FRACTAL_DIM_WINDOW = 50
 
 
 if _HAS_TORCH:
@@ -393,6 +399,25 @@ def _extract_features_impl(
                     feature_names.append("tick_emb")
             except (OSError, RuntimeError, ValueError) as exc:
                 logger.exception("Failed to load tick encoder from %s", tick_encoder)
+
+    if "symbol" in df.columns and "price" in df.columns:
+        prices = pd.to_numeric(df["price"], errors="coerce").fillna(0.0)
+        hurst_vals = pd.Series(0.5, index=df.index, dtype=float)
+        frac_vals = pd.Series(1.5, index=df.index, dtype=float)
+        for sym, group in df.groupby("symbol"):
+            p = prices.loc[group.index].to_list()
+            h_list: list[float] = []
+            f_list: list[float] = []
+            for i in range(len(p)):
+                window_p = p[max(0, i - HURST_WINDOW + 1) : i + 1]
+                h = _hurst_exponent(window_p, len(window_p))
+                h_list.append(h)
+                f_list.append(_fractal_dimension(window_p, len(window_p)))
+            hurst_vals.loc[group.index] = h_list
+            frac_vals.loc[group.index] = f_list
+        df["hurst"] = hurst_vals.to_numpy()
+        df["fractal_dim"] = frac_vals.to_numpy()
+        feature_names.extend(["hurst", "fractal_dim"])
 
     if neighbor_corr_windows is not None and len(neighbor_corr_windows) > 0:
         if "symbol" in df.columns and "price" in df.columns:
