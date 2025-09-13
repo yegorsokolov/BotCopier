@@ -1,0 +1,8 @@
+# Data contract for strategy feature set
+features:
+  - name: spread
+    dtype: float
+    shape: [1]
+  - name: fractal_dim
+    dtype: float
+    shape: [1]
