@@ -2,6 +2,7 @@ numpy
 pandas
 great_expectations
 scikit-learn
+scipy
 joblib
 river
 psutil

@@ -15,8 +15,11 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 import psutil
-from sklearn.preprocessing import PowerTransformer
+from scipy.cluster.hierarchy import fcluster, linkage
+from scipy.spatial.distance import squareform
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.preprocessing import PowerTransformer, StandardScaler
 
 try:  # optional polars support
     import polars as pl  # type: ignore
@@ -234,6 +237,7 @@ def train(
         profits = profits - cost
         y = (profits > 0).astype(float)
     sample_weight = np.clip(profits, a_min=0.0, a_max=None)
+    cluster_map: dict[str, list[str]] = {}
 
     regime_feature_names = list(regime_features or [])
     R: np.ndarray | None = None
@@ -264,6 +268,41 @@ def train(
                 "mean": pt._scaler.mean_.tolist(),
                 "scale": pt._scaler.scale_.tolist(),
             }
+
+    # --- Correlation-based feature clustering ---------------------------
+    corr_thresh = float(kwargs.get("cluster_correlation", 0.9))
+    if X.size and feature_names and X.shape[1] >= 2 and corr_thresh < 1.0:
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        corr = np.corrcoef(X_scaled, rowvar=False)
+        dist = 1 - np.abs(corr)
+        condensed = squareform(dist, checks=False)
+        link = linkage(condensed, method="average")
+        cluster_ids = fcluster(link, t=1 - corr_thresh, criterion="distance")
+        mi = mutual_info_classif(X_scaled, y)
+        keep_idx: list[int] = []
+        removed_groups: list[dict[str, list[str] | str]] = []
+        for cid in np.unique(cluster_ids):
+            idx = np.where(cluster_ids == cid)[0]
+            names = [feature_names[i] for i in idx]
+            if len(idx) == 1:
+                keep_idx.append(idx[0])
+                cluster_map[names[0]] = names
+                continue
+            best_local = idx[np.argmax(mi[idx])]
+            rep_name = feature_names[best_local]
+            cluster_map[rep_name] = names
+            keep_idx.append(best_local)
+            dropped = [f for f in names if f != rep_name]
+            if dropped:
+                removed_groups.append({"kept": rep_name, "dropped": dropped})
+        keep_idx = sorted(set(keep_idx))
+        if len(keep_idx) < len(feature_names):
+            logger.info("Removed correlated feature groups: %s", removed_groups)
+            X = X[:, keep_idx]
+            feature_names = [feature_names[i] for i in keep_idx]
+    else:
+        cluster_map = {fn: [fn] for fn in feature_names}
 
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
     if mlflow_active and not _HAS_MLFLOW:
@@ -514,6 +553,7 @@ def train(
                         calibrator = None
 
                 if calibrator is not None:
+
                     def _calibrated_predict(arr: np.ndarray) -> np.ndarray:
                         return calibrator.predict_proba(arr)[:, 1]
 
@@ -542,6 +582,8 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if cluster_map:
+            model["feature_clusters"] = cluster_map
         if calibration_info is not None:
             model["calibration"] = calibration_info
         if pt_meta is not None:
