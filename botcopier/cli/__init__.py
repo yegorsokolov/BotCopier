@@ -179,6 +179,9 @@ def evaluate(
     model_json: Optional[Path] = typer.Option(
         None, help="Optional model.json for additional metrics"
     ),
+    eval_hooks: Optional[str] = typer.Option(
+        None, help="Comma separated list of evaluation hooks"
+    ),
 ) -> None:
     """Evaluate predictions against actual trade outcomes."""
     data_cfg, train_cfg = _cfg(ctx)
@@ -190,6 +193,9 @@ def evaluate(
         train_cfg = train_cfg.model_copy(update={"window": window})
     if model_json:
         train_cfg = train_cfg.model_copy(update={"model": model_json})
+    if eval_hooks is not None:
+        hooks_list = [h.strip() for h in eval_hooks.split(",") if h.strip()]
+        train_cfg = train_cfg.model_copy(update={"eval_hooks": hooks_list})
     ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
     if data_cfg.pred_file is None or data_cfg.actual_log is None:
         raise typer.BadParameter("pred_file and actual_log must be provided")
@@ -199,6 +205,7 @@ def evaluate(
         Path(data_cfg.actual_log),
         train_cfg.window,
         train_cfg.model,
+        hooks=train_cfg.eval_hooks or None,
     )
     typer.echo(json.dumps(stats, indent=2))
 

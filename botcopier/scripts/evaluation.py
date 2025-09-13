@@ -175,6 +175,7 @@ def evaluate(
     *,
     fee_per_trade: float = 0.0,
     slippage_bps: float = 0.0,
+    hooks: Sequence[str] | None = None,
 ) -> Dict:
     predictions = _load_predictions(pred_file)
     trades = _load_actual_trades(actual_log)
@@ -304,7 +305,6 @@ def evaluate(
     fn = len(trades) - matches
     total = tp + fp + fn
     accuracy = tp / total if total else 0.0
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
     expectancy = (gross_profit - gross_loss) / matches if matches else 0.0
@@ -325,42 +325,7 @@ def evaluate(
     else:
         cvar = var_95 = es_95 = 0.0
 
-    sharpe = sortino = 0.0
-    sharpe_net = sortino_net = 0.0
-    if matches > 1:
-        mean = expected_return
-        variance = float(profits.var(ddof=1))
-        std = math.sqrt(variance)
-        if std > 0:
-            sharpe = mean / std
-        if len(downside):
-            downside_dev = math.sqrt(float((downside**2).mean()))
-            if downside_dev > 0:
-                sortino = mean / downside_dev
-        mean_net = expected_return_net
-        variance_net = float(net_profits.var(ddof=1))
-        std_net = math.sqrt(variance_net)
-        if std_net > 0:
-            sharpe_net = mean_net / std_net
-        if len(downside_net):
-            downside_dev_net = math.sqrt(float((downside_net**2).mean()))
-            if downside_dev_net > 0:
-                sortino_net = mean_net / downside_dev_net
-
-    annual_sharpe = annual_sortino = 0.0
-    annual_sharpe_net = annual_sortino_net = 0.0
-    if matches > 1 and not trade_times.isna().all():
-        start = trade_times.min()
-        end = trade_times.max()
-        years = (end - start).total_seconds() / (365 * 24 * 3600)
-        if years <= 0:
-            years = 1.0
-        trades_per_year = matches / years
-        factor = math.sqrt(trades_per_year)
-        annual_sharpe = sharpe * factor
-        annual_sortino = sortino * factor
-        annual_sharpe_net = sharpe_net * factor
-        annual_sortino_net = sortino_net * factor
+    # sharpe and precision metrics are handled via evaluation hooks
 
     roc_auc = pr_auc = brier = ece = None
     reliability = {"prob_true": [], "prob_pred": []}
@@ -396,25 +361,17 @@ def evaluate(
         "predicted_events": len(predictions),
         "actual_events": len(trades),
         "accuracy": accuracy,
-        "precision": precision,
         "recall": recall,
         "profit_factor": profit_factor,
         "gross_profit": gross_profit,
         "gross_loss": gross_loss,
         "expectancy": expectancy,
         "expected_return": expected_return,
+        "expected_return_net": expected_return_net,
         "downside_risk": downside_risk,
         "cvar": cvar,
         "var_95": var_95,
         "es_95": es_95,
-        "sharpe_ratio": sharpe,
-        "sortino_ratio": sortino,
-        "sharpe_ratio_annualised": annual_sharpe,
-        "sortino_ratio_annualised": annual_sortino,
-        "sharpe_ratio_net": sharpe_net,
-        "sortino_ratio_net": sortino_net,
-        "sharpe_ratio_net_annualised": annual_sharpe_net,
-        "sortino_ratio_net_annualised": annual_sortino_net,
         "risk_reward": risk_reward,
         "conformal_coverage": conformal,
         "predictions_per_model": predictions_per_model,
@@ -438,7 +395,22 @@ def evaluate(
         stats["model_value_distribution"] = model_value_dist
     if model_value_quantiles:
         stats["model_value_quantiles"] = model_value_quantiles
-    return stats
+    ctx = {
+        "tp": tp,
+        "fp": fp,
+        "matches": matches,
+        "profits": profits,
+        "net_profits": net_profits,
+        "downside": downside,
+        "downside_net": downside_net,
+        "trade_times": trade_times,
+        "stats": stats,
+    }
+    from botcopier.eval.hooks import dispatch_hooks
+
+    dispatch_hooks(hooks, ctx)
+
+    return ctx["stats"]
 
 
 def _metric_accuracy(
