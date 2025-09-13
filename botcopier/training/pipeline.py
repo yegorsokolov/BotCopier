@@ -55,6 +55,7 @@ from botcopier.scripts.evaluation import _classification_metrics
 from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.portfolio import hierarchical_risk_parity
 from botcopier.scripts.splitters import PurgedWalkForward
+from botcopier.training.curriculum import _apply_curriculum
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
 
@@ -314,6 +315,24 @@ def train(
         R = X[:, idx]
         X = np.delete(X, idx, axis=1)
         feature_names = [fn for i, fn in enumerate(feature_names) if i not in idx]
+
+    curriculum_threshold = float(kwargs.get("curriculum_threshold", 0.0))
+    curriculum_steps = int(kwargs.get("curriculum_steps", 3))
+    curriculum_meta: list[dict[str, object]] = []
+    if curriculum_threshold > 0.0:
+        X, y, profits, sample_weight, R, curriculum_meta = _apply_curriculum(
+            X,
+            y,
+            profits,
+            sample_weight,
+            model_type=model_type,
+            gpu_kwargs=gpu_kwargs,
+            grad_clip=grad_clip,
+            threshold=curriculum_threshold,
+            steps=curriculum_steps,
+            R=R,
+            regime_feature_names=regime_feature_names or None,
+        )
 
     if pretrain_mask is not None and _HAS_TORCH:
         enc_path = Path(pretrain_mask)
@@ -771,6 +790,8 @@ def train(
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = random_seed
         model["data_hashes"] = data_hashes
+        if curriculum_meta:
+            model["curriculum"] = curriculum_meta
         if model_obj is not None:
             try:
                 from botcopier.scripts.explain_model import generate_explanations
