@@ -36,8 +36,10 @@ try:  # optional dask support
 except Exception:  # pragma: no cover - optional
     dd = None  # type: ignore
     _HAS_DASK = False
+from opentelemetry import trace
 from pydantic import ValidationError
 
+import botcopier.features.technical as technical_features
 from botcopier.config.settings import TrainingConfig
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.data.loading import _load_logs
@@ -54,7 +56,6 @@ from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
-from opentelemetry import trace
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -634,6 +635,8 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if getattr(technical_features, "_DEPTH_CNN_STATE", None) is not None:
+            model["depth_cnn"] = technical_features._DEPTH_CNN_STATE
         if cluster_map:
             model["feature_clusters"] = cluster_map
         if calibration_info is not None:
