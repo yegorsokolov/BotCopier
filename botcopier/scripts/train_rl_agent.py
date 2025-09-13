@@ -40,10 +40,12 @@ from opentelemetry.trace import format_span_id, format_trace_id
 
 try:
     import stable_baselines3 as sb3  # type: ignore
+
     try:
         from stable_baselines3.common.buffers import (
             PrioritizedReplayBuffer,  # type: ignore
         )
+
         HAS_PRB = True
     except Exception:  # pragma: no cover - optional dependency
         PrioritizedReplayBuffer = None  # type: ignore
@@ -54,6 +56,7 @@ try:
         from gymnasium import Env, spaces  # type: ignore
     from stable_baselines3.common.env_util import make_vec_env  # type: ignore
     from stable_baselines3.common.vec_env import SubprocVecEnv  # type: ignore
+
     HAS_SB3 = True
 except Exception:  # pragma: no cover - optional dependency
     sb3 = None  # type: ignore
@@ -65,6 +68,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 try:  # pragma: no cover - optional dependency
     import sb3_contrib as sb3c  # type: ignore
+
     HAS_SB3_CONTRIB = True
 except Exception:  # pragma: no cover - optional dependency
     sb3c = None  # type: ignore
@@ -76,16 +80,12 @@ except Exception:  # pragma: no cover - executed when run from repo root
     try:
         from scripts.federated_buffer import FederatedBufferClient  # type: ignore
     except Exception:  # pragma: no cover - federated buffer optional
-    FederatedBufferClient = None  # type: ignore
+        FederatedBufferClient = None  # type: ignore
 
 import numpy as np
 
+from botcopier.rl.options import OptionTradeEnv, default_skills, evaluate_option_policy
 from botcopier.utils.random import set_seed
-from botcopier.rl.options import (
-    OptionTradeEnv,
-    default_skills,
-    evaluate_option_policy,
-)
 
 try:  # pragma: no cover - optional dependency
     import requests
@@ -94,6 +94,7 @@ except Exception:  # pragma: no cover - optional dependency
 try:  # pragma: no cover - optional dependency
     from sklearn.feature_extraction import DictVectorizer
 except Exception:  # pragma: no cover - minimal fallback
+
     class DictVectorizer:  # type: ignore
         def __init__(self, *args, **kwargs):
             pass
@@ -116,17 +117,20 @@ except Exception:  # pragma: no cover - minimal fallback
         def get_feature_names_out(self):  # pragma: no cover - simple
             return np.array(self.feature_names_)
 
+
 try:  # pragma: no cover - optional dependency
-    from self_play_env import SelfPlayEnv  # type: ignore
+    from self_play_env import SelfPlayEnv, train_self_play  # type: ignore
 except Exception:  # pragma: no cover - fallback when executed from repo root
     try:
-        from scripts.self_play_env import SelfPlayEnv  # type: ignore
+        from scripts.self_play_env import SelfPlayEnv, train_self_play  # type: ignore
     except Exception:  # pragma: no cover - simulation optional
         SelfPlayEnv = None  # type: ignore
+        train_self_play = None  # type: ignore
 
 try:  # pragma: no cover - optional dependency
     import torch
     from transformers import DecisionTransformerConfig, DecisionTransformerModel
+
     HAS_TRANSFORMERS = True
 except Exception:  # pragma: no cover - optional dependency
     torch = None  # type: ignore
@@ -135,7 +139,9 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 # OpenTelemetry setup
-resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_rl_agent")})
+resource = Resource.create(
+    {"service.name": os.getenv("OTEL_SERVICE_NAME", "train_rl_agent")}
+)
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
@@ -153,7 +159,9 @@ tracer = trace.get_tracer(__name__)
 
 logger_provider = LoggerProvider(resource=resource)
 if endpoint:
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint))
+    )
 set_logger_provider(logger_provider)
 handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
 
@@ -181,6 +189,7 @@ logger.setLevel(logging.INFO)
 # -------------------------------
 # Metrics feedback helper
 # -------------------------------
+
 
 def _send_live_metrics(url: str, metrics: Dict) -> Dict:
     """POST metrics to ``url`` and return any hyperparameter updates."""
@@ -259,7 +268,6 @@ def train_options(
 # -------------------------------
 
 
-
 def _pair_trades(rows: List[Dict]) -> List[Dict]:
     """Pair OPEN and CLOSE rows into trade records."""
     open_map: Dict[str, Dict] = {}
@@ -309,6 +317,7 @@ def _extract_feature(row: Dict) -> Dict:
 # Dataset helpers
 # -------------------------------
 
+
 def _build_dataset(
     data_dir: Path,
     flight_uri: str | None = None,
@@ -353,6 +362,7 @@ def _build_dataset(
 # RL Training
 # -------------------------------
 
+
 def train(
     data_dir: Path,
     out_dir: Path,
@@ -384,6 +394,27 @@ def train(
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     set_seed(random_seed)
+
+    if self_play:
+        if SelfPlayEnv is None or train_self_play is None:
+            raise ImportError("SelfPlayEnv not available for self-play training")
+        env = SelfPlayEnv()
+        trader_q, perturb_q = train_self_play(env, episodes=training_steps)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        np.save(out_dir / "trader_agent.npy", trader_q)
+        np.save(out_dir / "perturbation_agent.npy", perturb_q)
+        meta = {
+            "model_id": "rl_agent_self_play",
+            "training_type": "self_play",
+            "training_steps": training_steps,
+            "trader_agent": "trader_agent.npy",
+            "perturbation_agent": "perturbation_agent.npy",
+        }
+        with open(out_dir / "model.json", "w") as f:
+            json.dump(meta, f, indent=2)
+        print(f"Self-play agents saved to {out_dir}")
+        return
+
     states, actions, rewards_ext, next_states, vec = _build_dataset(
         data_dir, flight_uri, kafka_brokers
     )
@@ -421,7 +452,7 @@ def train(
                 err = t - p
                 # simple SGD update
                 self.predictor += self.lr * np.outer(obs, err)
-                return float(np.mean(err ** 2))
+                return float(np.mean(err**2))
 
         rnd = _SimpleRND(n_features)
         bonuses = [rnd.bonus(s) for s in states[: len(rewards)]]
@@ -438,7 +469,9 @@ def train(
     algo_key = algo.lower().replace("-", "_")
 
     if self_play and algo_key not in {"ppo", "dqn", "c51", "qr_dqn", "a2c", "ddpg"}:
-        raise ValueError("--self-play requires ppo, dqn, c51, qr_dqn, a2c, or ddpg algorithm")
+        raise ValueError(
+            "--self-play requires ppo, dqn, c51, qr_dqn, a2c, or ddpg algorithm"
+        )
 
     # precompute experience tuples for offline algorithms
     experiences: List[Tuple[np.ndarray, int, float, np.ndarray]] = [
@@ -456,7 +489,9 @@ def train(
 
     if algo_key == "decision_transformer":
         if not HAS_TRANSFORMERS:
-            raise ImportError("transformers and torch are required for decision_transformer")
+            raise ImportError(
+                "transformers and torch are required for decision_transformer"
+            )
 
         seq_len = min(len(states), 20)
         state_tensor = torch.tensor(states[:seq_len], dtype=torch.float32).unsqueeze(0)
@@ -464,7 +499,11 @@ def train(
         returns = np.cumsum(rewards[::-1])[::-1][:seq_len]
         rtg_tensor = torch.tensor(returns, dtype=torch.float32).unsqueeze(0)
         timestep_tensor = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
-        action_in = torch.nn.functional.one_hot(action_tensor, num_classes=2).float().unsqueeze(0)
+        action_in = (
+            torch.nn.functional.one_hot(action_tensor, num_classes=2)
+            .float()
+            .unsqueeze(0)
+        )
 
         config = DecisionTransformerConfig(
             state_dim=n_features,
@@ -577,11 +616,7 @@ def train(
                 reward = float(self.rewards[self.idx])
                 self.idx += 1
                 done = self.idx >= len(self.observations)
-                obs = (
-                    self.observations[self.idx]
-                    if not done
-                    else self.observations[-1]
-                )
+                obs = self.observations[self.idx] if not done else self.observations[-1]
                 return obs, reward, done, False, {}
 
         def make_trade_env() -> Env:
@@ -657,7 +692,9 @@ def train(
         train_acc = float(np.mean(np.array(preds) == np.array(actions)))
 
         # Evaluate episodic rewards for each environment
-        eval_vec_env = make_vec_env(make_trade_env, n_envs=num_envs, vec_env_cls=vec_cls)
+        eval_vec_env = make_vec_env(
+            make_trade_env, n_envs=num_envs, vec_env_cls=vec_cls
+        )
         vec_obs = eval_vec_env.reset()
         dones = np.zeros(num_envs, dtype=bool)
         episode_rewards = np.zeros(num_envs, dtype=float)
@@ -691,13 +728,19 @@ def train(
                     q_vals = (probs * atoms).sum(-1)
                     best = q_vals.argmax(-1)
                     exp_returns = q_vals[np.arange(len(q_vals)), best]
-                    downside = [probs[i, a][atoms < 0].sum() for i, a in enumerate(best)]
+                    downside = [
+                        probs[i, a][atoms < 0].sum() for i, a in enumerate(best)
+                    ]
                     value_atoms = atoms.tolist()
-                    value_dist = probs[np.arange(len(q_vals)), best].mean(axis=0).tolist()
+                    value_dist = (
+                        probs[np.arange(len(q_vals)), best].mean(axis=0).tolist()
+                    )
                     _atoms = np.array(value_atoms, dtype=float)
                     _dist = np.array(value_dist, dtype=float)
                     value_mean = float(np.dot(_atoms, _dist))
-                    value_std = float(np.sqrt((( _atoms - value_mean) ** 2 * _dist).sum()))
+                    value_std = float(
+                        np.sqrt(((_atoms - value_mean) ** 2 * _dist).sum())
+                    )
                 else:
                     quantiles = dist.cpu().numpy()
                     q_vals = quantiles.mean(-1)
@@ -807,7 +850,9 @@ def train(
     weights = np.zeros((2, n_features))
     intercepts = np.zeros(2)
     if init_model_data is not None:
-        feats_match = init_model_data.get("feature_names") == vec.get_feature_names_out().tolist()
+        feats_match = (
+            init_model_data.get("feature_names") == vec.get_feature_names_out().tolist()
+        )
         if feats_match:
             if "weights" in init_model_data and "intercepts" in init_model_data:
                 try:
@@ -845,14 +890,16 @@ def train(
         episode_totals = [float(np.sum(rewards))]
     else:  # qlearn
         episode_rewards: List[float] = []  # average reward per step
-        episode_totals: List[float] = []   # total reward per episode
+        episode_totals: List[float] = []  # total reward per episode
         for i in range(training_steps):
             if buffer_client is not None and i % sync_interval == 0:
                 experiences = buffer_client.sync(experiences)
             total_r = 0.0
             td_errs: List[float] = []
             if HAS_PRB:
-                obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32)
+                obs_space = spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32
+                )
                 action_space = spaces.Discrete(2)
                 pr_buffer = PrioritizedReplayBuffer(
                     buffer_size, obs_space, action_space, alpha=replay_alpha
@@ -892,9 +939,11 @@ def train(
                             td_errs.append(abs(td_err))
                     elif not HAS_PRB and len(buffer) >= batch_size:
                         weights_arr = np.array([b[4] for b in buffer], dtype=float)
-                        scaled = weights_arr ** replay_alpha
+                        scaled = weights_arr**replay_alpha
                         prob = scaled / scaled.sum()
-                        batch_idx = np.random.choice(len(buffer), size=batch_size, p=prob)
+                        batch_idx = np.random.choice(
+                            len(buffer), size=batch_size, p=prob
+                        )
                         max_w = (len(buffer) * prob.min()) ** (-replay_beta)
                         for idx in batch_idx:
                             bs, ba, br, bns, bw = buffer[idx]
@@ -969,23 +1018,44 @@ def train(
 def main() -> None:
     with tracer.start_as_current_span("train_rl_agent") as span:
         ctx = span.get_span_context()
-        logger.info("start training", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
+        logger.info(
+            "start training", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id}
+        )
         p = argparse.ArgumentParser(description="Train RL agent from logs")
         p.add_argument("--data-dir", required=True)
         p.add_argument("--out-dir", required=True)
         p.add_argument("--flight-uri", help="Arrow Flight server URI")
         p.add_argument("--kafka-brokers", help="Kafka bootstrap servers for log replay")
         p.add_argument("--learning-rate", type=float, default=0.1, help="learning rate")
-        p.add_argument("--epsilon", type=float, default=0.1, help="epsilon for exploration")
+        p.add_argument(
+            "--epsilon", type=float, default=0.1, help="epsilon for exploration"
+        )
         p.add_argument("--gamma", type=float, default=0.9, help="discount factor")
-        p.add_argument("--training-steps", type=int, default=100, help="total training steps")
-        p.add_argument("--batch-size", type=int, default=4, help="batch size for updates")
-        p.add_argument("--buffer-size", type=int, default=100, help="replay buffer size")
-        p.add_argument("--update-freq", type=int, default=1, help="steps between updates")
-        p.add_argument("--replay-alpha", type=float, default=0.6, help="prioritized replay exponent")
-        p.add_argument("--replay-beta", type=float, default=0.4, help="IS weight exponent")
+        p.add_argument(
+            "--training-steps", type=int, default=100, help="total training steps"
+        )
+        p.add_argument(
+            "--batch-size", type=int, default=4, help="batch size for updates"
+        )
+        p.add_argument(
+            "--buffer-size", type=int, default=100, help="replay buffer size"
+        )
+        p.add_argument(
+            "--update-freq", type=int, default=1, help="steps between updates"
+        )
+        p.add_argument(
+            "--replay-alpha",
+            type=float,
+            default=0.6,
+            help="prioritized replay exponent",
+        )
+        p.add_argument(
+            "--replay-beta", type=float, default=0.4, help="IS weight exponent"
+        )
         p.add_argument("--n-step", type=int, default=1, help="n-step return length")
-        p.add_argument("--num-envs", type=int, default=1, help="number of parallel environments")
+        p.add_argument(
+            "--num-envs", type=int, default=1, help="number of parallel environments"
+        )
         p.add_argument(
             "--algo",
             default="dqn",
@@ -1006,20 +1076,26 @@ def main() -> None:
             ),
         )
         p.add_argument("--start-model", help="path to initial model coefficients")
-        p.add_argument("--compress-model", action="store_true", help="write model.json.gz")
+        p.add_argument(
+            "--compress-model", action="store_true", help="write model.json.gz"
+        )
         p.add_argument(
             "--self-play",
             action="store_true",
             help="alternate training on real logs and simulated data",
         )
-        p.add_argument("--federated-server", help="gRPC address of federated buffer server")
+        p.add_argument(
+            "--federated-server", help="gRPC address of federated buffer server"
+        )
         p.add_argument(
             "--sync-interval",
             type=int,
             default=50,
             help="training iterations between federated buffer syncs",
         )
-        p.add_argument("--metrics-url", help="endpoint to POST live metrics for feedback")
+        p.add_argument(
+            "--metrics-url", help="endpoint to POST live metrics for feedback"
+        )
         p.add_argument(
             "--intrinsic-reward",
             action="store_true",
@@ -1060,7 +1136,10 @@ def main() -> None:
             intrinsic_reward_weight=args.intrinsic_weight,
             random_seed=args.random_seed,
         )
-        logger.info("training complete", extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id})
+        logger.info(
+            "training complete",
+            extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
+        )
 
 
 if __name__ == "__main__":
