@@ -407,9 +407,7 @@ def train(
         ood_threshold = (
             float(np.percentile(val_dists, 99)) if val_dists.size else float("inf")
         )
-        ood_rate = (
-            float(np.mean(val_dists > ood_threshold)) if val_dists.size else 0.0
-        )
+        ood_rate = float(np.mean(val_dists > ood_threshold)) if val_dists.size else 0.0
         param_grid = kwargs.get("param_grid") or [{}]
         metric_names = metrics
         best_score = -np.inf
@@ -636,6 +634,7 @@ def train(
                         )
         except Exception:  # pragma: no cover - shap is optional
             logger.exception("Failed to compute SHAP values")
+        model_obj = getattr(predict_fn, "model", None)
 
         # --- Probability calibration ---------------------------------------
         calibration_info: dict[str, object] | None = None
@@ -676,6 +675,7 @@ def train(
                         }
                     except Exception:
                         calibration_info = None
+            model_obj = base_model
 
         span_model.__exit__(None, None, None)
         span_eval = tracer.start_as_current_span("evaluation")
@@ -754,6 +754,16 @@ def train(
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = random_seed
         model["data_hashes"] = data_hashes
+        if model_obj is not None:
+            try:
+                from botcopier.scripts.explain_model import generate_explanations
+
+                report_dir = out_dir / "reports" / "explanations"
+                report_path = report_dir / "explanation.md"
+                generate_explanations(model_obj, X, y, feature_names, report_path)
+                model["explanation_report"] = str(report_path.relative_to(out_dir))
+            except Exception:  # pragma: no cover - best effort
+                logger.exception("Failed to generate explanation report")
         if hrp_allocation and returns_df is not None:
             try:
                 pivot = returns_df.pivot_table(
@@ -768,7 +778,6 @@ def train(
         model_params = ModelParams(**model)
         (out_dir / "model.json").write_text(model_params.model_dump_json())
         (out_dir / "data_hashes.json").write_text(json.dumps(data_hashes, indent=2))
-        model_obj = getattr(predict_fn, "model", None)
         deps_file = _write_dependency_snapshot(out_dir)
         generate_model_card(
             model_params,
