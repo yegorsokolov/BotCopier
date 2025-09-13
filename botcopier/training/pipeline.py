@@ -1,4 +1,5 @@
 """Training pipeline orchestrating model training and evaluation."""
+
 from __future__ import annotations
 
 import argparse
@@ -145,6 +146,7 @@ def train(
     slippage_bps: float = 0.0,
     grad_clip: float = 1.0,
     pretrain_mask: Path | None = None,
+    meta_weights: Path | Sequence[float] | None = None,
     hrp_allocation: bool = False,
     strategy_search: bool = False,
     max_drawdown: float | None = None,
@@ -157,8 +159,8 @@ def train(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
     )
     if strategy_search:
-        from botcopier.strategy.search import search_strategy
         from botcopier.strategy.dsl import serialize
+        from botcopier.strategy.search import search_strategy
 
         prices = np.linspace(1.0, 200.0, 200)
         best, score = search_strategy(prices)
@@ -189,6 +191,19 @@ def train(
     with tracer.start_as_current_span("data_load"):
         logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
     logger.info("Training data hashes: %s", data_hashes)
+
+    meta_init: np.ndarray | None = None
+    if meta_weights is not None:
+        if isinstance(meta_weights, (str, Path)):
+            try:
+                meta_data = json.loads(Path(meta_weights).read_text())
+                meta_w = meta_data.get("meta_weights")
+                if meta_w is not None:
+                    meta_init = np.asarray(meta_w, dtype=float)
+            except Exception:
+                meta_init = None
+        else:
+            meta_init = np.asarray(meta_weights, dtype=float)
     gpu_kwargs: dict[str, object] = {}
     if use_gpu:
         if model_type == "xgboost":
@@ -498,6 +513,11 @@ def train(
                             grad_clip=grad_clip,
                             **gpu_kwargs,
                             **params,
+                            **(
+                                {"init_weights": meta_init}
+                                if meta_init is not None
+                                else {}
+                            ),
                         )
                         prob_val = pred_fn(X[val_idx], R_local[val_idx])
                     else:
@@ -506,6 +526,8 @@ def train(
                             kwargs["sample_weight"] = weights[tr_idx]
                         if model_type in {"moe", "transformer"}:
                             kwargs["grad_clip"] = grad_clip
+                        if meta_init is not None:
+                            kwargs["init_weights"] = meta_init
                         model_fold, pred_fn = builder(
                             X[tr_idx],
                             y[tr_idx],
@@ -551,6 +573,11 @@ def train(
                             grad_clip=grad_clip,
                             **gpu_kwargs,
                             **params,
+                            **(
+                                {"init_weights": meta_init}
+                                if meta_init is not None
+                                else {}
+                            ),
                         )
                         prob_val = pred_fn(X[val_idx], R[val_idx])
                     else:
@@ -559,6 +586,8 @@ def train(
                             kwargs["sample_weight"] = sample_weight[tr_idx]
                         if model_type in {"moe", "transformer"}:
                             kwargs["grad_clip"] = grad_clip
+                        if meta_init is not None:
+                            kwargs["init_weights"] = meta_init
                         model_fold, pred_fn = builder(
                             X[tr_idx],
                             y[tr_idx],
@@ -628,6 +657,7 @@ def train(
                 grad_clip=grad_clip,
                 **gpu_kwargs,
                 **(best_params or {}),
+                **({"init_weights": meta_init} if meta_init is not None else {}),
             )
         else:
             kwargs = dict(**gpu_kwargs, **(best_params or {}))
@@ -635,6 +665,8 @@ def train(
                 kwargs["sample_weight"] = sample_weight
             if model_type in {"moe", "transformer"}:
                 kwargs["grad_clip"] = grad_clip
+            if meta_init is not None:
+                kwargs["init_weights"] = meta_init
             model_data, predict_fn = builder(
                 X,
                 y,
@@ -758,6 +790,8 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if meta_init is not None:
+            model.setdefault("meta_weights", meta_init.tolist())
         if encoder_meta is not None:
             model["masked_encoder"] = encoder_meta
         if getattr(technical_features, "_DEPTH_CNN_STATE", None) is not None:

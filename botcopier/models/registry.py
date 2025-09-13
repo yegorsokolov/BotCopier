@@ -1,4 +1,5 @@
 """Model builders and registry for BotCopier."""
+
 from __future__ import annotations
 
 import json
@@ -186,6 +187,8 @@ def _fit_logreg(
     *,
     C: float = 1.0,
     sample_weight: np.ndarray | None = None,
+    init_weights: Sequence[float] | None = None,
+    max_iter: int = 1000,
 ) -> tuple[dict[str, list | float], Callable[[np.ndarray], np.ndarray]]:
     """Fit logistic regression within a preprocessing pipeline.
 
@@ -197,14 +200,23 @@ def _fit_logreg(
 
     clip_low = np.quantile(X, 0.01, axis=0)
     clip_high = np.quantile(X, 0.99, axis=0)
+    logreg = LogisticRegression(
+        max_iter=max_iter, C=C, warm_start=init_weights is not None
+    )
     pipeline = Pipeline(
         [
             ("clip", _FeatureClipper(clip_low, clip_high)),
             ("scale", RobustScaler()),
-            ("logreg", LogisticRegression(max_iter=1000, C=C)),
+            ("logreg", logreg),
         ]
     )
-    fit_kwargs = {"logreg__sample_weight": sample_weight} if sample_weight is not None else {}
+    if init_weights is not None:
+        logreg.classes_ = np.array([0, 1])
+        logreg.coef_ = np.asarray(init_weights, dtype=float).reshape(1, -1)
+        logreg.intercept_ = np.zeros(1)
+    fit_kwargs = (
+        {"logreg__sample_weight": sample_weight} if sample_weight is not None else {}
+    )
     pipeline.fit(X, y, **fit_kwargs)
     clf: LogisticRegression = pipeline.named_steps["logreg"]
     scaler: RobustScaler = pipeline.named_steps["scale"]
@@ -212,6 +224,7 @@ def _fit_logreg(
 
     def _predict(arr: np.ndarray) -> np.ndarray:
         return pipeline.predict_proba(arr)[:, 1]
+
     _predict.model = pipeline  # type: ignore[attr-defined]
 
     meta = {
@@ -274,7 +287,9 @@ if _HAS_TORCH:
             )
             self.gating = torch.nn.Linear(n_regime_features, n_experts)
 
-        def forward(self, x: torch.Tensor, r: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        def forward(
+            self, x: torch.Tensor, r: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
             gate_logits = self.gating(r)
             gate = torch.softmax(gate_logits, dim=1)
             expert_logits = torch.cat([e(x) for e in self.experts], dim=1)
@@ -299,11 +314,15 @@ if _HAS_TORCH:
 
         n_experts = n_experts or regime_features.shape[1]
         dev = torch.device(device)
-        model = MixtureOfExperts(X.shape[1], regime_features.shape[1], n_experts).to(dev)
+        model = MixtureOfExperts(X.shape[1], regime_features.shape[1], n_experts).to(
+            dev
+        )
         opt = torch.optim.Adam(model.parameters(), lr=lr)
         sw: torch.Tensor | None = None
         if sample_weight is not None:
-            sw = torch.tensor(sample_weight, dtype=torch.float32, device=dev).unsqueeze(1)
+            sw = torch.tensor(sample_weight, dtype=torch.float32, device=dev).unsqueeze(
+                1
+            )
             loss_fn = torch.nn.BCELoss(weight=sw)
         else:
             loss_fn = torch.nn.BCELoss()
@@ -411,6 +430,7 @@ else:  # pragma: no cover - optional dependency
     def _fit_xgboost_classifier(*_, **__):  # type: ignore[dead-code]
         raise ImportError("xgboost is required for this model")
 
+
 if _HAS_CATBOOST:
 
     def _fit_catboost_classifier(
@@ -451,6 +471,7 @@ else:  # pragma: no cover - optional dependency
 
     def _fit_catboost_classifier(*_, **__):  # type: ignore[dead-code]
         raise ImportError("catboost is required for this model")
+
 
 if _HAS_TORCH:
 
@@ -538,6 +559,7 @@ if _HAS_TORCH:
             with torch.no_grad():
                 arr_t = torch.tensor(arr, dtype=torch.float32, device=dev)
                 return torch.sigmoid(model(arr_t)).cpu().numpy().squeeze(-1)
+
         _predict.model = model  # type: ignore[attr-defined]
         _predict.device = dev  # type: ignore[attr-defined]
 

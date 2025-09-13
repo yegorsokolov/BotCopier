@@ -1,9 +1,10 @@
 import json
+
 import numpy as np
 import pandas as pd
 
-from scripts.meta_learn import train_meta_initialisation, save_meta_weights
 from scripts.meta_adapt import ReptileMetaLearner, evaluate
+from scripts.meta_pretrain import save_meta_weights, train_meta_initialisation
 
 
 def _gen_df(sym: str, w: np.ndarray, rng_seed: int) -> pd.DataFrame:
@@ -23,7 +24,9 @@ def test_meta_initialisation_speedup(tmp_path):
     df_b = _gen_df("B", base + np.array([-0.1, 0.1]), 1)
     df = pd.concat([df_a, df_b], ignore_index=True)
     feat_cols = ["f0", "f1"]
-    weights = train_meta_initialisation(df, feat_cols, inner_steps=25, inner_lr=0.1, meta_lr=0.5)
+    weights = train_meta_initialisation(
+        df, feat_cols, inner_steps=25, inner_lr=0.1, meta_lr=0.5
+    )
     model_path = tmp_path / "model.json"
     save_meta_weights(weights, model_path)
     loaded = np.array(json.loads(model_path.read_text())["meta_weights"])
