@@ -128,6 +128,7 @@ def train(
     grad_clip: float = 1.0,
     pretrain_mask: Path | None = None,
     hrp_allocation: bool = False,
+    strategy_search: bool = False,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -135,6 +136,22 @@ def train(
     configure_cache(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
     )
+    if strategy_search:
+        from botcopier.strategy.search import search_strategy
+        from botcopier.strategy.dsl import serialize
+
+        prices = np.linspace(1.0, 200.0, 200)
+        best, score = search_strategy(prices)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        model_path = out_dir / "model.json"
+        try:
+            existing = json.loads(model_path.read_text())
+        except Exception:
+            existing = {}
+        existing["strategy"] = serialize(best)
+        existing["strategy_score"] = score
+        model_path.write_text(json.dumps(existing, indent=2))
+        return
     tracer = trace.get_tracer(__name__)
     load_keys = [
         "lite_mode",

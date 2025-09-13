@@ -143,6 +143,9 @@ def train(
     hrp_allocation: bool = typer.Option(
         False, help="Compute hierarchical risk parity allocation"
     ),
+    strategy_search: bool = typer.Option(
+        False, help="Run neural strategy search instead of standard training"
+    ),
 ) -> None:
     """Train a model from trade logs."""
     data_cfg, train_cfg = _cfg(ctx)
@@ -168,6 +171,8 @@ def train(
         train_cfg = train_cfg.model_copy(update={"random_seed": random_seed})
     if hrp_allocation:
         train_cfg = train_cfg.model_copy(update={"hrp_allocation": hrp_allocation})
+    if strategy_search:
+        train_cfg = train_cfg.model_copy(update={"strategy_search": strategy_search})
     ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
     if data_cfg.data is None or data_cfg.out is None:
         raise typer.BadParameter("data_dir and out_dir must be provided")
@@ -180,6 +185,7 @@ def train(
         features=train_cfg.features,
         random_seed=train_cfg.random_seed,
         hrp_allocation=train_cfg.hrp_allocation,
+        strategy_search=train_cfg.strategy_search,
     )
 
 
