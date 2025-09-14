@@ -84,7 +84,8 @@ except Exception:  # pragma: no cover - executed when run from repo root
 
 import numpy as np
 
-from botcopier.rl.options import OptionTradeEnv, default_skills, evaluate_option_policy
+from botcopier.rl.options import OptionTradeEnv, evaluate_option_policy
+from botcopier.rl.skills import HighLevelPolicy, default_skills
 from botcopier.utils.random import set_seed
 
 
@@ -233,39 +234,63 @@ def train_options(
     algo: str = "ppo",
     compress_model: bool = False,
     feature_names: List[str] | None = None,
+    backend: str = "sb3",
+    random_seed: int = 0,
 ) -> Dict:
     """Train a high-level option policy selecting among predefined skills."""
 
-    if not HAS_SB3:
-        raise ImportError("stable-baselines3 is required for option training")
-
+    set_seed(random_seed)
     skills = default_skills()
-    env = OptionTradeEnv(states, actions, rewards, skills)
-    algo_key = algo.lower().replace("-", "_")
-    algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN, "a2c": sb3.A2C}
-    model_cls = algo_map.get(algo_key, sb3.PPO)
-    model = model_cls(
-        "MlpPolicy",
-        env,
-        learning_rate=learning_rate,
-        gamma=gamma,
-        verbose=0,
-    )
-    model.learn(total_timesteps=training_steps)
-
-    total_reward = evaluate_option_policy(model, env)
-
+    backend_key = backend.lower()
     out_dir.mkdir(parents=True, exist_ok=True)
-    weights_path = out_dir / "option_policy"
-    model.save(str(weights_path))
 
+    if backend_key == "sb3":
+        if not HAS_SB3:
+            raise ImportError("stable-baselines3 is required for option training")
+        env = OptionTradeEnv(states, actions, rewards, skills)
+        algo_key = algo.lower().replace("-", "_")
+        algo_map = {"ppo": sb3.PPO, "dqn": sb3.DQN, "a2c": sb3.A2C}
+        model_cls = algo_map.get(algo_key, sb3.PPO)
+        model = model_cls(
+            "MlpPolicy",
+            env,
+            learning_rate=learning_rate,
+            gamma=gamma,
+            seed=random_seed,
+            verbose=0,
+        )
+        model.learn(total_timesteps=training_steps)
+        total_reward = evaluate_option_policy(model, env)
+        weights_path = out_dir / "option_policy"
+        model.save(str(weights_path))
+        weights_file = weights_path.with_suffix(".zip").name
+    else:
+        policy = HighLevelPolicy(
+            states.shape[1], skills, learning_rate=learning_rate, gamma=gamma
+        )
+        for _ in range(training_steps):
+            for s, a, r in zip(states, actions, rewards):
+                policy.update(s, int(a), float(r))
+        total_reward = 0.0
+        for s, a, r in zip(states, actions, rewards):
+            opt = policy.predict(s)
+            if skills[opt].act(s) == a:
+                total_reward += float(r)
+        weights_path = out_dir / "option_policy.npy"
+        policy.save(weights_path)
+        weights_file = weights_path.name
+        algo_key = "custom"
+
+    skill_names = [s.__class__.__name__.replace("Skill", "").lower() for s in skills]
     model_info = {
         "model_id": "option_rl_agent",
         "algo": algo_key,
+        "backend": backend_key,
         "trained_at": datetime.utcnow().isoformat(),
         "feature_names": feature_names or [],
-        "options": ["entry", "exit", "risk"],
-        "option_weights_file": weights_path.with_suffix(".zip").name,
+        "options": skill_names,
+        "skills": skill_names,
+        "option_weights_file": weights_file,
         "total_reward": float(total_reward),
         "training_steps": training_steps,
         "learning_rate": learning_rate,
