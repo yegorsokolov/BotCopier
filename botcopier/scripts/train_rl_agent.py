@@ -6,7 +6,7 @@ import gzip
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 try:
     from .model_fitting import load_logs
@@ -104,6 +104,34 @@ def _var_95(returns: np.ndarray) -> float:
     if returns.size == 0:
         return 0.0
     return float(-np.quantile(returns, 0.05))
+
+
+def live_tick_stream(log_path: Path) -> Iterator[Tuple[np.ndarray, int, float, np.ndarray]]:
+    """Yield experience tuples from a newline delimited JSON tick log.
+
+    Each line in ``log_path`` should contain a JSON object with ``state``,
+    ``action``, ``reward`` and ``next_state`` fields.  The generator yields a
+    tuple ``(state, action, reward, next_state)`` suitable for experience replay.
+    Missing or malformed lines are ignored.
+    """
+
+    if not log_path.exists():
+        return iter(())
+
+    def _iter() -> Iterator[Tuple[np.ndarray, int, float, np.ndarray]]:
+        with log_path.open() as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                state = np.asarray(rec.get("state", []), dtype=float)
+                next_state = np.asarray(rec.get("next_state", []), dtype=float)
+                action = int(rec.get("action", 0))
+                reward = float(rec.get("reward", 0.0))
+                yield state, action, reward, next_state
+
+    return _iter()
 
 
 try:  # pragma: no cover - optional dependency
@@ -960,7 +988,12 @@ def train(
             buffer = deque(maxlen=buffer_size)
             td_errs: List[float] = []
             total_r = 0.0
-            stream = experiences[:training_steps] if training_steps else experiences
+            tick_file = Path(data_dir) / "live_ticks.jsonl"
+            stream = (
+                live_tick_stream(tick_file)
+                if tick_file.exists()
+                else (experiences[:training_steps] if training_steps else experiences)
+            )
             for i, (s, a, r, ns) in enumerate(stream):
                 total_r += r
                 buffer.append((s, a, r, ns))
@@ -976,7 +1009,10 @@ def train(
                         weights[ba] += learning_rate * td_err * bs
                         intercepts[ba] += learning_rate * td_err
                         td_errs.append(abs(td_err))
-            episode_rewards.append(total_r / max(1, len(stream)))
+                if training_steps and (i + 1) >= training_steps:
+                    break
+            n_steps = max(1, (i + 1))
+            episode_rewards.append(total_r / n_steps)
             episode_totals.append(total_r)
             episode_td.append(float(np.mean(td_errs)) if td_errs else 0.0)
             training_type = "streaming_rl"
