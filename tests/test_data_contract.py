@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
-from botcopier.training.pipeline import train
 from botcopier.data.loading import _load_logs
 from botcopier.features.technical import _extract_features
+from botcopier.training.pipeline import train
 
 
 def test_data_contract(tmp_path: Path) -> None:
@@ -27,7 +28,7 @@ def test_data_contract(tmp_path: Path) -> None:
 
     # run training pipeline
     out_dir = tmp_path / "out"
-    train(data_file, out_dir, n_splits=2, cv_gap=1, param_grid=[{}])
+    predict_fn = train(data_file, out_dir, n_splits=2, cv_gap=1, param_grid=[{}])
 
     model = json.loads((out_dir / "model.json").read_text())
 
@@ -41,3 +42,14 @@ def test_data_contract(tmp_path: Path) -> None:
     for spec in schema["features"]:
         col = df[spec["name"]]
         assert pd.api.types.is_numeric_dtype(col)
+
+    # validate prediction contract
+    X = df[expected].fillna(0.0).to_numpy(dtype=float)
+    if hasattr(predict_fn, "predict_proba"):
+        preds = predict_fn.predict_proba(X)[:, 1]
+    else:
+        preds = predict_fn(X)
+    pred_spec = schema["predictions"][0]
+    assert np.issubdtype(preds.dtype, np.floating)
+    assert preds.shape == (len(df),)
+    assert np.isfinite(preds).all()
