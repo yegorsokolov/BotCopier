@@ -4,21 +4,24 @@ np = pytest.importorskip("numpy")
 
 from botcopier.training.curriculum import _apply_curriculum
 
+
 def test_curriculum_progression():
-    magnitudes = np.concatenate([
-        np.full(30, 0.001),
-        np.full(30, 0.01),
+    amplitudes = np.concatenate([
         np.full(30, 0.1),
+        np.full(30, 1.0),
+        np.full(30, 5.0),
     ])
     signs = np.concatenate([
         np.repeat([1, -1], 15),
-        np.repeat([1, -1], 15),
+        np.ones(30),
         np.repeat([1, -1], 15),
     ])
-    profits = magnitudes
-    X = (signs * 10).reshape(-1, 1)
+    profits = amplitudes
+    # Two-feature representation so that ``np.std`` captures volatility while the
+    # sign of the second feature determines the label.
+    X = np.column_stack([np.zeros_like(amplitudes), amplitudes * signs])
     y = (signs > 0).astype(float)
-    sample_weight = magnitudes
+    sample_weight = amplitudes
     X_sel, y_sel, prof_sel, w_sel, R_sel, meta = _apply_curriculum(
         X,
         y,

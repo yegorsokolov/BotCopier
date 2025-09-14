@@ -35,11 +35,26 @@ def _apply_curriculum(
     """Stage datasets from simple to complex and train sequentially.
 
     Returns filtered arrays and curriculum metadata.
+
+    The dataset is ordered from "easy" to "hard" based on a simple
+    volatility/complexity heuristic.  Samples with low feature volatility
+    and small absolute profits are considered easier than highly volatile
+    and high profit samples.  The model is trained sequentially on these
+    partitions promoting to harder levels only if the validation profit
+    exceeds ``threshold``.
     """
     if threshold <= 0.0 or steps <= 0 or not profits.size:
         return X, y, profits, sample_weight, R, []
 
-    order = np.argsort(np.abs(profits))
+    # Estimate a difficulty score for each sample using feature volatility
+    # and profit magnitude.  ``np.std`` works with a single feature as well
+    # but we clip to ``profits`` size for safety.
+    if X.size:
+        volatility = np.std(X, axis=1)
+    else:
+        volatility = np.zeros_like(profits)
+    difficulty = volatility + np.abs(profits)
+    order = np.argsort(difficulty)
     phases = np.array_split(order, steps)
     curriculum_meta: List[Dict[str, object]] = []
     final_idx = phases[0]
