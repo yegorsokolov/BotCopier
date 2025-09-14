@@ -6,43 +6,13 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - gymnasium fallback
     from gymnasium import Env, spaces  # type: ignore
 
-
-class OptionSkill:
-    """Base class for low-level skills used by high-level options."""
-
-    def __init__(self, action: int) -> None:
-        self.action = int(action)
-
-    def act(self, state: np.ndarray) -> int:  # pragma: no cover - trivial
-        del state
-        return self.action
-
-
-class EntrySkill(OptionSkill):
-    """Skill representing order entry."""
-
-    def __init__(self) -> None:
-        super().__init__(0)
-
-
-class ExitSkill(OptionSkill):
-    """Skill representing exiting a position."""
-
-    def __init__(self) -> None:
-        super().__init__(1)
-
-
-class RiskSkill(OptionSkill):
-    """Skill representing risk management actions."""
-
-    def __init__(self) -> None:
-        super().__init__(2)
-
-
-def default_skills() -> List[OptionSkill]:
-    """Return the default set of skills: entry, exit and risk."""
-
-    return [EntrySkill(), ExitSkill(), RiskSkill()]
+from .skills import (
+    EntrySkill,
+    ExitSkill,
+    RiskSkill,
+    SkillPolicy,
+    default_skills,
+)
 
 
 class OptionTradeEnv(Env):
@@ -53,7 +23,7 @@ class OptionTradeEnv(Env):
         states: np.ndarray,
         actions: np.ndarray,
         rewards: np.ndarray,
-        skills: List[OptionSkill] | None = None,
+        skills: List[SkillPolicy] | None = None,
     ) -> None:
         super().__init__()
         self.states = np.asarray(states, dtype=np.float32)
@@ -97,3 +67,14 @@ def evaluate_option_policy(model, env: OptionTradeEnv) -> float:
         if done:
             break
     return total
+
+
+__all__ = [
+    "OptionTradeEnv",
+    "evaluate_option_policy",
+    "SkillPolicy",
+    "EntrySkill",
+    "ExitSkill",
+    "RiskSkill",
+    "default_skills",
+]
