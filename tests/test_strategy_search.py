@@ -163,7 +163,7 @@ from botcopier.strategy import (
     backtest,
     deserialize,
     serialize,
-    search_strategy,
+    search_strategies,
 )
 from botcopier.training.pipeline import train
 
@@ -174,11 +174,11 @@ def test_strategy_search_outperforms_baseline(tmp_path: Path) -> None:
     baseline = Position(GT(Price(), Price()))
     baseline_ret = backtest(prices, baseline)
 
-    best, score = search_strategy(prices, n_samples=25)
-    assert score > baseline_ret
+    best, pareto = search_strategies(prices, n_samples=25)
+    assert best.ret > baseline_ret
 
-    compiled = deserialize(serialize(best))
-    assert np.allclose(backtest(prices, compiled), backtest(prices, best))
+    compiled = deserialize(serialize(best.expr))
+    assert np.allclose(backtest(prices, compiled), backtest(prices, best.expr))
 
     out_dir = tmp_path / "out"
     data_dir = tmp_path / "data"
@@ -187,6 +187,7 @@ def test_strategy_search_outperforms_baseline(tmp_path: Path) -> None:
     train(data_dir, out_dir, strategy_search=True)
 
     model = json.loads((out_dir / "model.json").read_text())
-    assert "strategy" in model and "strategy_score" in model
-    expr = deserialize(model["strategy"])
+    assert "strategies" in model and model["strategies"]
+    first = model["strategies"][0]
+    expr = deserialize(first["expr"])
     assert backtest(prices, expr) >= baseline_ret
