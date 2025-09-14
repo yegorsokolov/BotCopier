@@ -1,4 +1,4 @@
-from hypothesis import assume, given, strategies as st
+from hypothesis import assume, given, settings, strategies as st
 import math
 
 from botcopier.scripts.features import _sma, _atr, _bollinger
@@ -17,6 +17,7 @@ def value_series(draw):
 
 
 @given(value_series(), st.integers(1, 50))
+@settings(max_examples=100)
 def test_sma_within_bounds(values, window):
     sma = _sma(values, window)
     assert math.isfinite(sma)
@@ -24,6 +25,7 @@ def test_sma_within_bounds(values, window):
 
 
 @given(value_series(), st.integers(1, 50))
+@settings(max_examples=100)
 def test_atr_non_negative(values, window):
     assume(len(values) > 1)
     atr = _atr(values, window)
@@ -32,6 +34,7 @@ def test_atr_non_negative(values, window):
 
 
 @given(value_series(), st.integers(1, 50))
+@settings(max_examples=100)
 def test_bollinger_order(values, window):
     upper, mid, lower = _bollinger(values, window)
     assert upper >= mid >= lower
