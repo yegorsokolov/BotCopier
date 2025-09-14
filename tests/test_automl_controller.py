@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from botcopier.scripts.automl_controller import AutoMLController
+from automl.controller import AutoMLController
 
 
 def test_automl_controller_converges(tmp_path):
@@ -24,7 +24,7 @@ def test_automl_controller_converges(tmp_path):
         subset, model = action
         return profit_map[(tuple(subset), model)]
 
-    controller.train(env, episodes=200, epsilon=0.2, alpha=0.5, penalty=0.1)
+    controller.train(env, episodes=200, alpha=0.2, penalty=0.1)
 
     best = controller.select_best()
     assert best == (("f1", "f2"), "tree")
