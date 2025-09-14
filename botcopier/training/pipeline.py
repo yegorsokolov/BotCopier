@@ -60,6 +60,7 @@ from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.training.curriculum import _apply_curriculum
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
+from automl.controller import AutoMLController
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -153,9 +154,20 @@ def train(
     max_drawdown: float | None = None,
     var_limit: float | None = None,
     profile: bool = False,
+    controller: AutoMLController | None = None,
+    reuse_controller: bool = False,
+    complexity_penalty: float = 0.1,
     **kwargs: object,
-) -> None:
+) -> object:
     """Train a model selected from the registry."""
+    chosen_action: tuple[tuple[str, ...], str] | None = None
+    if controller is not None:
+        if not reuse_controller:
+            controller.reset()
+        chosen_action, _ = controller.sample_action()
+        features = list(chosen_action[0])
+        model_type = chosen_action[1]
+
     set_seed(random_seed)
     configure_cache(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
@@ -923,6 +935,12 @@ def train(
         model_params = ModelParams(**model)
         (out_dir / "model.json").write_text(model_params.model_dump_json())
         (out_dir / "data_hashes.json").write_text(json.dumps(data_hashes, indent=2))
+        if controller is not None and chosen_action is not None:
+            profit = metrics.get("profit", 0.0)
+            subset, model_choice = chosen_action
+            complexity = len(subset) + controller.models.get(model_choice, 0)
+            reward = profit - complexity_penalty * complexity
+            controller.update(chosen_action, reward)
         deps_file = _write_dependency_snapshot(out_dir)
         generate_model_card(
             model_params,
@@ -1121,6 +1139,11 @@ def main() -> None:
         action="store_true",
         help="Run DSL strategy search before training",
     )
+    p.add_argument(
+        "--reuse-controller",
+        action="store_true",
+        help="Reuse saved AutoML controller policy if available",
+    )
     args = p.parse_args()
     setup_logging(enable_tracing=args.trace, exporter=args.trace_exporter)
     cfg = TrainingConfig(random_seed=args.random_seed)
@@ -1137,6 +1160,7 @@ def main() -> None:
         grad_clip=args.grad_clip,
         profile=args.profile,
         strategy_search=args.strategy_search,
+        reuse_controller=args.reuse_controller,
     )
 
 
