@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import math
@@ -6,15 +8,30 @@ from pathlib import Path
 from statistics import NormalDist
 from typing import Dict, List, Optional, Sequence
 
-import numpy as np
-import pandas as pd
-from sklearn.calibration import calibration_curve
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    brier_score_loss,
-    roc_auc_score,
-)
+# ``evaluate_strategy`` is intentionally lightweight and may be imported in
+# environments where heavy scientific dependencies are absent.  The broader
+# evaluation utilities rely on :mod:`numpy`, :mod:`pandas` and scikit-learn,
+# so we attempt to import them but degrade gracefully when unavailable.
+try:  # pragma: no cover - exercised in minimal test environments
+    import numpy as np  # type: ignore
+    import pandas as pd  # type: ignore
+    from sklearn.calibration import calibration_curve  # type: ignore
+    from sklearn.metrics import (  # type: ignore
+        accuracy_score,
+        average_precision_score,
+        brier_score_loss,
+        roc_auc_score,
+    )
+except Exception:  # pragma: no cover
+    np = pd = None  # type: ignore
+    calibration_curve = None  # type: ignore
+
+    def _missing(*args, **kwargs):  # type: ignore
+        raise ImportError("optional dependencies not installed")
+
+    accuracy_score = (
+        average_precision_score
+    ) = brier_score_loss = roc_auc_score = _missing  # type: ignore
 
 from botcopier.exceptions import DataError, ServiceError
 from metrics.registry import get_metrics, register_metric
