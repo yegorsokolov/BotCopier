@@ -604,6 +604,7 @@ class OnlineTrainer:
                         self.adapt_log.append(
                             {"old": old_coef.tolist(), "new": new_coef.tolist()}
                         )
+                        self.meta_weights = new_coef.tolist()
                     lr_used = getattr(self.clf, "eta0", self.lr)
                     self.lr_history.append(lr_used)
                     try:
