@@ -45,6 +45,7 @@ from botcopier.metrics import (
 from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
 from botcopier.utils.random import set_seed
+from automl.controller import AutoMLController
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
@@ -206,6 +207,10 @@ class OnlineTrainer:
         lr_decay: float = 1.0,
         seed: int = 0,
         online_model: str = "sgd",
+        *,
+        tick_buffer_path: Path | str | None = None,
+        tick_buffer_size: int = 100_000,
+        controller: AutoMLController | None = None,
     ) -> None:
         self.model_path = Path(model_path)
         self.batch_size = batch_size
@@ -242,6 +247,14 @@ class OnlineTrainer:
         self.gnn_state: Dict[str, Any] | None = None
         self.meta_weights: List[float] | None = None
         self.adapt_log: List[Dict[str, List[float]]] = []
+        self.tick_buffer_path = (
+            Path(tick_buffer_path)
+            if tick_buffer_path is not None
+            else Path("data/live_ticks.parquet")
+        )
+        self.tick_buffer_size = tick_buffer_size
+        self.controller: AutoMLController | None = controller
+        self.prev_accuracy: float | None = None
         if _HAS_FEAST:
             repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
             self.store = FeatureStore(repo_path=str(repo))
@@ -492,6 +505,7 @@ class OnlineTrainer:
         if conf is not None:
             log["confidence"] = conf
         logger.info(log)
+        return acc
 
     def _handle_regime_shift(self) -> None:
         action = "reset"
@@ -521,6 +535,50 @@ class OnlineTrainer:
                 self.drift_events += 1
         self.last_drift_metric = float(metric)
         self.last_drift_detected = bool(detected)
+
+    def _append_buffer(self, records: List[Dict[str, Any]]) -> None:
+        if not records:
+            return
+        try:
+            df = pd.DataFrame(records)
+            path = self.tick_buffer_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                try:
+                    existing = pd.read_parquet(path)
+                except Exception:
+                    existing = pd.DataFrame()
+                df = pd.concat([existing, df], ignore_index=True).tail(
+                    self.tick_buffer_size
+                )
+            df.to_parquet(path, index=False)
+        except Exception:
+            pass
+
+    def _reselect_architecture(self) -> None:
+        if self.controller is None:
+            return
+        try:
+            action, _ = self.controller.sample_action()
+        except Exception:
+            return
+        feats, model_name = action
+        if feats:
+            self.feature_names = list(feats)
+        if model_name != self.model_type:
+            if model_name == "confidence_weighted":
+                try:
+                    from botcopier.models.registry import ConfidenceWeighted
+
+                    self.clf = ConfidenceWeighted()
+                except Exception:
+                    self.clf = SGDClassifier(loss="log_loss", learning_rate="adaptive", eta0=self.lr)
+            else:
+                self.clf = SGDClassifier(
+                    loss="log_loss", learning_rate="adaptive", eta0=self.lr
+                )
+            self.model_type = model_name
+        self._prev_coef = None
 
     def update(self, batch: List[Dict[str, Any]]) -> bool:
         with observe_latency("train_batch"):
@@ -590,7 +648,29 @@ class OnlineTrainer:
                     self._prev_coef = coef + [intercept]
                     changed = prev != self._prev_coef
                     self._save()
-                    self._log_validation(X, y)
+                    acc = self._log_validation(X, y)
+                    if self.controller is None and self.feature_names:
+                        try:
+                            self.controller = AutoMLController(
+                                self.feature_names,
+                                {"sgd": 1, "confidence_weighted": 2},
+                                model_path=self.model_path,
+                            )
+                        except Exception:
+                            self.controller = None
+                    if self.controller is not None:
+                        try:
+                            self.controller.update(
+                                (tuple(self.feature_names), self.model_type), acc
+                            )
+                            if (
+                                self.prev_accuracy is not None
+                                and acc < self.prev_accuracy - 0.2
+                            ):
+                                self._reselect_architecture()
+                            self.prev_accuracy = acc
+                        except Exception:
+                            pass
                     ctx = span.get_span_context()
                     log = {
                         "event": "batch_update",
@@ -696,13 +776,18 @@ class OnlineTrainer:
             else ShmRing.create(str(ring_path), ring_size)
         )
         batch: List[Dict[str, Any]] = []
+        buffer_records: List[Dict[str, Any]] = []
         try:
             async for tick in tick_stream:
+                buffer_records.append(tick)
                 try:
                     ring.push(TRADE_MSG, json.dumps(tick).encode())
                 except Exception:
                     pass
                 if "y" not in tick and "label" not in tick:
+                    if len(buffer_records) >= self.batch_size:
+                        self._append_buffer(buffer_records)
+                        buffer_records.clear()
                     continue
                 tick["y"] = tick["y"] if "y" in tick else tick.get("label")
                 batch.append(tick)
@@ -711,13 +796,17 @@ class OnlineTrainer:
                     if load > self.cpu_threshold:
                         await asyncio.sleep(self.sleep_seconds)
                     self.update(batch)
+                    self._append_buffer(buffer_records)
                     batch.clear()
+                    buffer_records.clear()
             if batch:
                 load = psutil.cpu_percent(interval=None)
                 if load > self.cpu_threshold:
                     await asyncio.sleep(self.sleep_seconds)
                 self.update(batch)
+                self._append_buffer(buffer_records)
                 batch.clear()
+                buffer_records.clear()
         finally:
             ring.close()
 
@@ -801,6 +890,55 @@ class OnlineTrainer:
                 await asyncio.sleep(1.0)
         finally:
             client.close()
+
+    async def consume_websocket(
+        self, url: str, ring_path: Path, ring_size: int = 1_000_000
+    ) -> None:
+        """Subscribe to ticks from a WebSocket source."""
+        try:
+            import websockets
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("websockets is required for WebSocket consumption") from exc
+
+        async with websockets.connect(url) as ws:
+            async def _gen():
+                async for msg in ws:
+                    try:
+                        yield json.loads(msg)
+                    except Exception:
+                        continue
+
+            await self.consume_ticks(_gen(), ring_path, ring_size)
+
+    async def consume_kafka(
+        self,
+        topic: str,
+        bootstrap_servers: str,
+        ring_path: Path,
+        group_id: str = "online-trainer",
+        ring_size: int = 1_000_000,
+    ) -> None:
+        """Subscribe to ticks from a Kafka topic."""
+        try:
+            from aiokafka import AIOKafkaConsumer
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("aiokafka is required for Kafka consumption") from exc
+
+        consumer = AIOKafkaConsumer(
+            topic,
+            bootstrap_servers=bootstrap_servers,
+            group_id=group_id,
+            value_deserializer=lambda m: json.loads(m.decode()),
+        )
+        await consumer.start()
+        try:
+            async def _gen():
+                async for msg in consumer:
+                    yield msg.value
+
+            await self.consume_ticks(_gen(), ring_path, ring_size)
+        finally:
+            await consumer.stop()
 
 
 async def run(data_cfg: DataConfig, train_cfg: TrainingConfig) -> None:

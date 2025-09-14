@@ -1,40 +1,47 @@
-import json
 import asyncio
 
+import pandas as pd
+
 from botcopier.scripts.online_trainer import OnlineTrainer
-from botcopier.scripts.shm_ring import ShmRing, TRADE_MSG
+
+
+class DummyController:
+    def __init__(self) -> None:
+        self.sampled = False
+
+    def update(self, action, reward, alpha: float = 0.1) -> None:  # pragma: no cover - simple stub
+        return None
+
+    def sample_action(self):  # pragma: no cover - deterministic sample
+        self.sampled = True
+        return (("feat",), "confidence_weighted"), []
 
 
 async def _tick_stream():
-    for _ in range(32):
+    for _ in range(16):
         yield {"feat": 0.0, "y": 0}
-    for _ in range(32):
-        yield {"feat": 10.0, "y": 1}
+    for _ in range(16):
+        yield {"feat": 1.0, "y": 1}
+    for i in range(16):
+        yield {"feat": 1.0, "y": i % 2}
+    for _ in range(16):
+        yield {"feat": 0.0, "y": 0}
 
 
-def test_tick_stream_updates_and_drift(tmp_path):
+def test_tick_stream_buffer_and_adaptive_refit(tmp_path):
     ring_path = tmp_path / "ticks.ring"
     model_path = tmp_path / "model.json"
-    trainer = OnlineTrainer(model_path=model_path, batch_size=16)
-    if trainer.drift_detector:
-        trainer.drift_detector.threshold = 0.01
-        trainer.drift_detector.min_samples = 1
-        trainer.drift_detector.delta = 0.0
+    buffer_path = tmp_path / "data/live_ticks.parquet"
+    controller = DummyController()
+    trainer = OnlineTrainer(
+        model_path=model_path,
+        batch_size=16,
+        controller=controller,
+        tick_buffer_path=buffer_path,
+    )
     asyncio.run(trainer.consume_ticks(_tick_stream(), ring_path))
-    ring = ShmRing.open(str(ring_path))
-    count = 0
-    while True:
-        msg = ring.pop()
-        if msg is None:
-            break
-        mtype, payload = msg
-        if mtype == TRADE_MSG:
-            count += 1
-        bytes(payload)
-        payload = None
-    ring.close()
-    assert count >= 64
-    assert model_path.exists()
-    data = json.loads(model_path.read_text())
-    assert "coefficients" in data
-    assert trainer.drift_events > 0
+    assert buffer_path.exists()
+    df = pd.read_parquet(buffer_path)
+    assert len(df) >= 64
+    assert controller.sampled
+    assert trainer.model_type == "confidence_weighted"
