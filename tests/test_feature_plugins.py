@@ -20,6 +20,13 @@ scipy.signal = types.ModuleType("scipy.signal")
 sys.modules.setdefault("scipy", scipy)
 sys.modules.setdefault("scipy.signal", scipy.signal)
 
+# stub gplearn
+gplearn = types.ModuleType("gplearn")
+gplearn.genetic = types.ModuleType("gplearn.genetic")
+gplearn.genetic.SymbolicTransformer = object
+sys.modules.setdefault("gplearn", gplearn)
+sys.modules.setdefault("gplearn.genetic", gplearn.genetic)
+
 # stub psutil
 sys.modules.setdefault("psutil", types.ModuleType("psutil"))
 
@@ -80,3 +87,24 @@ def test_entry_point_plugin(monkeypatch):
     out, cols, *_ = technical._extract_features(df, [])
     assert "ep" in cols
     assert out["ep"].iloc[0] == 1.0
+
+
+def test_register_feature_direct():
+    """Plugins can be registered directly via ``register_feature``."""
+
+    @plugins.register_feature("direct")
+    def direct_feature(df, names, **kwargs):
+        df["direct"] = 2.0
+        names.append("direct")
+        return df, names, {}, {}
+
+    configure_cache(FeatureConfig(enabled_features={"direct"}))
+
+    # replace heavy technical plugin with a no-op for the test
+    FEATURE_REGISTRY["technical"] = lambda df, names, **kwargs: (df, names, {}, {})
+
+    df = pd.DataFrame({"price": [1.0]})
+    out, cols, *_ = technical._extract_features(df, [])
+    assert "direct" in cols
+    assert out["direct"].iloc[0] == 2.0
+    FEATURE_REGISTRY.pop("direct", None)
