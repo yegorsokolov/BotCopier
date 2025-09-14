@@ -34,7 +34,10 @@ except Exception:  # pragma: no cover
     ) = brier_score_loss = roc_auc_score = _missing  # type: ignore
 
 from botcopier.exceptions import DataError, ServiceError
+from botcopier.utils.validation import validate_columns
 from metrics.registry import get_metrics, register_metric
+from schemas.decisions import DECISION_SCHEMA
+from schemas.trades import TRADE_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,13 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
             "decision_id",
         ]
         return pd.DataFrame(columns=cols)
+
+    validate_columns(
+        df,
+        DECISION_SCHEMA,
+        required={"timestamp", "probability"},
+        name="predictions",
+    )
 
     ts_col = next((c for c in ["timestamp", "time"] if c in df.columns), df.columns[0])
     sym_col = "symbol" if "symbol" in df.columns else None
@@ -161,6 +171,21 @@ def _load_actual_trades(log_file: Path) -> pd.DataFrame:
             "profit",
         ]
         return pd.DataFrame(columns=cols)
+
+    validate_columns(
+        df,
+        TRADE_SCHEMA,
+        required={
+            "event_time",
+            "action",
+            "ticket",
+            "symbol",
+            "order_type",
+            "lots",
+            "profit",
+        },
+        name="trade log",
+    )
 
     ts_col = next(
         (c for c in ["event_time", "time_event"] if c in df.columns), df.columns[0]
