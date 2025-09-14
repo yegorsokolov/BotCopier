@@ -1,54 +1,38 @@
-"""Neural program search for strategy expressions."""
+"""High level helper for running program search over the trading DSL."""
+
 from __future__ import annotations
+
+from typing import Tuple
 
 import numpy as np
 
-try:  # optional torch dependency
-    import torch
-except Exception:  # pragma: no cover - fallback
-    torch = None  # type: ignore
-
-from .dsl import Price, SMA, GT, Position, backtest, Expr
+from .dsl import Expr
+from .engine import search_strategies
 
 
-def _expr_for_window(window: int) -> Expr:
-    return Position(GT(Price(), SMA(window)))
-
-
-def search_strategy(prices: np.ndarray, n_samples: int = 20) -> tuple[Expr, float]:
-    """Search for a profitable strategy using an RNN sampler.
+def search_strategy(
+    prices: np.ndarray, n_samples: int = 50, seed: int = 0
+) -> Tuple[Expr, float, float]:
+    """Return the best strategy discovered by :func:`search_strategies`.
 
     Parameters
     ----------
     prices:
-        Price series to evaluate on.
+        Historical price series used for evaluation.
     n_samples:
-        Number of candidate programs to sample.
-    """
-    prices = np.asarray(prices, dtype=float)
-    best_expr = _expr_for_window(2)
-    best_ret = backtest(prices, best_expr)
+        Number of candidate programs to draw during the search.
+    seed:
+        Random seed controlling the search process.
 
-    if torch is not None:  # use a tiny RNN to propose windows
-        rnn = torch.nn.GRU(1, 8, batch_first=True)
-        h = torch.zeros(1, 1, 8)
-        x = torch.zeros(1, 1, 1)
-        for _ in range(n_samples):
-            out, h = rnn(x, h)
-            window = int(torch.sigmoid(out[0, 0, 0]).item() * 18) + 2
-            expr = _expr_for_window(window)
-            ret = backtest(prices, expr)
-            if ret > best_ret:
-                best_expr, best_ret = expr, ret
-    else:  # pragma: no cover - simple random search fallback
-        rng = np.random.default_rng(0)
-        for _ in range(n_samples):
-            window = int(rng.integers(2, 20))
-            expr = _expr_for_window(window)
-            ret = backtest(prices, expr)
-            if ret > best_ret:
-                best_expr, best_ret = expr, ret
-    return best_expr, best_ret
+    Returns
+    -------
+    tuple
+        ``(expr, ret, risk)`` where ``expr`` is the best expression, ``ret`` its
+        cumulative return and ``risk`` the associated maximum drawdown.
+    """
+
+    best, _ = search_strategies(prices, n_samples=n_samples, seed=seed)
+    return best.expr, best.ret, best.risk
 
 
 __all__ = ["search_strategy"]
