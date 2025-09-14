@@ -100,7 +100,7 @@ def _compute_meta_labels(
     return horizon_idx, tp_time, sl_time, meta.astype(float)
 
 
-def _load_logs(
+def _load_logs_impl(
     data_dir: Path,
     *,
     lite_mode: bool | None = None,
@@ -408,3 +408,12 @@ def _load_logs(
 
         df = dd.from_pandas(df, npartitions=1)
     return df, feature_cols, data_hashes
+
+
+def _load_logs(*args, **kwargs):
+    """Load logs with graceful fallback on network, disk or dependency failures."""
+    try:
+        return _load_logs_impl(*args, **kwargs)
+    except (OSError, ConnectionError, ImportError, ValueError) as exc:
+        logging.error("Failed to load logs: %s - using fallback empty dataset", exc)
+        return pd.DataFrame(), [], {}
