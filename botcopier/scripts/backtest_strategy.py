@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from statistics import mean, pstdev
-from typing import Dict, List, Sequence, Optional
+from typing import Dict, List, Optional, Sequence
 
 
 @dataclass
@@ -124,12 +124,64 @@ def load_ticks(file: Path) -> List[MarketRow]:
     return rows
 
 
+def execute_limit_order(
+    side: int, limit_price: float, tick: MarketRow, remaining: float
+) -> tuple[float, float, float]:
+    """Execute a limit order against ``tick``.
+
+    Parameters
+    ----------
+    side:
+        ``1`` for buy orders, ``-1`` for sell orders.
+    limit_price:
+        Desired execution price.
+    tick:
+        Current market tick used for matching the order.
+    remaining:
+        Order size still waiting to be filled.
+
+    Returns
+    -------
+    tuple
+        ``(filled, remaining, price)`` where ``filled`` is the executed
+        quantity, ``remaining`` the leftover amount and ``price`` the actual
+        execution price.
+
+    The implementation models partial fills by executing only half of the
+    remaining quantity when the market merely touches the limit price.  Orders
+    cross the spread at more favourable prices fill completely.  Unfilled
+    volume is returned so callers can keep the order resting in the book.
+    """
+
+    filled = 0.0
+    price = 0.0
+
+    if side == 1:  # buy
+        if tick.ask < limit_price:
+            filled = remaining
+            price = tick.ask
+        elif tick.ask == limit_price:
+            filled = remaining / 2.0
+            price = tick.ask
+    else:  # sell
+        if tick.bid > limit_price:
+            filled = remaining
+            price = tick.bid
+        elif tick.bid == limit_price:
+            filled = remaining / 2.0
+            price = tick.bid
+
+    remaining -= filled
+    return filled, remaining, price
+
+
 def backtest(
     ticks: Sequence[MarketRow],
     coefficients: Sequence[float],
     threshold: float = 0.0,
     slippage: float = 0.0,
     fee: float = 0.0,
+    order_types: Optional[Sequence[str]] = None,
 ) -> Dict[str, float]:
     """Replay market data applying a simple linear strategy.
 
@@ -151,15 +203,44 @@ def backtest(
             "avg_profit": 0.0,
             "avg_latency": 0.0,
             "max_latency": 0.0,
+            "resting_orders": 0,
         }
 
     trades: List[float] = []
     latencies: List[float] = []
+    resting: List[Dict[str, float]] = []
     equity = 0.0
     peak = 0.0
     max_dd = 0.0
 
-    for cur, nxt in zip(ticks[:-1], ticks[1:]):
+    for i, (cur, nxt) in enumerate(zip(ticks[:-1], ticks[1:])):
+        # First try to fill any resting limit orders on this tick
+        completed: List[Dict[str, float]] = []
+        for order in resting:
+            filled, rem, price = execute_limit_order(
+                int(order["side"]), order["limit"], cur, order["remaining"]
+            )
+            if filled > 0:
+                latencies.append(cur.latency)
+                if order["side"] == 1:
+                    open_price = price + slippage
+                    close_price = nxt.bid - slippage
+                    profit = (close_price - open_price) * filled
+                else:
+                    open_price = price - slippage
+                    close_price = nxt.ask + slippage
+                    profit = (open_price - close_price) * filled
+                profit -= fee * filled
+                trades.append(profit)
+                equity += profit
+                peak = max(peak, equity)
+                max_dd = max(max_dd, peak - equity)
+            order["remaining"] = rem
+            if rem <= 0:
+                completed.append(order)
+        for c in completed:
+            resting.remove(c)
+
         signal = sum(c * f for c, f in zip(coefficients, cur.features))
         direction = 0
         if signal > threshold:
@@ -169,22 +250,27 @@ def backtest(
         if direction == 0:
             continue
 
-        latencies.append(cur.latency)
+        otype = order_types[i] if order_types and i < len(order_types) else "market"
 
-        if direction == 1:
-            open_price = cur.ask + slippage
-            close_price = nxt.bid - slippage
-            profit = close_price - open_price
-        else:
-            open_price = cur.bid - slippage
-            close_price = nxt.ask + slippage
-            profit = open_price - close_price
+        if otype == "market":
+            latencies.append(cur.latency)
+            if direction == 1:
+                open_price = cur.ask + slippage
+                close_price = nxt.bid - slippage
+                profit = close_price - open_price
+            else:
+                open_price = cur.bid - slippage
+                close_price = nxt.ask + slippage
+                profit = open_price - close_price
 
-        profit -= fee
-        trades.append(profit)
-        equity += profit
-        peak = max(peak, equity)
-        max_dd = max(max_dd, peak - equity)
+            profit -= fee
+            trades.append(profit)
+            equity += profit
+            peak = max(peak, equity)
+            max_dd = max(max_dd, peak - equity)
+        else:  # limit order
+            limit_price = cur.bid if direction == 1 else cur.ask
+            resting.append({"side": direction, "limit": limit_price, "remaining": 1.0})
 
     trade_count = len(trades)
     if trade_count == 0:
@@ -197,6 +283,7 @@ def backtest(
             "avg_profit": 0.0,
             "avg_latency": 0.0,
             "max_latency": 0.0,
+            "resting_orders": len(resting),
         }
 
     wins = sum(1 for p in trades if p > 0)
@@ -206,7 +293,7 @@ def backtest(
     profit_factor = (gross_profit / gross_loss) if gross_loss else float("inf")
     avg_profit = mean(trades)
     sd = pstdev(trades) if trade_count > 1 else 0.0
-    sharpe = (avg_profit / sd * trade_count ** 0.5) if sd > 0 else 0.0
+    sharpe = (avg_profit / sd * trade_count**0.5) if sd > 0 else 0.0
 
     return {
         "trade_count": trade_count,
@@ -217,6 +304,7 @@ def backtest(
         "avg_profit": avg_profit,
         "avg_latency": mean(latencies) if latencies else 0.0,
         "max_latency": max(latencies) if latencies else 0.0,
+        "resting_orders": len(resting),
     }
 
 
@@ -228,7 +316,9 @@ def write_report(metrics: Dict[str, float], out_file: Path) -> None:
         json.dump(metrics, f, indent=2)
 
 
-def update_metrics_csv(metrics: Dict[str, float], metrics_file: Path, magic: int) -> None:
+def update_metrics_csv(
+    metrics: Dict[str, float], metrics_file: Path, magic: int
+) -> None:
     """Append metrics to a semi-colon separated CSV file."""
 
     metrics_file.parent.mkdir(parents=True, exist_ok=True)
@@ -252,7 +342,7 @@ def update_metrics_csv(metrics: Dict[str, float], metrics_file: Path, magic: int
                 str(magic),
                 f"{metrics['win_rate']:.6f}",
                 f"{metrics['avg_profit']:.6f}",
-                str(metrics['trade_count']),
+                str(metrics["trade_count"]),
                 f"{metrics['drawdown']:.6f}",
                 f"{metrics['sharpe']:.6f}",
             ]
@@ -320,7 +410,11 @@ def run_backtest(
             with open(eval_path) as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
-                existing = {k: float(v) for k, v in loaded.items() if isinstance(v, (int, float))}
+                existing = {
+                    k: float(v)
+                    for k, v in loaded.items()
+                    if isinstance(v, (int, float))
+                }
         except Exception:
             existing = {}
     existing.update(result)
@@ -371,17 +465,25 @@ def backtest_model(model_path: Path, log_file: Path) -> Dict[str, float]:
     """
 
     metrics = run_backtest(model_path, log_file)
-    return {"sharpe": metrics.get("sharpe", 0.0), "win_rate": metrics.get("win_rate", 0.0)}
+    return {
+        "sharpe": metrics.get("sharpe", 0.0),
+        "win_rate": metrics.get("win_rate", 0.0),
+    }
 
 
 def check_performance(
     metrics: Dict[str, float],
     min_win_rate: float = 0.0,
     min_profit_factor: float = 0.0,
+    max_resting_orders: int = 0,
 ) -> None:
     """Raise ``ValueError`` if metrics fall below thresholds."""
 
-    if metrics["win_rate"] < min_win_rate or metrics["profit_factor"] < min_profit_factor:
+    if (
+        metrics["win_rate"] < min_win_rate
+        or metrics["profit_factor"] < min_profit_factor
+        or metrics.get("resting_orders", 0) > max_resting_orders
+    ):
         raise ValueError("performance below required thresholds")
 
 
@@ -401,6 +503,7 @@ def main() -> None:
     p.add_argument("--metrics-file", help="metrics.csv to append results to")
     p.add_argument("--min-win-rate", type=float, default=0.0)
     p.add_argument("--min-profit-factor", type=float, default=0.0)
+    p.add_argument("--max-resting-orders", type=int, default=0)
     args = p.parse_args()
 
     if args.augmented_tick_file:
@@ -413,7 +516,9 @@ def main() -> None:
         result = run_backtest(Path(args.params_file), Path(args.tick_file))
 
     try:
-        check_performance(result, args.min_win_rate, args.min_profit_factor)
+        check_performance(
+            result, args.min_win_rate, args.min_profit_factor, args.max_resting_orders
+        )
     except ValueError as exc:  # pragma: no cover - exercised via CLI
         print(str(exc), file=sys.stderr)
         write_report(result, Path(args.report))

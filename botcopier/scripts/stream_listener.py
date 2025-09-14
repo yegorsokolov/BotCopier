@@ -22,13 +22,13 @@ import json
 import logging
 import os
 import re
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from typing import Any, Dict
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.trace import format_trace_id, format_span_id
+from opentelemetry.trace import format_span_id, format_trace_id
 
 try:  # optional system metrics
     import psutil  # type: ignore
@@ -49,8 +49,8 @@ except Exception:  # pragma: no cover - psutil not installed
 
 try:  # optional heavy dependency
     import pyarrow as pa  # type: ignore
-    import pyarrow.parquet as pq  # type: ignore
     import pyarrow.flight as flight  # type: ignore
+    import pyarrow.parquet as pq  # type: ignore
 except Exception:  # pragma: no cover - pyarrow not installed
     pa = None  # type: ignore
     pq = None  # type: ignore
@@ -156,15 +156,51 @@ def append_csv(path: Path, record: Dict[str, Any]) -> None:
         writer.writerow(record)
 
 
+def execute_limit_order(
+    order: Dict[str, Any], bid: float, ask: float
+) -> Dict[str, Any]:
+    """Simulate execution of a limit ``order`` against current bid/ask prices.
+
+    Orders that merely touch the limit price are partially filled while the
+    remainder stays resting on the book.  Filled volume accumulates in
+    ``filledLots`` and unfilled size is tracked via ``remainingLots``.
+    """
+
+    remaining = float(order.get("remainingLots", order.get("lots", 0.0)))
+    side = int(order.get("orderType", 0))  # 0=buy, 1=sell
+    price = float(order.get("price", 0.0))
+    filled = 0.0
+
+    if side == 0:  # buy
+        if ask < price:
+            filled = remaining
+        elif ask == price:
+            filled = remaining / 2.0
+    else:  # sell
+        if bid > price:
+            filled = remaining
+        elif bid == price:
+            filled = remaining / 2.0
+
+    remaining -= filled
+    order["remainingLots"] = remaining
+    order["filledLots"] = order.get("filledLots", 0.0) + filled
+    return order
+
+
 def _validate(fields: Dict[str, type], msg: Any, kind: str) -> Dict[str, Any] | None:
     data: Dict[str, Any] = {}
     for name, typ in fields.items():
         if not hasattr(msg, name):
-            logger.warning({"error": f"invalid {kind} event", "details": f"missing {name}"})
+            logger.warning(
+                {"error": f"invalid {kind} event", "details": f"missing {name}"}
+            )
             return None
         val = getattr(msg, name)
         if not isinstance(val, typ):
-            logger.warning({"error": f"invalid {kind} event", "details": f"field {name}"})
+            logger.warning(
+                {"error": f"invalid {kind} event", "details": f"field {name}"}
+            )
             return None
         data[_snake(name)] = val
     schema_version = getattr(msg, "schemaVersion", SCHEMA_VERSION)
@@ -314,11 +350,12 @@ def main() -> None:  # pragma: no cover - simple CLI wrapper
     parser.add_argument("--flight-port", type=int, default=8815)
     parser.add_argument("--repo", type=Path, help="git repository to push logs")
     args = parser.parse_args()
-    consume_flight("metrics", METRIC_SCHEMA, args.dest, args.flight_host, args.flight_port)
+    consume_flight(
+        "metrics", METRIC_SCHEMA, args.dest, args.flight_host, args.flight_port
+    )
     if args.repo:
         upload_logs(args.repo, "update logs")
 
 
 if __name__ == "__main__":  # pragma: no cover
     main()
-

@@ -12,21 +12,21 @@ except Exception:  # pragma: no cover - optional
     torch = None  # type: ignore
 
 from .dsl import (
-    Expr,
-    Price,
-    SMA,
     EMA,
     GT,
     LT,
-    And,
-    Or,
+    SMA,
     Add,
-    Sub,
-    Mul,
-    Div,
-    Position,
-    StopLoss,
+    And,
     Constant,
+    Div,
+    Expr,
+    Mul,
+    Or,
+    Position,
+    Price,
+    StopLoss,
+    Sub,
     backtest,
 )
 
@@ -38,6 +38,7 @@ class Candidate:
     expr: Expr
     ret: float
     risk: float
+    order_type: str = "market"
 
 
 def _max_drawdown(returns: np.ndarray) -> float:
@@ -49,20 +50,24 @@ def _max_drawdown(returns: np.ndarray) -> float:
     return float(np.max(dd))
 
 
-def _random_math(rng: np.random.Generator, depth: int, sample_window: Callable[[], int]) -> Expr:
+def _random_math(
+    rng: np.random.Generator, depth: int, sample_window: Callable[[], int]
+) -> Expr:
     if depth > 2:
         choice = rng.choice(["price", "const"])
     else:
-        choice = rng.choice([
-            "price",
-            "const",
-            "sma",
-            "ema",
-            "add",
-            "sub",
-            "mul",
-            "div",
-        ])
+        choice = rng.choice(
+            [
+                "price",
+                "const",
+                "sma",
+                "ema",
+                "add",
+                "sub",
+                "mul",
+                "div",
+            ]
+        )
     if choice == "price":
         return Price()
     if choice == "const":
@@ -84,18 +89,23 @@ def _random_math(rng: np.random.Generator, depth: int, sample_window: Callable[[
     raise RuntimeError(f"unknown choice {choice}")
 
 
-def _random_condition(rng: np.random.Generator, sample_window: Callable[[], int]) -> Expr:
+def _random_condition(
+    rng: np.random.Generator, sample_window: Callable[[], int]
+) -> Expr:
     left = _random_math(rng, 0, sample_window)
     right = _random_math(rng, 0, sample_window)
     return GT(left, right) if rng.random() < 0.5 else LT(left, right)
 
 
-def _random_strategy(rng: np.random.Generator, sample_window: Callable[[], int]) -> Expr:
+def _random_strategy(
+    rng: np.random.Generator, sample_window: Callable[[], int]
+) -> Tuple[Expr, str]:
     cond = _random_condition(rng, sample_window)
     expr: Expr = Position(cond)
     if rng.random() < 0.5:
         expr = StopLoss(expr, float(rng.uniform(0.5, 2.0)))
-    return expr
+    order_type = "limit" if rng.random() < 0.5 else "market"
+    return expr, order_type
 
 
 def search_strategies(
@@ -117,6 +127,7 @@ def search_strategies(
             return int(torch.sigmoid(out[0, 0, 0]).item() * 18) + 2
 
     else:  # pragma: no cover - fallback
+
         def sample_window() -> int:
             return int(rng.integers(2, 20))
 
@@ -124,16 +135,18 @@ def search_strategies(
     best: Candidate | None = None
 
     for _ in range(n_samples):
-        expr = _random_strategy(rng, sample_window)
+        expr, order_type = _random_strategy(rng, sample_window)
         ret = backtest(prices, expr)
         pnl = np.diff(prices) * expr.eval(prices)[:-1]
         risk = _max_drawdown(pnl)
-        cand = Candidate(expr, ret, risk)
+        cand = Candidate(expr, ret, risk, order_type)
 
         dominated = False
         for p in pareto:
-            if p.ret >= cand.ret and p.risk <= cand.risk and (
-                p.ret > cand.ret or p.risk < cand.risk
+            if (
+                p.ret >= cand.ret
+                and p.risk <= cand.risk
+                and (p.ret > cand.ret or p.risk < cand.risk)
             ):
                 dominated = True
                 break
@@ -161,4 +174,3 @@ def search_strategies(
 
 
 __all__ = ["Candidate", "search_strategies"]
-
