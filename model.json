@@ -9,6 +9,7 @@
     "feature_names": [],
     "formulas": []
   },
+  "indicator_history": [],
   "automl_controller": {
     "q_values": {},
     "best_action": null
