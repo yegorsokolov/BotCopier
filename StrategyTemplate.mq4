@@ -11,6 +11,8 @@ double g_sl_coeffs[];
 double g_tp_coeffs[];
 double g_conformal_lower;
 double g_conformal_upper;
+int g_order_types[];
+double g_order_thresholds[];
 // __SESSION_MODELS__
 
 bool g_use_transformer = false;
@@ -105,6 +107,25 @@ double CalendarImpact()
             maxImp = g_cal_impacts[i];
     }
     return maxImp;
+}
+
+// __INDICATOR_FUNCTIONS__
+
+int GetOrderType(int idx)
+{
+    if(idx < ArraySize(g_order_types))
+        return g_order_types[idx];
+    return OP_BUY;
+}
+
+double OrderThreshold(int order_type)
+{
+    for(int i = 0; i < ArraySize(g_order_types); i++)
+    {
+        if(g_order_types[i] == order_type)
+            return g_order_thresholds[i];
+    }
+    return SymbolThreshold();
 }
 
 int RouteModel()
@@ -590,14 +611,15 @@ void OnTick()
     int decision_id = g_decision_id;
     string decision = "hold";
     string reason = "";
-    double thr = SymbolThreshold();
+    int order_type = GetOrderType(model_idx);
+    double thr = OrderThreshold(order_type);
     bool uncertain = (prob >= g_conformal_lower && prob <= g_conformal_upper);
     if(uncertain)
     {
         decision = "skip";
         reason = "uncertain_prob";
     }
-    else if(prob > thr)
+    else if(prob > thr && order_type == OP_BUY)
     {
         double sl_price = Ask - sl * Point;
         double tp_price = Ask + tp * Point;
@@ -607,7 +629,7 @@ void OnTick()
             decision = "buy";
         }
     }
-    else if((1.0 - prob) > thr)
+    else if((1.0 - prob) > thr && order_type == OP_SELL)
     {
         double sl_price = Bid + sl * Point;
         double tp_price = Bid - tp * Point;
