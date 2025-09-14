@@ -1,17 +1,21 @@
 """Data loading helpers for BotCopier."""
 from __future__ import annotations
 
+import hashlib
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable, Tuple
-import hashlib
 
 import numpy as np
 import pandas as pd
 
+from botcopier.exceptions import DataError
 from botcopier.features.augmentation import _augment_dataframe, _augment_dtw_dataframe
 
 from ..scripts.data_validation import validate_logs
+
+logger = logging.getLogger(__name__)
 
 
 def _drop_duplicates_and_outliers(
@@ -146,9 +150,7 @@ def _load_logs_impl(
         raise NotImplementedError("dask mode only supports simple local CSV loading")
     data_hashes: dict[str, str] = {}
     if file.exists():
-        data_hashes[str(file.resolve())] = hashlib.sha256(
-            file.read_bytes()
-        ).hexdigest()
+        data_hashes[str(file.resolve())] = hashlib.sha256(file.read_bytes()).hexdigest()
     depth_df: pd.DataFrame | None = None
     if depth_file and depth_file.exists():
         import json
@@ -156,12 +158,18 @@ def _load_logs_impl(
         depth_df = pd.read_csv(
             depth_file,
             converters={
-                "bid_depth": lambda x: np.array(json.loads(x)) if isinstance(x, str) else x,
-                "ask_depth": lambda x: np.array(json.loads(x)) if isinstance(x, str) else x,
+                "bid_depth": lambda x: np.array(json.loads(x))
+                if isinstance(x, str)
+                else x,
+                "ask_depth": lambda x: np.array(json.loads(x))
+                if isinstance(x, str)
+                else x,
             },
         )
         if "event_time" in depth_df.columns:
-            depth_df["event_time"] = pd.to_datetime(depth_df["event_time"], errors="coerce")
+            depth_df["event_time"] = pd.to_datetime(
+                depth_df["event_time"], errors="coerce"
+            )
         data_hashes[str(depth_file.resolve())] = hashlib.sha256(
             depth_file.read_bytes()
         ).hexdigest()
@@ -190,7 +198,7 @@ def _load_logs_impl(
                 )
 
         df, dup_cnt, out_cnt = _drop_duplicates_and_outliers(df)
-        logging.info("Removed %d duplicate rows and %d outlier rows", dup_cnt, out_cnt)
+        logger.info("Removed %d duplicate rows and %d outlier rows", dup_cnt, out_cnt)
 
         hours: pd.Series
         if "hour" in df.columns:
@@ -243,9 +251,9 @@ def _load_logs_impl(
 
         validation_result = validate_logs(df)
         if not validation_result.get("success", False):
-            logging.warning("Log validation failed: %s", validation_result)
+            logger.warning("Log validation failed: %s", validation_result)
             raise ValueError("log validation failed")
-        logging.info(
+        logger.info(
             "Log validation succeeded: %s/%s expectations",
             validation_result.get("statistics", {}).get("successful_expectations", 0),
             validation_result.get("statistics", {}).get("evaluated_expectations", 0),
@@ -398,7 +406,11 @@ def _load_logs_impl(
             import dask.dataframe as dd
 
             ddfs = [dd.from_pandas(chunk, npartitions=1) for chunk in _iter()]
-            return dd.concat(ddfs, interleave_partitions=True), feature_cols, data_hashes
+            return (
+                dd.concat(ddfs, interleave_partitions=True),
+                feature_cols,
+                data_hashes,
+            )
         return _iter(), feature_cols, data_hashes
 
     df = reader  # type: ignore[assignment]
@@ -415,5 +427,6 @@ def _load_logs(*args, **kwargs):
     try:
         return _load_logs_impl(*args, **kwargs)
     except (OSError, ConnectionError, ImportError, ValueError) as exc:
-        logging.error("Failed to load logs: %s - using fallback empty dataset", exc)
+        err = DataError("Failed to load logs", timestamp=datetime.now(UTC))
+        logger.error("%s - using fallback empty dataset", err, exc_info=exc)
         return pd.DataFrame(), [], {}

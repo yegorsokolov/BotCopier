@@ -52,3 +52,13 @@ def model_parameters():
         )
 
     return st.integers(1, 10).flatmap(build)
+
+
+def price_series():
+    """Generate random price series for strategy testing."""
+
+    return st.lists(
+        st.floats(-1e3, 1e3, allow_nan=False, allow_infinity=False),
+        min_size=3,
+        max_size=50,
+    ).map(lambda vals: np.asarray(vals, dtype=float))

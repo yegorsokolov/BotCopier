@@ -1,7 +1,7 @@
 import json
 import logging
 import math
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from statistics import NormalDist
 from typing import Dict, List, Optional, Sequence
@@ -16,7 +16,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
-from botcopier.exceptions import DataError
+from botcopier.exceptions import DataError, ServiceError
 from metrics.registry import get_metrics, register_metric
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,10 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
     try:
         df = pd.read_csv(pred_file, delimiter=";")
     except OSError as exc:
-        logger.error("Failed to read predictions %s: %s; using empty DataFrame", pred_file, exc)
+        err = DataError(
+            f"Failed to read predictions {pred_file}", timestamp=datetime.now(UTC)
+        )
+        logger.error("%s; using empty DataFrame", err, exc_info=exc)
         cols = [
             "timestamp",
             "symbol",
@@ -125,7 +128,10 @@ def _load_actual_trades(log_file: Path) -> pd.DataFrame:
     try:
         df = pd.read_csv(log_file, delimiter=";")
     except OSError as exc:
-        logger.error("Failed to read trade log %s: %s; using empty DataFrame", log_file, exc)
+        err = DataError(
+            f"Failed to read trade log {log_file}", timestamp=datetime.now(UTC)
+        )
+        logger.error("%s; using empty DataFrame", err, exc_info=exc)
         cols = [
             "open_time",
             "close_time",
@@ -277,9 +283,7 @@ def evaluate(
     matched_mask = merged["ticket"].notna()
     matches = int(matched_mask.sum())
     profits = merged.loc[matched_mask, "profit"].astype(float)
-    net_profits = profits - (
-        fee_per_trade + np.abs(profits) * slippage_bps * 1e-4
-    )
+    net_profits = profits - (fee_per_trade + np.abs(profits) * slippage_bps * 1e-4)
     trade_times = merged.loc[matched_mask, "close_time"]
 
     gross_profit = float(profits[profits >= 0].sum())
@@ -562,8 +566,11 @@ def _classification_metrics(
     for name, fn in get_metrics(selected).items():
         try:
             results[name] = fn(y_true, probas, profits)
-        except Exception as exc:  # pragma: no cover - specific errors tested via injection
-            logger.warning("Metric %s failed: %s", name, exc)
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - specific errors tested via injection
+            err = ServiceError(f"Metric {name} failed", timestamp=datetime.now(UTC))
+            logger.warning("%s", err, exc_info=exc)
             results[name] = np.nan
     return results
 
