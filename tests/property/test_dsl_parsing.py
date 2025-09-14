@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from hypothesis import given, strategies as st
+from hypothesis import given, settings, strategies as st
 
 from botcopier.strategy.dsl import (
     Add,
@@ -49,6 +49,7 @@ expr_strategy = st.recursive(
 
 
 @given(expr_strategy, price_series())
+@settings(max_examples=100)
 def test_serialize_roundtrip(expr, prices):
     data = serialize(expr)
     rebuilt = deserialize(data)
