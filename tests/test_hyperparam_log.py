@@ -19,7 +19,8 @@ def test_hyperparam_csv_contains_best_trial(tmp_path: Path):
     assert data["metadata"]["hyperparam_log"] == "hyperparams.csv"
 
     df = pd.read_csv(csv_path)
-    best_number = data["metadata"]["best_trial"]["number"]
-    best_value = data["metadata"]["best_trial"]["value"]
-    best_row = df[df["trial"] == best_number].iloc[0]
-    assert best_row["value"] == pytest.approx(best_value)
+    selected = data["metadata"]["selected_trial"]
+    best_row = df[df["trial"] == selected["number"]].iloc[0]
+    assert best_row["profit"] == pytest.approx(selected["profit"])
+    assert best_row["sharpe"] == pytest.approx(selected["sharpe"])
+    assert best_row["max_drawdown"] == pytest.approx(selected["max_drawdown"])

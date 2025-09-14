@@ -4,7 +4,7 @@ import argparse
 import json
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional
 
 # Support both package and script execution
 try:  # pragma: no cover - fallback for script usage
@@ -87,6 +87,8 @@ def promote(
     metric: str,
     files_dir: Optional[Path] = None,
     max_drift: float = 0.2,
+    max_drawdown: float | None = None,
+    var_limit: float | None = None,
 ) -> None:
     """Copy the top ``max_models`` from ``models_dir`` to ``best_dir``.
 
@@ -105,6 +107,10 @@ def promote(
             metrics.get("drift_psi", 0.0) > max_drift
             or metrics.get("drift_ks", 0.0) > max_drift
         ):
+            continue
+        if max_drawdown is not None and metrics.get("max_drawdown", 0.0) > max_drawdown:
+            continue
+        if var_limit is not None and metrics.get("var_95", 0.0) > var_limit:
             continue
         score = _score_for_model(m, metric)
         candidates.append((score, m))
@@ -139,6 +145,8 @@ def main():
         default=0.2,
         help="maximum allowed drift metric before skipping model",
     )
+    p.add_argument("--max-drawdown", type=float, help="skip models breaching drawdown")
+    p.add_argument("--var-limit", type=float, help="skip models breaching VAR")
     args = p.parse_args()
     promote(
         Path(args.models_dir),
@@ -147,8 +155,10 @@ def main():
         args.metric,
         Path(args.files_dir) if args.files_dir else None,
         args.max_drift,
+        args.max_drawdown,
+        args.var_limit,
     )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
