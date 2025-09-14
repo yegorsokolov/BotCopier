@@ -14,6 +14,7 @@ nav:
   - Troubleshooting: troubleshooting.md
   - Guides:
       - Hardware-aware Training: hardware-training.md
+      - Feature Plugins: feature_plugins.md
   - Tutorials:
       - Data Loading and Feature Engineering: data_loading_tutorial.md
 markdown_extensions:
