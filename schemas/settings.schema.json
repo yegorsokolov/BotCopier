@@ -1,0 +1,460 @@
+{
+  "type": "object",
+  "properties": {
+    "data": {
+      "additionalProperties": false,
+      "description": "Paths and data-related options.",
+      "properties": {
+        "log_dir": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Log Dir"
+        },
+        "out_dir": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Out Dir"
+        },
+        "files_dir": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Files Dir"
+        },
+        "metrics_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metrics File"
+        },
+        "tick_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tick File"
+        },
+        "baseline_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Baseline File"
+        },
+        "recent_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recent File"
+        },
+        "uncertain_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uncertain File"
+        },
+        "csv": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Csv"
+        },
+        "data": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data"
+        },
+        "out": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Out"
+        },
+        "pred_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pred File"
+        },
+        "actual_log": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual Log"
+        },
+        "drift_scores": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Drift Scores"
+        },
+        "flag_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flag File"
+        },
+        "data_dir": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Dir"
+        }
+      },
+      "title": "DataConfig",
+      "type": "object"
+    },
+    "training": {
+      "additionalProperties": false,
+      "description": "Training and evaluation parameters.",
+      "properties": {
+        "win_rate_threshold": {
+          "default": 0.4,
+          "title": "Win Rate Threshold",
+          "type": "number"
+        },
+        "drawdown_threshold": {
+          "default": 0.2,
+          "title": "Drawdown Threshold",
+          "type": "number"
+        },
+        "drift_threshold": {
+          "default": 0.2,
+          "title": "Drift Threshold",
+          "type": "number"
+        },
+        "drift_method": {
+          "default": "psi",
+          "title": "Drift Method",
+          "type": "string"
+        },
+        "uncertain_weight": {
+          "default": 2.0,
+          "title": "Uncertain Weight",
+          "type": "number"
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interval"
+        },
+        "batch_size": {
+          "default": 32,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "lr": {
+          "default": 0.01,
+          "title": "Lr",
+          "type": "number"
+        },
+        "lr_decay": {
+          "default": 1.0,
+          "title": "Lr Decay",
+          "type": "number"
+        },
+        "flight_host": {
+          "default": "127.0.0.1",
+          "title": "Flight Host",
+          "type": "string"
+        },
+        "flight_port": {
+          "default": 8815,
+          "title": "Flight Port",
+          "type": "integer"
+        },
+        "flight_path": {
+          "default": "trades",
+          "title": "Flight Path",
+          "type": "string"
+        },
+        "drift_interval": {
+          "default": 300.0,
+          "title": "Drift Interval",
+          "type": "number"
+        },
+        "metrics_port": {
+          "default": 8003,
+          "title": "Metrics Port",
+          "type": "integer"
+        },
+        "cache_dir": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cache Dir"
+        },
+        "model": {
+          "default": "model.json",
+          "format": "path",
+          "title": "Model",
+          "type": "string"
+        },
+        "features": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Features",
+          "type": "array"
+        },
+        "label": {
+          "default": "best_model",
+          "title": "Label",
+          "type": "string"
+        },
+        "model_type": {
+          "default": "logreg",
+          "title": "Model Type",
+          "type": "string"
+        },
+        "window": {
+          "default": 60,
+          "title": "Window",
+          "type": "integer"
+        },
+        "random_seed": {
+          "default": 0,
+          "title": "Random Seed",
+          "type": "integer"
+        },
+        "online_model": {
+          "default": "sgd",
+          "title": "Online Model",
+          "type": "string"
+        },
+        "grad_clip": {
+          "default": 1.0,
+          "title": "Grad Clip",
+          "type": "number"
+        },
+        "eval_hooks": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Eval Hooks",
+          "type": "array"
+        },
+        "hrp_allocation": {
+          "default": false,
+          "title": "Hrp Allocation",
+          "type": "boolean"
+        },
+        "strategy_search": {
+          "default": false,
+          "title": "Strategy Search",
+          "type": "boolean"
+        },
+        "tracking_uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tracking Uri"
+        },
+        "experiment_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Experiment Name"
+        },
+        "metrics": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Metrics",
+          "type": "array"
+        },
+        "reuse_controller": {
+          "default": false,
+          "title": "Reuse Controller",
+          "type": "boolean"
+        },
+        "meta_weights": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Meta Weights"
+        }
+      },
+      "title": "TrainingConfig",
+      "type": "object"
+    },
+    "execution": {
+      "additionalProperties": false,
+      "description": "Runtime execution options.",
+      "properties": {
+        "use_gpu": {
+          "default": false,
+          "title": "Use Gpu",
+          "type": "boolean"
+        },
+        "trace": {
+          "default": false,
+          "title": "Trace",
+          "type": "boolean"
+        },
+        "trace_exporter": {
+          "default": "otlp",
+          "title": "Trace Exporter",
+          "type": "string"
+        },
+        "profile": {
+          "default": false,
+          "title": "Profile",
+          "type": "boolean"
+        }
+      },
+      "title": "ExecutionConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

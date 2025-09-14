@@ -43,7 +43,12 @@ from pydantic import ValidationError
 
 import botcopier.features.technical as technical_features
 from automl.controller import AutoMLController
-from botcopier.config.settings import TrainingConfig
+from botcopier.config.settings import (
+    DataConfig,
+    ExecutionConfig,
+    TrainingConfig,
+    load_settings,
+)
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.data.loading import _load_logs
 from botcopier.features.anomaly import _clip_train_features
@@ -1176,23 +1181,23 @@ def main() -> None:
         help="Path to model.json with meta-weights",
     )
     args = p.parse_args()
-    setup_logging(enable_tracing=args.trace, exporter=args.trace_exporter)
-    cfg = TrainingConfig(random_seed=args.random_seed)
-    set_seed(cfg.random_seed)
+    data_cfg, train_cfg, exec_cfg = load_settings(vars(args))
+    setup_logging(enable_tracing=exec_cfg.trace, exporter=exec_cfg.trace_exporter)
+    set_seed(train_cfg.random_seed)
     train(
-        args.data_dir,
-        args.out_dir,
-        model_type=args.model_type,
-        tracking_uri=args.tracking_uri,
-        experiment_name=args.experiment_name,
-        use_gpu=args.use_gpu,
-        random_seed=cfg.random_seed,
-        metrics=args.metrics,
-        grad_clip=args.grad_clip,
-        profile=args.profile,
-        strategy_search=args.strategy_search,
-        reuse_controller=args.reuse_controller,
-        meta_weights=args.use_meta,
+        data_cfg.data_dir,
+        data_cfg.out_dir,
+        model_type=train_cfg.model_type,
+        tracking_uri=train_cfg.tracking_uri,
+        experiment_name=train_cfg.experiment_name,
+        use_gpu=exec_cfg.use_gpu,
+        random_seed=train_cfg.random_seed,
+        metrics=train_cfg.metrics or args.metrics,
+        grad_clip=train_cfg.grad_clip,
+        profile=exec_cfg.profile,
+        strategy_search=train_cfg.strategy_search,
+        reuse_controller=train_cfg.reuse_controller,
+        meta_weights=train_cfg.meta_weights,
     )
 
 

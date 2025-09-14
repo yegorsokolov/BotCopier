@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -24,13 +25,17 @@ import subprocess
 import sys
 import threading
 import time
-import hashlib
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, AsyncIterable
+from typing import Any, AsyncIterable, Dict, Iterable, List
 
 from pydantic import ValidationError
 
-from botcopier.config.settings import DataConfig, TrainingConfig, save_params
+from botcopier.config.settings import (
+    DataConfig,
+    TrainingConfig,
+    load_settings,
+    save_params,
+)
 from botcopier.metrics import (
     ERROR_COUNTER,
     TRADE_COUNTER,
@@ -54,8 +59,8 @@ import numpy as np
 import pandas as pd
 import psutil
 from sklearn.exceptions import NotFittedError
-from sklearn.linear_model import LogisticRegression, SGDClassifier
 from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression, SGDClassifier
 
 try:  # detect resources to adapt behaviour on weaker hardware
     if __package__:
@@ -114,9 +119,9 @@ except Exception:  # pragma: no cover - optional dependency
 
 try:  # on-disk ring buffer for raw ticks
     if __package__:
-        from .shm_ring import ShmRing, TRADE_MSG
+        from .shm_ring import TRADE_MSG, ShmRing
     else:  # pragma: no cover - executed as script
-        from shm_ring import ShmRing, TRADE_MSG  # type: ignore
+        from shm_ring import TRADE_MSG, ShmRing  # type: ignore
 except Exception:  # pragma: no cover - ring buffer optional
     ShmRing = None  # type: ignore
     TRADE_MSG = 0  # type: ignore
@@ -404,7 +409,9 @@ class OnlineTrainer:
         to_hash = dict(existing)
         to_hash.pop("model_hash", None)
         try:
-            hash_val = hashlib.sha256(json.dumps(to_hash, sort_keys=True).encode()).hexdigest()
+            hash_val = hashlib.sha256(
+                json.dumps(to_hash, sort_keys=True).encode()
+            ).hexdigest()
             existing["model_hash"] = hash_val
         except Exception:  # pragma: no cover - hashing should not fail
             pass
@@ -796,9 +803,8 @@ class OnlineTrainer:
             client.close()
 
 
-async def run(data_cfg: "DataConfig", train_cfg: "TrainingConfig") -> None:
+async def run(data_cfg: DataConfig, train_cfg: TrainingConfig) -> None:
     """Run the online trainer with ``data_cfg`` and ``train_cfg`` asynchronously."""
-    from botcopier.config.settings import DataConfig, TrainingConfig, save_params
 
     set_seed(train_cfg.random_seed)
     save_params(data_cfg, train_cfg)
@@ -866,40 +872,7 @@ async def async_main(argv: List[str] | None = None) -> None:
     p.add_argument("--metrics-port", type=int, help="Prometheus metrics port")
     p.add_argument("--random-seed", type=int)
     args = p.parse_args(argv)
-    data_cfg = DataConfig(
-        **{
-            k: getattr(args, k)
-            for k in [
-                "csv",
-                "baseline_file",
-                "recent_file",
-                "log_dir",
-                "out_dir",
-                "files_dir",
-            ]
-            if getattr(args, k) is not None
-        }
-    )
-    train_cfg = TrainingConfig(
-        **{
-            k: getattr(args, k)
-            for k in [
-                "model",
-                "batch_size",
-                "lr",
-                "lr_decay",
-                "flight_host",
-                "flight_port",
-                "flight_path",
-                "drift_threshold",
-                "drift_interval",
-                "metrics_port",
-                "random_seed",
-                "online_model",
-            ]
-            if getattr(args, k) is not None
-        }
-    )
+    data_cfg, train_cfg, _ = load_settings(vars(args))
     await run(data_cfg, train_cfg)
 
 

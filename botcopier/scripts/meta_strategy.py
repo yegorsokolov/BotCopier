@@ -11,6 +11,7 @@ from sklearn.linear_model import LogisticRegression, SGDClassifier
 
 try:  # pragma: no cover - optional dependency
     import stable_baselines3 as sb3  # type: ignore
+
     try:  # gym is optional, gymnasium fallback
         from gym import Env, spaces  # type: ignore
     except Exception:  # pragma: no cover - gymnasium fallback
@@ -238,7 +239,9 @@ class ThresholdAgent:
         threshold, _ = self.model.predict(obs, deterministic=True)
         thr = float(np.clip(threshold[0], 0.0, 1.0))
         trade = float(prob) >= thr
-        self._logs.append({"threshold": thr, "prob": float(prob), "trade": float(trade)})
+        self._logs.append(
+            {"threshold": thr, "prob": float(prob), "trade": float(trade)}
+        )
         return thr, trade
 
     def logs(self) -> List[Dict[str, float]]:
@@ -256,18 +259,9 @@ def main() -> None:
     parser.add_argument("--label", help="Label column name")
     args = parser.parse_args()
 
-    from botcopier.config.settings import DataConfig, TrainingConfig, save_params
+    from botcopier.config.settings import load_settings, save_params
 
-    data_cfg = DataConfig(
-        **{k: getattr(args, k) for k in ["data", "out"] if getattr(args, k) is not None}
-    )
-    train_cfg = TrainingConfig(
-        **{
-            k: getattr(args, k)
-            for k in ["features", "label"]
-            if getattr(args, k) is not None
-        }
-    )
+    data_cfg, train_cfg, _ = load_settings(vars(args))
     save_params(data_cfg, train_cfg)
 
     df = pd.read_csv(data_cfg.data)
