@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Sequence
 
 try:  # pragma: no cover - optional dependency
@@ -39,24 +40,46 @@ class ActiveValidator:
         retrain_cb: Callable[[], None] | None = None,
         adjust_cb: Callable[[float], None] | None = None,
         interval: float = 60.0,
+        window: int = 5,
+        patience: int = 3,
+        demote_cb: Callable[[], None] | None = None,
     ) -> None:
         self.metric_fn = metric_fn or default_metric
         self.threshold = threshold
         self.retrain_cb = retrain_cb or (lambda: None)
         self.adjust_cb = adjust_cb
         self.interval = interval
+        self.window = max(1, int(window))
+        self.patience = max(1, int(patience))
+        self.demote_cb = demote_cb
         self.history: list[float] = []
+        self._recent = deque(maxlen=self.window)
+        self._failures = 0
 
     def evaluate(self, preds: Sequence[int], truth: Sequence[int]) -> float:
         """Evaluate one batch of predictions and act on degradation."""
         metric = self.metric_fn(preds, truth)
         self.history.append(metric)
-        logger.info("validation metric", extra={"metric": metric})
-        if metric < self.threshold:
-            logger.warning("metric below threshold", extra={"metric": metric})
+        self._recent.append(metric)
+        rolling = sum(self._recent) / len(self._recent)
+        logger.info("validation metric", extra={"metric": metric, "rolling": rolling})
+        if rolling < self.threshold:
+            self._failures += 1
+            logger.warning(
+                "metric below threshold", extra={"metric": metric, "rolling": rolling}
+            )
             self.retrain_cb()
             if self.adjust_cb:
-                self.adjust_cb(metric)
+                self.adjust_cb(rolling)
+            if self._failures >= self.patience and self.demote_cb:
+                logger.error(
+                    "metric consistently low, demoting strategy",
+                    extra={"metric": metric, "rolling": rolling},
+                )
+                self.demote_cb()
+                self._failures = 0
+        else:
+            self._failures = 0
         return metric
 
     def run(
