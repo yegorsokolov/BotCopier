@@ -651,3 +651,100 @@ def evaluate_model(
         preds = model.predict(X)
         probas = preds.astype(float)
     return _classification_metrics(y, probas, profits)
+
+
+def _abs_drawdown(returns: Sequence[float]) -> float:
+    """Calculate absolute drawdown of cumulative returns.
+
+    Parameters
+    ----------
+    returns:
+        Sequence of per-trade or per-period returns.
+
+    Returns
+    -------
+    float
+        Maximum peak-to-trough decline in absolute terms.
+    """
+
+    cumulative = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for r in returns:
+        cumulative += r
+        if cumulative > peak:
+            peak = cumulative
+        drawdown = peak - cumulative
+        if drawdown > max_dd:
+            max_dd = drawdown
+    return float(max_dd)
+
+
+def _risk(returns: Sequence[float]) -> float:
+    """Sample standard deviation of returns."""
+
+    returns = list(returns)
+    if len(returns) < 2:
+        return 0.0
+    mean = sum(returns) / len(returns)
+    variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+    return math.sqrt(variance)
+
+
+def _budget_utilisation(returns: Sequence[float], budget: float) -> float:
+    """Return fraction of budget consumed by ``returns``.
+
+    ``budget`` represents the allowed absolute sum of returns.  Values greater
+    than ``1.0`` indicate that the budget has been exceeded.
+    """
+
+    used = float(sum(abs(r) for r in returns))
+    if budget <= 0:
+        return used
+    return used / budget
+
+
+def _order_type_compliance(order_types: Sequence[str], allowed: Sequence[str]) -> float:
+    """Fraction of trades using allowed order types.
+
+    Parameters
+    ----------
+    order_types:
+        Recorded order types for a strategy.
+    allowed:
+        Order types permitted under the risk policy.
+    """
+
+    if not order_types:
+        return 1.0
+    allowed_set = {o.lower() for o in allowed}
+    cleaned = [o.strip().lower() for o in order_types]
+    compliant = sum(1 for o in cleaned if o in allowed_set)
+    return compliant / len(cleaned)
+
+
+def evaluate_strategy(
+    returns: Sequence[float],
+    order_types: Sequence[str],
+    *,
+    budget: float,
+    allowed_order_types: Sequence[str],
+) -> Dict[str, float]:
+    """Compute risk metrics for a trading strategy.
+
+    This lightweight helper is used by the promotion tooling to ensure that
+    candidate strategies obey basic risk constraints before being moved to the
+    live directory.
+    """
+
+    returns = list(returns)
+    metrics = {
+        "abs_drawdown": _abs_drawdown(returns),
+        "risk": _risk(returns),
+        "mean_return": sum(returns) / len(returns) if returns else 0.0,
+        "budget_utilisation": _budget_utilisation(returns, budget),
+        "order_type_compliance": _order_type_compliance(
+            order_types, allowed_order_types
+        ),
+    }
+    return metrics
