@@ -3,6 +3,7 @@
 
 try:
     import uvloop
+
     uvloop.install()
 except Exception:
     pass
@@ -10,31 +11,35 @@ except Exception:
 import argparse
 import asyncio
 import json
-import os
-import sqlite3
 import logging
+import os
+import signal
+import sqlite3
 import subprocess
 import sys
-import signal
-from contextlib import closing, suppress
-from pathlib import Path
-from datetime import datetime
+import tempfile
 from collections import deque
+from contextlib import closing, suppress
+from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
+
     logging.basicConfig(handlers=[JournalHandler()], level=logging.INFO)
 except Exception:  # pragma: no cover - fallback to file logging
     logging.basicConfig(filename="metrics_collector.log", level=logging.INFO)
-from typing import Callable, Optional
 from asyncio import Queue
+from typing import Callable, Optional
+
 from aiohttp import web
 
 try:
     from river.drift import ADWIN
 except Exception:  # pragma: no cover - optional dependency
+
     class ADWIN:  # minimal stub
         def update(self, x):
             return False
@@ -42,6 +47,7 @@ except Exception:  # pragma: no cover - optional dependency
         @property
         def estimation(self):
             return 0.0
+
 
 import psutil
 
@@ -51,6 +57,7 @@ except Exception:  # pragma: no cover - systemd not installed
     daemon = None
 
 from google.protobuf.json_format import MessageToDict
+
 from proto import metric_event_pb2
 
 try:  # optional Arrow Flight dependency
@@ -60,29 +67,32 @@ except Exception:  # pragma: no cover - optional dependency
 
 SCHEMA_VERSION = 1
 
-from opentelemetry import trace, metrics
+from opentelemetry import metrics, trace
 from opentelemetry._logs import set_logger_provider
+
 try:  # optional OTLP exporters
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+        OTLPMetricExporter,
+    )
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 except Exception:  # pragma: no cover - exporters not installed
     OTLPSpanExporter = OTLPLogExporter = OTLPMetricExporter = None  # type: ignore
+from opentelemetry.metrics import Observation
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-from opentelemetry.metrics import Observation
 from opentelemetry.trace import (
-    format_span_id,
-    format_trace_id,
     NonRecordingSpan,
     SpanContext,
     TraceFlags,
     TraceState,
+    format_span_id,
+    format_trace_id,
     set_span_in_context,
 )
 
@@ -124,9 +134,13 @@ FIELDS = [
     "queue_backlog",
 ]
 
-resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "metrics_collector")})
+resource = Resource.create(
+    {"service.name": os.getenv("OTEL_SERVICE_NAME", "metrics_collector")}
+)
 provider = TracerProvider(resource=resource)
-if (endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) and OTLPSpanExporter is not None:
+if (
+    endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+) and OTLPSpanExporter is not None:
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
@@ -204,9 +218,12 @@ def _context_from_ids(trace_id: str, span_id: str):
             pass
     return None
 
+
 logger_provider = LoggerProvider(resource=resource)
 if endpoint and OTLPLogExporter is not None:
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint))
+    )
 set_logger_provider(logger_provider)
 handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
 
@@ -261,6 +278,32 @@ def _update_model(
     model_json.write_text(json.dumps(data, indent=2))
 
 
+def _run_indicator_script(
+    script: Path, df: pd.DataFrame, model_json: Path
+) -> list[str] | None:
+    """Run an external indicator generator and return produced formulas."""
+
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as tmp:
+        df.to_csv(tmp.name, index=False)
+        csv_path = Path(tmp.name)
+    cmd = [sys.executable, str(script), str(csv_path), "--model", str(model_json)]
+    try:
+        subprocess.run(cmd, check=True)
+    except Exception:
+        logger.exception("indicator generation failed")
+        return None
+    finally:
+        with suppress(FileNotFoundError):
+            csv_path.unlink()
+
+    technical.refresh_symbolic_indicators(model_json)
+    try:
+        data = json.loads(model_json.read_text())
+        return data.get("symbolic_indicators", {}).get("formulas")
+    except Exception:
+        return None
+
+
 async def _writer_task(
     db_file: Path,
     queue: Queue,
@@ -273,6 +316,8 @@ async def _writer_task(
     out_dir: Path | None = None,
     files_dir: Path | None = None,
     detector: ADWIN | None = None,
+    indicator_script: Path | None = None,
+    neural_generator: Path | None = None,
 ) -> None:
     db_file.parent.mkdir(parents=True, exist_ok=True)
     cols = ",".join(FIELDS)
@@ -326,18 +371,32 @@ async def _writer_task(
                                     cols_num = [
                                         c
                                         for c in df.columns
-                                        if c not in {"time", "magic", "trace_id", "span_id"}
+                                        if c
+                                        not in {"time", "magic", "trace_id", "span_id"}
                                     ]
                                     if cols_num:
-                                        df = df[cols_num].apply(
-                                            pd.to_numeric, errors="coerce"
-                                        ).fillna(0.0)
-                                        formulas = indicator_discovery.evolve_indicators(
-                                            df, cols_num, model_path=model_json
+                                        df = (
+                                            df[cols_num]
+                                            .apply(pd.to_numeric, errors="coerce")
+                                            .fillna(0.0)
                                         )
-                                        technical.refresh_symbolic_indicators(
-                                            model_json
+                                if indicator_script or neural_generator:
+                                    script = indicator_script or neural_generator
+                                    formulas = await asyncio.to_thread(
+                                        _run_indicator_script,
+                                        script,
+                                        df,
+                                        model_json,
+                                    )
+                                    if formulas:
+                                        technical.append_symbolic_indicators(
+                                            formulas, cols_num, model_json
                                         )
+                                else:
+                                    formulas = indicator_discovery.evolve_indicators(
+                                        df, cols_num, model_path=model_json
+                                    )
+                                    technical.refresh_symbolic_indicators(model_json)
                                 _update_model(model_json, diff, retrain, formulas)
                                 if retrain and log_dir and out_dir and files_dir:
                                     base = Path(__file__).resolve().parent
@@ -356,11 +415,15 @@ async def _writer_task(
                                             subprocess.run,
                                             [
                                                 sys.executable,
-                                                str(base / "generate_mql4_from_model.py"),
+                                                str(
+                                                    base / "generate_mql4_from_model.py"
+                                                ),
                                                 "--model",
                                                 str(model_json),
                                                 "--template",
-                                                str(base.parent / "StrategyTemplate.mq4"),
+                                                str(
+                                                    base.parent / "StrategyTemplate.mq4"
+                                                ),
                                             ],
                                             check=True,
                                         )
@@ -368,8 +431,6 @@ async def _writer_task(
                                         logger.exception("retrain failed")
                             prev_est = detector.estimation
             queue.task_done()
-
-
 
 
 def serve(
@@ -407,10 +468,10 @@ def serve(
         prom_runner = None
         if prom_port is not None:
             from prometheus_client import (
+                CONTENT_TYPE_LATEST,
                 Counter,
                 Gauge,
                 generate_latest,
-                CONTENT_TYPE_LATEST,
             )
 
             prom_app = web.Application()
@@ -427,12 +488,8 @@ def serve(
             await prom_site.start()
             win_rate_g = Gauge("bot_win_rate", "Win rate")
             drawdown_g = Gauge("bot_drawdown", "Drawdown")
-            cvar_g = Gauge(
-                "bot_cvar", "Conditional Value at Risk (worst 5%)"
-            )
-            socket_err_c = Counter(
-                "bot_socket_errors_total", "Socket error count"
-            )
+            cvar_g = Gauge("bot_cvar", "Conditional Value at Risk (worst 5%)")
+            socket_err_c = Counter("bot_socket_errors_total", "Socket error count")
             file_err_c = Counter(
                 "bot_file_write_errors_total", "File write error count"
             )
@@ -449,27 +506,17 @@ def serve(
                 "bot_book_refresh_seconds",
                 "Cached book refresh interval",
             )
-            host_cpu_g = Gauge(
-                "system_cpu_percent", "Host CPU utilisation"
-            )
-            host_mem_g = Gauge(
-                "system_memory_percent", "Host memory utilisation"
-            )
+            host_cpu_g = Gauge("system_cpu_percent", "Host CPU utilisation")
+            host_mem_g = Gauge("system_memory_percent", "Host memory utilisation")
             metric_queue_g = Gauge(
                 "bot_metric_queue_depth", "Arrow Flight metric queue depth"
             )
             trade_queue_g = Gauge(
                 "bot_trade_queue_depth", "Arrow Flight trade queue depth"
             )
-            wal_size_g = Gauge(
-                "bot_wal_bytes", "Total WAL size in bytes"
-            )
-            trade_retry_g = Gauge(
-                "bot_trade_retry_count", "Trade send retry count"
-            )
-            metric_retry_g = Gauge(
-                "bot_metric_retry_count", "Metric send retry count"
-            )
+            wal_size_g = Gauge("bot_wal_bytes", "Total WAL size in bytes")
+            trade_retry_g = Gauge("bot_trade_retry_count", "Trade send retry count")
+            metric_retry_g = Gauge("bot_metric_retry_count", "Metric send retry count")
             queue_backlog_g = Gauge(
                 "bot_queue_backlog", "Observer fallback queue backlog"
             )
@@ -564,7 +611,9 @@ def serve(
                         val = float(v)
                         metric_queue_g.set(val)
                         if val > METRIC_Q_ALERT:
-                            logger.warning({"alert": "metric backlog", "metric_queue_depth": val})
+                            logger.warning(
+                                {"alert": "metric backlog", "metric_queue_depth": val}
+                            )
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("trade_queue_depth")) is not None:
@@ -572,7 +621,9 @@ def serve(
                         val = float(v)
                         trade_queue_g.set(val)
                         if val > TRADE_Q_ALERT:
-                            logger.warning({"alert": "trade backlog", "trade_queue_depth": val})
+                            logger.warning(
+                                {"alert": "trade backlog", "trade_queue_depth": val}
+                            )
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("queue_backlog")) is not None:
@@ -585,7 +636,9 @@ def serve(
                         val = float(v)
                         trade_retry_g.set(val)
                         if val > RETRY_ALERT:
-                            logger.warning({"alert": "trade retries", "trade_retry_count": val})
+                            logger.warning(
+                                {"alert": "trade retries", "trade_retry_count": val}
+                            )
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("metric_retry_count")) is not None:
@@ -593,7 +646,9 @@ def serve(
                         val = float(v)
                         metric_retry_g.set(val)
                         if val > RETRY_ALERT:
-                            logger.warning({"alert": "metric retries", "metric_retry_count": val})
+                            logger.warning(
+                                {"alert": "metric retries", "metric_retry_count": val}
+                            )
                     except (TypeError, ValueError):
                         pass
                 if (v := row.get("fallback_events")) is not None:
@@ -638,14 +693,28 @@ def serve(
                         trace_id = row.get("trace_id", "")
                         span_id = row.get("span_id", "")
                         ctx_in = _context_from_ids(trace_id, span_id)
-                        with tracer.start_as_current_span("metrics_message", context=ctx_in) as span:
+                        with tracer.start_as_current_span(
+                            "metrics_message", context=ctx_in
+                        ) as span:
                             ctx = span.get_span_context()
-                            row.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
-                            row.setdefault("span_id", span_id or format_span_id(ctx.span_id))
-                            span.set_attribute("file_write_errors", row.get("file_write_errors", 0))
-                            span.set_attribute("socket_errors", row.get("socket_errors", 0))
-                            span.set_attribute("fallback_events", row.get("fallback_events", 0))
-                            span.set_attribute("queue_backlog", row.get("queue_backlog", 0))
+                            row.setdefault(
+                                "trace_id", trace_id or format_trace_id(ctx.trace_id)
+                            )
+                            row.setdefault(
+                                "span_id", span_id or format_span_id(ctx.span_id)
+                            )
+                            span.set_attribute(
+                                "file_write_errors", row.get("file_write_errors", 0)
+                            )
+                            span.set_attribute(
+                                "socket_errors", row.get("socket_errors", 0)
+                            )
+                            span.set_attribute(
+                                "fallback_events", row.get("fallback_events", 0)
+                            )
+                            span.set_attribute(
+                                "queue_backlog", row.get("queue_backlog", 0)
+                            )
                             extra = {}
                             try:
                                 extra["trace_id"] = int(row["trace_id"], 16)
@@ -685,11 +754,15 @@ def serve(
             trace_id = data.get("trace_id", "")
             span_id = data.get("span_id", "")
             ctx_in = _context_from_ids(trace_id, span_id)
-            with tracer.start_as_current_span("metrics_http_ingest", context=ctx_in) as span:
+            with tracer.start_as_current_span(
+                "metrics_http_ingest", context=ctx_in
+            ) as span:
                 ctx = span.get_span_context()
                 data.setdefault("trace_id", trace_id or format_trace_id(ctx.trace_id))
                 data.setdefault("span_id", span_id or format_span_id(ctx.span_id))
-                span.set_attribute("file_write_errors", data.get("file_write_errors", 0))
+                span.set_attribute(
+                    "file_write_errors", data.get("file_write_errors", 0)
+                )
                 span.set_attribute("socket_errors", data.get("socket_errors", 0))
                 span.set_attribute("fallback_events", data.get("fallback_events", 0))
                 span.set_attribute("queue_backlog", data.get("queue_backlog", 0))
@@ -705,10 +778,12 @@ def serve(
 
         if http_port is not None:
             app = web.Application()
-            app.add_routes([
-                web.get("/history", history_handler),
-                web.post("/ingest", ingest_handler),
-            ])
+            app.add_routes(
+                [
+                    web.get("/history", history_handler),
+                    web.post("/ingest", ingest_handler),
+                ]
+            )
             runner = web.AppRunner(app)
             await runner.setup()
             site = web.TCPSite(runner, http_host, http_port)
@@ -734,7 +809,9 @@ def serve(
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Collect metric messages into SQLite")
-    p.add_argument("--flight-host", default="127.0.0.1", help="Arrow Flight server host")
+    p.add_argument(
+        "--flight-host", default="127.0.0.1", help="Arrow Flight server host"
+    )
     p.add_argument("--flight-port", type=int, default=8815)
     p.add_argument("--db", required=True, help="output SQLite file")
     p.add_argument("--http-host", default="127.0.0.1")
