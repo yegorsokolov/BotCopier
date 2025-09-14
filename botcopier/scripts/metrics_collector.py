@@ -19,6 +19,9 @@ import signal
 from contextlib import closing, suppress
 from pathlib import Path
 from datetime import datetime
+from collections import deque
+
+import pandas as pd
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
@@ -82,6 +85,12 @@ from opentelemetry.trace import (
     TraceState,
     set_span_in_context,
 )
+
+if __package__:
+    from ..features import indicator_discovery, technical
+else:  # pragma: no cover - executed when run as script
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from botcopier.features import indicator_discovery, technical
 
 FIELDS = [
     "time",
@@ -222,8 +231,13 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 
-def _update_model(model_json: Path, metric: float, retrained: bool) -> None:
-    """Record drift metrics and retrain timestamps in ``model.json``."""
+def _update_model(
+    model_json: Path,
+    metric: float,
+    retrained: bool,
+    indicators: list[str] | None = None,
+) -> None:
+    """Record drift metrics, retrain timestamps and indicator history."""
     ts = datetime.utcnow().isoformat()
     data: dict[str, object] = {}
     if model_json.exists():
@@ -240,6 +254,10 @@ def _update_model(model_json: Path, metric: float, retrained: bool) -> None:
         retrain_hist = data.setdefault("retrain_history", [])
         if isinstance(retrain_hist, list):
             retrain_hist.append({"time": ts, "adwin": float(metric)})
+    if indicators:
+        ind_hist = data.setdefault("indicator_history", [])
+        if isinstance(ind_hist, list):
+            ind_hist.append({"time": ts, "formulas": indicators})
     model_json.write_text(json.dumps(data, indent=2))
 
 
@@ -265,6 +283,7 @@ async def _writer_task(
         )
         insert_sql = f"INSERT INTO metrics ({cols}) VALUES ({placeholders})"
         prev_est: float | None = None
+        recent: deque[dict] = deque(maxlen=100)
         while True:
             row = await queue.get()
             if row is None:
@@ -281,6 +300,7 @@ async def _writer_task(
                 except Exception as e:  # pragma: no cover - disk or schema issues
                     logger.error({"error": "file write failure", "details": str(e)})
                 else:
+                    recent.append(row)
                     if prom_updater is not None:
                         prom_updater(row)
                     if (
@@ -300,7 +320,25 @@ async def _writer_task(
                             if changed:
                                 diff = abs((prev_est or 0.0) - detector.estimation)
                                 retrain = diff > drift_threshold
-                                _update_model(model_json, diff, retrain)
+                                formulas: list[str] | None = None
+                                if recent and retrain:
+                                    df = pd.DataFrame(list(recent))
+                                    cols_num = [
+                                        c
+                                        for c in df.columns
+                                        if c not in {"time", "magic", "trace_id", "span_id"}
+                                    ]
+                                    if cols_num:
+                                        df = df[cols_num].apply(
+                                            pd.to_numeric, errors="coerce"
+                                        ).fillna(0.0)
+                                        formulas = indicator_discovery.evolve_indicators(
+                                            df, cols_num, model_path=model_json
+                                        )
+                                        technical.refresh_symbolic_indicators(
+                                            model_json
+                                        )
+                                _update_model(model_json, diff, retrain, formulas)
                                 if retrain and log_dir and out_dir and files_dir:
                                     base = Path(__file__).resolve().parent
                                     try:

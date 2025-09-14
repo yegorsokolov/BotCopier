@@ -103,6 +103,13 @@ def _load_symbolic_indicators(model_json: Path | str | None) -> dict:
     return _SYMBOLIC_CACHE.get("data", {})
 
 
+def refresh_symbolic_indicators(model_json: Path | str | None = None) -> None:
+    """Clear cached symbolic indicators so updates are recognised."""
+    global _SYMBOLIC_CACHE
+    _SYMBOLIC_CACHE = None
+    _load_symbolic_indicators(model_json)
+
+
 _SYMBOLIC_FUNCS = {
     "add": np.add,
     "sub": np.subtract,
