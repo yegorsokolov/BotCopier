@@ -30,6 +30,8 @@ jobs:
         run: dvc pull
       - name: Run pre-commit
         run: pre-commit run --all-files
+      - name: Run data contract tests
+        run: pytest tests/test_data_contract.py
       - name: Run unit tests
         run: pytest -m "not integration" --ignore=tests/property
       - name: Run integration tests

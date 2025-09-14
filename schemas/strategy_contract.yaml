@@ -6,3 +6,7 @@ features:
   - name: fractal_dim
     dtype: float
     shape: [1]
+predictions:
+  - name: probability
+    dtype: float
+    shape: [1]
