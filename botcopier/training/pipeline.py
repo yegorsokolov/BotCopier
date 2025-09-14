@@ -162,18 +162,27 @@ def train(
     )
     if strategy_search:
         from botcopier.strategy.dsl import serialize
-        from botcopier.strategy.search import search_strategy
+        from botcopier.strategy.engine import search_strategies
 
         prices = np.linspace(1.0, 200.0, 200)
-        best, score = search_strategy(prices)
+        best, pareto = search_strategies(prices)
         out_dir.mkdir(parents=True, exist_ok=True)
         model_path = out_dir / "model.json"
         try:
             existing = json.loads(model_path.read_text())
         except Exception:
             existing = {}
-        existing["strategy"] = serialize(best)
-        existing["strategy_score"] = score
+        existing["strategies"] = [
+            {
+                "expr": serialize(c.expr),
+                "return": c.ret,
+                "risk": c.risk,
+            }
+            for c in sorted(pareto, key=lambda x: x.ret, reverse=True)
+        ]
+        existing["best_strategy"] = serialize(best.expr)
+        existing["best_return"] = best.ret
+        existing["best_risk"] = best.risk
         model_path.write_text(json.dumps(existing, indent=2))
         return
     tracer = trace.get_tracer(__name__)
@@ -1107,6 +1116,11 @@ def main() -> None:
         action="store_true",
         help="Profile feature extraction, model fitting, and evaluation",
     )
+    p.add_argument(
+        "--strategy-search",
+        action="store_true",
+        help="Run DSL strategy search before training",
+    )
     args = p.parse_args()
     setup_logging(enable_tracing=args.trace, exporter=args.trace_exporter)
     cfg = TrainingConfig(random_seed=args.random_seed)
@@ -1122,6 +1136,7 @@ def main() -> None:
         metrics=args.metrics,
         grad_clip=args.grad_clip,
         profile=args.profile,
+        strategy_search=args.strategy_search,
     )
 
 
