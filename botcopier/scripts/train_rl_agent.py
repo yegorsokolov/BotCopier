@@ -436,6 +436,8 @@ def train(
     use_options: bool = False,
     max_drawdown: float | None = None,
     var_limit: float | None = None,
+    streaming: bool = False,
+    policy_interval: int = 10,
 ) -> None:
     """Train a small RL agent from ``data_dir``."""
     set_seed(random_seed)
@@ -952,80 +954,114 @@ def train(
     else:  # qlearn
         episode_rewards: List[float] = []  # average reward per step
         episode_totals: List[float] = []  # total reward per episode
-        for i in range(training_steps):
-            if buffer_client is not None and i % sync_interval == 0:
-                experiences = buffer_client.sync(experiences)
-            total_r = 0.0
-            td_errs: List[float] = []
-            if HAS_PRB:
-                obs_space = spaces.Box(
-                    low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32
-                )
-                action_space = spaces.Discrete(2)
-                pr_buffer = PrioritizedReplayBuffer(
-                    buffer_size, obs_space, action_space, alpha=replay_alpha
-                )
-            else:
-                buffer: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
-                max_prio = 1.0
-            for step, exp in enumerate(experiences):
-                s, a, r, ns = exp
-                total_r += r
-                if HAS_PRB:
-                    pr_buffer.add(s, ns, np.array([a]), np.array([r]), np.array([0.0]))
-                else:
-                    if len(buffer) >= buffer_size:
-                        buffer.pop(0)
-                    buffer.append((s, a, r, ns, max_prio))
+        if streaming:
+            from collections import deque
 
-                if step % update_freq == 0:
-                    if HAS_PRB and pr_buffer.size() >= batch_size:
-                        sample = pr_buffer.sample(batch_size, beta=replay_beta)
-                        for j in range(batch_size):
-                            bs = sample.observations[j]
-                            ba = int(sample.actions[j])
-                            br = float(sample.rewards[j])
-                            bns = sample.next_observations[j]
-                            w = float(sample.weights[j])
-                            q_next0 = intercepts[0] + np.dot(weights[0], bns)
-                            q_next1 = intercepts[1] + np.dot(weights[1], bns)
-                            q_target = br + gamma * max(q_next0, q_next1)
-                            q_current = intercepts[ba] + np.dot(weights[ba], bs)
-                            td_err = q_target - q_current
-                            weights[ba] += learning_rate * w * td_err * bs
-                            intercepts[ba] += learning_rate * w * td_err
-                            pr_buffer.update_priorities(
-                                [sample.indices[j]], np.array([abs(td_err) + 1e-6])
-                            )
-                            td_errs.append(abs(td_err))
-                    elif not HAS_PRB and len(buffer) >= batch_size:
-                        weights_arr = np.array([b[4] for b in buffer], dtype=float)
-                        scaled = weights_arr**replay_alpha
-                        prob = scaled / scaled.sum()
-                        batch_idx = np.random.choice(
-                            len(buffer), size=batch_size, p=prob
-                        )
-                        max_w = (len(buffer) * prob.min()) ** (-replay_beta)
-                        for idx in batch_idx:
-                            bs, ba, br, bns, bw = buffer[idx]
-                            q_next0 = intercepts[0] + np.dot(weights[0], bns)
-                            q_next1 = intercepts[1] + np.dot(weights[1], bns)
-                            q_target = br + gamma * max(q_next0, q_next1)
-                            q_current = intercepts[ba] + np.dot(weights[ba], bs)
-                            td_err = q_target - q_current
-                            w = (len(buffer) * prob[idx]) ** (-replay_beta)
-                            w /= max_w
-                            weights[ba] += learning_rate * w * td_err * bs
-                            intercepts[ba] += learning_rate * w * td_err
-                            pr = float(abs(td_err)) + 1e-6
-                            buffer[idx] = (bs, ba, br, bns, pr)
-                            if pr > max_prio:
-                                max_prio = pr
-                            td_errs.append(abs(td_err))
-            episode_rewards.append(total_r / len(experiences))
+            buffer = deque(maxlen=buffer_size)
+            td_errs: List[float] = []
+            total_r = 0.0
+            stream = experiences[:training_steps] if training_steps else experiences
+            for i, (s, a, r, ns) in enumerate(stream):
+                total_r += r
+                buffer.append((s, a, r, ns))
+                if (i + 1) % policy_interval == 0 and len(buffer) >= batch_size:
+                    batch_idx = np.random.choice(len(buffer), size=batch_size)
+                    for idx in batch_idx:
+                        bs, ba, br, bns = buffer[idx]
+                        q_next0 = intercepts[0] + np.dot(weights[0], bns)
+                        q_next1 = intercepts[1] + np.dot(weights[1], bns)
+                        q_target = br + gamma * max(q_next0, q_next1)
+                        q_current = intercepts[ba] + np.dot(weights[ba], bs)
+                        td_err = q_target - q_current
+                        weights[ba] += learning_rate * td_err * bs
+                        intercepts[ba] += learning_rate * td_err
+                        td_errs.append(abs(td_err))
+            episode_rewards.append(total_r / max(1, len(stream)))
             episode_totals.append(total_r)
             episode_td.append(float(np.mean(td_errs)) if td_errs else 0.0)
-        training_type = "rl_only" if init_model_data is None else "supervised+rl"
+            training_type = "streaming_rl"
+        else:
+            for i in range(training_steps):
+                if buffer_client is not None and i % sync_interval == 0:
+                    experiences = buffer_client.sync(experiences)
+                total_r = 0.0
+                td_errs: List[float] = []
+                if HAS_PRB:
+                    obs_space = spaces.Box(
+                        low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32
+                    )
+                    action_space = spaces.Discrete(2)
+                    pr_buffer = PrioritizedReplayBuffer(
+                        buffer_size, obs_space, action_space, alpha=replay_alpha
+                    )
+                else:
+                    buffer: List[
+                        Tuple[np.ndarray, int, float, np.ndarray, float]
+                    ] = []
+                    max_prio = 1.0
+                for step, exp in enumerate(experiences):
+                    s, a, r, ns = exp
+                    total_r += r
+                    if HAS_PRB:
+                        pr_buffer.add(
+                            s, ns, np.array([a]), np.array([r]), np.array([0.0])
+                        )
+                    else:
+                        if len(buffer) >= buffer_size:
+                            buffer.pop(0)
+                        buffer.append((s, a, r, ns, max_prio))
+
+                    if step % update_freq == 0:
+                        if HAS_PRB and pr_buffer.size() >= batch_size:
+                            sample = pr_buffer.sample(batch_size, beta=replay_beta)
+                            for j in range(batch_size):
+                                bs = sample.observations[j]
+                                ba = int(sample.actions[j])
+                                br = float(sample.rewards[j])
+                                bns = sample.next_observations[j]
+                                w = float(sample.weights[j])
+                                q_next0 = intercepts[0] + np.dot(weights[0], bns)
+                                q_next1 = intercepts[1] + np.dot(weights[1], bns)
+                                q_target = br + gamma * max(q_next0, q_next1)
+                                q_current = intercepts[ba] + np.dot(weights[ba], bs)
+                                td_err = q_target - q_current
+                                weights[ba] += learning_rate * w * td_err * bs
+                                intercepts[ba] += learning_rate * w * td_err
+                                pr_buffer.update_priorities(
+                                    [sample.indices[j]],
+                                    np.array([abs(td_err) + 1e-6]),
+                                )
+                                td_errs.append(abs(td_err))
+                        elif not HAS_PRB and len(buffer) >= batch_size:
+                            weights_arr = np.array([b[4] for b in buffer], dtype=float)
+                            scaled = weights_arr**replay_alpha
+                            prob = scaled / scaled.sum()
+                            batch_idx = np.random.choice(
+                                len(buffer), size=batch_size, p=prob
+                            )
+                            max_w = (len(buffer) * prob.min()) ** (-replay_beta)
+                            for idx in batch_idx:
+                                bs, ba, br, bns, bw = buffer[idx]
+                                q_next0 = intercepts[0] + np.dot(weights[0], bns)
+                                q_next1 = intercepts[1] + np.dot(weights[1], bns)
+                                q_target = br + gamma * max(q_next0, q_next1)
+                                q_current = intercepts[ba] + np.dot(weights[ba], bs)
+                                td_err = q_target - q_current
+                                w = (len(buffer) * prob[idx]) ** (-replay_beta)
+                                w /= max_w
+                                weights[ba] += learning_rate * w * td_err * bs
+                                intercepts[ba] += learning_rate * w * td_err
+                                pr = float(abs(td_err)) + 1e-6
+                                buffer[idx] = (bs, ba, br, bns, pr)
+                                if pr > max_prio:
+                                    max_prio = pr
+                                td_errs.append(abs(td_err))
+                episode_rewards.append(total_r / len(experiences))
+                episode_totals.append(total_r)
+                episode_td.append(float(np.mean(td_errs)) if td_errs else 0.0)
+            training_type = (
+                "rl_only" if init_model_data is None else "supervised+rl"
+            )
     preds: List[int] = []
     for s in states:
         if np.random.rand() < epsilon:
@@ -1104,6 +1140,17 @@ def main() -> None:
         )
         p.add_argument(
             "--update-freq", type=int, default=1, help="steps between updates"
+        )
+        p.add_argument(
+            "--streaming",
+            action="store_true",
+            help="enable streaming experience replay",
+        )
+        p.add_argument(
+            "--policy-interval",
+            type=int,
+            default=10,
+            help="ticks between policy updates when streaming",
         )
         p.add_argument(
             "--replay-alpha",
@@ -1197,6 +1244,8 @@ def main() -> None:
             intrinsic_reward=args.intrinsic_reward,
             intrinsic_reward_weight=args.intrinsic_weight,
             random_seed=args.random_seed,
+            streaming=args.streaming,
+            policy_interval=args.policy_interval,
         )
         logger.info(
             "training complete",

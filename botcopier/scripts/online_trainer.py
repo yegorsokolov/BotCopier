@@ -235,6 +235,8 @@ class OnlineTrainer:
         self.conformal_lower: float | None = None
         self.conformal_upper: float | None = None
         self.gnn_state: Dict[str, Any] | None = None
+        self.meta_weights: List[float] | None = None
+        self.adapt_log: List[Dict[str, List[float]]] = []
         if _HAS_FEAST:
             repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
             self.store = FeatureStore(repo_path=str(repo))
@@ -291,6 +293,10 @@ class OnlineTrainer:
         self.conformal_lower = data.get("conformal_lower")
         self.conformal_upper = data.get("conformal_upper")
         self.gnn_state = data.get("gnn_state")
+        meta_section = data.get("meta")
+        if isinstance(meta_section, dict):
+            self.meta_weights = [float(w) for w in meta_section.get("weights", [])]
+        self.adapt_log = data.get("adaptation_log", [])
         calib = data.get("calibration")
         if isinstance(calib, dict):
             if calib.get("method") == "isotonic":
@@ -306,7 +312,16 @@ class OnlineTrainer:
                 self.graph_dataset = GraphDataset(Path("symbol_graph.json"))
             except (OSError, ValueError):
                 self.graph_dataset = None
-        if self.feature_names and coef is not None and intercept is not None:
+        if coef is None and self.meta_weights:
+            n = len(self.meta_weights)
+            self.feature_names = data.get("feature_names", self.feature_names)
+            if not self.feature_names:
+                self.feature_names = [f"f{i}" for i in range(n)]
+            self.clf.partial_fit(np.zeros((1, n)), [0], classes=np.array([0, 1]))
+            self.clf.coef_ = np.array([self.meta_weights])
+            self.clf.intercept_ = np.array([0.0])
+            self._prev_coef = list(self.meta_weights) + [0.0]
+        elif self.feature_names and coef is not None and intercept is not None:
             if self.model_type == "confidence_weighted":
                 from botcopier.models.registry import ConfidenceWeighted
 
@@ -379,6 +394,12 @@ class OnlineTrainer:
         except (OSError, ValidationError):
             existing = {}
         existing.update(payload)
+        if self.meta_weights is not None:
+            existing.setdefault("meta", {})["weights"] = [
+                float(w) for w in self.meta_weights
+            ]
+        if self.adapt_log:
+            existing["adaptation_log"] = self.adapt_log
         existing.setdefault("metadata", {})["seed"] = self.seed
         to_hash = dict(existing)
         to_hash.pop("model_hash", None)
@@ -504,10 +525,20 @@ class OnlineTrainer:
                     # configure current learning rate
                     if hasattr(self.clf, "eta0"):
                         self.clf.eta0 = self.lr
+                    old_coef = (
+                        self.clf.coef_[0].copy()
+                        if hasattr(self.clf, "coef_") and self.clf.coef_.size
+                        else None
+                    )
                     if not hasattr(self.clf, "classes_"):
                         self.clf.partial_fit(X, y, classes=np.array([0, 1]))
                     else:
                         self.clf.partial_fit(X, y)
+                    if old_coef is not None:
+                        new_coef = self.clf.coef_[0].copy()
+                        self.adapt_log.append(
+                            {"old": old_coef.tolist(), "new": new_coef.tolist()}
+                        )
                     lr_used = getattr(self.clf, "eta0", self.lr)
                     self.lr_history.append(lr_used)
                     try:

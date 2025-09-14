@@ -16,7 +16,7 @@ from typing import List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from scripts.meta_adapt import ReptileMetaLearner, _logistic_grad
+from .reptile import ReptileMetaLearner, _logistic_grad
 
 # ---------------------------------------------------------------------------
 # Task sampling
