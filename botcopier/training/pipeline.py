@@ -9,6 +9,7 @@ import json
 import logging
 import shutil
 import time
+import cProfile
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -151,6 +152,7 @@ def train(
     strategy_search: bool = False,
     max_drawdown: float | None = None,
     var_limit: float | None = None,
+    profile: bool = False,
     **kwargs: object,
 ) -> None:
     """Train a model selected from the registry."""
@@ -192,6 +194,15 @@ def train(
         logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
     logger.info("Training data hashes: %s", data_hashes)
 
+    profiles_dir = out_dir / "profiles"
+    if profile:
+        profiles_dir.mkdir(parents=True, exist_ok=True)
+        feature_prof = cProfile.Profile()
+        fit_prof = cProfile.Profile()
+        eval_prof = cProfile.Profile()
+    else:
+        feature_prof = fit_prof = eval_prof = None
+
     meta_init: np.ndarray | None = None
     if meta_weights is not None:
         if isinstance(meta_weights, (str, Path)):
@@ -221,6 +232,8 @@ def train(
     returns_frames: list[pd.DataFrame] = []
     label_col: str | None = None
     returns_df: pd.DataFrame | None = None
+    if profile and feature_prof is not None:
+        feature_prof.enable()
     if (
         isinstance(logs, Iterable)
         and not isinstance(logs, (pd.DataFrame,))
@@ -329,6 +342,9 @@ def train(
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
 
+    if profile and feature_prof is not None:
+        feature_prof.disable()
+        feature_prof.dump_stats(str(profiles_dir / "feature_extraction.prof"))
     span_ctx.__exit__(None, None, None)
 
     if has_profit and profits.size:
@@ -462,6 +478,8 @@ def train(
             mlflow.set_experiment(experiment_name)
 
     span_model = tracer.start_as_current_span("model_fit")
+    if profile and fit_prof is not None:
+        fit_prof.enable()
     span_model.__enter__()
     run_ctx = mlflow.start_run() if mlflow_active else nullcontext()
     with run_ctx:
@@ -595,9 +613,13 @@ def train(
                         )
                         prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
+                    if profile and eval_prof is not None:
+                        eval_prof.enable()
                     fold_metric = _classification_metrics(
                         y[val_idx], prob_val, returns, selected=metric_names
                     )
+                    if profile and eval_prof is not None:
+                        eval_prof.disable()
                     fold_metric["max_drawdown"] = _max_drawdown(returns)
                     fold_metric["var_95"] = _var_95(returns)
                     fold_metrics.append(fold_metric)
@@ -638,6 +660,8 @@ def train(
                 best_params = params
                 best_fold_metrics = fold_metrics
                 metrics = agg
+        if profile and eval_prof is not None:
+            eval_prof.dump_stats(str(profiles_dir / "evaluation.prof"))
         metrics["ood_rate"] = ood_rate
         min_acc = float(kwargs.get("min_accuracy", 0.0))
         min_profit = float(kwargs.get("min_profit", -np.inf))
@@ -774,6 +798,9 @@ def train(
                         calibration_info = None
             model_obj = base_model
 
+        if profile and fit_prof is not None:
+            fit_prof.disable()
+            fit_prof.dump_stats(str(profiles_dir / "model_fit.prof"))
         span_model.__exit__(None, None, None)
         span_eval = tracer.start_as_current_span("evaluation")
         span_eval.__enter__()
@@ -1075,6 +1102,11 @@ def main() -> None:
         default=1.0,
         help="max gradient norm for PyTorch models",
     )
+    p.add_argument(
+        "--profile",
+        action="store_true",
+        help="Profile feature extraction, model fitting, and evaluation",
+    )
     args = p.parse_args()
     setup_logging(enable_tracing=args.trace, exporter=args.trace_exporter)
     cfg = TrainingConfig(random_seed=args.random_seed)
@@ -1089,6 +1121,7 @@ def main() -> None:
         random_seed=cfg.random_seed,
         metrics=args.metrics,
         grad_clip=args.grad_clip,
+        profile=args.profile,
     )
 
 
