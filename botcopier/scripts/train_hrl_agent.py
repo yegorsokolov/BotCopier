@@ -16,14 +16,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from pathlib import Path
-from typing import Dict, Any
-
 import os
+from pathlib import Path
+from typing import Any, Dict
+
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
 try:  # Optional Jaeger exporter
     from opentelemetry.exporter.jaeger.thrift import JaegerExporter  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -33,11 +34,12 @@ from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.trace import format_trace_id, format_span_id
+from opentelemetry.trace import format_span_id, format_trace_id
 
 try:  # pragma: no cover - optional dependency
     import stable_baselines3 as sb3  # type: ignore
     from gym import Env, spaces  # type: ignore
+
     HAS_SB3 = True
 except Exception:  # pragma: no cover - SB3 not installed
     sb3 = None  # type: ignore
@@ -46,7 +48,7 @@ except Exception:  # pragma: no cover - SB3 not installed
     HAS_SB3 = False
 
 try:  # pragma: no cover - used when running from repository root
-    from self_play_env import SelfPlayEnv  # type: ignore
+    from self_play.env import SelfPlayEnv  # type: ignore
 except Exception:  # pragma: no cover - import fallback
     try:
         from scripts.self_play_env import SelfPlayEnv  # type: ignore
@@ -54,7 +56,9 @@ except Exception:  # pragma: no cover - import fallback
         SelfPlayEnv = None  # type: ignore
 
 
-resource = Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "train_hrl_agent")})
+resource = Resource.create(
+    {"service.name": os.getenv("OTEL_SERVICE_NAME", "train_hrl_agent")}
+)
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
     provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
@@ -72,7 +76,9 @@ tracer = trace.get_tracer(__name__)
 
 logger_provider = LoggerProvider(resource=resource)
 if endpoint:
-    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint)))
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint))
+    )
 set_logger_provider(logger_provider)
 handler = LoggingHandler(level=logging.INFO, logger_provider=logger_provider)
 
@@ -100,6 +106,7 @@ logger.setLevel(logging.INFO)
 # ---------------------------------------------------------------------------
 # Environment wrappers
 # ---------------------------------------------------------------------------
+
 
 class RegimeSelectionEnv(Env):
     """Meta-controller environment.
@@ -150,6 +157,7 @@ class RegimeEnv(Env):
 # Training utilities
 # ---------------------------------------------------------------------------
 
+
 def _to_jsonable(params: Dict[str, Any]) -> Dict[str, Any]:
     """Convert SB3 parameters (numpy arrays) to plain lists for JSON."""
 
@@ -162,7 +170,9 @@ def _to_jsonable(params: Dict[str, Any]) -> Dict[str, Any]:
     return simple
 
 
-def train(output: Path, meta_steps: int = 1000, sub_steps: int = 1000, regimes: int = 2) -> None:
+def train(
+    output: Path, meta_steps: int = 1000, sub_steps: int = 1000, regimes: int = 2
+) -> None:
     """Train the hierarchical agent and write ``model.json``."""
     if not SelfPlayEnv:
         raise RuntimeError("SelfPlayEnv is not available")
@@ -192,7 +202,9 @@ def train(output: Path, meta_steps: int = 1000, sub_steps: int = 1000, regimes: 
                     "parameters": _to_jsonable(sub_model.get_parameters()),
                 }
         else:  # pragma: no cover - executed when SB3 missing
-            logging.warning("stable-baselines3 not installed; producing empty hierarchy")
+            logging.warning(
+                "stable-baselines3 not installed; producing empty hierarchy"
+            )
             hierarchy["meta_controller"] = {}
 
         data = {"hierarchy": hierarchy}
