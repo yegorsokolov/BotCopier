@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import cProfile
 import gzip
 import importlib.metadata as importlib_metadata
 import json
 import logging
 import shutil
 import time
-import cProfile
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -42,6 +42,7 @@ from opentelemetry import trace
 from pydantic import ValidationError
 
 import botcopier.features.technical as technical_features
+from automl.controller import AutoMLController
 from botcopier.config.settings import TrainingConfig
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.data.loading import _load_logs
@@ -60,7 +61,6 @@ from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.training.curriculum import _apply_curriculum
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
-from automl.controller import AutoMLController
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -955,7 +955,14 @@ def train(
             profit = metrics.get("profit", 0.0)
             subset, model_choice = chosen_action
             complexity = len(subset) + controller.models.get(model_choice, 0)
-            reward = profit - complexity_penalty * complexity
+            risk_penalty = 0.0
+            if max_drawdown is not None:
+                risk_penalty += max(
+                    0.0, metrics.get("max_drawdown", 0.0) - max_drawdown
+                )
+            if var_limit is not None:
+                risk_penalty += max(0.0, metrics.get("var_95", 0.0) - var_limit)
+            reward = profit - complexity_penalty * complexity - risk_penalty
             controller.update(chosen_action, reward)
         deps_file = _write_dependency_snapshot(out_dir)
         generate_model_card(

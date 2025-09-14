@@ -49,7 +49,9 @@ class AutoMLController:
 
         # policy parameters and reward estimates per action
         self.theta: Dict[str, float] = {self._key(a): 0.0 for a in self.action_space}
-        self.avg_reward: Dict[str, float] = {self._key(a): 0.0 for a in self.action_space}
+        self.avg_reward: Dict[str, float] = {
+            self._key(a): 0.0 for a in self.action_space
+        }
         self.counts: Dict[str, int] = {self._key(a): 0 for a in self.action_space}
 
         if reuse:
@@ -149,18 +151,26 @@ class AutoMLController:
 
     def train(
         self,
-        env: Callable[[Action], float],
+        env: Callable[[Action], float | tuple[float, float]],
         episodes: int = 100,
         alpha: float = 0.1,
         penalty: float = 0.1,
+        risk_limit: float | None = None,
     ) -> None:
         """Train the controller in ``env`` for ``episodes`` iterations."""
         for _ in range(episodes):
             action, _ = self.sample_action()
-            profit = env(action)
+            result = env(action)
+            if isinstance(result, tuple):
+                profit, risk = result
+            else:
+                profit, risk = float(result), 0.0
             subset, model = action
             complexity = len(subset) + self.models[model]
-            reward = profit - penalty * complexity
+            risk_pen = 0.0
+            if risk_limit is not None and risk > risk_limit:
+                risk_pen = risk - risk_limit
+            reward = profit - penalty * complexity - risk_pen
             self.update(action, reward, alpha=alpha)
 
     def select_best(self) -> Action | None:

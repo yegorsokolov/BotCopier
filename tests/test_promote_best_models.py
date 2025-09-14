@@ -1,15 +1,12 @@
 import json
 import sys
-import json
-import json
-import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.promote_best_models import promote
 from scripts.backtest_strategy import run_backtest
+from scripts.promote_best_models import promote
 
 
 def _create_tick_file(dir_path: Path) -> Path:
@@ -32,7 +29,9 @@ def _create_model(dir_path: Path, name: str, coeff: float) -> Path:
     return model_file
 
 
-def _create_model_risk(dir_path: Path, name: str, expected: float, downside: float, coeff: float) -> Path:
+def _create_model_risk(
+    dir_path: Path, name: str, expected: float, downside: float, coeff: float
+) -> Path:
     model_dir = dir_path / name
     model_dir.mkdir()
     model_file = model_dir / f"{name}.json"
@@ -110,3 +109,24 @@ def test_promote_skips_high_drift(tmp_path: Path):
     promote(tmp_path, best_dir, max_models=1, metric="sharpe_ratio", max_drift=0.2)
     assert (best_dir / m2.name).exists()
     assert not (best_dir / m1.name).exists()
+
+
+def test_promote_skips_risky_models(tmp_path: Path):
+    m1 = _create_model(tmp_path, "model_safe", 1.0)
+    (tmp_path / "model_safe" / "evaluation.json").write_text(
+        json.dumps({"sharpe_ratio": 1.0, "max_drawdown": 0.1})
+    )
+    m2 = _create_model(tmp_path, "model_risky", 1.0)
+    (tmp_path / "model_risky" / "evaluation.json").write_text(
+        json.dumps({"sharpe_ratio": 2.0, "max_drawdown": 0.5})
+    )
+    best_dir = tmp_path / "best"
+    promote(
+        tmp_path,
+        best_dir,
+        max_models=2,
+        metric="sharpe_ratio",
+        max_drawdown=0.2,
+    )
+    assert (best_dir / m1.name).exists()
+    assert not (best_dir / m2.name).exists()

@@ -70,9 +70,7 @@ class AutoMLController:
         if self.model_path.exists():
             with self.model_path.open("r", encoding="utf-8") as fh:
                 self._data = json.load(fh)
-            self.q_values = (
-                self._data.get("automl_controller", {}).get("q_values", {})
-            )
+            self.q_values = self._data.get("automl_controller", {}).get("q_values", {})
         else:
             self._data = {}
 
@@ -102,11 +100,12 @@ class AutoMLController:
 
     def train(
         self,
-        env: Callable[[Action], float],
+        env: Callable[[Action], float | tuple[float, float]],
         episodes: int = 100,
         epsilon: float = 0.1,
         alpha: float = 0.5,
         penalty: float = 0.1,
+        risk_limit: float | None = None,
     ) -> None:
         """Train the controller.
 
@@ -127,10 +126,17 @@ class AutoMLController:
 
         for _ in range(episodes):
             action = self.choose_action(epsilon)
-            profit = env(action)
+            result = env(action)
+            if isinstance(result, tuple):
+                profit, risk = result
+            else:
+                profit, risk = float(result), 0.0
             subset, model = action
             complexity = len(subset) + self.models[model]
-            reward = profit - penalty * complexity
+            risk_pen = 0.0
+            if risk_limit is not None and risk > risk_limit:
+                risk_pen = risk - risk_limit
+            reward = profit - penalty * complexity - risk_pen
             key = self._key(action)
             old = self.q_values.get(key, 0.0)
             self.q_values[key] = old + alpha * (reward - old)

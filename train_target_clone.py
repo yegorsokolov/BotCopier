@@ -16,9 +16,10 @@ exist solely so imports from other modules (or historical code) do not fail.
 
 from __future__ import annotations
 
-from pathlib import Path
+import argparse
 import json
 import os
+from pathlib import Path
 from typing import Callable
 
 import numpy as np
@@ -60,15 +61,25 @@ def detect_resources() -> dict:
 # Optuna helpers
 # ---------------------------------------------------------------------------
 
-def _trial_logger(csv_path: Path) -> Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]:
+
+def _trial_logger(
+    csv_path: Path,
+) -> Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]:
     """Return a callback that appends trial information to ``csv_path``.
 
     Each row contains the trial number, suggested parameters, the objective
-    value and the random seed stored in ``trial.user_attrs``.
+    values and the random seed stored in ``trial.user_attrs``.
     """
 
     def _callback(study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
-        row = {"trial": trial.number, **trial.params, "seed": trial.user_attrs.get("seed"), "value": trial.value}
+        row = {
+            "trial": trial.number,
+            **trial.params,
+            "seed": trial.user_attrs.get("seed"),
+            "profit": trial.values[0],
+            "sharpe": trial.values[1],
+            "max_drawdown": trial.values[2],
+        }
         df = pd.DataFrame([row])
         df.to_csv(csv_path, mode="a", header=not csv_path.exists(), index=False)
 
@@ -77,10 +88,14 @@ def _trial_logger(csv_path: Path) -> Callable[[optuna.study.Study, optuna.trial.
 
 def _objective_factory(
     max_drawdown: float | None, var_limit: float | None
-) -> Callable[[optuna.trial.Trial], float]:
-    """Return an objective that includes risk penalties."""
+) -> Callable[[optuna.trial.Trial], tuple[float, float, float]]:
+    """Return a multi-objective that includes risk penalties.
 
-    def _objective(trial: optuna.trial.Trial) -> float:
+    The returned objective yields ``(profit, sharpe, max_drawdown)`` so the
+    study can simultaneously optimise for risk and return.
+    """
+
+    def _objective(trial: optuna.trial.Trial) -> tuple[float, float, float]:
         seed = trial.suggest_int("seed", 0, 9999)
         trial.set_user_attr("seed", seed)
         x = trial.suggest_float("x", -10.0, 10.0)
@@ -89,12 +104,13 @@ def _objective_factory(
         risk = abs(x) / 10.0
         trial.set_user_attr("max_drawdown", risk)
         trial.set_user_attr("var_95", risk)
-        penalty = 0.0
+        profit = -((x - 2) ** 2) + noise
         if max_drawdown is not None and risk > max_drawdown:
-            penalty += risk - max_drawdown
+            profit -= risk - max_drawdown
         if var_limit is not None and risk > var_limit:
-            penalty += risk - var_limit
-        return (x - 2) ** 2 + noise + penalty
+            profit -= risk - var_limit
+        sharpe = profit / (risk + 1e-6)
+        return profit, sharpe, risk
 
     return _objective
 
@@ -123,20 +139,44 @@ def run_optuna(
     model_json_path = Path(model_json_path)
 
     sampler = optuna.samplers.RandomSampler(seed=0)
-    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study = optuna.create_study(
+        directions=["maximize", "maximize", "minimize"], sampler=sampler
+    )
     objective = _objective_factory(max_drawdown, var_limit)
     study.optimize(objective, n_trials=n_trials, callbacks=[_trial_logger(csv_path)])
 
-    best = study.best_trial
+    def _select_trial() -> optuna.trial.FrozenTrial:
+        candidates = [t for t in study.best_trials]
+        if max_drawdown is not None:
+            candidates = [t for t in candidates if t.values[2] <= max_drawdown]
+        if var_limit is not None:
+            candidates = [
+                t
+                for t in candidates
+                if t.user_attrs.get("var_95", t.values[2]) <= var_limit
+            ]
+        if not candidates:
+            candidates = list(study.best_trials)
+        return max(candidates, key=lambda t: (t.values[0], t.values[1]))
+
+    best = _select_trial()
     relative_csv = os.path.relpath(csv_path, model_json_path.parent)
     risk = best.user_attrs.get("max_drawdown", 0.0)
     model_data = {
         "metadata": {
             "hyperparam_log": relative_csv,
-            "best_trial": {"number": best.number, "value": best.value},
+            "selected_trial": {
+                "number": best.number,
+                "profit": best.values[0],
+                "sharpe": best.values[1],
+                "max_drawdown": best.values[2],
+            },
         },
         "risk_params": {"max_drawdown": max_drawdown, "var_limit": var_limit},
-        "risk_metrics": {"max_drawdown": risk, "var_95": risk},
+        "risk_metrics": {
+            "max_drawdown": risk,
+            "var_95": best.user_attrs.get("var_95", risk),
+        },
     }
     model_json_path.write_text(json.dumps(model_data))
 
@@ -144,4 +184,13 @@ def run_optuna(
 
 
 if __name__ == "__main__":  # pragma: no cover - manual execution entry point
-    run_optuna()
+    p = argparse.ArgumentParser()
+    p.add_argument("--max-drawdown", type=float, default=None)
+    p.add_argument("--var-limit", type=float, default=None)
+    p.add_argument("--trials", type=int, default=10)
+    args = p.parse_args()
+    run_optuna(
+        n_trials=args.trials,
+        max_drawdown=args.max_drawdown,
+        var_limit=args.var_limit,
+    )
