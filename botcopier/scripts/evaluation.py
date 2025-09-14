@@ -723,9 +723,50 @@ def _order_type_compliance(order_types: Sequence[str], allowed: Sequence[str]) -
     return compliant / len(cleaned)
 
 
+def _var_95(returns: Sequence[float]) -> float:
+    """5%% value-at-risk of ``returns``.
+
+    The implementation intentionally avoids heavy dependencies and simply
+    computes the 5th percentile of the sorted return series.  An empty series
+    yields ``0.0``.
+    """
+
+    if not returns:
+        return 0.0
+    ordered = sorted(returns)
+    idx = int(0.05 * len(ordered))
+    idx = min(max(idx, 0), len(ordered) - 1)
+    return float(ordered[idx])
+
+
+def _volatility_spikes(returns: Sequence[float]) -> int:
+    """Count of returns deviating more than three standard deviations."""
+
+    if not returns:
+        return 0
+    mean = sum(returns) / len(returns)
+    variance = sum((r - mean) ** 2 for r in returns) / len(returns)
+    std = math.sqrt(variance)
+    if std == 0:
+        return 0
+    return sum(1 for r in returns if abs(r - mean) > 3 * std)
+
+
+def _slippage_stats(slippage: Sequence[float]) -> tuple[float, float]:
+    """Return mean and standard deviation of slippage values."""
+
+    slippage = list(slippage)
+    if not slippage:
+        return 0.0, 0.0
+    mean = sum(slippage) / len(slippage)
+    variance = sum((s - mean) ** 2 for s in slippage) / len(slippage)
+    return mean, math.sqrt(variance)
+
+
 def evaluate_strategy(
     returns: Sequence[float],
     order_types: Sequence[str],
+    slippage: Sequence[float] | None = None,
     *,
     budget: float,
     allowed_order_types: Sequence[str],
@@ -738,6 +779,8 @@ def evaluate_strategy(
     """
 
     returns = list(returns)
+    slip = list(slippage or [])
+    slip_mean, slip_std = _slippage_stats(slip)
     metrics = {
         "abs_drawdown": _abs_drawdown(returns),
         "risk": _risk(returns),
@@ -746,5 +789,9 @@ def evaluate_strategy(
         "order_type_compliance": _order_type_compliance(
             order_types, allowed_order_types
         ),
+        "var_95": _var_95(returns),
+        "volatility_spikes": _volatility_spikes(returns),
+        "slippage_mean": slip_mean,
+        "slippage_std": slip_std,
     }
     return metrics
