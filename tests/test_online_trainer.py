@@ -1,5 +1,8 @@
 import json
 import logging
+import subprocess
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -114,4 +117,58 @@ def test_calibration_parameters_evolve(tmp_path: Path):
     second = json.loads(model_path.read_text()).get("calibration")
     assert second is not None
     assert first != second
+
+
+def test_drift_event_records_hash(monkeypatch, tmp_path: Path):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2)
+    batch = [
+        {"a": 0.0, "y": 0},
+        {"a": 1.0, "y": 1},
+    ]
+    trainer.update(batch)
+    before = json.loads(model_path.read_text())["model_hash"]
+    baseline = tmp_path / "baseline.csv"
+    recent = tmp_path / "recent.csv"
+    baseline.write_text("a\n0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n")
+    recent.write_text("a\n10\n10\n10\n10\n10\n10\n10\n10\n10\n10\n")
+
+    def fake_run(cmd, check):
+        data = json.loads(model_path.read_text())
+        data["coefficients"] = [42.0]
+        model_path.write_text(json.dumps(data))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    class FakeThread:
+        def __init__(self, target, daemon=True):
+            self.target = target
+
+        def start(self):
+            try:
+                self.target()
+            except StopIteration:
+                pass
+
+    monkeypatch.setattr(threading, "Thread", FakeThread)
+
+    def fake_sleep(_):
+        raise StopIteration
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    trainer.start_drift_monitor(
+        baseline,
+        recent,
+        log_dir=tmp_path,
+        out_dir=tmp_path,
+        files_dir=tmp_path,
+        threshold=0.1,
+        interval=0.1,
+    )
+
+    data = json.loads(model_path.read_text())
+    assert data["model_hash"] != before
+    assert data["drift_events"] and data["drift_events"][0]["model_hash"] == data["model_hash"]
 
