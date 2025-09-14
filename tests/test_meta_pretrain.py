@@ -1,10 +1,11 @@
 import json
 
+import json
 import numpy as np
 import pandas as pd
 
-from scripts.meta_adapt import ReptileMetaLearner, evaluate
-from scripts.meta_pretrain import save_meta_weights, train_meta_initialisation
+from scripts.meta_adapt import _logistic_grad, evaluate
+from meta.meta_pretrain import save_meta_weights, train_meta_initialisation
 
 
 def _gen_df(sym: str, w: np.ndarray, rng_seed: int) -> pd.DataFrame:
@@ -28,20 +29,41 @@ def test_meta_initialisation_speedup(tmp_path):
         df, feat_cols, inner_steps=25, inner_lr=0.1, meta_lr=0.5
     )
     model_path = tmp_path / "model.json"
-    save_meta_weights(weights, model_path)
-    loaded = np.array(json.loads(model_path.read_text())["meta_weights"])
+    save_meta_weights(
+        weights,
+        model_path,
+        method="reptile",
+        inner_steps=25,
+        inner_lr=0.1,
+        meta_lr=0.5,
+    )
+    meta_data = json.loads(model_path.read_text())["meta"]
+    loaded = np.array(meta_data["weights"])
     assert np.allclose(loaded, weights)
 
     df_c = _gen_df("C", base + np.array([0.05, -0.05]), 2)
     Xc = df_c[feat_cols].to_numpy()
     yc = df_c["label"].to_numpy()
 
-    scratch = ReptileMetaLearner(len(feat_cols))
-    w_scratch = scratch.adapt(Xc, yc, inner_steps=5, inner_lr=0.1)
-    acc_scratch = evaluate(w_scratch, Xc, yc)
+    def _run_steps(w_init: np.ndarray, steps: int = 5, lr: float = 0.1) -> float:
+        w = w_init.copy()
+        for _ in range(steps):
+            w -= lr * _logistic_grad(w, Xc, yc)
+        return evaluate(w, Xc, yc)
 
-    meta_model = ReptileMetaLearner(len(feat_cols), loaded)
-    w_meta = meta_model.adapt(Xc, yc, inner_steps=5, inner_lr=0.1)
-    acc_meta = evaluate(w_meta, Xc, yc)
+    def _steps_to_acc(w_init: np.ndarray, target: float = 0.9, lr: float = 0.1) -> int:
+        w = w_init.copy()
+        for step in range(1, 51):
+            w -= lr * _logistic_grad(w, Xc, yc)
+            if evaluate(w, Xc, yc) >= target:
+                return step
+        return 50
 
-    assert acc_meta >= acc_scratch
+    random_init = np.zeros_like(loaded)
+    steps_rand = _steps_to_acc(random_init)
+    steps_meta = _steps_to_acc(loaded.copy())
+    assert steps_meta <= steps_rand
+
+    acc_rand = _run_steps(random_init)
+    acc_meta = _run_steps(loaded.copy())
+    assert acc_meta >= acc_rand

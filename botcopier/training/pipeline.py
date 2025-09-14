@@ -225,15 +225,26 @@ def train(
         feature_prof = fit_prof = eval_prof = None
 
     meta_init: np.ndarray | None = None
+    meta_info: dict[str, object] | None = None
     if meta_weights is not None:
         if isinstance(meta_weights, (str, Path)):
             try:
                 meta_data = json.loads(Path(meta_weights).read_text())
-                meta_w = meta_data.get("meta_weights")
-                if meta_w is not None:
-                    meta_init = np.asarray(meta_w, dtype=float)
+                if isinstance(meta_data.get("meta"), dict):
+                    meta_w = meta_data["meta"].get("weights")
+                    if meta_w is not None:
+                        meta_init = np.asarray(meta_w, dtype=float)
+                    meta_info = {
+                        k: v for k, v in meta_data["meta"].items() if k != "weights"
+                    }
+                    meta_info.setdefault("source", str(meta_weights))
+                else:
+                    meta_w = meta_data.get("meta_weights")
+                    if meta_w is not None:
+                        meta_init = np.asarray(meta_w, dtype=float)
             except Exception:
                 meta_init = None
+                meta_info = None
         else:
             meta_init = np.asarray(meta_weights, dtype=float)
     gpu_kwargs: dict[str, object] = {}
@@ -839,6 +850,11 @@ def train(
             "model_type": model_type,
         }
         if meta_init is not None:
+            meta_entry = {"weights": meta_init.tolist()}
+            if meta_info:
+                meta_entry.update(meta_info)
+            meta_entry["adapted"] = True
+            model.setdefault("meta", meta_entry)
             model.setdefault("meta_weights", meta_init.tolist())
         if encoder_meta is not None:
             model["masked_encoder"] = encoder_meta
@@ -1144,6 +1160,12 @@ def main() -> None:
         action="store_true",
         help="Reuse saved AutoML controller policy if available",
     )
+    p.add_argument(
+        "--use-meta",
+        type=Path,
+        dest="use_meta",
+        help="Path to model.json with meta-weights",
+    )
     args = p.parse_args()
     setup_logging(enable_tracing=args.trace, exporter=args.trace_exporter)
     cfg = TrainingConfig(random_seed=args.random_seed)
@@ -1161,6 +1183,7 @@ def main() -> None:
         profile=args.profile,
         strategy_search=args.strategy_search,
         reuse_controller=args.reuse_controller,
+        meta_weights=args.use_meta,
     )
 
 
