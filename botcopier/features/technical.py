@@ -35,7 +35,13 @@ try:  # optional numba dependency
 
     _HAS_NUMBA = True
 except Exception:  # pragma: no cover - optional
-    njit = lambda *a, **k: (lambda f: f)
+
+    def njit(*a, **k):  # pragma: no cover - simple stub
+        def _decorator(f):
+            return f
+
+        return _decorator
+
     _HAS_NUMBA = False
 
 from ..scripts.features import (
@@ -172,6 +178,42 @@ def refresh_symbolic_indicators(model_json: Path | str | None = None) -> None:
     global _SYMBOLIC_CACHE
     _SYMBOLIC_CACHE = None
     _load_symbolic_indicators(model_json)
+
+
+def append_symbolic_indicators(
+    formulas: Iterable[str],
+    feature_names: Iterable[str],
+    model_json: Path | str | None = None,
+) -> None:
+    """Persist ``formulas`` and ``feature_names`` to ``model_json``.
+
+    This helper ensures that newly discovered indicators are appended to the
+    model file while keeping previously stored values intact.  It also refreshes
+    the in-memory cache so that subsequent feature extraction picks up the
+    updates immediately.
+    """
+
+    path = Path(model_json or "model.json")
+    try:
+        data = json.loads(path.read_text()) if path.exists() else {}
+    except Exception:  # pragma: no cover - corrupt model file
+        data = {}
+
+    sym = data.setdefault("symbolic_indicators", {})
+    stored_formulas = sym.get("formulas", [])
+    stored_feats = sym.get("feature_names", [])
+
+    for f in formulas:
+        if f not in stored_formulas:
+            stored_formulas.append(f)
+    for feat in feature_names:
+        if feat not in stored_feats:
+            stored_feats.append(feat)
+
+    sym["formulas"] = stored_formulas
+    sym["feature_names"] = stored_feats
+    path.write_text(json.dumps(data, indent=2))
+    refresh_symbolic_indicators(path)
 
 
 _SYMBOLIC_FUNCS = {
