@@ -17,6 +17,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 import psutil
+from joblib import Memory
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 from sklearn.calibration import CalibratedClassifierCV
@@ -38,6 +39,14 @@ try:  # optional dask support
 except Exception:  # pragma: no cover - optional
     dd = None  # type: ignore
     _HAS_DASK = False
+
+try:  # optional numba support
+    from numba import njit
+
+    _HAS_NUMBA = True
+except Exception:  # pragma: no cover - optional
+    njit = lambda *a, **k: (lambda f: f)
+    _HAS_NUMBA = False
 from opentelemetry import trace
 from pydantic import ValidationError
 
@@ -106,21 +115,56 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
-def _max_drawdown(returns: np.ndarray) -> float:
-    """Return the maximum drawdown of ``returns``."""
-    if returns.size == 0:
-        return 0.0
-    cum = np.cumsum(returns, dtype=float)
-    peak = np.maximum.accumulate(cum)
-    dd = peak - cum
-    return float(np.max(dd))
+if _HAS_NUMBA:
 
+    @njit
+    def _max_drawdown_nb(returns: np.ndarray) -> float:
+        cum = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for r in returns:
+            cum += r
+            if cum > peak:
+                peak = cum
+            dd = peak - cum
+            if dd > max_dd:
+                max_dd = dd
+        return max_dd
 
-def _var_95(returns: np.ndarray) -> float:
-    """Return the 95% Value at Risk of ``returns``."""
-    if returns.size == 0:
-        return 0.0
-    return float(-np.quantile(returns, 0.05))
+    @njit
+    def _var_95_nb(returns: np.ndarray) -> float:
+        if returns.size == 0:
+            return 0.0
+        sorted_r = np.sort(returns)
+        idx = int(0.05 * (sorted_r.size - 1))
+        return -sorted_r[idx]
+
+    def _max_drawdown(returns: np.ndarray) -> float:
+        if returns.size == 0:
+            return 0.0
+        return float(_max_drawdown_nb(returns))
+
+    def _var_95(returns: np.ndarray) -> float:
+        if returns.size == 0:
+            return 0.0
+        return float(_var_95_nb(returns))
+
+else:  # pragma: no cover - fallback without numba
+
+    def _max_drawdown(returns: np.ndarray) -> float:
+        """Return the maximum drawdown of ``returns``."""
+        if returns.size == 0:
+            return 0.0
+        cum = np.cumsum(returns, dtype=float)
+        peak = np.maximum.accumulate(cum)
+        dd = peak - cum
+        return float(np.max(dd))
+
+    def _var_95(returns: np.ndarray) -> float:
+        """Return the 95% Value at Risk of ``returns``."""
+        if returns.size == 0:
+            return 0.0
+        return float(-np.quantile(returns, 0.05))
 
 
 def _write_dependency_snapshot(out_dir: Path) -> Path:
@@ -177,6 +221,9 @@ def train(
     configure_cache(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
     )
+    memory = Memory(str(cache_dir) if cache_dir else None, verbose=0)
+    _classification_metrics_cached = memory.cache(_classification_metrics)
+    _hrp_cached = memory.cache(hierarchical_risk_parity)
     if strategy_search:
         from botcopier.strategy.dsl import serialize
         from botcopier.strategy.engine import search_strategies
@@ -590,7 +637,7 @@ def train(
                         )
                         prob_val = pred_fn(X[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
-                    fold_metric = _classification_metrics(
+                    fold_metric = _classification_metrics_cached(
                         y[val_idx], prob_val, returns, selected=metric_names
                     )
                     fold_metric["max_drawdown"] = _max_drawdown(returns)
@@ -652,7 +699,7 @@ def train(
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     if profile and eval_prof is not None:
                         eval_prof.enable()
-                    fold_metric = _classification_metrics(
+                    fold_metric = _classification_metrics_cached(
                         y[val_idx], prob_val, returns, selected=metric_names
                     )
                     if profile and eval_prof is not None:
@@ -950,7 +997,7 @@ def train(
                     index="event_time", columns="symbol", values="profit", aggfunc="sum"
                 ).fillna(0.0)
                 if pivot.shape[1] >= 1:
-                    weights, link = hierarchical_risk_parity(pivot)
+                    weights, link = _hrp_cached(pivot)
                     model["hrp_weights"] = weights.to_dict()
                     model["hrp_dendrogram"] = link.tolist()
             except Exception:  # pragma: no cover - best effort

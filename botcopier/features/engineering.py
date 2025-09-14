@@ -62,6 +62,7 @@ def configure_cache(config: FeatureConfig) -> None:
         _augmentation._augment_dtw_dataframe_impl, "_augment_dtw_dataframe"
     )
     FEATURE_REGISTRY["augment_dtw_dataframe"] = _augmentation._augment_dtw_dataframe
+    _technical._csd_pair = _cache_with_logging(_technical._csd_pair_impl, "_csd_pair")
     FEATURE_REGISTRY["technical"] = _technical._extract_features_impl
 
 

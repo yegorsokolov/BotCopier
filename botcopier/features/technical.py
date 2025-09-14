@@ -10,7 +10,6 @@ from typing import Iterable, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy import signal
 
 try:  # optional dask support
     import dask.dataframe as dd  # type: ignore
@@ -20,7 +19,7 @@ except Exception:  # pragma: no cover - optional
     dd = None  # type: ignore
     _HAS_DASK = False
 
-from .plugins import FEATURE_REGISTRY, register_feature, load_plugins
+from .plugins import FEATURE_REGISTRY, load_plugins, register_feature
 
 try:  # optional polars dependency
     import polars as pl  # type: ignore
@@ -30,6 +29,14 @@ except ImportError:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
 from sklearn.linear_model import LinearRegression
+
+try:  # optional numba dependency
+    from numba import njit
+
+    _HAS_NUMBA = True
+except Exception:  # pragma: no cover - optional
+    njit = lambda *a, **k: (lambda f: f)
+    _HAS_NUMBA = False
 
 from ..scripts.features import (
     KALMAN_DEFAULT_PARAMS,
@@ -88,6 +95,63 @@ CSD_FREQ_BINS = 16
 _CSD_PARAMS: dict | None = None
 
 _SYMBOLIC_CACHE: dict | None = None
+
+
+if _HAS_NUMBA:
+
+    @njit(cache=True)
+    def _csd_freq_coh_nb(
+        sa: np.ndarray, sb: np.ndarray, window: int, freq_bins: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        freqs = np.fft.rfftfreq(window)[:freq_bins]
+        n = sa.shape[0]
+        freq_arr = np.zeros(n)
+        coh_arr = np.zeros(n)
+        for i in range(window - 1, n):
+            xa = sa[i - window + 1 : i + 1]
+            xb = sb[i - window + 1 : i + 1]
+            fa = np.fft.rfft(xa, freq_bins)
+            fb = np.fft.rfft(xb, freq_bins)
+            Pxy = fa * np.conjugate(fb)
+            Pxx = fa * np.conjugate(fa)
+            Pyy = fb * np.conjugate(fb)
+            coh = np.abs(Pxy) ** 2 / (Pxx * Pyy + 1e-9)
+            idx_max = np.argmax(coh)
+            freq_arr[i] = freqs[idx_max]
+            coh_arr[i] = np.real(coh[idx_max])
+        return freq_arr, coh_arr
+
+else:  # pragma: no cover - numba unavailable
+
+    def _csd_freq_coh_nb(
+        sa: np.ndarray, sb: np.ndarray, window: int, freq_bins: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        freqs = np.fft.rfftfreq(window)[:freq_bins]
+        n = sa.shape[0]
+        freq_arr = np.zeros(n)
+        coh_arr = np.zeros(n)
+        for i in range(window - 1, n):
+            xa = sa[i - window + 1 : i + 1]
+            xb = sb[i - window + 1 : i + 1]
+            fa = np.fft.rfft(xa, freq_bins)
+            fb = np.fft.rfft(xb, freq_bins)
+            Pxy = fa * np.conjugate(fb)
+            Pxx = fa * np.conjugate(fa)
+            Pyy = fb * np.conjugate(fb)
+            coh = np.abs(Pxy) ** 2 / (Pxx * Pyy + 1e-9)
+            idx_max = np.argmax(coh)
+            freq_arr[i] = freqs[idx_max]
+            coh_arr[i] = np.real(coh[idx_max])
+        return freq_arr, coh_arr
+
+
+def _csd_pair_impl(
+    sa: np.ndarray, sb: np.ndarray, window: int, freq_bins: int
+) -> tuple[np.ndarray, np.ndarray]:
+    return _csd_freq_coh_nb(sa, sb, window, freq_bins)
+
+
+_csd_pair = _csd_pair_impl
 
 
 def _load_symbolic_indicators(model_json: Path | str | None) -> dict:
@@ -625,24 +689,7 @@ def _extract_features_impl(
                 continue
             sa = price_wide[a].to_numpy()
             sb = price_wide[b].to_numpy()
-            freq_arr = np.zeros(len(price_wide))
-            coh_arr = np.zeros(len(price_wide))
-            for i in range(CSD_WINDOW - 1, len(price_wide)):
-                xa = sa[i - CSD_WINDOW + 1 : i + 1]
-                xb = sb[i - CSD_WINDOW + 1 : i + 1]
-                f, Pxy = signal.csd(
-                    xa, xb, nperseg=CSD_WINDOW, nfft=CSD_FREQ_BINS, scaling="spectrum"
-                )
-                _, Pxx = signal.csd(
-                    xa, xa, nperseg=CSD_WINDOW, nfft=CSD_FREQ_BINS, scaling="spectrum"
-                )
-                _, Pyy = signal.csd(
-                    xb, xb, nperseg=CSD_WINDOW, nfft=CSD_FREQ_BINS, scaling="spectrum"
-                )
-                coh = np.abs(Pxy) ** 2 / (Pxx * Pyy + 1e-9)
-                idx_max = int(np.argmax(coh))
-                freq_arr[i] = float(f[idx_max])
-                coh_arr[i] = float(np.real(coh[idx_max]))
+            freq_arr, coh_arr = _csd_pair(sa, sb, CSD_WINDOW, CSD_FREQ_BINS)
             freq_series = pd.Series(freq_arr, index=price_wide.index)
             coh_series = pd.Series(coh_arr, index=price_wide.index)
             col_freq_ab = f"csd_freq_{b}"
