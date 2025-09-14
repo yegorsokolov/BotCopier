@@ -927,6 +927,8 @@ def train(
         model["data_hashes"] = data_hashes
         if curriculum_meta:
             model["curriculum"] = curriculum_meta
+            # Record summary of the final curriculum phase for quick access
+            model["curriculum_final"] = curriculum_meta[-1]
         if model_obj is not None:
             try:
                 from botcopier.scripts.explain_model import generate_explanations
