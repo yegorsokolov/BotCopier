@@ -117,7 +117,12 @@ def _isolation_forest_scores(
     return scores
 
 
-def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) -> None:
+def _update_model(
+    model_json: Path,
+    metrics: dict[str, float],
+    retrained: bool,
+    model_hash: str | None = None,
+) -> None:
     """Record drift metrics and retrain timestamp in ``model.json``."""
     ts = datetime.utcnow().isoformat()
     data: dict[str, object] = {}
@@ -127,6 +132,17 @@ def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) 
             data = params.model_dump()
         except (ValidationError, OSError, ValueError):
             data = {}
+    core = dict(data)
+    core.pop("model_hash", None)
+    try:
+        import hashlib
+        hash_val = hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()
+    except Exception:  # pragma: no cover - hashing should not fail
+        hash_val = None
+    if model_hash:
+        hash_val = model_hash
+    if hash_val is not None:
+        data["model_hash"] = hash_val
     max_metric = max(metrics.values()) if metrics else 0.0
     data["drift_metric"] = max_metric
     data["drift_metrics"] = metrics
@@ -139,6 +155,9 @@ def _update_model(model_json: Path, metrics: dict[str, float], retrained: bool) 
         if isinstance(retrain_hist, list):
             entry = {"time": ts, **metrics}
             retrain_hist.append(entry)
+        events = data.setdefault("drift_events", [])
+        if isinstance(events, list):
+            events.append({"time": ts, "model_hash": hash_val, **metrics})
     model_json.write_text(ModelParams(**data).model_dump_json(indent=2))
 
 
@@ -178,7 +197,6 @@ def run(
     method = max(metrics, key=metrics.get)
     metric_val = metrics[method]
     retrain = metric_val > drift_threshold
-    _update_model(model_json, metrics, retrain)
     _update_evaluation(model_json.parent / "evaluation.json", metrics)
     if retrain:
         if flag_file is not None:
@@ -209,6 +227,9 @@ def run(
             ],
             check=True,
         )
+        _update_model(model_json, metrics, True)
+    else:
+        _update_model(model_json, metrics, False)
 
 
 def main() -> int:

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -367,6 +368,13 @@ class OnlineTrainer:
             existing = {}
         existing.update(payload)
         existing.setdefault("metadata", {})["seed"] = self.seed
+        to_hash = dict(existing)
+        to_hash.pop("model_hash", None)
+        try:
+            hash_val = hashlib.sha256(json.dumps(to_hash, sort_keys=True).encode()).hexdigest()
+            existing["model_hash"] = hash_val
+        except Exception:  # pragma: no cover - hashing should not fail
+            pass
         self.model_path.write_text(ModelParams(**existing).model_dump_json())
 
     # ------------------------------------------------------------------
@@ -568,32 +576,39 @@ class OnlineTrainer:
                 try:
                     metrics = _compute_metrics(baseline_file, recent_file)
                     retrain = max(metrics.values()) > threshold
-                    _update_model(self.model_path, metrics, retrain)
                     if retrain:
                         method = max(metrics, key=metrics.get)
                         base = Path(__file__).resolve().parent
-                        subprocess.run(
-                            [
-                                sys.executable,
-                                str(base / "auto_retrain.py"),
-                                "--log-dir",
-                                str(log_dir),
-                                "--out-dir",
-                                str(out_dir),
-                                "--files-dir",
-                                str(files_dir),
-                                "--baseline-file",
-                                str(baseline_file),
-                                "--recent-file",
-                                str(recent_file),
-                                "--drift-method",
-                                method,
-                                "--drift-threshold",
-                                str(threshold),
-                            ],
-                            check=True,
-                        )
-                except (OSError, subprocess.SubprocessError):
+                        try:
+                            subprocess.run(
+                                [
+                                    sys.executable,
+                                    str(base / "auto_retrain.py"),
+                                    "--log-dir",
+                                    str(log_dir),
+                                    "--out-dir",
+                                    str(out_dir),
+                                    "--files-dir",
+                                    str(files_dir),
+                                    "--baseline-file",
+                                    str(baseline_file),
+                                    "--recent-file",
+                                    str(recent_file),
+                                    "--drift-method",
+                                    method,
+                                    "--drift-threshold",
+                                    str(threshold),
+                                ],
+                                check=True,
+                            )
+                            self._load()
+                        except (OSError, subprocess.SubprocessError):
+                            logger.exception("drift monitoring failed")
+                            self._handle_regime_shift()
+                        _update_model(self.model_path, metrics, True)
+                    else:
+                        _update_model(self.model_path, metrics, False)
+                except Exception:
                     logger.exception("drift monitoring failed")
                 time.sleep(interval)
 
