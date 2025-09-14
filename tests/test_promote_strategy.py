@@ -112,6 +112,33 @@ def test_promote_rejects_order_mismatch(tmp_path: Path):
     assert "bad_orders" not in json.loads(registry.read_text())
 
 
+def test_promote_rejects_high_risk(tmp_path: Path):
+    shadow = tmp_path / "shadow"
+    live = tmp_path / "live"
+    metrics_dir = tmp_path / "metrics"
+    registry = tmp_path / "models" / "active.json"
+
+    model = shadow / "too_risky"
+    # Large volatility but drawdown within allowed limit
+    _write_returns(model / "oos.csv", [0.3, -0.3, 0.3, -0.3])
+
+    promote(
+        shadow,
+        live,
+        metrics_dir,
+        registry,
+        max_drawdown=0.4,
+        max_risk=0.2,
+        budget_limit=10.0,
+    )
+
+    assert model.exists()
+    assert not (live / "too_risky").exists()
+    report = json.loads((metrics_dir / "risk.json").read_text())
+    assert report["too_risky"]["risk"] > 0.2
+    assert "risk" in report["too_risky"]["reasons"]
+
+
 def test_promote_logs_additional_metrics(tmp_path: Path):
     shadow = tmp_path / "shadow"
     live = tmp_path / "live"
