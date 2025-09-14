@@ -105,6 +105,7 @@ def _var_95(returns: np.ndarray) -> float:
         return 0.0
     return float(-np.quantile(returns, 0.05))
 
+
 try:  # pragma: no cover - optional dependency
     import requests
 except Exception:  # pragma: no cover - optional dependency
@@ -137,7 +138,7 @@ except Exception:  # pragma: no cover - minimal fallback
 
 
 try:  # pragma: no cover - optional dependency
-    from self_play_env import SelfPlayEnv, train_self_play  # type: ignore
+    from self_play.env import SelfPlayEnv, train_self_play  # type: ignore
 except Exception:  # pragma: no cover - fallback when executed from repo root
     try:
         from scripts.self_play_env import SelfPlayEnv, train_self_play  # type: ignore
