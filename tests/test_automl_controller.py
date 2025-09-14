@@ -34,3 +34,11 @@ def test_automl_controller_converges(tmp_path):
         "features": ["f1", "f2"],
         "model": "tree",
     }
+
+    # Ensure the policy is persisted and reused on a fresh instance
+    warm = AutoMLController(features, models, model_path=model_file)
+    assert warm.select_best() == (("f1", "f2"), "tree")
+
+    # When reuse is disabled the policy should reset
+    cold = AutoMLController(features, models, model_path=model_file, reuse=False)
+    assert cold.select_best() != (("f1", "f2"), "tree")

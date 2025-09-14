@@ -10,6 +10,11 @@ import random
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Sequence, Tuple
 
+try:  # pragma: no cover - registry may not be present in tests
+    from models.registry import _REGISTRY as _MODEL_REGISTRY  # type: ignore
+except Exception:  # pragma: no cover - best effort
+    _MODEL_REGISTRY = {}
+
 Action = Tuple[Tuple[str, ...], str]
 
 
@@ -22,7 +27,9 @@ class AutoMLController:
         Iterable of available feature names.
     models:
         Mapping of model name to an integer representing its relative
-        complexity. Higher values imply greater complexity penalty.
+        complexity. Higher values imply greater complexity penalty.  If
+        ``None`` all models currently registered in
+        :mod:`models.registry` are used with a default complexity of 1.
     model_path:
         File used to persist the controller's policy and best action.
     reuse:
@@ -33,18 +40,20 @@ class AutoMLController:
     def __init__(
         self,
         features: Iterable[str],
-        models: Dict[str, int],
+        models: Dict[str, int] | None = None,
         model_path: str | os.PathLike[str] = "model.json",
         *,
         reuse: bool = True,
     ) -> None:
         self.features = list(features)
+        if models is None:
+            models = {name: 1 for name in _MODEL_REGISTRY.keys()}
         self.models = models
         self.model_path = Path(model_path)
         self.action_space: List[Action] = []
         for r in range(1, len(self.features) + 1):
             for subset in itertools.combinations(self.features, r):
-                for model in models:
+                for model in self.models:
                     self.action_space.append((subset, model))
 
         # policy parameters and reward estimates per action
