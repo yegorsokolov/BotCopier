@@ -56,12 +56,15 @@ class AutoMLController:
                 for model in self.models:
                     self.action_space.append((subset, model))
 
+        # Pre-compute keys for each action so we don't repeatedly encode
+        # actions during gradient updates. ``action_keys`` maintains the
+        # same order as ``action_space``.
+        self.action_keys = [self._key(a) for a in self.action_space]
+
         # policy parameters and reward estimates per action
-        self.theta: Dict[str, float] = {self._key(a): 0.0 for a in self.action_space}
-        self.avg_reward: Dict[str, float] = {
-            self._key(a): 0.0 for a in self.action_space
-        }
-        self.counts: Dict[str, int] = {self._key(a): 0 for a in self.action_space}
+        self.theta: Dict[str, float] = {k: 0.0 for k in self.action_keys}
+        self.avg_reward: Dict[str, float] = {k: 0.0 for k in self.action_keys}
+        self.counts: Dict[str, int] = {k: 0 for k in self.action_keys}
 
         if reuse:
             self._load()
@@ -71,7 +74,7 @@ class AutoMLController:
     # ------------------------------------------------------------------
     def reset(self) -> None:
         """Reset the learned policy."""
-        for k in self.theta:
+        for k in self.action_keys:
             self.theta[k] = 0.0
             self.avg_reward[k] = 0.0
             self.counts[k] = 0
@@ -132,7 +135,9 @@ class AutoMLController:
     # Policy logic
     # ------------------------------------------------------------------
     def _probs(self) -> List[float]:
-        weights = [self.theta[self._key(a)] for a in self.action_space]
+        # ``self.action_keys`` mirrors ``self.action_space`` so weights are
+        # retrieved without recomputing keys.
+        weights = [self.theta[k] for k in self.action_keys]
         max_w = max(weights)
         exps = [math.exp(w - max_w) for w in weights]
         s = sum(exps)
@@ -148,11 +153,10 @@ class AutoMLController:
         """Update policy parameters for ``action`` with ``reward``."""
         probs = self._probs()
         chosen = self.action_space.index(action)
-        keys = [self._key(a) for a in self.action_space]
-        for i, k in enumerate(keys):
+        for i, k in enumerate(self.action_keys):
             grad = (1.0 if i == chosen else 0.0) - probs[i]
             self.theta[k] += alpha * reward * grad
-        k = keys[chosen]
+        k = self.action_keys[chosen]
         self.counts[k] += 1
         c = self.counts[k]
         self.avg_reward[k] += (reward - self.avg_reward[k]) / c
