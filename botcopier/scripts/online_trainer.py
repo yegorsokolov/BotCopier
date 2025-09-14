@@ -26,7 +26,7 @@ import threading
 import time
 import hashlib
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, AsyncIterable
 
 from pydantic import ValidationError
 
@@ -111,6 +111,15 @@ try:  # optional sequential drift detection
         from sequential_drift import PageHinkley  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     PageHinkley = None  # type: ignore
+
+try:  # on-disk ring buffer for raw ticks
+    if __package__:
+        from .shm_ring import ShmRing, TRADE_MSG
+    else:  # pragma: no cover - executed as script
+        from shm_ring import ShmRing, TRADE_MSG  # type: ignore
+except Exception:  # pragma: no cover - ring buffer optional
+    ShmRing = None  # type: ignore
+    TRADE_MSG = 0  # type: ignore
 
 resource = Resource.create(
     {"service.name": os.getenv("OTEL_SERVICE_NAME", "online_trainer")}
@@ -234,6 +243,9 @@ class OnlineTrainer:
         self.graph_dataset: GraphDataset | None = None
         # sequential drift detector on rolling feature statistics
         self.drift_detector = PageHinkley() if PageHinkley is not None else None
+        self.last_drift_metric: float = 0.0
+        self.last_drift_detected: bool = False
+        self.drift_events: int = 0
         if self.model_path.exists():
             self._load()
         elif detect_resources:
@@ -468,16 +480,27 @@ class OnlineTrainer:
         logger.info({"event": "regime_shift", "action": action})
 
     def _check_drift(self, value: float) -> None:
-        """Run sequential drift detector and handle regime shifts."""
-        if self.drift_detector is not None and self.drift_detector.update(value):
-            self._handle_regime_shift()
+        """Run sequential drift detector, store metric and handle regime shifts."""
+        metric = 0.0
+        detected = False
+        if self.drift_detector is not None:
+            detected = self.drift_detector.update(value)
+            metric = getattr(self.drift_detector, "_cum", 0.0) - getattr(
+                self.drift_detector, "_min_cum", 0.0
+            )
+            if detected:
+                self._handle_regime_shift()
+                self.drift_events += 1
+        self.last_drift_metric = float(metric)
+        self.last_drift_detected = bool(detected)
 
     def update(self, batch: List[Dict[str, Any]]) -> bool:
         with observe_latency("train_batch"):
             try:
                 with tracer.start_as_current_span("train_batch") as span:
                     X, y = self._vectorise(batch)
-                    self._check_drift(float(X.mean()))
+                    mean_val = float(X.mean())
+                    self._check_drift(mean_val)
                     # configure current learning rate
                     if hasattr(self.clf, "eta0"):
                         self.clf.eta0 = self.lr
@@ -536,6 +559,8 @@ class OnlineTrainer:
                         "size": len(batch),
                         "coefficients_changed": changed,
                         "lr": lr_used,
+                        "drift_metric": self.last_drift_metric,
+                        "drift": self.last_drift_detected,
                     }
                     conf = getattr(self.clf, "last_batch_confidence", None)
                     if conf is not None:
@@ -617,6 +642,47 @@ class OnlineTrainer:
     # ------------------------------------------------------------------
     # Data sources
     # ------------------------------------------------------------------
+    async def consume_ticks(
+        self,
+        tick_stream: AsyncIterable[Dict[str, Any]],
+        ring_path: Path,
+        ring_size: int = 1_000_000,
+    ) -> None:
+        """Subscribe to a live tick stream and persist raw ticks in a ring buffer."""
+        if ShmRing is None:
+            raise RuntimeError("shm ring unavailable")
+        ring_path = Path(ring_path)
+        ring = (
+            ShmRing.open(str(ring_path))
+            if ring_path.exists()
+            else ShmRing.create(str(ring_path), ring_size)
+        )
+        batch: List[Dict[str, Any]] = []
+        try:
+            async for tick in tick_stream:
+                try:
+                    ring.push(TRADE_MSG, json.dumps(tick).encode())
+                except Exception:
+                    pass
+                if "y" not in tick and "label" not in tick:
+                    continue
+                tick["y"] = tick["y"] if "y" in tick else tick.get("label")
+                batch.append(tick)
+                if len(batch) >= self.batch_size:
+                    load = psutil.cpu_percent(interval=None)
+                    if load > self.cpu_threshold:
+                        await asyncio.sleep(self.sleep_seconds)
+                    self.update(batch)
+                    batch.clear()
+            if batch:
+                load = psutil.cpu_percent(interval=None)
+                if load > self.cpu_threshold:
+                    await asyncio.sleep(self.sleep_seconds)
+                self.update(batch)
+                batch.clear()
+        finally:
+            ring.close()
+
     def tail_csv(self, path: Path) -> None:
         """Continuously follow ``path`` for new rows."""
         path = Path(path)
