@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import importlib.util
 import json
 import logging
 from datetime import datetime
@@ -9,10 +8,14 @@ from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar, cast
 
 import typer
-import yaml
-from pydantic_settings import BaseSettings
 
-from botcopier.config.settings import DataConfig, TrainingConfig, save_params
+from botcopier.config.settings import (
+    DataConfig,
+    ExecutionConfig,
+    TrainingConfig,
+    load_settings,
+    save_params,
+)
 from botcopier.exceptions import BotCopierError
 from botcopier.training.pipeline import train as train_pipeline
 
@@ -59,31 +62,6 @@ def error_handler(func: F) -> F:
     return cast(F, wrapper)
 
 
-def _load_config(path: Path) -> tuple[DataConfig, TrainingConfig]:
-    """Load configuration from ``path`` and return data/training sections."""
-
-    if path.suffix in {".yml", ".yaml", ".json"}:
-        raw = yaml.safe_load(path.read_text()) or {}
-        return DataConfig(**raw.get("data", {})), TrainingConfig(
-            **raw.get("training", {})
-        )
-
-    spec = importlib.util.spec_from_file_location("_botcopier_config", path)
-    if spec and spec.loader:
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        data_kwargs: dict[str, Any] = {}
-        train_kwargs: dict[str, Any] = {}
-        for obj in vars(module).values():
-            if isinstance(obj, type) and issubclass(obj, BaseSettings):
-                if obj.__name__ == "DataConfig":
-                    data_kwargs = obj().model_dump()
-                elif obj.__name__ == "TrainingConfig":
-                    train_kwargs = obj().model_dump()
-        return DataConfig(**data_kwargs), TrainingConfig(**train_kwargs)
-    raise typer.BadParameter(f"Unable to load configuration from {path}")
-
-
 @app.callback()
 @error_handler
 def main(
@@ -92,27 +70,50 @@ def main(
         None, "--config", "-c", help="Path to optional config file"
     ),
     log_level: str = typer.Option("INFO", "--log-level", "-l", help="Logging level"),
-    orderbook_features: bool = typer.Option(
-        False, help="Include order book derived features"
-    ),
-    csd_features: bool = typer.Option(
-        False, help="Include cross spectral density features"
-    ),
+    use_gpu: bool = typer.Option(False, help="Enable GPU execution"),
+    trace: bool = typer.Option(False, help="Enable tracing"),
+    trace_exporter: str = typer.Option("otlp", help="Tracing exporter"),
+    profile: bool = typer.Option(False, help="Enable profiling"),
 ) -> None:
     """Configure global options for all commands."""
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.INFO))
     if config:
-        data_cfg, train_cfg = _load_config(config)
+        data_cfg, train_cfg, exec_cfg = load_settings(path=config)
     else:
-        data_cfg, train_cfg = DataConfig(), TrainingConfig()
-    ctx.obj = {"config": {"data": data_cfg, "training": train_cfg}}
+        data_cfg, train_cfg, exec_cfg = (
+            DataConfig(),
+            TrainingConfig(),
+            ExecutionConfig(),
+        )
+    exec_updates: dict[str, Any] = {}
+    if use_gpu:
+        exec_updates["use_gpu"] = use_gpu
+    if trace:
+        exec_updates["trace"] = trace
+    if trace_exporter:
+        exec_updates["trace_exporter"] = trace_exporter
+    if profile:
+        exec_updates["profile"] = profile
+    if exec_updates:
+        exec_cfg = exec_cfg.model_copy(update=exec_updates)
+    ctx.obj = {
+        "config": {
+            "data": data_cfg,
+            "training": train_cfg,
+            "execution": exec_cfg,
+        }
+    }
 
 
-def _cfg(ctx: typer.Context) -> tuple[DataConfig, TrainingConfig]:
+def _cfg(ctx: typer.Context) -> tuple[DataConfig, TrainingConfig, ExecutionConfig]:
     if ctx.obj and "config" in ctx.obj:
         cfg = ctx.obj["config"]
-        return cfg.get("data", DataConfig()), cfg.get("training", TrainingConfig())
-    return DataConfig(), TrainingConfig()
+        return (
+            cfg.get("data", DataConfig()),
+            cfg.get("training", TrainingConfig()),
+            cfg.get("execution", ExecutionConfig()),
+        )
+    return DataConfig(), TrainingConfig(), ExecutionConfig()
 
 
 @app.command("train")
@@ -148,7 +149,7 @@ def train(
     ),
 ) -> None:
     """Train a model from trade logs."""
-    data_cfg, train_cfg = _cfg(ctx)
+    data_cfg, train_cfg, exec_cfg = _cfg(ctx)
     if data_dir:
         data_cfg = data_cfg.model_copy(update={"data": data_dir})
     if out_dir:
@@ -173,10 +174,14 @@ def train(
         train_cfg = train_cfg.model_copy(update={"hrp_allocation": hrp_allocation})
     if strategy_search:
         train_cfg = train_cfg.model_copy(update={"strategy_search": strategy_search})
-    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    ctx.obj["config"] = {
+        "data": data_cfg,
+        "training": train_cfg,
+        "execution": exec_cfg,
+    }
     if data_cfg.data is None or data_cfg.out is None:
         raise typer.BadParameter("data_dir and out_dir must be provided")
-    save_params(data_cfg, train_cfg)
+    save_params(data_cfg, train_cfg, exec_cfg)
     train_pipeline(
         Path(data_cfg.data),
         Path(data_cfg.out),
@@ -206,7 +211,7 @@ def evaluate(
     ),
 ) -> None:
     """Evaluate predictions against actual trade outcomes."""
-    data_cfg, train_cfg = _cfg(ctx)
+    data_cfg, train_cfg, exec_cfg = _cfg(ctx)
     if pred_file:
         data_cfg = data_cfg.model_copy(update={"pred_file": pred_file})
     if actual_log:
@@ -218,10 +223,14 @@ def evaluate(
     if eval_hooks is not None:
         hooks_list = [h.strip() for h in eval_hooks.split(",") if h.strip()]
         train_cfg = train_cfg.model_copy(update={"eval_hooks": hooks_list})
-    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    ctx.obj["config"] = {
+        "data": data_cfg,
+        "training": train_cfg,
+        "execution": exec_cfg,
+    }
     if data_cfg.pred_file is None or data_cfg.actual_log is None:
         raise typer.BadParameter("pred_file and actual_log must be provided")
-    save_params(data_cfg, train_cfg)
+    save_params(data_cfg, train_cfg, exec_cfg)
     stats = eval_predictions(
         Path(data_cfg.pred_file),
         Path(data_cfg.actual_log),
@@ -269,7 +278,7 @@ def online_train(
     ),
 ) -> None:
     """Continuously update a model from streaming trade events."""
-    data_cfg, train_cfg = _cfg(ctx)
+    data_cfg, train_cfg, exec_cfg = _cfg(ctx)
     updates_data = {
         k: v
         for k, v in {
@@ -282,7 +291,7 @@ def online_train(
         }.items()
         if v is not None
     }
-    updates_train = {
+    updates_train: dict[str, Any] = {
         k: v
         for k, v in {
             "model": model,
@@ -309,7 +318,11 @@ def online_train(
         data_cfg = data_cfg.model_copy(update=updates_data)
     if updates_train:
         train_cfg = train_cfg.model_copy(update=updates_train)
-    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    ctx.obj["config"] = {
+        "data": data_cfg,
+        "training": train_cfg,
+        "execution": exec_cfg,
+    }
     import asyncio
 
     asyncio.run(run_online_trainer(data_cfg, train_cfg))
@@ -336,7 +349,7 @@ def drift_monitor(
     ),
 ) -> None:
     """Compute feature drift metrics and trigger retraining when needed."""
-    data_cfg, train_cfg = _cfg(ctx)
+    data_cfg, train_cfg, exec_cfg = _cfg(ctx)
     updates_data = {
         k: v
         for k, v in {
@@ -356,7 +369,11 @@ def drift_monitor(
         train_cfg = train_cfg.model_copy(update={"drift_threshold": drift_threshold})
     if model_json:
         train_cfg = train_cfg.model_copy(update={"model": model_json})
-    ctx.obj["config"] = {"data": data_cfg, "training": train_cfg}
+    ctx.obj["config"] = {
+        "data": data_cfg,
+        "training": train_cfg,
+        "execution": exec_cfg,
+    }
     if (
         data_cfg.baseline_file is None
         or data_cfg.recent_file is None
@@ -367,7 +384,7 @@ def drift_monitor(
         raise typer.BadParameter(
             "baseline_file, recent_file, log_dir, out_dir and files_dir must be provided"
         )
-    save_params(data_cfg, train_cfg)
+    save_params(data_cfg, train_cfg, exec_cfg)
     run_drift_monitor(
         baseline_file=data_cfg.baseline_file,
         recent_file=data_cfg.recent_file,
