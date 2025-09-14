@@ -2,6 +2,7 @@
 from .anomaly import _clip_apply, _clip_train_features, _score_anomalies
 from .augmentation import _augment_dataframe, _augment_dtw_dataframe
 from .technical import _extract_features, _neutralize_against_market_index
+from .indicator_discovery import evolve_indicators
 
 __all__ = [
     "_augment_dataframe",
@@ -11,4 +12,5 @@ __all__ = [
     "_score_anomalies",
     "_extract_features",
     "_neutralize_against_market_index",
+    "evolve_indicators",
 ]

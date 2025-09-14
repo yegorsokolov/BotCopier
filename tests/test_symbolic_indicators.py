@@ -1,4 +1,3 @@
-import importlib.util
 import json
 from pathlib import Path
 
@@ -7,14 +6,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 
 from botcopier.features.technical import _extract_features_impl
-
-spec = importlib.util.spec_from_file_location(
-    "symbolic_indicators",
-    Path(__file__).resolve().parents[1] / "scripts" / "symbolic_indicators.py",
-)
-symbolic_indicators = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(symbolic_indicators)
-evolve_indicators = symbolic_indicators.evolve_indicators
+from botcopier.features.indicator_discovery import evolve_indicators, evaluate_formula
 
 
 def test_symbolic_indicators_improve_metrics(tmp_path: Path) -> None:
@@ -37,7 +29,10 @@ def test_symbolic_indicators_improve_metrics(tmp_path: Path) -> None:
         population_size=200,
     )
     data = json.loads(model.read_text())
-    assert data["symbolic_indicators"]["formulas"]
+    formulas = data["symbolic_indicators"]["formulas"]
+    assert formulas
+    series = evaluate_formula(df, ["a", "b"], formulas[0])
+    assert np.isfinite(series).all()
 
     df_feat, cols, *_ = _extract_features_impl(
         df[["a", "b"]].copy(), ["a", "b"], model_json=model
