@@ -16,7 +16,7 @@ import argparse
 import json
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, Sequence
+from typing import Any, Dict, Iterable, Sequence
 
 from botcopier.scripts.evaluation import evaluate_strategy
 
@@ -30,8 +30,9 @@ def _load_returns(path: Path) -> Iterable[float]:
 
     if not path.exists():
         return []
-    return [float(line.strip()) for line in path.read_text().splitlines() if line.strip()]
-
+    return [
+        float(line.strip()) for line in path.read_text().splitlines() if line.strip()
+    ]
 
 
 def _load_order_types(path: Path) -> Iterable[str]:
@@ -40,6 +41,16 @@ def _load_order_types(path: Path) -> Iterable[str]:
     if not path.exists():
         return []
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+
+def _load_slippage(path: Path) -> Iterable[float]:
+    """Load slippage values from ``path`` if present."""
+
+    if not path.exists():
+        return []
+    return [
+        float(line.strip()) for line in path.read_text().splitlines() if line.strip()
+    ]
 
 
 def promote(
@@ -73,27 +84,35 @@ def promote(
         except json.JSONDecodeError:
             registry = {}
 
-    risk_report: Dict[str, Dict[str, float]] = {}
+    risk_report: Dict[str, Dict[str, Any]] = {}
 
     for model_dir in shadow_dir.iterdir():
         if not model_dir.is_dir():
             continue
         returns = _load_returns(model_dir / "oos.csv")
         order_types = _load_order_types(model_dir / "orders.csv")
+        slippage = _load_slippage(model_dir / "slippage.csv")
         metrics = evaluate_strategy(
             returns,
             order_types,
+            slippage,
             budget=budget_limit,
             allowed_order_types=allowed_order_types,
         )
-        risk_report[model_dir.name] = metrics
 
-        if (
-            metrics["abs_drawdown"] <= max_drawdown
-            and metrics["risk"] <= max_risk
-            and metrics["budget_utilisation"] <= 1.0
-            and metrics["order_type_compliance"] >= min_order_compliance
-        ):
+        reasons = []
+        if metrics["abs_drawdown"] > max_drawdown:
+            reasons.append("drawdown")
+        if metrics["risk"] > max_risk:
+            reasons.append("risk")
+        if metrics["budget_utilisation"] > 1.0:
+            reasons.append("budget")
+        if metrics["order_type_compliance"] < min_order_compliance:
+            reasons.append("order_type")
+
+        risk_report[model_dir.name] = {**metrics, "reasons": reasons}
+
+        if not reasons:
             dest = live_dir / model_dir.name
             if dest.exists():
                 shutil.rmtree(dest)
@@ -108,7 +127,9 @@ def promote(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Promote strategies that meet risk constraints")
+    p = argparse.ArgumentParser(
+        description="Promote strategies that meet risk constraints"
+    )
     p.add_argument("--shadow-dir", type=Path, default=Path("shadow"))
     p.add_argument("--live-dir", type=Path, default=Path("live"))
     p.add_argument("--metrics-dir", type=Path, default=Path("metrics"))
@@ -123,7 +144,9 @@ def main() -> None:
         help="Permitted order types",
     )
     p.add_argument(
-        "--min-order-compliance", type=float, default=1.0,
+        "--min-order-compliance",
+        type=float,
+        default=1.0,
         help="Minimum fraction of trades with permitted order types",
     )
     args = p.parse_args()
