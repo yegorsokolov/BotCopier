@@ -1,7 +1,7 @@
-from pathlib import Path
 import csv
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -9,16 +9,16 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.backtest_strategy import (
+    MarketRow,
+    analyze_shadow_trades,
+    backtest,
+    check_performance,
     load_strategy_params,
     load_ticks,
-    backtest,
-    write_report,
-    update_metrics_csv,
     run_backtest,
-    check_performance,
-    analyze_shadow_trades,
+    update_metrics_csv,
+    write_report,
 )
-
 
 FIXTURE = Path(__file__).parent / "fixtures" / "trades_small.csv"
 
@@ -77,6 +77,33 @@ def test_backtest_engine(tmp_path: Path):
     # and fails for demanding ones
     with pytest.raises(ValueError):
         check_performance(result, min_win_rate=0.9, min_profit_factor=10)
+
+
+def test_limit_order_execution():
+    ticks = [
+        MarketRow("t0", 1.0, 1.1, 0, [1.0]),
+        MarketRow("t1", 1.0, 1.0, 0, [0.0]),
+        MarketRow("t2", 1.1, 1.2, 0, [0.0]),
+        MarketRow("t3", 0.9, 0.95, 0, [0.0]),
+        MarketRow("t4", 1.2, 1.3, 0, [0.0]),
+    ]
+    metrics = backtest(ticks, [1.0], threshold=0.5, order_types=["limit"] * len(ticks))
+    assert metrics["trade_count"] == 2
+    assert metrics["resting_orders"] == 0
+    check_performance(metrics, max_resting_orders=0)
+
+
+def test_limit_order_resting_risk():
+    ticks = [
+        MarketRow("t0", 1.0, 1.1, 0, [1.0]),
+        MarketRow("t1", 1.3, 1.4, 0, [0.0]),
+        MarketRow("t2", 1.4, 1.5, 0, [0.0]),
+    ]
+    metrics = backtest(ticks, [1.0], threshold=0.5, order_types=["limit"] * len(ticks))
+    assert metrics["trade_count"] == 0
+    assert metrics["resting_orders"] == 1
+    with pytest.raises(ValueError):
+        check_performance(metrics, max_resting_orders=0)
 
 
 def test_analyze_shadow_trades(tmp_path: Path):
