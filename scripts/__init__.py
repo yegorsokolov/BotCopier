@@ -16,5 +16,11 @@ try:  # pragma: no cover - optional modules
     setattr(_module, "symbolic_indicators", _symbolic_indicators)
 except Exception:
     pass
+try:  # pragma: no cover - optional modules
+    from . import promote_strategy as _promote_strategy
+
+    setattr(_module, "promote_strategy", _promote_strategy)
+except Exception:
+    pass
 globals().update(_module.__dict__)
 sys.modules[__name__] = _module
