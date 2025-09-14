@@ -37,3 +37,5 @@ ENV/
 encoder/
 /synthetic_prices.csv
 /model.json
+# Generated strategy metrics
+metrics/*.metrics.json

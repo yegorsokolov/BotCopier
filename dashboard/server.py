@@ -1,11 +1,12 @@
 import os
 import json
-from typing import List, Set
+from typing import Callable, List, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Depends
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import pyarrow.flight as flight
+from metrics.aggregator import add_metric, get_aggregated_metrics
 
 API_TOKEN = os.environ.get("DASHBOARD_API_TOKEN", "")
 FLIGHT_URI = os.environ.get("FLIGHT_URI", "")
@@ -16,7 +17,7 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 
 # In-memory stores
 trades: List[dict] = []
-metrics: List[dict] = []
+metrics_store: List[dict] = []
 decisions: List[dict] = []
 training_progress: List[dict] = []
 
@@ -29,12 +30,16 @@ training_connections: Set[WebSocket] = set()
 if FLIGHT_URI:
     try:
         client = flight.FlightClient(FLIGHT_URI)
-        for name, store in (("trades", trades), ("metrics", metrics), ("decisions", decisions)):
+        for name, store in (("trades", trades), ("metrics", metrics_store), ("decisions", decisions)):
             desc = flight.FlightDescriptor.for_path(name)
             info = client.get_flight_info(desc)
             reader = client.do_get(info.endpoints[0].ticket)
             table = reader.read_all()
-            store.extend(table.to_pylist())
+            items = table.to_pylist()
+            store.extend(items)
+            if name == "metrics":
+                for item in items:
+                    add_metric(item.get("strategy"), item.get("metrics"))
     except Exception:
         pass
 
@@ -57,7 +62,7 @@ async def get_trades(_: Request = Depends(verify_token)):
 
 @app.get("/metrics")
 async def get_metrics(_: Request = Depends(verify_token)):
-    return metrics
+    return get_aggregated_metrics()
 
 
 @app.get("/decisions")
@@ -75,7 +80,12 @@ def _auth_ws(ws: WebSocket) -> bool:
     return not API_TOKEN or token == API_TOKEN
 
 
-async def _ws_handler(ws: WebSocket, store: List[dict], connections: Set[WebSocket]):
+async def _ws_handler(
+    ws: WebSocket,
+    store: List[dict],
+    connections: Set[WebSocket],
+    on_message: Callable[[dict], None] | None = None,
+):
     if not _auth_ws(ws):
         await ws.close(code=1008)
         return
@@ -87,6 +97,8 @@ async def _ws_handler(ws: WebSocket, store: List[dict], connections: Set[WebSock
             try:
                 payload = json.loads(data)
                 store.append(payload)
+                if on_message:
+                    on_message(payload)
             except Exception:
                 payload = data
             # broadcast
@@ -109,7 +121,12 @@ async def ws_trades(ws: WebSocket):
 
 @app.websocket("/ws/metrics")
 async def ws_metrics(ws: WebSocket):
-    await _ws_handler(ws, metrics, metric_connections)
+    await _ws_handler(
+        ws,
+        metrics_store,
+        metric_connections,
+        lambda payload: add_metric(payload.get("strategy"), payload.get("metrics")),
+    )
 
 
 @app.websocket("/ws/decisions")
