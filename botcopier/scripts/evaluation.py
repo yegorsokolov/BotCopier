@@ -32,7 +32,22 @@ def _parse_time(value: str, *, symbol: str = "") -> datetime:
 
 
 def _load_predictions(pred_file: Path) -> pd.DataFrame:
-    df = pd.read_csv(pred_file, delimiter=";")
+    try:
+        df = pd.read_csv(pred_file, delimiter=";")
+    except OSError as exc:
+        logger.error("Failed to read predictions %s: %s; using empty DataFrame", pred_file, exc)
+        cols = [
+            "timestamp",
+            "symbol",
+            "direction",
+            "lots",
+            "probability",
+            "value",
+            "log_variance",
+            "executed_model_idx",
+            "decision_id",
+        ]
+        return pd.DataFrame(columns=cols)
 
     ts_col = next((c for c in ["timestamp", "time"] if c in df.columns), df.columns[0])
     sym_col = "symbol" if "symbol" in df.columns else None
@@ -107,7 +122,22 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
 
 
 def _load_actual_trades(log_file: Path) -> pd.DataFrame:
-    df = pd.read_csv(log_file, delimiter=";")
+    try:
+        df = pd.read_csv(log_file, delimiter=";")
+    except OSError as exc:
+        logger.error("Failed to read trade log %s: %s; using empty DataFrame", log_file, exc)
+        cols = [
+            "open_time",
+            "close_time",
+            "symbol",
+            "direction",
+            "lots",
+            "executed_model_idx",
+            "decision_id",
+            "ticket",
+            "profit",
+        ]
+        return pd.DataFrame(columns=cols)
 
     ts_col = next(
         (c for c in ["event_time", "time_event"] if c in df.columns), df.columns[0]
@@ -199,11 +229,7 @@ def evaluate(
             model_value_dist = m.get("value_distribution")
             model_value_quantiles = m.get("value_quantiles")
         except (OSError, json.JSONDecodeError) as exc:
-            raise DataError(
-                "failed to read model metadata",
-                symbol="model",
-                timestamp=datetime.utcnow(),
-            ) from exc
+            logger.warning("Failed to read model metadata %s: %s", model_json, exc)
 
     # Initial merge on decision_id when available
     if predictions["decision_id"].notna().any() and trades["decision_id"].notna().any():
@@ -534,7 +560,11 @@ def _classification_metrics(
 
     results: Dict[str, object] = {}
     for name, fn in get_metrics(selected).items():
-        results[name] = fn(y_true, probas, profits)
+        try:
+            results[name] = fn(y_true, probas, profits)
+        except Exception as exc:  # pragma: no cover - specific errors tested via injection
+            logger.warning("Metric %s failed: %s", name, exc)
+            results[name] = np.nan
     return results
 
 
