@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover - optional
     hdbscan = None
 
 # Reuse data loading and feature extraction from training script
-from botcopier.data.loading import _load_logs
+from botcopier.data.loading import _load_calendar, _load_logs
 from botcopier.features.technical import _extract_features
 
 

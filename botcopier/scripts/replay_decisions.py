@@ -40,13 +40,8 @@ except Exception:  # pragma: no cover
     torch = None  # type: ignore
     _HAS_TORCH = False
 
-try:
-    from train_target_clone import TabTransformer, detect_resources
-except Exception:  # pragma: no cover - script executed within package
-    from botcopier.training.pipeline import (  # type: ignore
-        TabTransformer,
-        detect_resources,
-    )
+from botcopier.models.registry import TabTransformer
+from botcopier.training.pipeline import detect_resources
 
 try:  # optional graph embedding support
     from graph_dataset import GraphDataset, compute_gnn_embeddings
@@ -59,11 +54,13 @@ except Exception:  # pragma: no cover
 
 try:  # optional stable-baselines3 dependency
     import stable_baselines3 as sb3  # type: ignore
+
     from botcopier.rl.options import (
         OptionTradeEnv,
         default_skills,
         evaluate_option_policy,
     )
+
     _HAS_SB3 = True
 except Exception:  # pragma: no cover - optional dependency
     sb3 = None  # type: ignore
@@ -378,7 +375,9 @@ def main() -> int:
             states = df[state_cols].to_numpy(dtype=float)
             acts = df.get("action", pd.Series([0] * len(df))).to_numpy(dtype=int)
             rewards = np.ones(len(df), dtype=float)
-            opt_stats = replay_option_policy(states, acts, rewards, model, args.model.parent)
+            opt_stats = replay_option_policy(
+                states, acts, rewards, model, args.model.parent
+            )
             print(f"Option total reward: {opt_stats['total_reward']:.2f}")
         except Exception:
             pass
