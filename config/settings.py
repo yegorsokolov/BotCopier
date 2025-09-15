@@ -85,6 +85,8 @@ class TrainingConfig(BaseSettings):
     random_seed: int = 0
     online_model: str = "sgd"
     grad_clip: float = 1.0
+    half_life_days: float = 0.0
+    vol_weight: bool = False
     eval_hooks: List[str] = []
     hrp_allocation: bool = False
     strategy_search: bool = False
