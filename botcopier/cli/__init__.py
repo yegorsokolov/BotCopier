@@ -147,6 +147,9 @@ def train(
     strategy_search: bool = typer.Option(
         False, help="Run neural strategy search instead of standard training"
     ),
+    reuse_controller: bool = typer.Option(
+        False, help="Reuse previously learned AutoML controller policy",
+    ),
 ) -> None:
     """Train a model from trade logs."""
     data_cfg, train_cfg, exec_cfg = _cfg(ctx)
@@ -174,6 +177,8 @@ def train(
         train_cfg = train_cfg.model_copy(update={"hrp_allocation": hrp_allocation})
     if strategy_search:
         train_cfg = train_cfg.model_copy(update={"strategy_search": strategy_search})
+    if reuse_controller:
+        train_cfg = train_cfg.model_copy(update={"reuse_controller": reuse_controller})
     ctx.obj["config"] = {
         "data": data_cfg,
         "training": train_cfg,
@@ -191,6 +196,7 @@ def train(
         random_seed=train_cfg.random_seed,
         hrp_allocation=train_cfg.hrp_allocation,
         strategy_search=train_cfg.strategy_search,
+        reuse_controller=train_cfg.reuse_controller,
     )
 
 
