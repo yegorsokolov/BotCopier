@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional, TypeVar, cast
 
 import typer
 
-from botcopier.config.settings import (
+from config.settings import (
     DataConfig,
     ExecutionConfig,
     TrainingConfig,
@@ -331,6 +331,7 @@ def online_train(
         "training": train_cfg,
         "execution": exec_cfg,
     }
+    save_params(data_cfg, train_cfg, exec_cfg)
     import asyncio
 
     asyncio.run(run_online_trainer(data_cfg, train_cfg))
