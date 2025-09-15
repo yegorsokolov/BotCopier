@@ -106,11 +106,12 @@ from opentelemetry.trace import format_span_id, format_trace_id
 
 try:  # optional sequential drift detection
     if __package__:
-        from .sequential_drift import PageHinkley
+        from .sequential_drift import PageHinkley, CusumDetector
     else:  # pragma: no cover - executed as script
-        from sequential_drift import PageHinkley  # type: ignore
+        from sequential_drift import PageHinkley, CusumDetector  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     PageHinkley = None  # type: ignore
+    CusumDetector = None  # type: ignore
 
 try:  # on-disk ring buffer for raw ticks
     if __package__:
@@ -205,6 +206,7 @@ class OnlineTrainer:
         tick_buffer_path: Path | str | None = None,
         tick_buffer_size: int = 100_000,
         controller: AutoMLController | None = None,
+        drift_test: str = "page_hinkley",
     ) -> None:
         self.model_path = Path(model_path)
         self.batch_size = batch_size
@@ -256,7 +258,13 @@ class OnlineTrainer:
             self.store = None
         self.graph_dataset: GraphDataset | None = None
         # sequential drift detector on rolling feature statistics
-        self.drift_detector = PageHinkley() if PageHinkley is not None else None
+        self.drift_test = drift_test
+        if drift_test == "cusum" and CusumDetector is not None:
+            self.drift_detector = CusumDetector()
+        elif drift_test == "page_hinkley" and PageHinkley is not None:
+            self.drift_detector = PageHinkley()
+        else:
+            self.drift_detector = None
         self.last_drift_metric: float = 0.0
         self.last_drift_detected: bool = False
         self.drift_events: int = 0
@@ -521,9 +529,15 @@ class OnlineTrainer:
         detected = False
         if self.drift_detector is not None:
             detected = self.drift_detector.update(value)
-            metric = getattr(self.drift_detector, "_cum", 0.0) - getattr(
-                self.drift_detector, "_min_cum", 0.0
-            )
+            if isinstance(self.drift_detector, PageHinkley):
+                metric = getattr(self.drift_detector, "_cum", 0.0) - getattr(
+                    self.drift_detector, "_min_cum", 0.0
+                )
+            elif isinstance(self.drift_detector, CusumDetector):
+                metric = max(
+                    getattr(self.drift_detector, "_gpos", 0.0),
+                    abs(getattr(self.drift_detector, "_gneg", 0.0)),
+                )
             if detected:
                 self._handle_regime_shift()
                 self.drift_events += 1
@@ -684,6 +698,26 @@ class OnlineTrainer:
                         log,
                         extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
                     )
+                    if self.last_drift_detected and _update_model is not None:
+                        try:
+                            params = load_params(self.model_path)
+                            model_hash = params.model_hash
+                        except Exception:
+                            model_hash = None
+                        _update_model(
+                            self.model_path,
+                            {f"seq_{self.drift_test}": self.last_drift_metric},
+                            True,
+                            model_hash=model_hash,
+                        )
+                        logger.info(
+                            {
+                                "event": "sequential_drift",
+                                "drift_metric": self.last_drift_metric,
+                                "model_hash": model_hash,
+                            }
+                        )
+                        self.last_drift_detected = False
                     # decay learning rate for next batch
                     self.lr *= self.lr_decay
             except Exception:
