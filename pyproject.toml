@@ -48,6 +48,7 @@ dependencies = [
     "imbalanced-learn",
     "transformers",
     "mlflow",
+    "dvc",
 ]
 
 [project.optional-dependencies]
