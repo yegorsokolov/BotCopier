@@ -35,3 +35,52 @@ custom = "my_pkg.my_module:my_features"
 BotCopier will automatically discover such plugins when they are enabled.
 Enable a plugin by passing ``--feature custom`` on the CLI or by listing it
 under ``training.features`` in a configuration file.
+
+## Metric plugins
+
+Classification metrics share the same ergonomics. Implement a callable that
+accepts ``(y_true, probas, profits=None)`` and register it via
+``metrics.registry.register_metric``:
+
+```python
+from metrics.registry import register_metric
+
+@register_metric("fancy")
+def fancy_metric(y_true, probas, profits=None):
+    return 42.0
+```
+
+Expose the metric from a third-party package with an entry point:
+
+```
+[project.entry-points."botcopier.metrics"]
+fancy = "my_pkg.metrics:fancy_metric"
+```
+
+Metrics can be selected when training with ``--metric fancy`` or by setting
+``training.metrics`` in a configuration file.
+
+## Evaluation hooks
+
+Evaluation hooks extend the JSON payload returned by the ``evaluate`` command.
+They are simple callables that receive a mutable context dictionary. Register
+hooks with ``botcopier.eval.hooks.register_hook`` or publish them via the
+``botcopier.eval_hooks`` entry point group:
+
+```python
+from botcopier.eval import hooks
+
+@hooks.register_hook("alpha")
+def add_alpha(ctx):
+    ctx.setdefault("stats", {})["alpha"] = 1.0
+```
+
+Or from a plugin package:
+
+```
+[project.entry-points."botcopier.eval_hooks"]
+alpha = "my_pkg.hooks:add_alpha"
+```
+
+Enable hooks on the CLI with ``--eval-hooks alpha`` or set ``training.eval_hooks``
+in configuration.

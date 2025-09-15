@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover
 
 from botcopier.exceptions import DataError, ServiceError
 from botcopier.utils.validation import validate_columns
-from metrics.registry import get_metrics, register_metric
+from metrics.registry import get_metrics, load_plugins, register_metric
 from schemas.decisions import DECISION_SCHEMA
 from schemas.trades import TRADE_SCHEMA
 
@@ -478,13 +478,15 @@ def evaluate(
         "trade_times": trade_times,
         "stats": stats,
     }
-    from botcopier.eval.hooks import dispatch_hooks
+    from botcopier.eval.hooks import dispatch_hooks, load_entry_point_hooks
 
+    load_entry_point_hooks(hooks)
     dispatch_hooks(hooks, ctx)
 
     return ctx["stats"]
 
 
+@register_metric("accuracy")
 def _metric_accuracy(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
@@ -492,6 +494,7 @@ def _metric_accuracy(
     return float(accuracy_score(y_true, preds))
 
 
+@register_metric("roc_auc")
 def _metric_roc_auc(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float | None:
@@ -500,6 +503,7 @@ def _metric_roc_auc(
     )
 
 
+@register_metric("pr_auc")
 def _metric_pr_auc(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float | None:
@@ -510,12 +514,14 @@ def _metric_pr_auc(
     )
 
 
+@register_metric("brier_score")
 def _metric_brier(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
     return float(brier_score_loss(y_true, probas))
 
 
+@register_metric("reliability_curve")
 def _metric_reliability(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> Dict[str, List[float]]:
@@ -526,6 +532,7 @@ def _metric_reliability(
         return {"prob_true": [], "prob_pred": []}
 
 
+@register_metric("ece")
 def _metric_ece(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
@@ -551,6 +558,7 @@ def _returns(
     return profits
 
 
+@register_metric("sharpe_ratio")
 def _metric_sharpe(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
@@ -563,6 +571,7 @@ def _metric_sharpe(
     return 0.0
 
 
+@register_metric("sortino_ratio")
 def _metric_sortino(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
@@ -577,6 +586,7 @@ def _metric_sortino(
     return 0.0
 
 
+@register_metric("max_drawdown")
 def _metric_drawdown(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
@@ -584,6 +594,7 @@ def _metric_drawdown(
     return float(_abs_drawdown(returns))
 
 
+@register_metric("var_95")
 def _metric_var95(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
@@ -591,25 +602,12 @@ def _metric_var95(
     return float(_var_95(returns))
 
 
+@register_metric("profit")
 def _metric_profit(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
     returns = _returns(y_true, probas, profits)
     return float(np.sum(returns))
-
-
-# Register default metrics
-register_metric("accuracy", _metric_accuracy)
-register_metric("roc_auc", _metric_roc_auc)
-register_metric("pr_auc", _metric_pr_auc)
-register_metric("brier_score", _metric_brier)
-register_metric("reliability_curve", _metric_reliability)
-register_metric("ece", _metric_ece)
-register_metric("sharpe_ratio", _metric_sharpe)
-register_metric("sortino_ratio", _metric_sortino)
-register_metric("max_drawdown", _metric_drawdown)
-register_metric("var_95", _metric_var95)
-register_metric("profit", _metric_profit)
 
 
 def _classification_metrics(
@@ -620,6 +618,7 @@ def _classification_metrics(
 ) -> Dict[str, object]:
     """Compute classification and calibration metrics."""
 
+    load_plugins(selected)
     results: Dict[str, object] = {}
     for name, fn in get_metrics(selected).items():
         try:
