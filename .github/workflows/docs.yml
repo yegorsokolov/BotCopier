@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: '3.x'
-      - run: pip install mkdocs mkdocstrings[python]
+      - run: pip install mkdocs mkdocstrings[python] pymdown-extensions plantuml-markdown
       - run: mkdocs build --site-dir site
       - uses: actions/upload-pages-artifact@v1
         with:
