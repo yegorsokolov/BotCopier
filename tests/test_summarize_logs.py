@@ -27,6 +27,22 @@ def _write_metrics(path: Path) -> None:
         writer.writerow([3, 0])
 
 
+def _write_decisions(path: Path) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "decision_id",
+                "action",
+                "model_idx",
+                "executed_model_idx",
+                "probability",
+            ]
+        )
+        writer.writerow([1, "shadow", 0, 0, 0.4])
+        writer.writerow([2, "buy", 0, 0, 0.7])
+
+
 def test_session_summary_fields(tmp_path: Path) -> None:
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
@@ -34,6 +50,8 @@ def test_session_summary_fields(tmp_path: Path) -> None:
     metrics_file = logs_dir / "metrics.csv"
     _write_trades(trades_file)
     _write_metrics(metrics_file)
+    decisions_file = logs_dir / "decisions.csv"
+    _write_decisions(decisions_file)
     summary_file = tmp_path / "session_summary.json"
     summaries_csv = logs_dir / "summaries.csv"
 
@@ -47,6 +65,10 @@ def test_session_summary_fields(tmp_path: Path) -> None:
             str(summary_file),
             "--summaries-file",
             str(summaries_csv),
+            "--decisions-file",
+            str(decisions_file),
+            "--n-jobs",
+            "1",
         ]
     )
 
@@ -62,3 +84,49 @@ def test_session_summary_fields(tmp_path: Path) -> None:
     ]:
         assert key in data
     assert summaries_csv.exists()
+
+
+def test_summary_deterministic_n_jobs(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    trades_file = logs_dir / "trades_raw.csv"
+    metrics_file = logs_dir / "metrics.csv"
+    decisions_file = logs_dir / "decisions.csv"
+    _write_trades(trades_file)
+    _write_metrics(metrics_file)
+    _write_decisions(decisions_file)
+    summary1 = tmp_path / "sum1.json"
+    summary2 = tmp_path / "sum2.json"
+
+    main(
+        [
+            "--trades-file",
+            str(trades_file),
+            "--metrics-file",
+            str(metrics_file),
+            "--decisions-file",
+            str(decisions_file),
+            "--summary-file",
+            str(summary1),
+            "--n-jobs",
+            "1",
+        ]
+    )
+    main(
+        [
+            "--trades-file",
+            str(trades_file),
+            "--metrics-file",
+            str(metrics_file),
+            "--decisions-file",
+            str(decisions_file),
+            "--summary-file",
+            str(summary2),
+            "--n-jobs",
+            "2",
+        ]
+    )
+
+    data1 = json.loads(summary1.read_text())
+    data2 = json.loads(summary2.read_text())
+    assert data1 == data2
