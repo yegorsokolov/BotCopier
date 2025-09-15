@@ -17,8 +17,11 @@ nav:
       - Feature Plugins: feature_plugins.md
   - Tutorials:
       - Data Loading and Feature Engineering: data_loading_tutorial.md
+      - End-to-End Pipeline: end_to_end_pipeline.md
 markdown_extensions:
   - admonition
   - pymdownx.superfences
+  - plantuml_markdown:
+      server: https://www.plantuml.com/plantuml
 plugins:
   - mkdocstrings
