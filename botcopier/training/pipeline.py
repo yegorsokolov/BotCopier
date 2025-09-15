@@ -103,6 +103,12 @@ except ImportError:  # pragma: no cover
     torch = None  # type: ignore
     _HAS_TORCH = False
 
+if _HAS_TORCH:
+    from botcopier.models.deep import TabTransformer, TCNClassifier
+else:  # pragma: no cover - optional dependency
+    TabTransformer = None  # type: ignore
+    TCNClassifier = None  # type: ignore
+
 try:  # optional mlflow dependency
     import mlflow  # type: ignore
 
@@ -131,6 +137,8 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+
+SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn"}
 
 
 def _serialize_mlflow_param(value: object) -> str:
@@ -424,6 +432,44 @@ def train(
         features = list(chosen_action[0])
         model_type = chosen_action[1]
 
+    if model_type == "transformer":
+        logger.warning(
+            "Model type 'transformer' is deprecated; using 'tabtransformer' instead"
+        )
+        model_type = "tabtransformer"
+    sequence_model = model_type in SEQUENCE_MODEL_TYPES
+    sequence_param_map: dict[str, set[str]] = {
+        "tabtransformer": {
+            "epochs",
+            "batch_size",
+            "lr",
+            "weight_decay",
+            "dropout",
+            "dim",
+            "depth",
+            "heads",
+            "ff_dim",
+            "patience",
+            "mixed_precision",
+        },
+        "tcn": {
+            "epochs",
+            "batch_size",
+            "lr",
+            "weight_decay",
+            "dropout",
+            "channels",
+            "kernel_size",
+            "patience",
+            "mixed_precision",
+        },
+    }
+    extra_model_params = {
+        key: kwargs[key]
+        for key in sequence_param_map.get(model_type, set())
+        if key in kwargs
+    }
+
     set_seed(random_seed)
     configure_cache(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
@@ -512,7 +558,7 @@ def train(
             gpu_kwargs.update({"tree_method": "gpu_hist", "predictor": "gpu_predictor"})
         elif model_type == "catboost":
             gpu_kwargs.update({"device": "gpu"})
-        elif model_type == "transformer":
+        elif sequence_model:
             gpu_kwargs.update({"device": "cuda"})
     fs_repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
     span_ctx = tracer.start_as_current_span("feature_extraction")
@@ -661,19 +707,25 @@ def train(
     curriculum_steps = int(kwargs.get("curriculum_steps", 3))
     curriculum_meta: list[dict[str, object]] = []
     if curriculum_threshold > 0.0:
-        X, y, profits, sample_weight, R, curriculum_meta = _apply_curriculum(
-            X,
-            y,
-            profits,
-            sample_weight,
-            model_type=model_type,
-            gpu_kwargs=gpu_kwargs,
-            grad_clip=grad_clip,
-            threshold=curriculum_threshold,
-            steps=curriculum_steps,
-            R=R,
-            regime_feature_names=regime_feature_names or None,
-        )
+        if sequence_model:
+            logger.info(
+                "Skipping curriculum learning for sequence model type %s",
+                model_type,
+            )
+        else:
+            X, y, profits, sample_weight, R, curriculum_meta = _apply_curriculum(
+                X,
+                y,
+                profits,
+                sample_weight,
+                model_type=model_type,
+                gpu_kwargs=gpu_kwargs,
+                grad_clip=grad_clip,
+                threshold=curriculum_threshold,
+                steps=curriculum_steps,
+                R=R,
+                regime_feature_names=regime_feature_names or None,
+            )
 
     if pretrain_mask is not None and _HAS_TORCH:
         enc_path = Path(pretrain_mask)
@@ -745,6 +797,27 @@ def train(
     else:
         cluster_map = {fn: [fn] for fn in feature_names}
 
+    window_length = max(1, int(kwargs.get("window", 1)))
+    sequence_data: np.ndarray | None = None
+    if sequence_model:
+        if X.shape[0] < window_length:
+            raise ValueError("Not enough samples for the requested window length")
+        seq_list = [
+            X[i - window_length + 1 : i + 1]
+            for i in range(window_length - 1, X.shape[0])
+        ]
+        sequence_data = np.stack(seq_list, axis=0).astype(float)
+        X = X[window_length - 1 :]
+        y = y[window_length - 1 :]
+        profits = profits[window_length - 1 :]
+        sample_weight = sample_weight[window_length - 1 :]
+        if R is not None:
+            R = R[window_length - 1 :]
+        if returns_df is not None:
+            returns_df = returns_df.iloc[window_length - 1 :].reset_index(drop=True)
+    else:
+        sequence_data = None
+
     # --- Baseline statistics for Mahalanobis distance ------------------
     feat_mean: np.ndarray = np.mean(X, axis=0) if X.size else np.array([])
     if X.shape[0] >= 2:
@@ -778,6 +851,7 @@ def train(
         gap = int(kwargs.get("cv_gap", 1))
         splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
         splits = list(splitter.split(X))
+        model_inputs = sequence_data if sequence_model else X
         val_dists = (
             np.concatenate([mahal_all[val_idx] for _, val_idx in splits])
             if mahal_all.size
@@ -798,7 +872,7 @@ def train(
         for params in param_grid:
             fold_metrics: list[dict[str, object]] = []
             if distributed and _HAS_RAY:
-                X_ref = ray.put(X)
+                X_ref = ray.put(model_inputs)
                 y_ref = ray.put(y)
                 profits_ref = ray.put(profits)
                 weight_ref = ray.put(sample_weight)
@@ -806,7 +880,7 @@ def train(
 
                 @ray.remote
                 def _run_fold(tr_idx, val_idx, fold):
-                    X = ray.get(X_ref)
+                    data = ray.get(X_ref)
                     y = ray.get(y_ref)
                     profits = ray.get(profits_ref)
                     weights = ray.get(weight_ref)
@@ -830,19 +904,20 @@ def train(
                         )
                         prob_val = pred_fn(X[val_idx], R_local[val_idx])
                     else:
-                        kwargs = dict(**gpu_kwargs, **params)
-                        if model_type != "transformer":
-                            kwargs["sample_weight"] = weights[tr_idx]
-                        if model_type in {"moe", "transformer"}:
-                            kwargs["grad_clip"] = grad_clip
-                        if meta_init is not None:
-                            kwargs["init_weights"] = meta_init
-                        model_fold, pred_fn = builder(
-                            X[tr_idx],
-                            y[tr_idx],
-                            **kwargs,
+                        builder_kwargs = dict(
+                            **gpu_kwargs, **params, **extra_model_params
                         )
-                        prob_val = pred_fn(X[val_idx])
+                        builder_kwargs["sample_weight"] = weights[tr_idx]
+                        if model_type == "moe" or sequence_model:
+                            builder_kwargs["grad_clip"] = grad_clip
+                        if meta_init is not None:
+                            builder_kwargs["init_weights"] = meta_init
+                        model_fold, pred_fn = builder(
+                            data[tr_idx],
+                            y[tr_idx],
+                            **builder_kwargs,
+                        )
+                        prob_val = pred_fn(data[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     fold_metric = _classification_metrics_cached(
                         y[val_idx], prob_val, returns, selected=metric_names
@@ -890,19 +965,20 @@ def train(
                         )
                         prob_val = pred_fn(X[val_idx], R[val_idx])
                     else:
-                        kwargs = dict(**gpu_kwargs, **params)
-                        if model_type != "transformer":
-                            kwargs["sample_weight"] = sample_weight[tr_idx]
-                        if model_type in {"moe", "transformer"}:
-                            kwargs["grad_clip"] = grad_clip
-                        if meta_init is not None:
-                            kwargs["init_weights"] = meta_init
-                        model_fold, pred_fn = builder(
-                            X[tr_idx],
-                            y[tr_idx],
-                            **kwargs,
+                        builder_kwargs = dict(
+                            **gpu_kwargs, **params, **extra_model_params
                         )
-                        prob_val = pred_fn(X[val_idx])
+                        builder_kwargs["sample_weight"] = sample_weight[tr_idx]
+                        if model_type == "moe" or sequence_model:
+                            builder_kwargs["grad_clip"] = grad_clip
+                        if meta_init is not None:
+                            builder_kwargs["init_weights"] = meta_init
+                        model_fold, pred_fn = builder(
+                            model_inputs[tr_idx],
+                            y[tr_idx],
+                            **builder_kwargs,
+                        )
+                        prob_val = pred_fn(model_inputs[val_idx])
                     returns = profits[val_idx] * (prob_val >= 0.5)
                     if profile and eval_prof is not None:
                         eval_prof.enable()
@@ -975,82 +1051,86 @@ def train(
                 **({"init_weights": meta_init} if meta_init is not None else {}),
             )
         else:
-            kwargs = dict(**gpu_kwargs, **(best_params or {}))
-            if model_type != "transformer":
-                kwargs["sample_weight"] = sample_weight
-            if model_type in {"moe", "transformer"}:
-                kwargs["grad_clip"] = grad_clip
+            builder_kwargs = dict(
+                **gpu_kwargs, **(best_params or {}), **extra_model_params
+            )
+            builder_kwargs["sample_weight"] = sample_weight
+            if model_type == "moe" or sequence_model:
+                builder_kwargs["grad_clip"] = grad_clip
             if meta_init is not None:
-                kwargs["init_weights"] = meta_init
+                builder_kwargs["init_weights"] = meta_init
             model_data, predict_fn = builder(
-                X,
+                model_inputs,
                 y,
-                **kwargs,
+                **builder_kwargs,
             )
 
         # --- SHAP based feature selection ---------------------------------
         shap_threshold = float(kwargs.get("shap_threshold", 0.0))
-        try:
-            import shap  # type: ignore
+        if not sequence_model:
+            try:
+                import shap  # type: ignore
 
-            explainer = None
-            if model_type == "logreg":
+                explainer = None
+                if model_type == "logreg":
 
-                class _LRWrap:
-                    def __init__(self, coef: list[float], intercept: float) -> None:
-                        self.coef_ = np.asarray(coef, dtype=float).reshape(1, -1)
-                        self.intercept_ = np.asarray([intercept], dtype=float)
+                    class _LRWrap:
+                        def __init__(self, coef: list[float], intercept: float) -> None:
+                            self.coef_ = np.asarray(coef, dtype=float).reshape(1, -1)
+                            self.intercept_ = np.asarray([intercept], dtype=float)
 
-                explainer = shap.LinearExplainer(
-                    _LRWrap(
-                        model_data.get("coefficients", []),
-                        float(model_data.get("intercept", 0.0)),
-                    ),
-                    X,
-                )
-            else:
-                # fall back to TreeExplainer if model exposes tree structure
-                if hasattr(model_data, "booster") or model_type in {
-                    "xgboost",
-                    "lightgbm",
-                    "random_forest",
-                }:
-                    try:
-                        explainer = shap.TreeExplainer(predict_fn)  # type: ignore[arg-type]
-                    except Exception:  # pragma: no cover - optional
-                        explainer = None
+                    explainer = shap.LinearExplainer(
+                        _LRWrap(
+                            model_data.get("coefficients", []),
+                            float(model_data.get("intercept", 0.0)),
+                        ),
+                        X,
+                    )
+                else:
+                    # fall back to TreeExplainer if model exposes tree structure
+                    if hasattr(model_data, "booster") or model_type in {
+                        "xgboost",
+                        "lightgbm",
+                        "random_forest",
+                    }:
+                        try:
+                            explainer = shap.TreeExplainer(predict_fn)  # type: ignore[arg-type]
+                        except Exception:  # pragma: no cover - optional
+                            explainer = None
 
-            if explainer is not None:
-                shap_values = explainer.shap_values(X)
-                mean_abs = np.abs(shap_values).mean(axis=0)
-                ranking = sorted(
-                    zip(feature_names, mean_abs), key=lambda x: x[1], reverse=True
-                )
-                logger.info("SHAP importance ranking: %s", ranking)
-                if shap_threshold > 0.0:
-                    mask = mean_abs >= shap_threshold
-                    if mask.sum() < len(feature_names):
-                        X = X[:, mask]
-                        feature_names = [
-                            fn for fn, keep in zip(feature_names, mask) if keep
-                        ]
-                        kwargs = dict(**gpu_kwargs, **(best_params or {}))
-                        if model_type != "transformer":
-                            kwargs["sample_weight"] = sample_weight
-                        if model_type in {"moe", "transformer"}:
-                            kwargs["grad_clip"] = grad_clip
-                        model_data, predict_fn = builder(
-                            X,
-                            y,
-                            **kwargs,
-                        )
-        except Exception:  # pragma: no cover - shap is optional
-            logger.exception("Failed to compute SHAP values")
+                if explainer is not None:
+                    shap_values = explainer.shap_values(X)
+                    mean_abs = np.abs(shap_values).mean(axis=0)
+                    ranking = sorted(
+                        zip(feature_names, mean_abs), key=lambda x: x[1], reverse=True
+                    )
+                    logger.info("SHAP importance ranking: %s", ranking)
+                    if shap_threshold > 0.0:
+                        mask = mean_abs >= shap_threshold
+                            if mask.sum() < len(feature_names):
+                                X = X[:, mask]
+                                feature_names = [
+                                    fn for fn, keep in zip(feature_names, mask) if keep
+                                ]
+                                model_inputs = X
+                            builder_kwargs = dict(
+                                **gpu_kwargs, **(best_params or {}), **extra_model_params
+                            )
+                            builder_kwargs["sample_weight"] = sample_weight
+                            if model_type == "moe" or sequence_model:
+                                builder_kwargs["grad_clip"] = grad_clip
+                            model_data, predict_fn = builder(
+                                model_inputs,
+                                y,
+                                **builder_kwargs,
+                            )
+            except Exception:  # pragma: no cover - shap is optional
+                logger.exception("Failed to compute SHAP values")
         model_obj = getattr(predict_fn, "model", None)
 
         # --- Probability calibration ---------------------------------------
         calibration_info: dict[str, object] | None = None
-        if model_type != "moe":
+        if model_type != "moe" and not sequence_model:
             base_model = getattr(predict_fn, "model", None)
             if base_model is not None and X.size and y.size:
                 cal_splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
@@ -1098,7 +1178,8 @@ def train(
         if model_type == "moe" and R is not None:
             probas = predict_fn(X, R)
         else:
-            probas = predict_fn(X)
+            data_eval = model_inputs
+            probas = predict_fn(data_eval)
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
         feature_metadata = [FeatureMetadata(original_column=fn) for fn in feature_names]
@@ -1323,7 +1404,7 @@ def detect_resources(*, lite_mode: bool = False, heavy_mode: bool = False) -> di
         gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     model_type = "logreg"
     if has_gpu and gpu_mem_gb >= 8.0:
-        model_type = "transformer"
+        model_type = "tabtransformer"
     CPU_MHZ_THRESHOLD = 2500.0
     heavy_mode = heavy_mode or cpu_mhz >= CPU_MHZ_THRESHOLD
     enable_rl = has_gpu and gpu_mem_gb >= 8.0

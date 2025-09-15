@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Dict, Sequence
 
@@ -489,106 +490,303 @@ else:  # pragma: no cover - optional dependency
 
 if _HAS_TORCH:
 
-    class _TTBlock(torch.nn.Module):
-        """Attention block used by :class:`TabTransformer`."""
+    from torch.utils.data import DataLoader, TensorDataset
 
-        def __init__(self, dim: int, heads: int, ff_dim: int, dropout: float) -> None:
-            super().__init__()
-            self.attn = torch.nn.MultiheadAttention(
-                dim, heads, dropout=dropout, batch_first=True
-            )
-            self.ff = torch.nn.Sequential(
-                torch.nn.Linear(dim, ff_dim),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(dropout),
-                torch.nn.Linear(ff_dim, dim),
-            )
-            self.norm1 = torch.nn.LayerNorm(dim)
-            self.norm2 = torch.nn.LayerNorm(dim)
-            self.drop1 = torch.nn.Dropout(dropout)
-            self.drop2 = torch.nn.Dropout(dropout)
+    from .deep import TabTransformer, TCNClassifier
 
-        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover
-            attn, _ = self.attn(x, x, x)
-            x = self.norm1(x + self.drop1(attn))
-            ff = self.ff(x)
-            return self.norm2(x + self.drop2(ff))
+    def _sequence_stats(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        flat = X.reshape(-1, X.shape[-1])
+        clip_low = np.quantile(flat, 0.01, axis=0)
+        clip_high = np.quantile(flat, 0.99, axis=0)
+        clipped = np.clip(flat, clip_low, clip_high)
+        mean = clipped.mean(axis=0)
+        std = clipped.std(axis=0)
+        return clip_low, clip_high, mean, std
 
-    class TabTransformer(torch.nn.Module):
-        """Simple tabular transformer with multi-head attention layers."""
+    def _normalise_windows(
+        X: np.ndarray,
+        clip_low: np.ndarray,
+        clip_high: np.ndarray,
+        mean: np.ndarray,
+        std: np.ndarray,
+    ) -> np.ndarray:
+        std_safe = np.where(std == 0, 1.0, std)
+        X_clip = np.clip(X, clip_low, clip_high)
+        return (X_clip - mean) / std_safe
 
-        def __init__(
-            self,
-            num_features: int,
-            dim: int = 32,
-            heads: int = 4,
-            depth: int = 2,
-            ff_dim: int = 64,
-            dropout: float = 0.0,
-        ) -> None:
-            super().__init__()
-            self.embed = torch.nn.Linear(1, dim)
-            self.layers = torch.nn.ModuleList(
-                [_TTBlock(dim, heads, ff_dim, dropout) for _ in range(depth)]
-            )
-            self.norm = torch.nn.LayerNorm(dim)
-            self.head = torch.nn.Linear(num_features * dim, 1)
+    def _train_sequence_model(
+        model: torch.nn.Module,
+        X: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None,
+        *,
+        epochs: int,
+        batch_size: int,
+        lr: float,
+        weight_decay: float,
+        grad_clip: float,
+        patience: int,
+        device: torch.device,
+        mixed_precision: bool,
+    ) -> dict[str, torch.Tensor]:
+        if X.size == 0:
+            raise ValueError("Empty training data")
+        model.to(device)
+        X_t = torch.as_tensor(X, dtype=torch.float32, device=device)
+        y_t = torch.as_tensor(y, dtype=torch.float32, device=device)
+        if sample_weight is not None:
+            w_np = np.asarray(sample_weight, dtype=float)
+        else:
+            w_np = np.ones_like(y, dtype=float)
+        w_t = torch.as_tensor(w_np, dtype=torch.float32, device=device)
+        n_samples = X_t.shape[0]
+        if n_samples == 1:
+            train_X, val_X = X_t, X_t[:0]
+            train_y, val_y = y_t, y_t[:0]
+            train_w, val_w = w_t, w_t[:0]
+        else:
+            val_size = max(1, int(n_samples * 0.2))
+            if val_size >= n_samples:
+                val_size = n_samples - 1
+            split = n_samples - val_size
+            train_X, val_X = X_t[:split], X_t[split:]
+            train_y, val_y = y_t[:split], y_t[split:]
+            train_w, val_w = w_t[:split], w_t[split:]
+        dataset = TensorDataset(train_X, train_y, train_w)
+        loader = DataLoader(
+            dataset,
+            batch_size=min(batch_size, len(dataset)) or 1,
+            shuffle=True,
+        )
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
+        amp_enabled = mixed_precision and device.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
 
-        def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover
-            x = self.embed(x.unsqueeze(-1))
-            for layer in self.layers:
-                x = layer(x)
-            x = self.norm(x)
-            x = x.reshape(x.size(0), -1)
-            return self.head(x)
+        def _autocast():
+            if device.type == "cuda":
+                return torch.cuda.amp.autocast(enabled=amp_enabled)
+            return nullcontext()
+
+        best_loss = float("inf")
+        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        patience_ctr = 0
+        for _ in range(max(1, epochs)):
+            model.train()
+            for batch_X, batch_y, batch_w in loader:
+                opt.zero_grad(set_to_none=True)
+                with _autocast():
+                    logits = model(batch_X)
+                    batch_loss = loss_fn(logits, batch_y)
+                    denom = batch_w.sum()
+                    if denom.item() <= 0:
+                        loss = batch_loss.mean()
+                    else:
+                        loss = (batch_loss * batch_w).sum() / denom
+                scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(opt)
+                scaler.update()
+            model.eval()
+            with torch.no_grad():
+                if val_X.numel() == 0:
+                    val_loss = float(loss.item())
+                else:
+                    with _autocast():
+                        logits = model(val_X)
+                        val_raw = loss_fn(logits, val_y)
+                    denom = val_w.sum()
+                    if denom.item() <= 0:
+                        val_loss = float(val_raw.mean().item())
+                    else:
+                        val_loss = float((val_raw * val_w).sum().item() / denom.item())
+            if val_loss + 1e-6 < best_loss:
+                best_loss = val_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                patience_ctr = 0
+            else:
+                patience_ctr += 1
+                if patience_ctr >= max(1, patience):
+                    break
+        model.load_state_dict(best_state)
+        model.eval()
+        return best_state
 
     def fit_tab_transformer(
         X: np.ndarray,
         y: np.ndarray,
         *,
-        epochs: int = 10,
+        sample_weight: np.ndarray | None = None,
+        epochs: int = 50,
+        batch_size: int = 64,
         lr: float = 1e-3,
-        dropout: float = 0.0,
-        device: str = "cpu",
+        weight_decay: float = 1e-4,
+        dropout: float = 0.1,
+        dim: int = 64,
+        depth: int = 2,
+        heads: int = 4,
+        ff_dim: int = 128,
+        patience: int = 5,
         grad_clip: float = 1.0,
-    ) -> tuple[dict[str, list], Callable[[np.ndarray], np.ndarray]]:
-        """Train a :class:`TabTransformer` on ``X`` and ``y``."""
-
+        device: str = "cpu",
+        mixed_precision: bool = True,
+    ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
+        seq = np.asarray(X, dtype=float)
+        if seq.ndim == 2:
+            seq = seq[:, np.newaxis, :]
+        window = seq.shape[1]
+        features = seq.shape[-1]
+        clip_low, clip_high, mean, std = _sequence_stats(seq)
+        seq_norm = _normalise_windows(seq, clip_low, clip_high, mean, std)
         dev = torch.device(device)
-        model = TabTransformer(X.shape[1], dropout=dropout).to(dev)
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
-        loss_fn = torch.nn.BCEWithLogitsLoss()
-        X_t = torch.tensor(X, dtype=torch.float32, device=dev)
-        y_t = torch.tensor(y, dtype=torch.float32, device=dev).unsqueeze(-1)
-        model.train()
-        for _ in range(epochs):  # pragma: no cover - quick epochs
-            opt.zero_grad()
-            out = model(X_t)
-            loss = loss_fn(out, y_t)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            opt.step()
+        model = TabTransformer(
+            features,
+            window,
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        state = _train_sequence_model(
+            model,
+            seq_norm,
+            np.asarray(y, dtype=float),
+            sample_weight,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            weight_decay=weight_decay,
+            grad_clip=grad_clip,
+            patience=patience,
+            device=dev,
+            mixed_precision=mixed_precision,
+        )
+        model.load_state_dict(state)
+        model.to(dev)
+
+        std_safe = np.where(std == 0, 1.0, std)
 
         def _predict(arr: np.ndarray) -> np.ndarray:
+            data = np.asarray(arr, dtype=float)
+            if data.ndim == 2:
+                data = data[:, np.newaxis, :]
+            norm = (np.clip(data, clip_low, clip_high) - mean) / std_safe
             with torch.no_grad():
-                arr_t = torch.tensor(arr, dtype=torch.float32, device=dev)
-                return torch.sigmoid(model(arr_t)).cpu().numpy().squeeze(-1)
+                tens = torch.as_tensor(norm, dtype=torch.float32, device=dev)
+                logits = model(tens)
+                return torch.sigmoid(logits).cpu().numpy()
 
         _predict.model = model  # type: ignore[attr-defined]
         _predict.device = dev  # type: ignore[attr-defined]
 
-        state = model.state_dict()
-        dim = model.embed.out_features
-        qkv = state["layers.0.attn.in_proj_weight"].cpu()
-        weights = {
-            "q_weight": qkv[:dim].tolist(),
-            "k_weight": qkv[dim : 2 * dim].tolist(),
-            "v_weight": qkv[2 * dim :].tolist(),
-            "out_weight": state["layers.0.attn.out_proj.weight"].cpu().tolist(),
-            "pos_embed_weight": state["embed.weight"].cpu().tolist(),
+        meta = {
+            "state_dict": {k: v.numpy().tolist() for k, v in state.items()},
+            "clip_low": clip_low.tolist(),
+            "clip_high": clip_high.tolist(),
+            "mean": mean.tolist(),
+            "std": std.tolist(),
+            "feature_mean": mean.tolist(),
+            "feature_std": std.tolist(),
+            "window": int(window),
+            "config": {
+                "dim": dim,
+                "depth": depth,
+                "heads": heads,
+                "ff_dim": ff_dim,
+                "dropout": dropout,
+            },
+            "sequence_order": list(range(window)),
         }
-        return {"weights": weights, "dropout": dropout}, _predict
+        return meta, _predict
 
+    def fit_temporal_cnn(
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        sample_weight: np.ndarray | None = None,
+        epochs: int = 50,
+        batch_size: int = 64,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
+        dropout: float = 0.1,
+        channels: Sequence[int] | None = None,
+        kernel_size: int = 3,
+        patience: int = 5,
+        grad_clip: float = 1.0,
+        device: str = "cpu",
+        mixed_precision: bool = True,
+    ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
+        seq = np.asarray(X, dtype=float)
+        if seq.ndim == 2:
+            seq = seq[:, np.newaxis, :]
+        window = seq.shape[1]
+        features = seq.shape[-1]
+        clip_low, clip_high, mean, std = _sequence_stats(seq)
+        seq_norm = _normalise_windows(seq, clip_low, clip_high, mean, std)
+        dev = torch.device(device)
+        model = TCNClassifier(
+            features,
+            window,
+            channels=channels,
+            kernel_size=kernel_size,
+            dropout=dropout,
+        )
+        state = _train_sequence_model(
+            model,
+            seq_norm,
+            np.asarray(y, dtype=float),
+            sample_weight,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            weight_decay=weight_decay,
+            grad_clip=grad_clip,
+            patience=patience,
+            device=dev,
+            mixed_precision=mixed_precision,
+        )
+        model.load_state_dict(state)
+        model.to(dev)
+
+        std_safe = np.where(std == 0, 1.0, std)
+
+        def _predict(arr: np.ndarray) -> np.ndarray:
+            data = np.asarray(arr, dtype=float)
+            if data.ndim == 2:
+                data = data[:, np.newaxis, :]
+            norm = (np.clip(data, clip_low, clip_high) - mean) / std_safe
+            with torch.no_grad():
+                tens = torch.as_tensor(norm, dtype=torch.float32, device=dev)
+                logits = model(tens)
+                return torch.sigmoid(logits).cpu().numpy()
+
+        _predict.model = model  # type: ignore[attr-defined]
+        _predict.device = dev  # type: ignore[attr-defined]
+
+        cfg_channels = list(channels or (64, 64))
+        meta = {
+            "state_dict": {k: v.numpy().tolist() for k, v in state.items()},
+            "clip_low": clip_low.tolist(),
+            "clip_high": clip_high.tolist(),
+            "mean": mean.tolist(),
+            "std": std.tolist(),
+            "feature_mean": mean.tolist(),
+            "feature_std": std.tolist(),
+            "window": int(window),
+            "config": {
+                "channels": cfg_channels,
+                "kernel_size": kernel_size,
+                "dropout": dropout,
+            },
+            "sequence_order": list(range(window)),
+        }
+        return meta, _predict
+
+    register_model("tabtransformer", fit_tab_transformer)
+    register_model("tcn", fit_temporal_cnn)
     register_model("transformer", fit_tab_transformer)
 else:  # pragma: no cover - torch optional
 
@@ -596,13 +794,22 @@ else:  # pragma: no cover - torch optional
         def __init__(self, *_, **__):  # pragma: no cover - trivial
             raise ImportError("PyTorch is required for TabTransformer")
 
+    class TCNClassifier:  # type: ignore[misc]
+        def __init__(self, *_, **__):  # pragma: no cover - trivial
+            raise ImportError("PyTorch is required for TemporalConvNet")
+
     def fit_tab_transformer(*_, **__):  # pragma: no cover - trivial
         raise ImportError("PyTorch is required for TabTransformer")
+
+    def fit_temporal_cnn(*_, **__):  # pragma: no cover - trivial
+        raise ImportError("PyTorch is required for TemporalConvNet")
 
 
 __all__ = [
     "TabTransformer",
+    "TCNClassifier",
     "fit_tab_transformer",
+    "fit_temporal_cnn",
     "register_model",
     "get_model",
     "MODEL_REGISTRY",

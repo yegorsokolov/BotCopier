@@ -40,7 +40,11 @@ except Exception:  # pragma: no cover
     torch = None  # type: ignore
     _HAS_TORCH = False
 
-from botcopier.models.registry import TabTransformer
+if _HAS_TORCH:
+    from botcopier.models.deep import TabTransformer, TCNClassifier
+else:  # pragma: no cover - optional dependency
+    TabTransformer = None  # type: ignore
+    TCNClassifier = None  # type: ignore
 from botcopier.training.pipeline import detect_resources
 
 try:  # optional graph embedding support
@@ -145,32 +149,102 @@ def _predict_nn(model: Dict, features: Dict[str, float]) -> float:
     return float(1 / (1 + np.exp(-z)))
 
 
-def _predict_tabtransformer(model: Dict, features: Dict[str, float]) -> float:
-    """Compute probability using a tabular transformer model."""
-    state = model.get("state_dict")
-    if state is None or not _HAS_TORCH:
-        return _predict_logistic(model, features)
+def _prepare_sequence_window(
+    model: Dict, features: Dict[str, float]
+) -> tuple[np.ndarray | None, int]:
     names = model.get("feature_names", [])
-    mean = np.array(
-        model.get("feature_mean", model.get("mean", [0.0] * len(names))),
-        dtype=float,
-    )
-    std = np.array(
-        model.get("feature_std", model.get("std", [1.0] * len(names))),
-        dtype=float,
-    )
-    low = np.array(model.get("clip_low", [-np.inf] * len(names)), dtype=float)
-    high = np.array(model.get("clip_high", [np.inf] * len(names)), dtype=float)
-    vec = np.array([float(features.get(n, 0.0)) for n in names])
+    if not names:
+        return None, 1
+    mean = np.asarray(model.get("mean", [0.0] * len(names)), dtype=float)
+    std = np.asarray(model.get("std", [1.0] * len(names)), dtype=float)
+    low = np.asarray(model.get("clip_low", [-np.inf] * len(names)), dtype=float)
+    high = np.asarray(model.get("clip_high", [np.inf] * len(names)), dtype=float)
+    vec = np.array([float(features.get(n, 0.0)) for n in names], dtype=float)
     vec = np.clip(vec, low, high)
     std_safe = np.where(std == 0, 1, std)
-    x = (vec - mean) / std_safe
-    tt = TabTransformer(len(names))
-    tt.load_state_dict({k: torch.tensor(v) for k, v in state.items()})
-    tt.eval()
+    norm = (vec - mean) / std_safe
+    window = int(model.get("window", len(model.get("sequence_order", [])) or 1))
+    buffer = model.setdefault("_sequence_buffer", [])
+    buffer.append(norm)
+    if len(buffer) > window:
+        del buffer[:-window]
+    if len(buffer) < window:
+        return None, window
+    seq = np.stack(buffer[-window:], axis=0)
+    return seq, window
+
+
+def _load_sequence_model(model: Dict, cls):
+    if not _HAS_TORCH:
+        return None
+    cache_key = f"_{cls.__name__.lower()}"
+    net = model.get(cache_key)
+    if net is not None:
+        return net
+    state = model.get("state_dict")
+    names = model.get("feature_names", [])
+    if not state or not names:
+        return None
+    window = int(model.get("window", len(model.get("sequence_order", [])) or 1))
+    config = model.get("config", {})
+    if cls is TabTransformer and TabTransformer is not None:
+        net = TabTransformer(
+            len(names),
+            window,
+            dim=int(config.get("dim", 64)),
+            depth=int(config.get("depth", 2)),
+            heads=int(config.get("heads", 4)),
+            ff_dim=int(config.get("ff_dim", 128)),
+            dropout=float(config.get("dropout", 0.1)),
+        )
+    elif cls is TCNClassifier and TCNClassifier is not None:
+        channels = config.get("channels")
+        if channels is not None:
+            channels = [int(c) for c in channels]
+        net = TCNClassifier(
+            len(names),
+            window,
+            channels=channels,
+            kernel_size=int(config.get("kernel_size", 3)),
+            dropout=float(config.get("dropout", 0.1)),
+        )
+    else:  # pragma: no cover - defensive
+        return None
+    state_tensors = {k: torch.tensor(v, dtype=torch.float32) for k, v in state.items()}
+    net.load_state_dict(state_tensors)
+    net.eval()
+    model[cache_key] = net
+    return net
+
+
+def _predict_tabtransformer(model: Dict, features: Dict[str, float]) -> float:
+    """Compute probability using a tabular transformer model."""
+    if not _HAS_TORCH:
+        return _predict_logistic(model, features)
+    seq, _ = _prepare_sequence_window(model, features)
+    if seq is None:
+        return _predict_logistic(model, features)
+    net = _load_sequence_model(model, TabTransformer)
+    if net is None:
+        return _predict_logistic(model, features)
     with torch.no_grad():
-        inp = torch.tensor(x, dtype=torch.float32).unsqueeze(0)
-        logit = tt(inp)
+        tens = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
+        logit = net(tens)
+        return float(torch.sigmoid(logit).item())
+
+
+def _predict_tcn(model: Dict, features: Dict[str, float]) -> float:
+    if not _HAS_TORCH:
+        return _predict_logistic(model, features)
+    seq, _ = _prepare_sequence_window(model, features)
+    if seq is None:
+        return _predict_logistic(model, features)
+    net = _load_sequence_model(model, TCNClassifier)
+    if net is None:
+        return _predict_logistic(model, features)
+    with torch.no_grad():
+        tens = torch.tensor(seq, dtype=torch.float32).unsqueeze(0)
+        logit = net(tens)
         return float(torch.sigmoid(logit).item())
 
 
@@ -189,7 +263,12 @@ def _recompute(
 ) -> Dict:
     """Recompute probabilities and collect statistics."""
     resources = detect_resources()
-    if model.get("state_dict"):
+    model_type = model.get("model_type")
+    if model_type == "tabtransformer":
+        pred_fn = _predict_tabtransformer
+    elif model_type == "tcn":
+        pred_fn = _predict_tcn
+    elif model.get("state_dict"):
         pred_fn = _predict_tabtransformer
     else:
         use_complex = not resources.get("lite_mode") and model.get("nn_weights")

@@ -12,7 +12,7 @@ import argparse
 
 from botcopier.data.loading import _load_logs
 from botcopier.features.engineering import _extract_features
-from botcopier.models.registry import TabTransformer
+from botcopier.models.deep import TabTransformer
 from botcopier.training.pipeline import detect_resources, run_optuna, train
 
 __all__ = [

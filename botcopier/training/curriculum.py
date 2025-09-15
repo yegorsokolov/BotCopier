@@ -10,6 +10,8 @@ from botcopier.models.registry import get_model
 
 logger = logging.getLogger(__name__)
 
+SEQUENCE_MODELS = {"tabtransformer", "tcn"}
+
 
 def _apply_curriculum(
     X: np.ndarray,
@@ -81,9 +83,9 @@ def _apply_curriculum(
             )
             prob_val = pred_fn(X[val_idx], R[val_idx])
         else:
-            if model_type != "transformer":
+            if model_type not in SEQUENCE_MODELS:
                 kwargs["sample_weight"] = sample_weight[tr_idx]
-            if model_type in {"moe", "transformer"}:
+            if model_type == "moe" or model_type in SEQUENCE_MODELS:
                 kwargs["grad_clip"] = grad_clip
             model, pred_fn = builder(X[tr_idx], y[tr_idx], **kwargs)
             prob_val = pred_fn(X[val_idx])
