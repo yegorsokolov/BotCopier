@@ -1107,12 +1107,12 @@ def train(
                     logger.info("SHAP importance ranking: %s", ranking)
                     if shap_threshold > 0.0:
                         mask = mean_abs >= shap_threshold
-                            if mask.sum() < len(feature_names):
-                                X = X[:, mask]
-                                feature_names = [
-                                    fn for fn, keep in zip(feature_names, mask) if keep
-                                ]
-                                model_inputs = X
+                        if mask.sum() < len(feature_names):
+                            X = X[:, mask]
+                            feature_names = [
+                                fn for fn, keep in zip(feature_names, mask) if keep
+                            ]
+                            model_inputs = X
                             builder_kwargs = dict(
                                 **gpu_kwargs, **(best_params or {}), **extra_model_params
                             )

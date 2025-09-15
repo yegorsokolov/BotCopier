@@ -6,10 +6,10 @@ functions can be plugged in at runtime.
 ## Writing a plugin
 
 Create a module on the Python path and register a function with
-`botcopier.features.plugins.register_feature`:
+`botcopier.features.registry.register_feature`:
 
 ```python
-from botcopier.features.plugins import register_feature
+from botcopier.features.registry import register_feature
 
 def my_features(df, feature_names, **kwargs):
     # add columns to df and append their names
