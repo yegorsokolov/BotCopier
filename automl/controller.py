@@ -8,7 +8,7 @@ import math
 import os
 import random
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Tuple
 
 try:  # pragma: no cover - registry may not be present in tests
     from models.registry import _REGISTRY as _MODEL_REGISTRY  # type: ignore
@@ -16,6 +16,8 @@ except Exception:  # pragma: no cover - best effort
     _MODEL_REGISTRY = {}
 
 Action = Tuple[Tuple[str, ...], str]
+
+__all__ = ["AutoMLController", "Action"]
 
 
 class AutoMLController:
@@ -51,10 +53,16 @@ class AutoMLController:
         self.models = models
         self.model_path = Path(model_path)
         self.action_space: List[Action] = []
+        self.last_action: Action | None = None
         for r in range(1, len(self.features) + 1):
             for subset in itertools.combinations(self.features, r):
                 for model in self.models:
                     self.action_space.append((subset, model))
+
+        if not self.action_space:
+            raise ValueError(
+                "AutoMLController requires at least one feature/model combination"
+            )
 
         # Pre-compute keys for each action so we don't repeatedly encode
         # actions during gradient updates. ``action_keys`` maintains the
@@ -78,6 +86,7 @@ class AutoMLController:
             self.theta[k] = 0.0
             self.avg_reward[k] = 0.0
             self.counts[k] = 0
+        self.last_action = None
 
     def _key(self, action: Action) -> str:
         subset, model = action
@@ -103,6 +112,7 @@ class AutoMLController:
         theta = sec.get("policy")
         rewards = sec.get("avg_reward")
         counts = sec.get("counts")
+        last_action = sec.get("last_action")
         if theta:
             for k, v in theta.items():
                 if k in self.theta:
@@ -115,6 +125,13 @@ class AutoMLController:
             for k, v in counts.items():
                 if k in self.counts:
                     self.counts[k] = int(v)
+        if last_action and isinstance(last_action, dict):
+            subset = tuple(last_action.get("features", ()))
+            model = last_action.get("model")
+            if subset and isinstance(model, str):
+                key = self._key((subset, model))
+                if key in self.theta:
+                    self.last_action = (subset, model)
 
     def _save(self) -> None:
         try:
@@ -125,6 +142,13 @@ class AutoMLController:
         sec["policy"] = self.theta
         sec["avg_reward"] = self.avg_reward
         sec["counts"] = self.counts
+        if self.last_action is not None:
+            sec["last_action"] = {
+                "features": list(self.last_action[0]),
+                "model": self.last_action[1],
+            }
+        else:
+            sec.pop("last_action", None)
         best = self.select_best()
         if best is not None:
             sec["best_action"] = {"features": list(best[0]), "model": best[1]}
@@ -147,6 +171,7 @@ class AutoMLController:
         """Sample an action according to the current policy."""
         probs = self._probs()
         action = random.choices(self.action_space, probs)[0]
+        self.last_action = action
         return action, probs
 
     def update(self, action: Action, reward: float, alpha: float = 0.1) -> None:
@@ -160,6 +185,7 @@ class AutoMLController:
         self.counts[k] += 1
         c = self.counts[k]
         self.avg_reward[k] += (reward - self.avg_reward[k]) / c
+        self.last_action = action
         self._save()
 
     def train(

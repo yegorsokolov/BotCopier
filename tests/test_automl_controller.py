@@ -1,11 +1,15 @@
+"""Convergence tests for the :mod:`automl.controller` module."""
+
+from __future__ import annotations
+
 import json
 import random
 from pathlib import Path
 
-from automl.controller import AutoMLController
+from automl.controller import Action, AutoMLController
 
 
-def _toy_env(action):
+def _toy_env(action: Action) -> float:
     rewards = {
         (("f1",), "m1"): 0.1,
         (("f1",), "m2"): 0.2,
@@ -28,6 +32,8 @@ def test_controller_converges(tmp_path: Path) -> None:
     data = json.loads((tmp_path / "model.json").read_text())
     sec = data["automl_controller"]["best_action"]
     assert sec == {"features": ["f1", "f2"], "model": "m2"}
+    last = data["automl_controller"].get("last_action")
+    assert last == {"features": ["f1", "f2"], "model": "m2"}
 
 
 def test_controller_reuse(tmp_path: Path) -> None:
@@ -38,5 +44,6 @@ def test_controller_reuse(tmp_path: Path) -> None:
     best = controller.select_best()
     reused = AutoMLController(["f1", "f2"], {"m1": 1, "m2": 2}, model_path=path, reuse=True)
     assert reused.select_best() == best
+    assert reused.last_action in reused.action_space
     fresh = AutoMLController(["f1", "f2"], {"m1": 1, "m2": 2}, model_path=path, reuse=False)
     assert fresh.select_best() != best
