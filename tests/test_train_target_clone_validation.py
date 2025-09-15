@@ -69,6 +69,8 @@ def test_threshold_selected_by_profit(tmp_path: Path) -> None:
     model = json.loads((out_dir / "model.json").read_text())
     params = model["session_models"]["asian"]
     assert params["threshold"] == pytest.approx(0.0)
+    assert model["threshold"] == pytest.approx(params["threshold"])
+    assert model["cv_metrics"]["threshold"] == pytest.approx(params["threshold"])
     assert params["metrics"]["profit"] == pytest.approx(1.5)
     assert "sharpe_ratio" in params["metrics"]
     assert "sortino_ratio" in params["metrics"]

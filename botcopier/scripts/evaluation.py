@@ -331,6 +331,39 @@ def evaluate(
     gross_profit = float(profits[profits >= 0].sum())
     gross_loss = float(-profits[profits < 0].sum())
 
+    profit_array = profits.to_numpy(dtype=float) if matches else np.array([], dtype=float)
+    net_profit_array = (
+        net_profits.to_numpy(dtype=float) if matches else np.array([], dtype=float)
+    )
+
+    sharpe = sortino = 0.0
+    sharpe_net = sortino_net = 0.0
+    if profit_array.size > 1:
+        mean_profit = float(np.mean(profit_array))
+        std_profit = float(np.std(profit_array, ddof=1))
+        if std_profit > 0:
+            sharpe = mean_profit / std_profit
+        downside = profit_array[profit_array < 0]
+        if downside.size:
+            downside_std = float(np.sqrt(np.mean(downside**2)))
+            if downside_std > 0:
+                sortino = mean_profit / downside_std
+    if net_profit_array.size > 1:
+        mean_net = float(np.mean(net_profit_array))
+        std_net = float(np.std(net_profit_array, ddof=1))
+        if std_net > 0:
+            sharpe_net = mean_net / std_net
+        downside_net_arr = net_profit_array[net_profit_array < 0]
+        if downside_net_arr.size:
+            downside_net_std = float(np.sqrt(np.mean(downside_net_arr**2)))
+            if downside_net_std > 0:
+                sortino_net = mean_net / downside_net_std
+
+    max_dd = _abs_drawdown(profit_array.tolist()) if profit_array.size else 0.0
+    max_dd_net = (
+        _abs_drawdown(net_profit_array.tolist()) if net_profit_array.size else 0.0
+    )
+
     predictions_per_model = (
         merged["executed_model_idx"].dropna().astype(int).value_counts().to_dict()
     )
@@ -394,8 +427,12 @@ def evaluate(
         cvar = float(tail.mean())
         var_95 = float(np.quantile(profits, 0.05))
         es_95 = float(profits[profits <= var_95].mean())
+        var_95_net = float(np.quantile(net_profit_array, 0.05))
+        net_tail = net_profit_array[net_profit_array <= var_95_net]
+        es_95_net = float(net_tail.mean()) if net_tail.size else float(var_95_net)
     else:
         cvar = var_95 = es_95 = 0.0
+        var_95_net = es_95_net = 0.0
 
     # sharpe and precision metrics are handled via evaluation hooks
 
@@ -441,13 +478,21 @@ def evaluate(
         "expected_return": expected_return,
         "expected_return_net": expected_return_net,
         "downside_risk": downside_risk,
+        "max_drawdown": float(max_dd),
+        "max_drawdown_net": float(max_dd_net),
         "cvar": cvar,
         "var_95": var_95,
         "es_95": es_95,
+        "var_95_net": var_95_net,
+        "es_95_net": es_95_net,
         "risk_reward": risk_reward,
         "conformal_coverage": conformal,
         "predictions_per_model": predictions_per_model,
         "matches_per_model": matches_per_model,
+        "sharpe_ratio": sharpe,
+        "sortino_ratio": sortino,
+        "sharpe_ratio_net": sharpe_net,
+        "sortino_ratio_net": sortino_net,
         "roc_auc": roc_auc,
         "pr_auc": pr_auc,
         "brier_score": brier,
