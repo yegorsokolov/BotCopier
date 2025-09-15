@@ -26,6 +26,8 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt pre-commit mkdocs mkdocstrings[python] dvc
+      - name: Prepare DVC remote cache
+        run: mkdir -p ../../dvcstore
       - name: Pull DVC data
         run: dvc pull
       - name: Run pre-commit

@@ -111,6 +111,16 @@ except ImportError:  # pragma: no cover
     mlflow = None  # type: ignore
     _HAS_MLFLOW = False
 
+try:  # optional dvc dependency
+    from dvc.exceptions import DvcException
+    from dvc.repo import Repo as _DvcRepo
+
+    _HAS_DVC = True
+except Exception:  # pragma: no cover - optional
+    DvcException = Exception  # type: ignore
+    _DvcRepo = None  # type: ignore
+    _HAS_DVC = False
+
 try:  # optional ray dependency
     import ray  # type: ignore
 
@@ -121,6 +131,69 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+
+
+def _serialize_mlflow_param(value: object) -> str:
+    """Convert arbitrary parameter values into a string for MLflow logging."""
+
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return np.array2string(np.asarray(value), separator=",")
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return ",".join(_serialize_mlflow_param(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(
+            {str(k): _serialize_mlflow_param(v) for k, v in value.items()},
+            sort_keys=True,
+        )
+    return str(value)
+
+
+def _version_artifacts_with_dvc(repo_root: Path | None, targets: Sequence[Path]) -> None:
+    """Register the provided targets with a DVC repository if available."""
+
+    if not (_HAS_DVC and repo_root):
+        return
+    repo_root = Path(repo_root).resolve()
+    if not (repo_root / ".dvc").exists():
+        logger.debug("DVC root %s is not initialized; skipping versioning", repo_root)
+        return
+    cwd = os.getcwd()
+    try:
+        os.chdir(repo_root)
+        with _DvcRepo(str(repo_root)) as repo:  # type: ignore[misc]
+            for target in targets:
+                target_path = Path(target).resolve()
+                if not target_path.exists():
+                    continue
+                try:
+                    rel_target = target_path.relative_to(repo_root)
+                except ValueError:
+                    logger.debug(
+                        "Skipping DVC registration for %s outside of repo %s",
+                        target_path,
+                        repo_root,
+                    )
+                    continue
+                try:
+                    repo.add([str(rel_target)])
+                except DvcException:  # pragma: no cover - best effort logging
+                    logger.debug(
+                        "DVC reported that %s is already tracked; skipping", rel_target
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    logger.exception(
+                        "Failed to add %s to DVC repository %s", rel_target, repo_root
+                    )
+    except Exception:  # pragma: no cover - defensive
+        logger.exception("Failed to open DVC repository at %s", repo_root)
+    finally:
+        os.chdir(cwd)
 
 
 if _HAS_NUMBA:
@@ -318,9 +391,28 @@ def train(
     controller: AutoMLController | None = None,
     reuse_controller: bool = False,
     complexity_penalty: float = 0.1,
+    dvc_repo: Path | str | None = None,
     **kwargs: object,
 ) -> object:
-    """Train a model selected from the registry."""
+    """Train a model selected from the registry.
+
+    Parameters
+    ----------
+    dvc_repo
+        Optional path to a DVC repository used to version the training
+        dataset and resulting model artifacts.
+    """
+    data_dir = Path(data_dir)
+    out_dir = Path(out_dir)
+    if dvc_repo is not None:
+        dvc_repo_path: Path | None = Path(dvc_repo)
+    else:
+        env_repo = os.getenv("BOTCOPIER_DVC_ROOT")
+        dvc_repo_path = Path(env_repo) if env_repo else None
+    if dvc_repo_path is not None and not dvc_repo_path.exists():
+        logger.debug("Provided DVC repository %s does not exist", dvc_repo_path)
+        dvc_repo_path = None
+
     if model_json is not None:
         model_json = Path(model_json)
     chosen_action: tuple[tuple[str, ...], str] | None = None
@@ -1157,16 +1249,61 @@ def train(
                 export_model(model_obj, X, out_dir / "model.onnx")
             except Exception:  # pragma: no cover - best effort
                 logger.exception("Failed to export ONNX model")
+        _version_artifacts_with_dvc(
+            dvc_repo_path,
+            [
+                data_dir,
+                out_dir / "model.json",
+                out_dir / "data_hashes.json",
+            ],
+        )
         if mlflow_active:
-            mlflow.log_param("model_type", model_type)
-            mlflow.log_param("n_features", len(feature_names))
+            base_params: dict[str, object] = {
+                "model_type": model_type,
+                "n_features": len(feature_names),
+                "random_seed": random_seed,
+                "grad_clip": grad_clip,
+                "fee_per_trade": fee_per_trade,
+                "slippage_bps": slippage_bps,
+                "distributed": distributed,
+                "use_gpu": use_gpu,
+                "hrp_allocation": hrp_allocation,
+                "strategy_search": strategy_search,
+            }
+            if n_jobs is not None:
+                base_params["n_jobs"] = n_jobs
+            if features is not None:
+                base_params["requested_features"] = list(features)
+            if regime_features is not None:
+                base_params["regime_features"] = list(regime_features)
+            if dvc_repo_path is not None:
+                base_params["dvc_repo"] = dvc_repo_path
+            mlflow.log_params({
+                k: _serialize_mlflow_param(v) for k, v in base_params.items()
+            })
+            if best_params:
+                mlflow.log_params(
+                    {
+                        f"hp_{k}": _serialize_mlflow_param(v)
+                        for k, v in best_params.items()
+                    }
+                )
             mlflow.log_metric("train_accuracy", float(score))
-            for k, v in metrics.items():
-                mlflow.log_metric(f"cv_{k}", float(v))
+            aggregated_metrics = {
+                f"cv_{k}": float(v)
+                for k, v in metrics.items()
+                if isinstance(v, (int, float)) and not np.isnan(v)
+            }
+            if aggregated_metrics:
+                mlflow.log_metrics(aggregated_metrics)
             mlflow.log_artifact(str(out_dir / "model.json"), artifact_path="model")
             mlflow.log_artifact(
                 str(out_dir / "data_hashes.json"), artifact_path="model"
             )
+            model_uri = mlflow.get_artifact_uri("model/model.json")
+            data_hash_uri = mlflow.get_artifact_uri("model/data_hashes.json")
+            mlflow.log_param("model_uri", model_uri)
+            mlflow.log_param("data_hashes_uri", data_hash_uri)
         span_eval.__exit__(None, None, None)
         return model_obj
 
