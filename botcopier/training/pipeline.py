@@ -83,6 +83,7 @@ from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.training.curriculum import _apply_curriculum
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
+from metrics.aggregator import add_metric
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -139,6 +140,130 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn"}
+
+
+def _compute_time_decay_weights(
+    event_times: np.ndarray | Sequence[object] | None, *, half_life_days: float
+) -> np.ndarray:
+    """Return exponential decay weights based on ``event_times``.
+
+    Parameters
+    ----------
+    event_times:
+        Sequence of event timestamps.  Values are coerced to ``datetime64``
+        before computing ages relative to the most recent timestamp.
+    half_life_days:
+        Half-life in days controlling the decay rate.  When the value is
+        non-positive or ``event_times`` is empty an array of ones is returned.
+    """
+
+    if event_times is None:
+        return np.ones(0, dtype=float)
+
+    dt_index = pd.to_datetime(pd.Index(event_times), errors="coerce", utc=True)
+    try:
+        dt_index = dt_index.tz_convert(None)
+    except AttributeError:  # pragma: no cover - defensive for non-index inputs
+        dt_index = pd.to_datetime(dt_index, errors="coerce")
+    times = dt_index.to_numpy(dtype="datetime64[ns]")
+    if times.size == 0:
+        return np.ones(0, dtype=float)
+    if half_life_days <= 0:
+        return np.ones(times.size, dtype=float)
+
+    mask = ~np.isnat(times)
+    weights = np.ones(times.size, dtype=float)
+    if not mask.any():
+        return weights
+
+    ref_time = times[mask].max()
+    age_seconds = (ref_time - times[mask]).astype("timedelta64[s]").astype(float)
+    age_days = age_seconds / (24 * 3600)
+    decay = np.power(0.5, age_days / half_life_days)
+    weights[mask] = decay
+    if (~mask).any():
+        fill_value = float(decay.min()) if decay.size else 1.0
+        weights[~mask] = fill_value
+    return weights
+
+
+def _compute_volatility_scaler(
+    profits: np.ndarray, *, window: int = 50
+) -> np.ndarray:
+    """Compute inverse volatility scaling factors for ``profits``."""
+
+    if profits.size == 0:
+        return np.ones(0, dtype=float)
+
+    series = pd.Series(profits, dtype=float)
+    vol = series.rolling(window=window, min_periods=1).std(ddof=0).fillna(0.0)
+    scaler = 1.0 / (1.0 + vol.to_numpy(dtype=float))
+    return np.clip(scaler, a_min=1e-6, a_max=None)
+
+
+def _compute_profit_weights(profits: np.ndarray) -> np.ndarray:
+    """Return base sample weights derived from trade profits."""
+
+    if profits.size == 0:
+        return np.ones(0, dtype=float)
+
+    weights = np.abs(np.asarray(profits, dtype=float))
+    weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+    positive = weights > 0
+    if positive.any():
+        min_positive = float(weights[positive].min())
+        weights = np.where(positive, weights, min_positive)
+    else:
+        weights = np.ones_like(weights)
+    return weights
+
+
+def _normalise_weights(weights: np.ndarray) -> np.ndarray:
+    """Normalise ``weights`` to have a mean of one."""
+
+    arr = np.asarray(weights, dtype=float)
+    if arr.size == 0:
+        return arr
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    mean = arr.mean()
+    if not np.isfinite(mean) or mean <= 0:
+        return np.ones_like(arr, dtype=float)
+    return arr / mean
+
+
+def _summarise_weights(weights: np.ndarray) -> dict[str, float]:
+    """Compute summary statistics for ``weights`` suitable for logging."""
+
+    arr = np.asarray(weights, dtype=float)
+    if arr.size == 0:
+        return {"min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
+    return {
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+    }
+
+
+def _build_sample_weights(
+    profits: np.ndarray,
+    event_times: np.ndarray | Sequence[object] | None,
+    *,
+    half_life_days: float,
+    use_volatility: bool,
+) -> np.ndarray:
+    """Combine profit, time-decay and volatility based weights."""
+
+    base = _compute_profit_weights(profits)
+    if event_times is not None and base.size:
+        decay = _compute_time_decay_weights(event_times, half_life_days=half_life_days)
+        if decay.size == base.size:
+            base = base * decay
+    if use_volatility and base.size:
+        scaler = _compute_volatility_scaler(profits)
+        if scaler.size == base.size:
+            base = base * scaler
+    return base
 
 
 def _serialize_mlflow_param(value: object) -> str:
@@ -395,6 +520,8 @@ def train(
     strategy_search: bool = False,
     max_drawdown: float | None = None,
     var_limit: float | None = None,
+    half_life_days: float | None = None,
+    vol_weight: bool = False,
     profile: bool = False,
     controller: AutoMLController | None = None,
     reuse_controller: bool = False,
@@ -469,6 +596,18 @@ def train(
         for key in sequence_param_map.get(model_type, set())
         if key in kwargs
     }
+
+    half_life_value = half_life_days
+    if half_life_value is None:
+        half_life_value = kwargs.pop("half_life", None)
+    if half_life_value is None and "half_life_days" in kwargs:
+        half_life_value = kwargs.pop("half_life_days")
+    half_life_days = float(half_life_value or 0.0)
+
+    if not vol_weight and "vol_weight" in kwargs:
+        vol_weight = bool(kwargs.pop("vol_weight"))
+    if not vol_weight and "volatility_weighting" in kwargs:
+        vol_weight = bool(kwargs.pop("volatility_weighting"))
 
     set_seed(random_seed)
     configure_cache(
@@ -566,7 +705,9 @@ def train(
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []
     profit_list: list[np.ndarray] = []
+    event_time_list: list[np.ndarray] = []
     returns_frames: list[pd.DataFrame] = []
+    event_times: np.ndarray = np.array([], dtype="datetime64[ns]")
     label_col: str | None = None
     returns_df: pd.DataFrame | None = None
     if profile and feature_prof is not None:
@@ -598,6 +739,14 @@ def train(
                 if label_col is None:
                     raise ValueError("no label column found")
             X_list.append(chunk[feature_names].fillna(0.0).to_numpy(dtype=float))
+            if "event_time" in chunk.columns:
+                event_time_list.append(
+                    pd.to_datetime(chunk["event_time"], errors="coerce").to_numpy()
+                )
+            else:
+                event_time_list.append(
+                    np.full(len(chunk), np.datetime64("NaT"), dtype="datetime64[ns]")
+                )
             if "profit" in chunk.columns:
                 p = chunk["profit"].to_numpy(dtype=float)
                 profit_list.append(p)
@@ -616,6 +765,11 @@ def train(
         )
         returns_df = (
             pd.concat(returns_frames, ignore_index=True) if returns_frames else None
+        )
+        event_times = (
+            pd.to_datetime(np.concatenate(event_time_list), errors="coerce").to_numpy()
+            if event_time_list
+            else np.array([], dtype="datetime64[ns]")
         )
     else:
         df = logs  # type: ignore[assignment]
@@ -639,6 +793,9 @@ def train(
                 profits = df["profit"].to_numpy(dtype=float)
                 y = (profits > 0).astype(float)
                 has_profit = True
+                event_times = pd.to_datetime(
+                    df["event_time"], errors="coerce"
+                ).to_numpy()
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
@@ -646,13 +803,24 @@ def train(
                 y = df[label_col].to_numpy(dtype=float)
                 profits = np.zeros_like(y)
                 has_profit = False
+                event_times = (
+                    pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
+                    if "event_time" in df.columns
+                    else np.array([], dtype="datetime64[ns]")
+                )
         elif isinstance(df, pd.DataFrame):
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy(dtype=float)
                 y = (profits > 0).astype(float)
                 has_profit = True
-                returns_df = df[["event_time", "symbol", "profit"]]
+                event_times = pd.to_datetime(
+                    df["event_time"], errors="coerce"
+                ).to_numpy()
+                ret_cols = [
+                    c for c in ["event_time", "symbol", "profit"] if c in df.columns
+                ]
+                returns_df = df[ret_cols] if ret_cols else None
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
@@ -660,6 +828,11 @@ def train(
                 y = df[label_col].to_numpy(dtype=float)
                 profits = np.zeros_like(y)
                 has_profit = False
+                event_times = (
+                    pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
+                    if "event_time" in df.columns
+                    else np.array([], dtype="datetime64[ns]")
+                )
                 returns_df = None
         elif _HAS_POLARS and isinstance(df, pl.DataFrame):
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
@@ -667,7 +840,15 @@ def train(
                 profits = df["profit"].to_numpy().astype(float)
                 y = (profits > 0).astype(float)
                 has_profit = True
-                returns_df = df[["event_time", "symbol", "profit"]].to_pandas()
+                event_times = pd.to_datetime(
+                    df["event_time"].to_numpy(), errors="coerce"
+                ).to_numpy()
+                ret_cols = [
+                    c for c in ["event_time", "symbol", "profit"] if c in df.columns
+                ]
+                returns_df = (
+                    df[ret_cols].to_pandas() if ret_cols else None
+                )
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
@@ -675,6 +856,11 @@ def train(
                 y = df[label_col].to_numpy().astype(float)
                 profits = np.zeros_like(y)
                 has_profit = False
+                event_times = (
+                    pd.to_datetime(df["event_time"].to_numpy(), errors="coerce").to_numpy()
+                    if "event_time" in df.columns
+                    else np.array([], dtype="datetime64[ns]")
+                )
                 returns_df = None
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
@@ -688,7 +874,13 @@ def train(
         cost = fee_per_trade + np.abs(profits) * slippage_bps * 1e-4
         profits = profits - cost
         y = (profits > 0).astype(float)
-    sample_weight = np.clip(profits, a_min=0.0, a_max=None)
+    weight_times = event_times if event_times.size else None
+    sample_weight = _build_sample_weights(
+        profits,
+        weight_times,
+        half_life_days=half_life_days,
+        use_volatility=vol_weight,
+    )
     cluster_map: dict[str, list[str]] = {}
     encoder_meta: dict[str, object] | None = None
     regime_feature_names = list(regime_features or [])
@@ -770,30 +962,33 @@ def train(
         corr = np.corrcoef(X_scaled, rowvar=False)
         dist = 1 - np.abs(corr)
         condensed = squareform(dist, checks=False)
-        link = linkage(condensed, method="average")
-        cluster_ids = fcluster(link, t=1 - corr_thresh, criterion="distance")
-        mi = mutual_info_classif(X_scaled, y)
-        keep_idx: list[int] = []
-        removed_groups: list[dict[str, list[str] | str]] = []
-        for cid in np.unique(cluster_ids):
-            idx = np.where(cluster_ids == cid)[0]
-            names = [feature_names[i] for i in idx]
-            if len(idx) == 1:
-                keep_idx.append(idx[0])
-                cluster_map[names[0]] = names
-                continue
-            best_local = idx[np.argmax(mi[idx])]
-            rep_name = feature_names[best_local]
-            cluster_map[rep_name] = names
-            keep_idx.append(best_local)
-            dropped = [f for f in names if f != rep_name]
-            if dropped:
-                removed_groups.append({"kept": rep_name, "dropped": dropped})
-        keep_idx = sorted(set(keep_idx))
-        if len(keep_idx) < len(feature_names):
-            logger.info("Removed correlated feature groups: %s", removed_groups)
-            X = X[:, keep_idx]
-            feature_names = [feature_names[i] for i in keep_idx]
+        if not np.isfinite(condensed).all():
+            logger.debug("Skipping correlation clustering due to non-finite distances")
+        else:
+            link = linkage(condensed, method="average")
+            cluster_ids = fcluster(link, t=1 - corr_thresh, criterion="distance")
+            mi = mutual_info_classif(X_scaled, y)
+            keep_idx: list[int] = []
+            removed_groups: list[dict[str, list[str] | str]] = []
+            for cid in np.unique(cluster_ids):
+                idx = np.where(cluster_ids == cid)[0]
+                names = [feature_names[i] for i in idx]
+                if len(idx) == 1:
+                    keep_idx.append(idx[0])
+                    cluster_map[names[0]] = names
+                    continue
+                best_local = idx[np.argmax(mi[idx])]
+                rep_name = feature_names[best_local]
+                cluster_map[rep_name] = names
+                keep_idx.append(best_local)
+                dropped = [f for f in names if f != rep_name]
+                if dropped:
+                    removed_groups.append({"kept": rep_name, "dropped": dropped})
+            keep_idx = sorted(set(keep_idx))
+            if len(keep_idx) < len(feature_names):
+                logger.info("Removed correlated feature groups: %s", removed_groups)
+                X = X[:, keep_idx]
+                feature_names = [feature_names[i] for i in keep_idx]
     else:
         cluster_map = {fn: [fn] for fn in feature_names}
 
@@ -817,6 +1012,23 @@ def train(
             returns_df = returns_df.iloc[window_length - 1 :].reset_index(drop=True)
     else:
         sequence_data = None
+
+    sample_weight = _normalise_weights(sample_weight)
+    weight_stats = _summarise_weights(sample_weight)
+    if sample_weight.size:
+        logger.info("Sample weight stats: %s", weight_stats)
+        metric_payload = {
+            "model_type": model_type,
+            "half_life_days": float(half_life_days),
+            "vol_weight": bool(vol_weight),
+            **weight_stats,
+        }
+        try:
+            add_metric("train_sample_weights", metric_payload)
+        except Exception:  # pragma: no cover - metrics logging best effort
+            logger.exception("Failed to record sample weight metrics")
+    else:
+        weight_stats = {"min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
 
     # --- Baseline statistics for Mahalanobis distance ------------------
     feat_mean: np.ndarray = np.mean(X, axis=0) if X.size else np.array([])
@@ -850,7 +1062,19 @@ def train(
         n_splits = int(kwargs.get("n_splits", 3))
         gap = int(kwargs.get("cv_gap", 1))
         splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
-        splits = list(splitter.split(X))
+        try:
+            splits = list(splitter.split(X))
+        except ValueError:
+            logger.debug(
+                "Insufficient samples for %d folds; falling back to hold-out split",
+                n_splits,
+            )
+            if X.shape[0] <= 1:
+                splits = [(np.array([0]), np.array([0]))]
+            else:
+                train_idx = np.arange(0, X.shape[0] - 1)
+                val_idx = np.array([X.shape[0] - 1])
+                splits = [(train_idx, val_idx)]
         model_inputs = sequence_data if sequence_model else X
         val_dists = (
             np.concatenate([mahal_all[val_idx] for _, val_idx in splits])
@@ -1189,6 +1413,12 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if half_life_days > 0.0:
+            model["half_life_days"] = float(half_life_days)
+        if vol_weight:
+            model["volatility_weighting"] = True
+        if sample_weight.size:
+            model["sample_weight_stats"] = weight_stats
         if meta_init is not None:
             meta_entry = {"weights": meta_init.tolist()}
             if meta_info:
@@ -1550,6 +1780,19 @@ def main() -> None:
         help="max gradient norm for PyTorch models",
     )
     p.add_argument(
+        "--half-life",
+        dest="half_life_days",
+        type=float,
+        default=0.0,
+        help="half-life in days for exponential time-decay weighting",
+    )
+    p.add_argument(
+        "--vol-weight",
+        dest="vol_weight",
+        action="store_true",
+        help="scale sample weights by rolling profit volatility",
+    )
+    p.add_argument(
         "--profile",
         action="store_true",
         help="Profile feature extraction, model fitting, and evaluation",
@@ -1584,6 +1827,8 @@ def main() -> None:
         random_seed=train_cfg.random_seed,
         metrics=train_cfg.metrics or args.metrics,
         grad_clip=train_cfg.grad_clip,
+        half_life_days=train_cfg.half_life_days,
+        vol_weight=train_cfg.vol_weight,
         profile=exec_cfg.profile,
         strategy_search=train_cfg.strategy_search,
         reuse_controller=train_cfg.reuse_controller,

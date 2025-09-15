@@ -355,6 +355,16 @@
           "title": "Grad Clip",
           "type": "number"
         },
+        "half_life_days": {
+          "default": 0.0,
+          "title": "Half Life Days",
+          "type": "number"
+        },
+        "vol_weight": {
+          "default": false,
+          "title": "Vol Weight",
+          "type": "boolean"
+        },
         "eval_hooks": {
           "default": [],
           "items": {
