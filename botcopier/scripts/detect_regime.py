@@ -21,7 +21,8 @@ try:  # optional dependency
 except Exception:  # pragma: no cover - optional
     hdbscan = None
 
-from train_target_clone import _load_logs, _load_calendar  # type: ignore
+from botcopier.data.loading import _load_calendar, _load_logs
+
 try:
     from scripts.features import _extract_features  # type: ignore
 except Exception:
@@ -138,16 +139,25 @@ def main() -> None:
         help="clustering algorithm",
     )
     p.add_argument("--model-json", type=Path, default=Path("model.json"))
-    p.add_argument("--assignments", type=Path, help="CSV file to write per-sample regime IDs")
-    p.add_argument("--corr-symbols", help="comma separated correlated symbol pairs e.g. EURUSD:USDCHF")
-    p.add_argument("--calendar-file", help="CSV file with columns time,impact[,id] for events")
-    p.add_argument("--event-window", type=float, default=60.0, help="minutes around events to flag")
+    p.add_argument(
+        "--assignments", type=Path, help="CSV file to write per-sample regime IDs"
+    )
+    p.add_argument(
+        "--corr-symbols",
+        help="comma separated correlated symbol pairs e.g. EURUSD:USDCHF",
+    )
+    p.add_argument(
+        "--calendar-file", help="CSV file with columns time,impact[,id] for events"
+    )
+    p.add_argument(
+        "--event-window", type=float, default=60.0, help="minutes around events to flag"
+    )
     args = p.parse_args()
     if args.corr_symbols:
         corr_map = {}
-        for p_sym in args.corr_symbols.split(','):
-            if ':' in p_sym:
-                base, peer = p_sym.split(':', 1)
+        for p_sym in args.corr_symbols.split(","):
+            if ":" in p_sym:
+                base, peer = p_sym.split(":", 1)
                 corr_map.setdefault(base, []).append(peer)
     else:
         corr_map = None

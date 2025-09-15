@@ -1,6 +1,7 @@
 """Data loading helpers for BotCopier."""
 from __future__ import annotations
 
+import csv
 import hashlib
 import logging
 from datetime import UTC, datetime
@@ -434,3 +435,24 @@ def _load_logs(*args, **kwargs):
             err = DataError("Failed to load logs", timestamp=datetime.now(UTC))
             logger.exception("%s - using fallback empty dataset", err)
             return pd.DataFrame(), [], {}
+
+
+def _load_calendar(file: Path) -> list[tuple[datetime, float, int]]:
+    """Load calendar events from ``file`` sorted by time."""
+
+    times: list[datetime] = []
+    impacts: list[float] = []
+    ids: list[int] = []
+    with file.open(newline="") as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        for row in reader:
+            if not row:
+                continue
+            ts, impact, *rest = row
+            times.append(datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"))
+            impacts.append(float(impact))
+            eid = int(rest[0]) if rest else len(ids)
+            ids.append(eid)
+    order = sorted(range(len(times)), key=lambda i: times[i])
+    return [(times[i], impacts[i], ids[i]) for i in order]

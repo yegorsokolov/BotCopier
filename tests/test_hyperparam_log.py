@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from train_target_clone import run_optuna
+from botcopier.training.pipeline import run_optuna
 
 
 def test_hyperparam_csv_contains_best_trial(tmp_path: Path):

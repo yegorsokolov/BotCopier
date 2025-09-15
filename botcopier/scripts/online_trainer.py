@@ -30,6 +30,7 @@ from typing import Any, AsyncIterable, Dict, Iterable, List
 
 from pydantic import ValidationError
 
+from automl.controller import AutoMLController
 from botcopier.config.settings import (
     DataConfig,
     TrainingConfig,
@@ -45,7 +46,6 @@ from botcopier.metrics import (
 from botcopier.models.registry import load_params
 from botcopier.models.schema import ModelParams
 from botcopier.utils.random import set_seed
-from automl.controller import AutoMLController
 
 try:  # prefer systemd journal if available
     from systemd.journal import JournalHandler
@@ -63,13 +63,7 @@ from sklearn.exceptions import NotFittedError
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 
-try:  # detect resources to adapt behaviour on weaker hardware
-    if __package__:
-        from .train_target_clone import detect_resources  # type: ignore
-    else:  # pragma: no cover - script executed directly
-        from train_target_clone import detect_resources  # type: ignore
-except ImportError:  # pragma: no cover - detection optional
-    detect_resources = None  # type: ignore
+from botcopier.training.pipeline import detect_resources
 
 try:  # drift metrics utilities
     if __package__:
@@ -572,7 +566,9 @@ class OnlineTrainer:
 
                     self.clf = ConfidenceWeighted()
                 except Exception:
-                    self.clf = SGDClassifier(loss="log_loss", learning_rate="adaptive", eta0=self.lr)
+                    self.clf = SGDClassifier(
+                        loss="log_loss", learning_rate="adaptive", eta0=self.lr
+                    )
             else:
                 self.clf = SGDClassifier(
                     loss="log_loss", learning_rate="adaptive", eta0=self.lr
@@ -899,9 +895,12 @@ class OnlineTrainer:
         try:
             import websockets
         except ImportError as exc:  # pragma: no cover - optional dependency
-            raise RuntimeError("websockets is required for WebSocket consumption") from exc
+            raise RuntimeError(
+                "websockets is required for WebSocket consumption"
+            ) from exc
 
         async with websockets.connect(url) as ws:
+
             async def _gen():
                 async for msg in ws:
                     try:
@@ -933,6 +932,7 @@ class OnlineTrainer:
         )
         await consumer.start()
         try:
+
             async def _gen():
                 async for msg in consumer:
                     yield msg.value
