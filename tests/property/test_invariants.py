@@ -1,11 +1,33 @@
 """Property-based tests for core invariants."""
-import numpy as np
+
+import pytest
+
+np = pytest.importorskip("numpy")
+pytest.importorskip("sklearn")
+
 from hypothesis import HealthCheck, assume, given, settings
 from sklearn.preprocessing import StandardScaler
 
 from botcopier.data.loading import _compute_meta_labels
 from botcopier.scripts.model_fitting import scale_features
 from tests.property.strategies import feature_matrices, model_parameters, trade_logs
+
+
+@given(trade_logs())
+@settings(max_examples=25)
+def test_trade_log_samples_are_finite(df) -> None:
+    numeric = df.select_dtypes(include=[np.number]).to_numpy()
+    assert np.isfinite(numeric).all()
+    assert not df.isna().any().any()
+    if "spread" in df.columns:
+        assert (df["spread"] >= 0).all()
+
+
+@given(feature_matrices())
+@settings(max_examples=25)
+def test_generated_feature_matrices_are_finite(X: np.ndarray) -> None:
+    assert np.isfinite(X).all()
+    assert not np.isnan(X).any()
 
 
 @given(feature_matrices())
@@ -26,6 +48,7 @@ def test_meta_label_bounds(df) -> None:
     sl = prices - spreads
     _, _, _, meta = _compute_meta_labels(prices, tp, sl, hold_period=5)
     assert ((meta >= 0) & (meta <= 1)).all()
+    assert np.isfinite(meta).all()
 
 
 @given(feature_matrices(), model_parameters())
