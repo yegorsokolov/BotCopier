@@ -1,4 +1,4 @@
-from scripts.sequential_drift import PageHinkley
+from scripts.sequential_drift import PageHinkley, CusumDetector
 
 
 def test_page_hinkley_detects_expected_change():
@@ -10,4 +10,15 @@ def test_page_hinkley_detects_expected_change():
             alarm = i
             break
     assert alarm == 11
+
+
+def test_cusum_detects_expected_change():
+    detector = CusumDetector(threshold=0.5)
+    data = [0.0] * 5 + [1.0] * 5
+    alarm = None
+    for i, v in enumerate(data):
+        if detector.update(v):
+            alarm = i
+            break
+    assert alarm == 5
 

@@ -172,3 +172,19 @@ def test_drift_event_records_hash(monkeypatch, tmp_path: Path):
     assert data["model_hash"] != before
     assert data["drift_events"] and data["drift_events"][0]["model_hash"] == data["model_hash"]
 
+
+def test_sequential_drift_records_hash(tmp_path: Path):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2)
+    trainer.drift_detector = PageHinkley(delta=0.1, threshold=0.5, min_samples=5)
+    stable = [{"a": 0.0, "y": 0} for _ in range(2)]
+    for _ in range(5):
+        trainer.update(stable)
+    before = json.loads(model_path.read_text())["model_hash"]
+    shift = [{"a": 5.0, "y": 1} for _ in range(2)]
+    trainer.update(shift)
+    data = json.loads(model_path.read_text())
+    assert data["model_hash"] != before
+    assert data["drift_events"]
+    assert data["drift_events"][-1]["model_hash"] == data["model_hash"]
+
