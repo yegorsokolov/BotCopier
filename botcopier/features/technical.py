@@ -90,6 +90,7 @@ logger = logging.getLogger(__name__)
 
 _DEPTH_CNN_STATE: dict | None = None
 _GRAPH_SNAPSHOT: dict | None = None
+_GNN_STATE: dict[str, list[list[float]]] | None = None
 
 # Lookback windows for fractal metrics
 HURST_WINDOW = 50
@@ -444,6 +445,7 @@ def _extract_features_impl(
     depth_cnn: dict | None = None,
     calendar_features: bool = True,
     pca_components: dict | None = None,
+    gnn_state: dict | None = None,
     rank_features: bool = False,
     n_jobs: int | None = None,
     model_json: Path | str | None = None,
@@ -468,7 +470,7 @@ def _extract_features_impl(
                 logger.exception("Failed to load graph dataset from %s", symbol_graph)
                 g_dataset = None
     embeddings: dict[str, list[float]] = {}
-    gnn_state: dict[str, list[list[float]]] = {}
+    gnn_state_out: dict[str, list[list[float]]] = gnn_state or {}
 
     executor: ThreadPoolExecutor | None = None
     gnn_future = None
@@ -479,7 +481,9 @@ def _extract_features_impl(
         and compute_gnn_embeddings is not None
     ):
         executor = ThreadPoolExecutor(max_workers=n_jobs)
-        gnn_future = executor.submit(compute_gnn_embeddings, df.copy(), g_dataset)
+        gnn_future = executor.submit(
+            compute_gnn_embeddings, df.copy(), g_dataset, state_dict=gnn_state
+        )
 
     use_polars = _HAS_POLARS and isinstance(df, pl.DataFrame)
     if use_polars and "event_time" in df.columns:
@@ -811,18 +815,20 @@ def _extract_features_impl(
 
     if gnn_future is not None:
         try:
-            embeddings, gnn_state = gnn_future.result()
+            embeddings, gnn_state_out = gnn_future.result()
         except (RuntimeError, ValueError) as exc:
             logger.exception("Failed to compute GNN embeddings")
-            embeddings, gnn_state = {}, {}
+            embeddings, gnn_state_out = {}, gnn_state_out
         finally:
             executor.shutdown()
     elif g_dataset is not None and compute_gnn_embeddings is not None:
         try:
-            embeddings, gnn_state = compute_gnn_embeddings(df, g_dataset)
+            embeddings, gnn_state_out = compute_gnn_embeddings(
+                df, g_dataset, state_dict=gnn_state
+            )
         except (RuntimeError, ValueError) as exc:
             logger.exception("Failed to compute GNN embeddings")
-            embeddings, gnn_state = {}, {}
+            embeddings, gnn_state_out = {}, gnn_state_out
     if embeddings and "symbol" in df.columns:
         emb_dim = len(next(iter(embeddings.values())))
         sym_series = df["symbol"].astype(str)
@@ -831,7 +837,10 @@ def _extract_features_impl(
             df[col] = sym_series.map(lambda s: embeddings.get(s, [0.0] * emb_dim)[i])
         feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
     df, feature_names = _apply_symbolic_indicators(df, feature_names, model_json)
-    return df, feature_names, embeddings, gnn_state
+    global _GNN_STATE
+    if gnn_state_out:
+        _GNN_STATE = gnn_state_out
+    return df, feature_names, embeddings, gnn_state_out
 
 
 def _extract_features(
@@ -887,6 +896,12 @@ def _extract_features(
         df, feature_names, emb, gnn = func(df, feature_names, **kwargs)
         embeddings.update(emb or {})
         gnn_state.update(gnn or {})
+    if embeddings:
+        emb_dim = len(next(iter(embeddings.values())))
+        for i in range(emb_dim):
+            col = f"graph_emb{i}"
+            if col not in feature_names:
+                feature_names.append(col)
     _FEATURE_RESULTS[key] = (df, feature_names, embeddings, gnn_state)
     return df, feature_names, embeddings, gnn_state
 
