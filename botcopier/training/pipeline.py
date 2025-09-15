@@ -47,7 +47,13 @@ try:  # optional numba support
 
     _HAS_NUMBA = True
 except Exception:  # pragma: no cover - optional
-    njit = lambda *a, **k: (lambda f: f)
+
+    def njit(*a, **k):  # pragma: no cover - simple stub
+        def _inner(f):
+            return f
+
+        return _inner
+
     _HAS_NUMBA = False
 from opentelemetry import trace
 from pydantic import ValidationError
@@ -289,6 +295,7 @@ def train(
     *,
     model_type: str = "logreg",
     cache_dir: Path | None = None,
+    model_json: Path | None = None,
     tracking_uri: str | None = None,
     experiment_name: str | None = None,
     features: Sequence[str] | None = None,
@@ -314,6 +321,8 @@ def train(
     **kwargs: object,
 ) -> object:
     """Train a model selected from the registry."""
+    if model_json is not None:
+        model_json = Path(model_json)
     chosen_action: tuple[tuple[str, ...], str] | None = None
     if controller is not None:
         controller.model_path = out_dir / "model.json"
@@ -441,7 +450,7 @@ def train(
                 feature_names = list(FEATURE_COLUMNS)
             else:
                 chunk, feature_names, _, _ = _extract_features(
-                    chunk, feature_names, n_jobs=n_jobs
+                    chunk, feature_names, n_jobs=n_jobs, model_json=model_json
                 )
             FeatureSchema.validate(chunk[feature_names], lazy=True)
             if label_col is None:
@@ -482,7 +491,7 @@ def train(
             feature_names = list(FEATURE_COLUMNS)
         else:
             df, feature_names, _, _ = _extract_features(
-                df, feature_names, n_jobs=n_jobs
+                df, feature_names, n_jobs=n_jobs, model_json=model_json
             )
         FeatureSchema.validate(df[feature_names], lazy=True)
         if _HAS_DASK and isinstance(df, dd.DataFrame):
@@ -1039,6 +1048,14 @@ def train(
                     "scale": [pt_meta["scale"][i] for i in idx],
                 }
                 model["power_transformer"] = pt_meta
+        if model_json and Path(model_json).exists():
+            try:
+                existing = json.loads(Path(model_json).read_text())
+                sym = existing.get("symbolic_indicators")
+                if sym:
+                    model["symbolic_indicators"] = sym
+            except Exception:
+                pass
         if "feature_mean" not in model:
             model["feature_mean"] = X.mean(axis=0).tolist()
         if "feature_std" not in model:

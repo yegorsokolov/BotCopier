@@ -148,7 +148,8 @@ def train(
         False, help="Run neural strategy search instead of standard training"
     ),
     reuse_controller: bool = typer.Option(
-        False, help="Reuse previously learned AutoML controller policy",
+        False,
+        help="Reuse previously learned AutoML controller policy",
     ),
 ) -> None:
     """Train a model from trade logs."""
@@ -192,6 +193,7 @@ def train(
         Path(data_cfg.out),
         model_type=train_cfg.model_type,
         cache_dir=train_cfg.cache_dir,
+        model_json=train_cfg.model,
         features=train_cfg.features,
         random_seed=train_cfg.random_seed,
         hrp_allocation=train_cfg.hrp_allocation,
