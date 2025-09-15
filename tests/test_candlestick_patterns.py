@@ -6,7 +6,7 @@ import pandas as pd
 import botcopier.features.engineering as fe
 from botcopier.features.engineering import FeatureConfig, clear_cache, configure_cache
 from botcopier.features.technical import _extract_features
-from scripts.features import _extract_features as extract_rows_features
+from botcopier.features.engineering import _extract_features as extract_rows_features
 
 
 def _synthetic_rows():

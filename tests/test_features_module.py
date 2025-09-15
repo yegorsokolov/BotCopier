@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from scripts.features import _extract_features
+from botcopier.features.engineering import _extract_features
 
 
 def test_extract_features_basic():

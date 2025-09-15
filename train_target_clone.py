@@ -2,16 +2,27 @@
 
 This script exists for historical compatibility.  The implementation
 moved into the :mod:`botcopier` package and is re-exported here so that
-older entry points continue to function.
+older entry points continue to function.  To preserve the legacy public
+API we re-export the training helpers that previously lived directly in
+this module.
 """
 from __future__ import annotations
 
 import argparse
 
+from botcopier.data.loading import _load_logs
+from botcopier.features.engineering import _extract_features
 from botcopier.models.registry import TabTransformer
-from botcopier.training.pipeline import detect_resources, run_optuna
+from botcopier.training.pipeline import detect_resources, run_optuna, train
 
-__all__ = ["run_optuna", "TabTransformer", "detect_resources"]
+__all__ = [
+    "train",
+    "_load_logs",
+    "_extract_features",
+    "run_optuna",
+    "TabTransformer",
+    "detect_resources",
+]
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entry
