@@ -6,7 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Any, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - optional
     dd = None  # type: ignore
     _HAS_DASK = False
 
-from .plugins import FEATURE_REGISTRY, load_plugins, register_feature
+from .registry import FEATURE_REGISTRY, load_plugins, register_feature
 
 try:  # optional polars dependency
     import polars as pl  # type: ignore
@@ -158,7 +158,373 @@ def _csd_pair_impl(
     return _csd_freq_coh_nb(sa, sb, window, freq_bins)
 
 
+FeatureResult = Tuple[
+    Any,
+    list[str],
+    dict[str, list[float]],
+    dict[str, list[list[float]]],
+]
+
+
 _csd_pair = _csd_pair_impl
+
+
+def _maybe_to_pandas(
+    df: pd.DataFrame | "pl.DataFrame",
+) -> tuple[pd.DataFrame, str | None]:
+    """Return a pandas ``DataFrame`` along with the original backend tag."""
+
+    if _HAS_POLARS and isinstance(df, pl.DataFrame):
+        return df.to_pandas(), "polars"
+    return df, None
+
+
+def _restore_frame(df: pd.DataFrame, backend: str | None):
+    if backend == "polars" and _HAS_POLARS:
+        return pl.from_pandas(df)
+    return df
+
+
+@register_feature("calendar")
+def _calendar_feature_plugin(
+    df: pd.DataFrame | "pl.DataFrame",
+    feature_names: list[str],
+    *,
+    calendar_features: bool = True,
+    **_: object,
+) -> FeatureResult:
+    if not calendar_features:
+        return df, feature_names, {}, {}
+
+    pdf, backend = _maybe_to_pandas(df)
+    if "event_time" not in pdf.columns:
+        return df, feature_names, {}, {}
+
+    pdf = pdf.copy()
+    pdf["event_time"] = pd.to_datetime(pdf["event_time"], errors="coerce", utc=True)
+    if pdf["event_time"].isna().all():
+        return df, feature_names, {}, {}
+
+    pdf["hour"] = pdf["event_time"].dt.hour.astype(int)
+    pdf["dayofweek"] = pdf["event_time"].dt.dayofweek.astype(int)
+    pdf["month"] = pdf["event_time"].dt.month.astype(int)
+
+    pdf["hour_sin"] = np.sin(2 * np.pi * pdf["hour"] / 24.0)
+    pdf["hour_cos"] = np.cos(2 * np.pi * pdf["hour"] / 24.0)
+    pdf["dow_sin"] = np.sin(2 * np.pi * pdf["dayofweek"] / 7.0)
+    pdf["dow_cos"] = np.cos(2 * np.pi * pdf["dayofweek"] / 7.0)
+    pdf["month_sin"] = np.sin(2 * np.pi * (pdf["month"] - 1) / 12.0)
+    pdf["month_cos"] = np.cos(2 * np.pi * (pdf["month"] - 1) / 12.0)
+
+    for col in [
+        "hour",
+        "dayofweek",
+        "month",
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        "month_sin",
+        "month_cos",
+    ]:
+        if col not in feature_names:
+            feature_names.append(col)
+
+    out = _restore_frame(pdf, backend)
+    return out, feature_names, {}, {}
+
+
+@register_feature("lag_diff")
+def _lag_diff_feature_plugin(
+    df: pd.DataFrame | "pl.DataFrame",
+    feature_names: list[str],
+    *,
+    lag_windows: Iterable[int] = (1, 5),
+    lag_columns: Iterable[str] | None = None,
+    **_: object,
+) -> FeatureResult:
+    pdf, backend = _maybe_to_pandas(df)
+    if pdf.empty:
+        return df, feature_names, {}, {}
+
+    candidates = (
+        [c for c in lag_columns if c in pdf.columns]
+        if lag_columns is not None
+        else [
+            c
+            for c in feature_names
+            if c in pdf.columns and pd.api.types.is_numeric_dtype(pdf[c])
+        ]
+    )
+    if not candidates:
+        return df, feature_names, {}, {}
+
+    symbol_col = pdf["symbol"] if "symbol" in pdf.columns else None
+    for col in candidates:
+        series = pd.to_numeric(pdf[col], errors="coerce")
+        for lag in lag_windows:
+            if symbol_col is not None:
+                lagged = series.groupby(symbol_col).shift(lag)
+            else:
+                lagged = series.shift(lag)
+            lag_col = f"{col}_lag_{lag}"
+            pdf[lag_col] = lagged
+            if lag_col not in feature_names:
+                feature_names.append(lag_col)
+
+        if symbol_col is not None:
+            diff_series = series.groupby(symbol_col).diff()
+        else:
+            diff_series = series.diff()
+        diff_col = f"{col}_diff"
+        pdf[diff_col] = diff_series
+        if diff_col not in feature_names:
+            feature_names.append(diff_col)
+
+    out = _restore_frame(pdf, backend)
+    return out, feature_names, {}, {}
+
+
+def _rolling_rsi(series: pd.Series, period: int) -> pd.Series:
+    delta = series.diff().fillna(0.0)
+    up = delta.clip(lower=0.0)
+    down = -delta.clip(upper=0.0)
+    roll_up = up.rolling(period, min_periods=1).mean()
+    roll_down = down.rolling(period, min_periods=1).mean()
+    rs = roll_up / (roll_down + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50.0)
+
+
+def _rolling_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> pd.Series:
+    prev_close = close.shift(1).fillna(close)
+    tr = pd.concat(
+        [
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr.rolling(period, min_periods=1).mean().fillna(0.0)
+
+
+@register_feature("technical_indicators")
+def _technical_indicator_plugin(
+    df: pd.DataFrame | "pl.DataFrame",
+    feature_names: list[str],
+    *,
+    price_column: str | None = None,
+    sma_window: int = 5,
+    rsi_period: int = 14,
+    macd_short: int = 12,
+    macd_long: int = 26,
+    macd_signal: int = 9,
+    boll_window: int = 20,
+    atr_period: int = 14,
+    fft_window: int = 16,
+    **_: object,
+) -> FeatureResult:
+    pdf, backend = _maybe_to_pandas(df)
+    if pdf.empty:
+        return df, feature_names, {}, {}
+
+    price_col = price_column or ("close" if "close" in pdf.columns else "price")
+    if price_col not in pdf.columns:
+        return df, feature_names, {}, {}
+
+    prices = pd.to_numeric(pdf[price_col], errors="coerce").fillna(0.0)
+    symbols = pdf["symbol"] if "symbol" in pdf.columns else None
+
+    ema_short = prices.ewm(span=macd_short, adjust=False).mean()
+    ema_long = prices.ewm(span=macd_long, adjust=False).mean()
+    macd_val = ema_short - ema_long
+    macd_signal_val = macd_val.ewm(span=macd_signal, adjust=False).mean()
+
+    sma = prices.rolling(sma_window, min_periods=1).mean()
+    rsi = _rolling_rsi(prices, rsi_period)
+
+    roll_mean = prices.rolling(boll_window, min_periods=1).mean()
+    roll_std = prices.rolling(boll_window, min_periods=1).std(ddof=0).fillna(0.0)
+    boll_upper = roll_mean + 2.0 * roll_std
+    boll_lower = roll_mean - 2.0 * roll_std
+
+    high = pd.to_numeric(pdf.get("high", prices), errors="coerce").fillna(prices)
+    low = pd.to_numeric(pdf.get("low", prices), errors="coerce").fillna(prices)
+    atr = _rolling_atr(high, low, prices, atr_period)
+
+    sl = pd.to_numeric(pdf.get("sl"), errors="coerce")
+    tp = pd.to_numeric(pdf.get("tp"), errors="coerce")
+    sl_dist = (prices - sl).abs().fillna(0.0)
+    tp_dist = (tp - prices).abs().fillna(0.0)
+    sl_dist_atr = np.where(atr > 0, sl_dist / atr, 0.0)
+    tp_dist_atr = np.where(atr > 0, tp_dist / atr, 0.0)
+
+    fft_mag0 = pd.Series(0.0, index=pdf.index, dtype=float)
+    fft_phase0 = pd.Series(0.0, index=pdf.index, dtype=float)
+    fft_mag1 = pd.Series(0.0, index=pdf.index, dtype=float)
+    fft_phase1 = pd.Series(0.0, index=pdf.index, dtype=float)
+
+    if symbols is not None:
+        group_positions = pdf.groupby(symbols).indices.values()
+    else:
+        group_positions = [list(range(len(pdf)))]
+
+    for positions in group_positions:
+        idx_positions = list(positions)
+        if not idx_positions:
+            continue
+        seq = prices.iloc[idx_positions].to_numpy(dtype=float)
+        for pos, iloc_idx in enumerate(idx_positions):
+            window = seq[max(0, pos - fft_window + 1) : pos + 1]
+            if window.size == 0:
+                continue
+            fft_vals = np.fft.fft(window, n=4)
+            fft_mag0.iloc[iloc_idx] = float(np.abs(fft_vals[0]))
+            fft_phase0.iloc[iloc_idx] = float(np.angle(fft_vals[0]))
+            fft_mag1.iloc[iloc_idx] = float(np.abs(fft_vals[1]))
+            fft_phase1.iloc[iloc_idx] = float(np.angle(fft_vals[1]))
+
+    pdf["sma"] = sma
+    pdf["rsi"] = rsi
+    pdf["macd"] = macd_val
+    pdf["macd_signal"] = macd_signal_val
+    pdf["bollinger_upper"] = boll_upper
+    pdf["bollinger_middle"] = roll_mean
+    pdf["bollinger_lower"] = boll_lower
+    pdf["atr"] = atr
+    pdf["sl_dist_atr"] = sl_dist_atr
+    pdf["tp_dist_atr"] = tp_dist_atr
+    pdf["fft_0_mag"] = fft_mag0
+    pdf["fft_0_phase"] = fft_phase0
+    pdf["fft_1_mag"] = fft_mag1
+    pdf["fft_1_phase"] = fft_phase1
+
+    for col in [
+        "sma",
+        "rsi",
+        "macd",
+        "macd_signal",
+        "bollinger_upper",
+        "bollinger_middle",
+        "bollinger_lower",
+        "atr",
+        "sl_dist_atr",
+        "tp_dist_atr",
+        "fft_0_mag",
+        "fft_0_phase",
+        "fft_1_mag",
+        "fft_1_phase",
+    ]:
+        if col not in feature_names:
+            feature_names.append(col)
+
+    out = _restore_frame(pdf, backend)
+    return out, feature_names, {}, {}
+
+
+@register_feature("rolling_correlations")
+def _rolling_corr_plugin(
+    df: pd.DataFrame | "pl.DataFrame",
+    feature_names: list[str],
+    *,
+    symbol_graph: dict | str | Path | None = None,
+    neighbor_corr_windows: Iterable[int] | None = None,
+    price_column: str = "price",
+    **_: object,
+) -> FeatureResult:
+    if neighbor_corr_windows is None or not neighbor_corr_windows:
+        return df, feature_names, {}, {}
+
+    pdf, backend = _maybe_to_pandas(df)
+    if "symbol" not in pdf.columns or price_column not in pdf.columns:
+        return df, feature_names, {}, {}
+
+    if symbol_graph is None:
+        return df, feature_names, {}, {}
+
+    if isinstance(symbol_graph, (str, Path)):
+        try:
+            graph_data = json.loads(Path(symbol_graph).read_text())
+        except Exception:
+            return df, feature_names, {}, {}
+    else:
+        graph_data = symbol_graph
+
+    symbols = graph_data.get("symbols", [])
+    adjacency: dict[str, set[str]] = {sym: set() for sym in symbols}
+
+    edge_index = graph_data.get("edge_index")
+    if isinstance(edge_index, list) and len(edge_index) == 2:
+        for a, b in zip(edge_index[0], edge_index[1]):
+            if a < len(symbols) and b < len(symbols):
+                sa = symbols[a]
+                sb = symbols[b]
+                if sa != sb:
+                    adjacency.setdefault(sa, set()).add(sb)
+
+    edges = graph_data.get("edges")
+    if isinstance(edges, list):
+        for edge in edges:
+            if not isinstance(edge, (list, tuple)) or len(edge) < 2:
+                continue
+            sa, sb = edge[0], edge[1]
+            if sa != sb:
+                adjacency.setdefault(sa, set()).add(sb)
+
+    if not adjacency:
+        return df, feature_names, {}, {}
+
+    prices = pd.to_numeric(pdf[price_column], errors="coerce").fillna(0.0)
+    idx_col = "event_time" if "event_time" in pdf.columns else None
+    if idx_col:
+        idx_vals = pd.to_datetime(pdf[idx_col], errors="coerce")
+    else:
+        idx_vals = pd.Series(pdf.index, index=pdf.index)
+
+    temp = pd.DataFrame({
+        "_idx": idx_vals,
+        "symbol": pdf["symbol"].astype(str),
+        "price": prices,
+    })
+
+    price_wide = (
+        temp.pivot(index="_idx", columns="symbol", values="price")
+        .sort_index()
+        .ffill()
+        .fillna(0.0)
+    )
+    returns = price_wide.pct_change().fillna(0.0)
+
+    pdf = pdf.copy()
+    pdf["_idx"] = temp["_idx"].values
+
+    for base, peers in adjacency.items():
+        if base not in returns.columns:
+            continue
+        for peer in peers:
+            if peer not in returns.columns:
+                continue
+            for win in neighbor_corr_windows:
+                if win <= 1:
+                    continue
+                corr_series = (
+                    returns[base]
+                    .rolling(int(win), min_periods=2)
+                    .corr(returns[peer])
+                    .clip(-1.0, 1.0)
+                )
+                col = f"corr_{base}_{peer}_w{win}"
+                mask = pdf["symbol"].astype(str) == base
+                aligned = corr_series.reindex(pdf.loc[mask, "_idx"]).fillna(0.0)
+                pdf.loc[mask, col] = aligned.to_numpy()
+                pdf[col] = pdf[col].fillna(0.0)
+                if col not in feature_names:
+                    feature_names.append(col)
+
+    pdf.drop(columns=["_idx"], inplace=True)
+    out = _restore_frame(pdf, backend)
+    return out, feature_names, {}, {}
 
 
 def _load_symbolic_indicators(model_json: Path | str | None) -> dict:
@@ -859,17 +1225,39 @@ def _extract_features(
         _FEATURE_RESULTS,
     )
 
+    plugin_overrides_raw = kwargs.pop("plugins", None)
+    if plugin_overrides_raw is None:
+        plugin_overrides_raw = kwargs.pop("enabled_plugins", None)
+    if plugin_overrides_raw is None:
+        plugin_overrides_list: list[str] | None = None
+    elif isinstance(plugin_overrides_raw, str):
+        plugin_overrides_list = [plugin_overrides_raw]
+    else:
+        plugin_overrides_list = list(plugin_overrides_raw)
+
+    requested = set(_CONFIG.enabled_features)
+    if plugin_overrides_list:
+        requested.update(plugin_overrides_list)
+
     # Dynamically load any third-party plugins requested via configuration
-    load_plugins(_CONFIG.enabled_features)
+    load_plugins(requested)
 
     if _HAS_DASK and isinstance(df, dd.DataFrame):
         sample = df.head()  # compute small sample for metadata
+        sample_kwargs = dict(kwargs)
+        if plugin_overrides_list:
+            sample_kwargs["plugins"] = list(plugin_overrides_list)
         sample_out, feature_names, embeddings, gnn_state = _extract_features(
-            sample, list(feature_names), **kwargs
+            sample, list(feature_names), **sample_kwargs
         )
 
         def _apply(pdf: pd.DataFrame) -> pd.DataFrame:
-            out, _, _, _ = _extract_features(pdf, list(feature_names), **kwargs)
+            apply_kwargs = dict(kwargs)
+            if plugin_overrides_list:
+                apply_kwargs["plugins"] = list(plugin_overrides_list)
+            out, _, _, _ = _extract_features(
+                pdf, list(feature_names), **apply_kwargs
+            )
             return out
 
         meta = sample_out.iloc[0:0]
@@ -881,21 +1269,41 @@ def _extract_features(
         logger.info("cache hit for _extract_features")
         return _FEATURE_RESULTS[key]  # type: ignore[return-value]
 
-    plugins = ["technical"] + [
-        name
-        for name in _CONFIG.enabled_features
-        if name != "technical" and name in FEATURE_REGISTRY
+    base_plugins = [
+        "calendar",
+        "lag_diff",
+        "technical_indicators",
+        "rolling_correlations",
+        "technical",
     ]
+
+    plugins: list[str] = []
+    for name in base_plugins:
+        if name in FEATURE_REGISTRY and name not in plugins:
+            plugins.append(name)
+
+    for name in requested:
+        if name in FEATURE_REGISTRY and name not in plugins:
+            plugins.append(name)
+
+    if "technical" not in plugins and "technical" in FEATURE_REGISTRY:
+        plugins.append("technical")
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
+    calendar_executed = False
     for name in plugins:
         func = FEATURE_REGISTRY.get(name)
         if func is None:
             logger.warning("Feature plugin %s not found", name)
             continue
-        df, feature_names, emb, gnn = func(df, feature_names, **kwargs)
+        plugin_kwargs = dict(kwargs)
+        if name == "technical" and calendar_executed:
+            plugin_kwargs["calendar_features"] = False
+        df, feature_names, emb, gnn = func(df, feature_names, **plugin_kwargs)
         embeddings.update(emb or {})
         gnn_state.update(gnn or {})
+        if name == "calendar":
+            calendar_executed = True
     if embeddings:
         emb_dim = len(next(iter(embeddings.values())))
         for i in range(emb_dim):

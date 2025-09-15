@@ -4,21 +4,27 @@ import sys
 import pandas as pd
 from importlib.metadata import EntryPoint
 
-# stub minimal sklearn module to avoid heavy dependency
-sklearn = types.ModuleType("sklearn")
-sklearn.ensemble = types.ModuleType("sklearn.ensemble")
-sklearn.ensemble.IsolationForest = object
-sklearn.linear_model = types.ModuleType("sklearn.linear_model")
-sklearn.linear_model.LinearRegression = object
-sys.modules.setdefault("sklearn", sklearn)
-sys.modules.setdefault("sklearn.ensemble", sklearn.ensemble)
-sys.modules.setdefault("sklearn.linear_model", sklearn.linear_model)
+# stub minimal sklearn module to avoid heavy dependency when unavailable
+try:
+    import sklearn  # type: ignore
+except Exception:  # pragma: no cover - optional dependency missing
+    sklearn = types.ModuleType("sklearn")
+    sklearn.ensemble = types.ModuleType("sklearn.ensemble")
+    sklearn.ensemble.IsolationForest = object
+    sklearn.linear_model = types.ModuleType("sklearn.linear_model")
+    sklearn.linear_model.LinearRegression = object
+    sys.modules.setdefault("sklearn", sklearn)
+    sys.modules.setdefault("sklearn.ensemble", sklearn.ensemble)
+    sys.modules.setdefault("sklearn.linear_model", sklearn.linear_model)
 
-# stub minimal scipy module
-scipy = types.ModuleType("scipy")
-scipy.signal = types.ModuleType("scipy.signal")
-sys.modules.setdefault("scipy", scipy)
-sys.modules.setdefault("scipy.signal", scipy.signal)
+# stub minimal scipy module when not installed
+try:
+    import scipy  # type: ignore
+except Exception:  # pragma: no cover - optional dependency missing
+    scipy = types.ModuleType("scipy")
+    scipy.signal = types.ModuleType("scipy.signal")
+    sys.modules.setdefault("scipy", scipy)
+    sys.modules.setdefault("scipy.signal", scipy.signal)
 
 # stub gplearn
 gplearn = types.ModuleType("gplearn")
@@ -52,8 +58,8 @@ joblib.Memory = _DummyMemory
 sys.modules.setdefault("joblib", joblib)
 
 from botcopier.features.engineering import FeatureConfig, configure_cache
-import botcopier.features.plugins as plugins
-from botcopier.features.plugins import FEATURE_REGISTRY
+import botcopier.features.registry as registry
+from botcopier.features.registry import FEATURE_REGISTRY
 from botcopier.features import technical
 
 
@@ -72,7 +78,7 @@ def test_entry_point_plugin(monkeypatch):
     # mock entry points to advertise the plugin
     ep = EntryPoint(name="ep", value="thirdparty_mod:feature", group="botcopier.features")
     monkeypatch.setattr(
-        plugins,
+        registry,
         "entry_points",
         lambda group=None: [ep] if group == "botcopier.features" else [],
     )
@@ -92,7 +98,7 @@ def test_entry_point_plugin(monkeypatch):
 def test_register_feature_direct():
     """Plugins can be registered directly via ``register_feature``."""
 
-    @plugins.register_feature("direct")
+    @registry.register_feature("direct")
     def direct_feature(df, names, **kwargs):
         df["direct"] = 2.0
         names.append("direct")

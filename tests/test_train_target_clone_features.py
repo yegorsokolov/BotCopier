@@ -86,6 +86,8 @@ def test_neighbor_correlation_features(tmp_path: Path) -> None:
     )
     for col in corr_cols:
         assert df[col].notna().all()
+        assert df[col].between(-1, 1).all()
+        assert not np.allclose(df[col].to_numpy(), 0.0)
     for col in factor_cols:
         assert np.isfinite(df[col]).all()
 
