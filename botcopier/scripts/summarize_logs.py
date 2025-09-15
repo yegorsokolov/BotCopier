@@ -13,12 +13,84 @@ import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import time
+from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 import pandas as pd
+import logging
+
+
+logger = logging.getLogger(__name__)
+
+
+def _shadow_accuracy_vectorized(
+    decisions: pd.DataFrame, trades: pd.DataFrame, n_jobs: int = 1
+) -> float:
+    """Compute shadow prediction accuracy without explicit Python loops."""
+    if decisions.empty:
+        return 0.0
+
+    dec = decisions.sort_values("decision_id").merge(
+        trades[["decision_id", "profit"]], on="decision_id", how="left"
+    )
+    if dec.empty:
+        return 0.0
+
+    rev = dec.iloc[::-1]
+    groups = (
+        (rev["action"] != "shadow")
+        | (rev["executed_model_idx"] != rev["executed_model_idx"].shift())
+    ).cumsum()
+    dec["group"] = groups.iloc[::-1].to_numpy()
+
+    exec_rows = dec[dec["action"].isin(["buy", "sell"])]
+    if exec_rows.empty:
+        return 0.0
+    actual_map = {
+        int(k): int(v)
+        for k, v in (
+            (exec_rows.set_index("group")["profit"].astype(float) > 0).astype(int)
+        ).items()
+    }
+
+    shadow_rows = dec[dec["action"] == "shadow"]
+    if shadow_rows.empty:
+        return 0.0
+
+    def chunk_acc(df_chunk: pd.DataFrame) -> tuple[int, int]:
+        preds = (df_chunk["probability"].astype(float) > 0.5).astype(int)
+        actuals = df_chunk["group"].map(actual_map)
+        mask = actuals.notna()
+        correct = int((preds[mask] == actuals[mask]).sum())
+        total = int(mask.sum())
+        return correct, total
+
+    if n_jobs and n_jobs > 1:
+        group_ids = shadow_rows["group"].unique()
+        chunks = np.array_split(group_ids, n_jobs)
+        with ThreadPoolExecutor(max_workers=n_jobs) as ex:
+            results = list(
+                ex.map(
+                    lambda g: chunk_acc(shadow_rows[shadow_rows["group"].isin(g)]),
+                    chunks,
+                )
+            )
+        correct = sum(r[0] for r in results)
+        total = sum(r[1] for r in results)
+    else:
+        correct, total = chunk_acc(shadow_rows)
+
+    return float(correct / total) if total else 0.0
 
 
 def _compute_summary(
-    trades: pd.DataFrame, metrics: pd.DataFrame, decisions: pd.DataFrame
+    trades: pd.DataFrame,
+    metrics: pd.DataFrame,
+    decisions: pd.DataFrame,
+    *,
+    n_jobs: int = 1,
+    benchmark: bool = False,
 ) -> dict:
     summary: dict[str, float] = {}
 
@@ -93,30 +165,19 @@ def _compute_summary(
                 summary["live_prediction_accuracy"] = float(
                     (merged["actual"] == merged["pred"]).mean()
                 )
-                dec_sorted = decisions.sort_values("decision_id")
-                shadow_acc: list[int] = []
-                for _, row in exec_dec.iterrows():
-                    exec_id = row["decision_id"]
-                    exec_model = row["model_idx"]
-                    profit_row = trades.loc[trades["decision_id"] == exec_id, "profit"]
-                    if profit_row.empty:
-                        continue
-                    actual = 1 if float(profit_row.iloc[0]) > 0 else 0
-                    idx = dec_sorted.index.get_loc(row.name)
-                    j = idx - 1
-                    while j >= 0:
-                        sh = dec_sorted.iloc[j]
-                        if (
-                            sh["action"] != "shadow"
-                            or sh["executed_model_idx"] != exec_model
-                        ):
-                            break
-                        pred = 1 if float(sh["probability"]) > 0.5 else 0
-                        shadow_acc.append(1 if pred == actual else 0)
-                        j -= 1
-                summary["shadow_prediction_accuracy"] = float(
-                    sum(shadow_acc) / len(shadow_acc)
-                ) if shadow_acc else 0.0
+                if benchmark and n_jobs and n_jobs > 1:
+                    t0 = time.perf_counter()
+                    _shadow_accuracy_vectorized(decisions, trades, n_jobs=1)
+                    t1 = time.perf_counter()
+                    shadow_acc = _shadow_accuracy_vectorized(decisions, trades, n_jobs)
+                    t2 = time.perf_counter()
+                    if t2 - t1 > 0:
+                        logger.info(
+                            "shadow accuracy speedup %.2fx", (t1 - t0) / (t2 - t1)
+                        )
+                else:
+                    shadow_acc = _shadow_accuracy_vectorized(decisions, trades, n_jobs)
+                summary["shadow_prediction_accuracy"] = shadow_acc
             else:
                 summary["live_prediction_accuracy"] = 0.0
                 summary["shadow_prediction_accuracy"] = 0.0
@@ -152,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--summary-file", default="session_summary.json")
     p.add_argument("--summaries-file", default="logs/summaries.csv")
     p.add_argument("--decisions-file", default="logs/decisions.csv")
+    p.add_argument("--n-jobs", type=int, default=1, help="parallel workers")
+    p.add_argument("--benchmark", action="store_true", help="log speedup")
     args = p.parse_args(argv)
 
     trades = pd.read_csv(Path(args.trades_file))
@@ -160,7 +223,9 @@ def main(argv: list[str] | None = None) -> int:
     decisions = (
         pd.read_csv(decisions_path) if decisions_path.exists() else pd.DataFrame()
     )
-    summary = _compute_summary(trades, metrics, decisions)
+    summary = _compute_summary(
+        trades, metrics, decisions, n_jobs=args.n_jobs, benchmark=args.benchmark
+    )
     _write_outputs(summary, Path(args.summary_file), Path(args.summaries_file))
     return 0
 
