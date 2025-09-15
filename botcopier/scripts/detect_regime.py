@@ -22,11 +22,7 @@ except Exception:  # pragma: no cover - optional
     hdbscan = None
 
 from botcopier.data.loading import _load_calendar, _load_logs
-
-try:
-    from scripts.features import _extract_features  # type: ignore
-except Exception:
-    from features import _extract_features  # type: ignore
+from botcopier.features.engineering import _extract_features
 
 
 def detect_regimes(

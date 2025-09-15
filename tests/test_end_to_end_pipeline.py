@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sklearn.feature_extraction import DictVectorizer
 
-from scripts.features import _extract_features
+from botcopier.features.engineering import _extract_features
 from scripts.model_fitting import fit_logistic_regression
 from scripts.evaluation import evaluate_model
 
