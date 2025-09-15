@@ -1,4 +1,7 @@
 import os
+import json
+from pathlib import Path
+
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 
@@ -14,6 +17,8 @@ def test_evaluate_model():
     assert metrics["roc_auc"] == 1.0
     assert metrics["pr_auc"] == 1.0
     assert "reliability_curve" in metrics
+    assert metrics["max_drawdown"] == 0.0
+    assert metrics["var_95"] == 1.0
 
 
 def test_bootstrap_interval_shrinks(tmp_path):
@@ -30,6 +35,7 @@ def test_bootstrap_interval_shrinks(tmp_path):
     returns_large = rng.normal(0, 1, n_large)
 
     old_cwd = os.getcwd()
+    metrics_file = tmp_path / "metrics.json"
     os.chdir(tmp_path)
     try:
         metrics_small = bootstrap_metrics(
@@ -40,8 +46,13 @@ def test_bootstrap_interval_shrinks(tmp_path):
         )
     finally:
         os.chdir(old_cwd)
+    saved = json.loads(metrics_file.read_text())
 
     for key in ["accuracy", "brier_score", "sharpe_ratio"]:
         width_small = metrics_small[key]["high"] - metrics_small[key]["low"]
         width_large = metrics_large[key]["high"] - metrics_large[key]["low"]
         assert width_large < width_small
+
+    for key in ["sharpe_ratio", "sortino_ratio", "max_drawdown", "var_95"]:
+        assert key in saved
+        assert set(saved[key].keys()) == {"mean", "low", "high"}
