@@ -316,6 +316,7 @@ def train(
     """Train a model selected from the registry."""
     chosen_action: tuple[tuple[str, ...], str] | None = None
     if controller is not None:
+        controller.model_path = out_dir / "model.json"
         if not reuse_controller:
             controller.reset()
         chosen_action, _ = controller.sample_action()
