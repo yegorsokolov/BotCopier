@@ -3,23 +3,30 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Callable, Dict, Sequence
 
 import numpy as np
+from opentelemetry import trace
 from pydantic import ValidationError
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 
+from botcopier.exceptions import ModelError
 from .schema import ModelParams
+
+logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 try:  # Optional dependency
     import torch
 
     _HAS_TORCH = True
-except Exception:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover - optional
+    logger.exception("PyTorch is unavailable")
     torch = None  # type: ignore
     _HAS_TORCH = False
 
@@ -27,7 +34,8 @@ try:  # Optional dependency
     import xgboost as xgb  # type: ignore
 
     _HAS_XGB = True
-except Exception:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover - optional
+    logger.exception("XGBoost is unavailable")
     xgb = None  # type: ignore
     _HAS_XGB = False
 
@@ -35,7 +43,8 @@ try:  # Optional dependency
     import catboost as cb  # type: ignore
 
     _HAS_CATBOOST = True
-except Exception:  # pragma: no cover - optional
+except ImportError:  # pragma: no cover - optional
+    logger.exception("CatBoost is unavailable")
     cb = None  # type: ignore
     _HAS_CATBOOST = False
 
@@ -65,25 +74,30 @@ def _migrate_data(data: dict) -> dict:
 
 def load_params(path: Path) -> ModelParams:
     """Load ``ModelParams`` from ``path`` upgrading older versions."""
-    if path.suffix == ".gz":
-        import gzip
+    with tracer.start_as_current_span("load_params"):
+        try:
+            if path.suffix == ".gz":
+                import gzip
 
-        with gzip.open(path, "rt") as fh:
-            raw = fh.read()
-    else:
-        raw = path.read_text()
-    try:
-        params = ModelParams.model_validate_json(raw)
-    except ValidationError:
-        data = json.loads(raw)
-        data = _migrate_data(data)
-        params = ModelParams(**data)
-    else:
-        if params.version != MODEL_VERSION:
-            data = _migrate_data(params.model_dump())
-            params = ModelParams(**data)
-    path.write_text(params.model_dump_json())
-    return params
+                with gzip.open(path, "rt") as fh:
+                    raw = fh.read()
+            else:
+                raw = path.read_text()
+            try:
+                params = ModelParams.model_validate_json(raw)
+            except ValidationError:
+                data = json.loads(raw)
+                data = _migrate_data(data)
+                params = ModelParams(**data)
+            else:
+                if params.version != MODEL_VERSION:
+                    data = _migrate_data(params.model_dump())
+                    params = ModelParams(**data)
+            path.write_text(params.model_dump_json())
+            return params
+        except (OSError, json.JSONDecodeError, ValidationError) as exc:
+            logger.exception("Failed to load model parameters from %s", path)
+            raise ModelError("Failed to load model parameters") from exc
 
 
 def register_model(name: str, builder: Callable) -> None:

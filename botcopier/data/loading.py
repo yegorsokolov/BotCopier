@@ -9,6 +9,7 @@ from typing import Iterable, Tuple
 
 import numpy as np
 import pandas as pd
+from opentelemetry import trace
 
 from botcopier.exceptions import DataError
 from botcopier.features.augmentation import _augment_dataframe, _augment_dtw_dataframe
@@ -16,6 +17,7 @@ from botcopier.features.augmentation import _augment_dataframe, _augment_dtw_dat
 from ..scripts.data_validation import validate_logs
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 def _drop_duplicates_and_outliers(
@@ -386,7 +388,8 @@ def _load_logs_impl(
                     yield df_chunk
 
             return _iter(), feature_cols, data_hashes
-        except Exception:  # pragma: no cover - pyarrow.dataset missing
+        except ImportError as exc:  # pragma: no cover - pyarrow.dataset missing
+            logger.exception("pyarrow.dataset missing, falling back to pandas")
             reader = pd.read_csv(file, memory_map=True)
             df, feature_cols = _process(reader)
             return df, feature_cols, data_hashes
@@ -424,9 +427,10 @@ def _load_logs_impl(
 
 def _load_logs(*args, **kwargs):
     """Load logs with graceful fallback on network, disk or dependency failures."""
-    try:
-        return _load_logs_impl(*args, **kwargs)
-    except (OSError, ConnectionError, ImportError, ValueError) as exc:
-        err = DataError("Failed to load logs", timestamp=datetime.now(UTC))
-        logger.error("%s - using fallback empty dataset", err, exc_info=exc)
-        return pd.DataFrame(), [], {}
+    with tracer.start_as_current_span("load_logs"):
+        try:
+            return _load_logs_impl(*args, **kwargs)
+        except (OSError, ConnectionError, ImportError, ValueError):
+            err = DataError("Failed to load logs", timestamp=datetime.now(UTC))
+            logger.exception("%s - using fallback empty dataset", err)
+            return pd.DataFrame(), [], {}
