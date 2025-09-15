@@ -35,6 +35,8 @@ def test_full_pipeline(tmp_path: Path) -> None:
     expected_hash = hashlib.sha256(data_file.read_bytes()).hexdigest()
     key = str(data_file.resolve())
     assert model["data_hashes"][key] == expected_hash
+    assert "risk_metrics" in model
+    assert set(model["risk_metrics"].keys()) >= {"max_drawdown", "var_95"}
 
 
 @pytest.mark.integration

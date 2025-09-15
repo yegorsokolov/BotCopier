@@ -577,6 +577,20 @@ def _metric_sortino(
     return 0.0
 
 
+def _metric_drawdown(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
+    returns = _returns(y_true, probas, profits).tolist()
+    return float(_abs_drawdown(returns))
+
+
+def _metric_var95(
+    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+) -> float:
+    returns = _returns(y_true, probas, profits).tolist()
+    return float(_var_95(returns))
+
+
 def _metric_profit(
     y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
 ) -> float:
@@ -593,6 +607,8 @@ register_metric("reliability_curve", _metric_reliability)
 register_metric("ece", _metric_ece)
 register_metric("sharpe_ratio", _metric_sharpe)
 register_metric("sortino_ratio", _metric_sortino)
+register_metric("max_drawdown", _metric_drawdown)
+register_metric("var_95", _metric_var95)
 register_metric("profit", _metric_profit)
 
 
@@ -652,6 +668,8 @@ def bootstrap_metrics(
         "brier_score",
         "sharpe_ratio",
         "sortino_ratio",
+        "max_drawdown",
+        "var_95",
         "profit",
     ]
     collected: Dict[str, List[float]] = {k: [] for k in keys}
@@ -823,15 +841,28 @@ def evaluate_strategy(
     returns = list(returns)
     slip = list(slippage or [])
     slip_mean, slip_std = _slippage_stats(slip)
+    mean = sum(returns) / len(returns) if returns else 0.0
+    risk = _risk(returns)
+    downside = [r for r in returns if r < 0]
+    if downside:
+        downside_std = math.sqrt(sum(r * r for r in downside) / len(downside))
+    else:
+        downside_std = 0.0
+    sharpe = mean / risk if risk > 0 else 0.0
+    sortino = mean / downside_std if downside_std > 0 else 0.0
+    drawdown = _abs_drawdown(returns)
     metrics = {
-        "abs_drawdown": _abs_drawdown(returns),
-        "risk": _risk(returns),
-        "mean_return": sum(returns) / len(returns) if returns else 0.0,
+        "abs_drawdown": drawdown,
+        "max_drawdown": drawdown,
+        "risk": risk,
+        "mean_return": mean,
         "budget_utilisation": _budget_utilisation(returns, budget),
         "order_type_compliance": _order_type_compliance(
             order_types, allowed_order_types
         ),
         "var_95": _var_95(returns),
+        "sharpe_ratio": sharpe,
+        "sortino_ratio": sortino,
         "volatility_spikes": _volatility_spikes(returns),
         "slippage_mean": slip_mean,
         "slippage_std": slip_std,

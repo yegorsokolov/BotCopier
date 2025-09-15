@@ -161,6 +161,8 @@ def test_promote_logs_additional_metrics(tmp_path: Path):
     report = json.loads((metrics_dir / "risk.json").read_text())
     metrics = report["metrics_model"]
     assert "var_95" in metrics
+    assert "sharpe_ratio" in metrics
+    assert "sortino_ratio" in metrics
     assert "volatility_spikes" in metrics
     assert "slippage_mean" in metrics
     assert "slippage_std" in metrics
