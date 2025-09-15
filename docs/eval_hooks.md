@@ -21,3 +21,14 @@ botcopier evaluate preds.csv trades.csv --eval-hooks precision,sharpe
 
 Each hook receives the same context object, allowing them to share results.
 They are executed sequentially in the order provided.
+
+Third-party packages can expose hooks via the `botcopier.eval_hooks` entry
+point group:
+
+```
+[project.entry-points."botcopier.eval_hooks"]
+precision_plus = "my_pkg.hooks:precision_plus"
+```
+
+When listed on the CLI the hook will be discovered and executed alongside the
+built-in ones.

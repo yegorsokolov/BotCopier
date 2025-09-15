@@ -9,6 +9,7 @@ context object. Hooks are executed sequentially in the order provided to
 """
 
 from typing import Callable, Dict, Sequence, Any
+from importlib.metadata import entry_points
 import math
 import numpy as np
 
@@ -33,6 +34,26 @@ def register_hook(name: str) -> Callable[[HookFn], HookFn]:
         return fn
 
     return decorator
+
+
+def load_entry_point_hooks(names: Sequence[str] | None = None) -> None:
+    """Discover hooks published via the ``botcopier.eval_hooks`` entry point."""
+
+    try:
+        eps = entry_points(group="botcopier.eval_hooks")
+    except TypeError:  # pragma: no cover - compatibility with older Python
+        eps = entry_points().get("botcopier.eval_hooks", [])
+
+    for ep in eps:
+        if names is not None and ep.name not in names:
+            continue
+        if ep.name in _REGISTRY:
+            continue
+        try:
+            fn = ep.load()
+        except Exception:  # pragma: no cover - faulty third-party plugin
+            continue
+        register_hook(ep.name)(fn)
 
 
 def available_hooks() -> Sequence[str]:
