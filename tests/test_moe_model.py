@@ -28,9 +28,11 @@ def _make_dataset(tmp_path: Path):
 
 
 def test_gating_probabilities_sum_to_one(tmp_path: Path):
+    """Gating network should produce a valid probability simplex."""
+
     _, X, R, y, _ = _make_dataset(tmp_path)
     builder = get_model("moe")
-    _, pred_fn = builder(
+    meta, pred_fn = builder(
         X,
         y,
         regime_features=R,
@@ -44,6 +46,15 @@ def test_gating_probabilities_sum_to_one(tmp_path: Path):
             model.gating(torch.tensor(R, dtype=torch.float32)), dim=1
         ).cpu().numpy()
     assert np.allclose(gates.sum(axis=1), 1.0)
+
+    # Recompute gating probabilities from persisted weights to ensure metadata
+    # is consistent with the trained model.
+    gw = np.array(meta["regime_gating"]["weights"])
+    gb = np.array(meta["regime_gating"]["bias"])
+    logits = R @ gw.T + gb
+    probs = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
+    assert np.allclose(probs, gates)
+    assert np.allclose(probs.sum(axis=1), 1.0)
 
 
 def test_moe_accuracy_exceeds_individual_experts(tmp_path: Path):
