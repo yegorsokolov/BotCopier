@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
 import numpy as np
-import optuna
 import pandas as pd
 import psutil
 from joblib import Memory
@@ -41,6 +40,14 @@ try:  # optional dask support
 except Exception:  # pragma: no cover - optional
     dd = None  # type: ignore
     _HAS_DASK = False
+
+try:  # optional optuna support
+    import optuna
+
+    _HAS_OPTUNA = True
+except ImportError:  # pragma: no cover - optional
+    optuna = None  # type: ignore
+    _HAS_OPTUNA = False
 
 try:  # optional numba support
     from numba import njit
@@ -392,6 +399,20 @@ def _write_dependency_snapshot(out_dir: Path) -> Path:
     return dep_path
 
 
+def _serialise_metric_values(obj: object) -> object:
+    """Recursively convert numpy types within ``obj`` to JSON-friendly values."""
+
+    if isinstance(obj, dict):
+        return {k: _serialise_metric_values(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_serialise_metric_values(v) for v in obj]
+    if isinstance(obj, np.generic):  # includes scalar numpy types
+        return obj.item()
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
 def _trial_logger(
     csv_path: Path,
 ) -> Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]:
@@ -609,6 +630,22 @@ def train(
     if not vol_weight and "volatility_weighting" in kwargs:
         vol_weight = bool(kwargs.pop("volatility_weighting"))
 
+    threshold_objective = str(
+        kwargs.pop("threshold_objective", "profit") or "profit"
+    ).lower()
+    threshold_grid_param = kwargs.pop("threshold_grid", None)
+    threshold_grid_values: np.ndarray | None
+    if threshold_grid_param is None:
+        threshold_grid_values = None
+    elif isinstance(threshold_grid_param, (float, int)):
+        threshold_grid_values = np.asarray([float(threshold_grid_param)], dtype=float)
+    else:
+        try:
+            threshold_grid_values = np.asarray(list(threshold_grid_param), dtype=float)
+        except TypeError:
+            threshold_grid_values = np.asarray(
+                [float(threshold_grid_param)], dtype=float
+            )
     set_seed(random_seed)
     configure_cache(
         FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
@@ -791,11 +828,21 @@ def train(
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy(dtype=float)
-                y = (profits > 0).astype(float)
+                label_col = next((c for c in df.columns if c.startswith("label")), None)
+                signs = np.unique(np.sign(profits[np.isfinite(profits)]))
+                if signs.size <= 1 and label_col is not None:
+                    y = df[label_col].to_numpy(dtype=float)
+                else:
+                    y = (profits > 0).astype(float)
                 has_profit = True
-                event_times = pd.to_datetime(
-                    df["event_time"], errors="coerce"
-                ).to_numpy()
+                if "event_time" in df.columns:
+                    event_times = pd.to_datetime(
+                        df["event_time"], errors="coerce"
+                    ).to_numpy()
+                else:
+                    event_times = np.full(
+                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                    )
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
@@ -806,17 +853,29 @@ def train(
                 event_times = (
                     pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
                     if "event_time" in df.columns
-                    else np.array([], dtype="datetime64[ns]")
+                    else np.full(
+                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                    )
                 )
         elif isinstance(df, pd.DataFrame):
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy(dtype=float)
-                y = (profits > 0).astype(float)
+                label_col = next((c for c in df.columns if c.startswith("label")), None)
+                signs = np.unique(np.sign(profits[np.isfinite(profits)]))
+                if signs.size <= 1 and label_col is not None:
+                    y = df[label_col].to_numpy(dtype=float)
+                else:
+                    y = (profits > 0).astype(float)
                 has_profit = True
-                event_times = pd.to_datetime(
-                    df["event_time"], errors="coerce"
-                ).to_numpy()
+                if "event_time" in df.columns:
+                    event_times = pd.to_datetime(
+                        df["event_time"], errors="coerce"
+                    ).to_numpy()
+                else:
+                    event_times = np.full(
+                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                    )
                 ret_cols = [
                     c for c in ["event_time", "symbol", "profit"] if c in df.columns
                 ]
@@ -831,18 +890,30 @@ def train(
                 event_times = (
                     pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
                     if "event_time" in df.columns
-                    else np.array([], dtype="datetime64[ns]")
+                    else np.full(
+                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                    )
                 )
                 returns_df = None
         elif _HAS_POLARS and isinstance(df, pl.DataFrame):
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy().astype(float)
-                y = (profits > 0).astype(float)
+                label_col = next((c for c in df.columns if str(c).startswith("label")), None)
+                signs = np.unique(np.sign(profits[np.isfinite(profits)]))
+                if signs.size <= 1 and label_col is not None:
+                    y = df[label_col].to_numpy().astype(float)
+                else:
+                    y = (profits > 0).astype(float)
                 has_profit = True
-                event_times = pd.to_datetime(
-                    df["event_time"].to_numpy(), errors="coerce"
-                ).to_numpy()
+                if "event_time" in df.columns:
+                    event_times = pd.to_datetime(
+                        df["event_time"].to_numpy(), errors="coerce"
+                    ).to_numpy()
+                else:
+                    event_times = np.full(
+                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                    )
                 ret_cols = [
                     c for c in ["event_time", "symbol", "profit"] if c in df.columns
                 ]
@@ -859,7 +930,9 @@ def train(
                 event_times = (
                     pd.to_datetime(df["event_time"].to_numpy(), errors="coerce").to_numpy()
                     if "event_time" in df.columns
-                    else np.array([], dtype="datetime64[ns]")
+                    else np.full(
+                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                    )
                 )
                 returns_df = None
         else:  # pragma: no cover - defensive
@@ -1090,11 +1163,96 @@ def train(
         best_score = -np.inf
         best_params: dict[str, object] | None = None
         best_fold_metrics: list[dict[str, object]] = []
-        metrics: dict[str, float] = {}
+        metrics: dict[str, object] = {}
+        objective_metric_map = {
+            "profit": "profit",
+            "net_profit": "profit",
+            "sharpe": "sharpe_ratio",
+            "sortino": "sortino_ratio",
+        }
+        objective_key = objective_metric_map.get(threshold_objective, "profit")
+        def _evaluate_thresholds_for_fold(
+            fold_preds: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]]
+        ) -> tuple[
+            float, dict[str, object], list[tuple[int, dict[str, object]]]
+        ]:
+            if not fold_preds:
+                return 0.5, {}, []
+            fold_preds = sorted(fold_preds, key=lambda x: x[0])
+            y_all = np.concatenate([fp[1] for fp in fold_preds])
+            prob_all = np.concatenate([fp[2] for fp in fold_preds])
+            profit_all = np.concatenate([fp[3] for fp in fold_preds])
+            if not np.any(np.abs(profit_all) > 0):
+                candidates = np.asarray([0.5], dtype=float)
+            else:
+                base_grid = (
+                    threshold_grid_values
+                    if threshold_grid_values is not None
+                    else np.asarray([], dtype=float)
+                )
+                finite_probs = prob_all[np.isfinite(prob_all)]
+                candidate = np.concatenate(
+                    [
+                        base_grid,
+                        finite_probs,
+                        np.asarray([0.0, 0.5, 1.0], dtype=float),
+                    ]
+                )
+                candidate = candidate[(candidate >= 0.0) & (candidate <= 1.0)]
+                if candidate.size == 0:
+                    candidates = np.asarray([0.5], dtype=float)
+                else:
+                    candidates = np.unique(candidate)
+                    if candidates.size > 512:
+                        idx = np.linspace(0, candidates.size - 1, 512, dtype=int)
+                        candidates = candidates[idx]
+            best_metrics: dict[str, object] | None = None
+            best_threshold = float(candidates[0])
+            best_obj = -np.inf
+            for thr in candidates:
+                returns_all = profit_all * (prob_all >= thr)
+                metrics_all = _classification_metrics_cached(
+                    y_all, prob_all, returns_all, selected=metric_names
+                )
+                metrics_all["max_drawdown"] = _max_drawdown(returns_all)
+                metrics_all["var_95"] = _var_95(returns_all)
+                metrics_all["threshold"] = float(thr)
+                metrics_all["threshold_objective"] = threshold_objective
+                obj_val = metrics_all.get(objective_key)
+                if isinstance(obj_val, (int, float)) and not np.isnan(obj_val):
+                    obj_score = float(obj_val)
+                else:
+                    obj_score = -np.inf
+                if obj_score > best_obj or (
+                    np.isfinite(obj_score)
+                    and np.isclose(obj_score, best_obj)
+                    and float(thr) < best_threshold
+                ):
+                    best_obj = obj_score
+                    best_threshold = float(thr)
+                    best_metrics = metrics_all
+            if best_metrics is None:
+                best_metrics = {
+                    "threshold": best_threshold,
+                    "threshold_objective": threshold_objective,
+                }
+            fold_metrics: list[tuple[int, dict[str, object]]] = []
+            for fold_idx, y_val, prob_val, prof_val in fold_preds:
+                returns_fold = prof_val * (prob_val >= best_threshold)
+                metrics_fold = _classification_metrics_cached(
+                    y_val, prob_val, returns_fold, selected=metric_names
+                )
+                metrics_fold["max_drawdown"] = _max_drawdown(returns_fold)
+                metrics_fold["var_95"] = _var_95(returns_fold)
+                metrics_fold["threshold"] = float(best_threshold)
+                metrics_fold["threshold_objective"] = threshold_objective
+                fold_metrics.append((fold_idx, metrics_fold))
+            return best_threshold, best_metrics, fold_metrics
+
         if distributed and not _HAS_RAY:
             raise RuntimeError("ray is required for distributed execution")
         for params in param_grid:
-            fold_metrics: list[dict[str, object]] = []
+            fold_predictions: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]] = []
             if distributed and _HAS_RAY:
                 X_ref = ray.put(model_inputs)
                 y_ref = ray.put(y)
@@ -1142,13 +1300,14 @@ def train(
                             **builder_kwargs,
                         )
                         prob_val = pred_fn(data[val_idx])
-                    returns = profits[val_idx] * (prob_val >= 0.5)
-                    fold_metric = _classification_metrics_cached(
-                        y[val_idx], prob_val, returns, selected=metric_names
+                    profits_val = profits[val_idx]
+                    y_val = y[val_idx]
+                    return (
+                        fold,
+                        np.asarray(y_val, dtype=float),
+                        np.asarray(prob_val, dtype=float),
+                        np.asarray(profits_val, dtype=float),
                     )
-                    fold_metric["max_drawdown"] = _max_drawdown(returns)
-                    fold_metric["var_95"] = _var_95(returns)
-                    return fold, fold_metric
 
                 futures = [
                     _run_fold.remote(tr_idx, val_idx, fold)
@@ -1156,16 +1315,8 @@ def train(
                     if len(np.unique(y[tr_idx])) >= 2
                 ]
                 results = ray.get(futures)
-                results.sort(key=lambda x: x[0])
-                for fold, fold_metric in results:
-                    fold_metrics.append(fold_metric)
-                    logger.info(
-                        "Fold %d params %s metrics %s", fold + 1, params, fold_metric
-                    )
-                    if mlflow_active:
-                        for k, v in fold_metric.items():
-                            if isinstance(v, (int, float)) and not np.isnan(v):
-                                mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
+                for fold, y_val, prob_val, prof_val in results:
+                    fold_predictions.append((fold, y_val, prob_val, prof_val))
             else:
                 for fold, (tr_idx, val_idx) in enumerate(splits):
                     if len(np.unique(y[tr_idx])) < 2:
@@ -1203,26 +1354,30 @@ def train(
                             **builder_kwargs,
                         )
                         prob_val = pred_fn(model_inputs[val_idx])
-                    returns = profits[val_idx] * (prob_val >= 0.5)
+                    profits_val = profits[val_idx]
                     if profile and eval_prof is not None:
                         eval_prof.enable()
-                    fold_metric = _classification_metrics_cached(
-                        y[val_idx], prob_val, returns, selected=metric_names
-                    )
+                    y_val = y[val_idx]
+                    prob_sel = np.asarray(prob_val, dtype=float)
+                    prof_sel = np.asarray(profits_val, dtype=float)
+                    y_sel = np.asarray(y_val, dtype=float)
                     if profile and eval_prof is not None:
                         eval_prof.disable()
-                    fold_metric["max_drawdown"] = _max_drawdown(returns)
-                    fold_metric["var_95"] = _var_95(returns)
-                    fold_metrics.append(fold_metric)
-                    logger.info(
-                        "Fold %d params %s metrics %s", fold + 1, params, fold_metric
-                    )
-                    if mlflow_active:
-                        for k, v in fold_metric.items():
-                            if isinstance(v, (int, float)) and not np.isnan(v):
-                                mlflow.log_metric(f"fold{fold + 1}_{k}", float(v))
-            if not fold_metrics:
+                    fold_predictions.append((fold, y_sel, prob_sel, prof_sel))
+            threshold_value, combined_metrics, fold_metric_entries = _evaluate_thresholds_for_fold(
+                fold_predictions
+            )
+            if not fold_metric_entries:
                 continue
+            fold_metrics = [metrics_dict for _, metrics_dict in fold_metric_entries]
+            for fold_idx, metrics_dict in fold_metric_entries:
+                logger.info(
+                    "Fold %d params %s metrics %s", fold_idx + 1, params, metrics_dict
+                )
+                if mlflow_active:
+                    for k, v in metrics_dict.items():
+                        if isinstance(v, (int, float)) and not np.isnan(v):
+                            mlflow.log_metric(f"fold{fold_idx + 1}_{k}", float(v))
             agg = {
                 k: float(
                     np.nanmean(
@@ -1236,6 +1391,17 @@ def train(
                 for k in fold_metrics[0].keys()
                 if k != "reliability_curve"
             }
+            agg["threshold"] = float(threshold_value)
+            agg["threshold_objective"] = threshold_objective
+            for key in [
+                "reliability_curve",
+                "roc_auc",
+                "pr_auc",
+                "brier_score",
+                "ece",
+            ]:
+                if key in combined_metrics and combined_metrics[key] is not None:
+                    agg[key] = combined_metrics[key]
             score = agg.get("roc_auc", float("nan"))
             if np.isnan(score):
                 score = agg.get("accuracy", 0.0)
@@ -1250,9 +1416,14 @@ def train(
                 best_score = score
                 best_params = params
                 best_fold_metrics = fold_metrics
-                metrics = agg
+                metrics = agg.copy()
+                metrics.setdefault("threshold", float(threshold_value))
+                metrics.setdefault("threshold_objective", threshold_objective)
+        selected_threshold = float(metrics.get("threshold", 0.5))
         if profile and eval_prof is not None:
             eval_prof.dump_stats(str(profiles_dir / "evaluation.prof"))
+        metrics.setdefault("threshold", selected_threshold)
+        metrics.setdefault("threshold_objective", threshold_objective)
         metrics["ood_rate"] = ood_rate
         min_acc = float(kwargs.get("min_accuracy", 0.0))
         min_profit = float(kwargs.get("min_profit", -np.inf))
@@ -1472,6 +1643,11 @@ def train(
             "covariance": feat_cov.tolist(),
             "threshold": ood_threshold,
         }
+        serialised_cv_metrics = _serialise_metric_values(metrics)
+        session_cv_metrics = _serialise_metric_values(metrics)
+        serialised_fold_metrics = [
+            _serialise_metric_values(m) for m in best_fold_metrics
+        ]
         if "session_models" not in model:
             sm_keys = [
                 "coefficients",
@@ -1484,11 +1660,18 @@ def train(
             model["session_models"] = {
                 "asian": {k: model[k] for k in sm_keys if k in model}
             }
+        model["cv_metrics"] = serialised_cv_metrics
+        model["threshold"] = float(selected_threshold)
+        model["decision_threshold"] = float(selected_threshold)
+        model["threshold_objective"] = threshold_objective
         model["cv_accuracy"] = metrics.get("accuracy", 0.0)
         model["cv_profit"] = metrics.get("profit", 0.0)
         model["conformal_lower"] = 0.0
         model["conformal_upper"] = 1.0
-        model["session_models"]["asian"]["cv_metrics"] = best_fold_metrics
+        model["session_models"]["asian"]["cv_metrics"] = serialised_fold_metrics
+        model["session_models"]["asian"]["threshold"] = float(selected_threshold)
+        model["session_models"]["asian"]["metrics"] = session_cv_metrics
+        model["session_models"]["asian"]["threshold_objective"] = threshold_objective
         model["session_models"]["asian"]["conformal_lower"] = 0.0
         model["session_models"]["asian"]["conformal_upper"] = 1.0
         mode = kwargs.get("mode")
@@ -1501,6 +1684,8 @@ def train(
         model["risk_metrics"] = {
             "max_drawdown": metrics.get("max_drawdown", 0.0),
             "var_95": metrics.get("var_95", 0.0),
+            "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
+            "sortino_ratio": metrics.get("sortino_ratio", 0.0),
         }
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = random_seed
@@ -1547,9 +1732,14 @@ def train(
             reward = profit - complexity_penalty * complexity - risk_penalty
             controller.update(chosen_action, reward)
         deps_file = _write_dependency_snapshot(out_dir)
+        numeric_metrics = {
+            k: float(v)
+            for k, v in metrics.items()
+            if isinstance(v, (int, float, np.floating)) and not np.isnan(float(v))
+        }
         generate_model_card(
             model_params,
-            metrics,
+            numeric_metrics,
             out_dir / "model_card.md",
             dependencies_path=deps_file,
         )
@@ -1617,6 +1807,45 @@ def train(
             mlflow.log_param("data_hashes_uri", data_hash_uri)
         span_eval.__exit__(None, None, None)
         return model_obj
+
+
+def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
+    """Compute expected profit predictions for feature matrix ``X``."""
+
+    if "session_models" in model and model["session_models"]:
+        params = next(iter(model["session_models"].values()))
+    else:
+        params = model
+
+    features = np.asarray(X, dtype=float)
+    clip_low = np.asarray(params.get("clip_low", model.get("clip_low", [])), dtype=float)
+    clip_high = np.asarray(
+        params.get("clip_high", model.get("clip_high", [])), dtype=float
+    )
+    if clip_low.size and clip_high.size and clip_low.shape == clip_high.shape:
+        features = np.clip(features, clip_low, clip_high)
+
+    mean = np.asarray(params.get("feature_mean", model.get("feature_mean", [])), dtype=float)
+    std = np.asarray(params.get("feature_std", model.get("feature_std", [])), dtype=float)
+    if mean.size and std.size and mean.shape == std.shape:
+        denom = np.where(std == 0, 1.0, std)
+        features = features - mean
+        features = features / denom
+
+    coef = np.asarray(params.get("coefficients", []), dtype=float)
+    intercept = float(params.get("intercept", 0.0))
+    logits = features @ coef + intercept
+    prob = 1.0 / (1.0 + np.exp(-logits))
+
+    pnl_model = params.get("pnl_model")
+    if pnl_model:
+        pnl_coef = np.asarray(pnl_model.get("coefficients", []), dtype=float)
+        pnl_intercept = float(pnl_model.get("intercept", 0.0))
+        pnl = features @ pnl_coef + pnl_intercept
+    else:
+        pnl = np.ones_like(prob)
+
+    return prob * pnl
 
 
 def detect_resources(*, lite_mode: bool = False, heavy_mode: bool = False) -> dict:

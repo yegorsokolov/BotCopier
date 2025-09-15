@@ -20,11 +20,22 @@ def test_cross_validation_metrics_written(tmp_path: Path) -> None:
     out_dir = tmp_path / "out"
     train(data, out_dir)
     model = json.loads((out_dir / "model.json").read_text())
+    assert "cv_metrics" in model
+    assert "threshold" in model
     assert "cv_accuracy" in model and "cv_profit" in model
     assert "conformal_lower" in model and "conformal_upper" in model
+    cv_metrics = model["cv_metrics"]
+    assert cv_metrics["threshold_objective"] == "profit"
+    assert cv_metrics["threshold"] == pytest.approx(model["threshold"])
+    assert "brier_score" in cv_metrics
+    assert "sharpe_ratio" in cv_metrics
     for params in model["session_models"].values():
         assert params["cv_metrics"]
         assert "conformal_lower" in params and "conformal_upper" in params
+        assert params["threshold"] == pytest.approx(model["threshold"])
+        assert "metrics" in params
+        assert params["metrics"]["threshold"] == pytest.approx(model["threshold"])
+        assert "brier_score" in params["metrics"]
         for fm in params["cv_metrics"]:
             assert "accuracy" in fm and "profit" in fm
 
