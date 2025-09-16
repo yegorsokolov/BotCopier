@@ -1,7 +1,7 @@
 import numpy as np
 from hypothesis import HealthCheck, assume, given, settings
 
-from botcopier.strategy.engine import search_strategies
+from botcopier.strategy.search import search_strategies
 from tests.property.strategies import price_series
 
 

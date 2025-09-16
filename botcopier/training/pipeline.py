@@ -687,10 +687,55 @@ def train(
     _hrp_cached = memory.cache(hierarchical_risk_parity)
     if strategy_search:
         from botcopier.strategy.dsl import serialize
-        from botcopier.strategy.engine import search_strategies
+        from botcopier.strategy.search import search_strategies
 
-        prices = np.linspace(1.0, 200.0, 200)
-        best, pareto = search_strategies(prices)
+        def _load_price_series(root: Path) -> np.ndarray | None:
+            if not root.exists():
+                return None
+            for candidate in sorted(root.glob("*.npy")):
+                try:
+                    arr = np.load(candidate)
+                except Exception:
+                    continue
+                arr = np.asarray(arr, dtype=float).reshape(-1)
+                arr = arr[np.isfinite(arr)]
+                if arr.size >= 2:
+                    return arr
+            for candidate in sorted(root.glob("*.csv")):
+                try:
+                    df = pd.read_csv(candidate)
+                except Exception:
+                    continue
+                numeric = df.select_dtypes(include=[np.number])
+                if numeric.empty:
+                    continue
+                series = numeric.iloc[:, 0].to_numpy(dtype=float)
+                series = series[np.isfinite(series)]
+                if series.size >= 2:
+                    return series
+            return None
+
+        prices = _load_price_series(data_dir)
+        if prices is None or prices.size < 2:
+            rng = np.random.default_rng(random_seed or 0)
+            steps = rng.normal(loc=0.15, scale=1.0, size=512)
+            prices = np.cumsum(steps) + 100.0
+            prices = prices - np.nanmin(prices) + 1.0
+        prices = np.asarray(prices, dtype=float)
+
+        base_pop = max(8, prices.size // 8)
+        population_size = int(min(48, max(12, base_pop)))
+        n_generations = int(max(6, np.ceil(160 / max(population_size, 1))))
+        n_samples = population_size * n_generations
+        search_seed = int(random_seed or 0)
+
+        best, pareto = search_strategies(
+            prices,
+            seed=search_seed,
+            population_size=population_size,
+            n_generations=n_generations,
+            n_samples=n_samples,
+        )
         out_dir.mkdir(parents=True, exist_ok=True)
         model_path = out_dir / "model.json"
         try:
@@ -699,15 +744,28 @@ def train(
             existing = {}
         existing["strategies"] = [
             {
-                "expr": serialize(c.expr),
-                "return": c.ret,
-                "risk": c.risk,
+                "expr": serialize(candidate.expr),
+                "return": candidate.ret,
+                "risk": candidate.risk,
+                "complexity": candidate.complexity,
             }
-            for c in sorted(pareto, key=lambda x: x.ret, reverse=True)
+            for candidate in pareto
         ]
         existing["best_strategy"] = serialize(best.expr)
         existing["best_return"] = best.ret
         existing["best_risk"] = best.risk
+        existing["best_complexity"] = best.complexity
+        existing["strategy_search_metadata"] = {
+            "seed": search_seed,
+            "population_size": population_size,
+            "n_generations": n_generations,
+            "n_samples": n_samples,
+            "price_history": {
+                "length": int(prices.size),
+                "min": float(np.nanmin(prices)),
+                "max": float(np.nanmax(prices)),
+            },
+        }
         model_path.write_text(json.dumps(existing, indent=2))
         return
     tracer = trace.get_tracer(__name__)
