@@ -33,5 +33,15 @@ def test_search_strategy_profitable() -> None:
     baseline = backtest(prices, Position(GT(Price(), Price())))
     expr, ret, risk = search_strategy(prices, n_samples=10, seed=0)
     assert ret >= baseline
-    assert risk >= 0
-    assert backtest(prices, expr) == ret
+    assert np.isfinite(risk) and risk >= 0
+    compiled = expr.compile()
+    assert compiled(prices).shape == prices.shape
+    assert np.isclose(backtest(prices, expr), ret)
+
+
+def test_search_strategy_handles_short_series() -> None:
+    prices = np.array([1.0, 1.0])
+    expr, ret, risk = search_strategy(prices, n_samples=5, seed=1)
+    assert expr.eval(prices).shape == prices.shape
+    assert np.isfinite(ret)
+    assert np.isfinite(risk)

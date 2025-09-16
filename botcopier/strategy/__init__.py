@@ -20,6 +20,7 @@ from .dsl import (
     backtest,
 )
 from .engine import search_strategies
+from .search import Candidate, search_strategy
 
 __all__ = [
     "Expr",
@@ -40,5 +41,7 @@ __all__ = [
     "serialize",
     "deserialize",
     "backtest",
+    "Candidate",
+    "search_strategy",
     "search_strategies",
 ]

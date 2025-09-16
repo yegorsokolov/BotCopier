@@ -5,10 +5,24 @@ from pathlib import Path
 
 import numpy as np
 
+
 # Stub heavy optional dependencies so pipeline imports without installing them
-pandas_stub = types.ModuleType("pandas")
-pandas_stub.DataFrame = type("DataFrame", (), {})
-sys.modules.setdefault("pandas", pandas_stub)
+try:  # pragma: no cover - executed only when pandas is unavailable
+    import pandas  # type: ignore  # noqa: F401
+except Exception:  # pragma: no cover - fallback for minimal environments
+    class _StubDataFrame:
+        def select_dtypes(self, include=None):
+            return self
+
+        @property
+        def empty(self) -> bool:
+            return True
+
+    pandas_stub = types.ModuleType("pandas")
+    pandas_stub.DataFrame = _StubDataFrame
+    pandas_stub.RangeIndex = type("RangeIndex", (), {})
+    pandas_stub.read_csv = lambda *a, **k: _StubDataFrame()
+    sys.modules.setdefault("pandas", pandas_stub)
 sys.modules.setdefault("psutil", types.ModuleType("psutil"))
 
 scipy = types.ModuleType("scipy")
@@ -112,6 +126,12 @@ class FeatureConfig:
 
 engineering_mod.FeatureConfig = FeatureConfig
 engineering_mod.configure_cache = lambda config: None
+engineering_mod._extract_features = lambda df, names, n_jobs=None: (df, names, None, None)
+engineering_mod._neutralize_against_market_index = lambda df, n_jobs=None: df
+
+augmentation_mod = types.ModuleType("augmentation")
+augmentation_mod._augment_dataframe = lambda df, *a, **k: df
+augmentation_mod._augment_dtw_dataframe = lambda df, *a, **k: df
 
 sys.modules.update(
     {
@@ -119,10 +139,7 @@ sys.modules.update(
         "botcopier.features.technical": technical_mod,
         "botcopier.features.anomaly": anomaly_mod,
         "botcopier.features.engineering": engineering_mod,
-        "botcopier.features.augmentation": types.SimpleNamespace(
-            _augment_dataframe=lambda df, *a, **k: df,
-            _augment_dtw_dataframe=lambda df, *a, **k: df,
-        ),
+        "botcopier.features.augmentation": augmentation_mod,
     }
 )
 
@@ -155,6 +172,14 @@ jinja2.Environment = object
 jinja2.select_autoescape = lambda *a, **k: None
 sys.modules["jinja2"] = jinja2
 
+pyarrow_stub = types.ModuleType("pyarrow")
+pyarrow_stub.schema = lambda *a, **k: None
+pyarrow_stub.field = lambda *a, **k: None
+pyarrow_stub.int32 = lambda *a, **k: None
+pyarrow_stub.float64 = lambda *a, **k: None
+pyarrow_stub.string = lambda *a, **k: None
+sys.modules.setdefault("pyarrow", pyarrow_stub)
+
 from botcopier.strategy import (
     Price,
     SMA,
@@ -165,6 +190,7 @@ from botcopier.strategy import (
     serialize,
     search_strategies,
 )
+from botcopier.strategy.search import PARETO_MAX_SIZE
 from botcopier.training.pipeline import train
 
 
@@ -176,6 +202,7 @@ def test_strategy_search_outperforms_baseline(tmp_path: Path) -> None:
 
     best, pareto = search_strategies(prices, n_samples=25)
     assert best.ret > baseline_ret
+    assert best.complexity >= 1
 
     compiled = deserialize(serialize(best.expr))
     assert np.allclose(backtest(prices, compiled), backtest(prices, best.expr))
@@ -188,6 +215,12 @@ def test_strategy_search_outperforms_baseline(tmp_path: Path) -> None:
 
     model = json.loads((out_dir / "model.json").read_text())
     assert "strategies" in model and model["strategies"]
+    assert len(model["strategies"]) <= PARETO_MAX_SIZE
     first = model["strategies"][0]
+    assert "complexity" in first
     expr = deserialize(first["expr"])
     assert backtest(prices, expr) >= baseline_ret
+    assert model.get("best_complexity", 0) >= 1
+    metadata = model.get("strategy_search_metadata")
+    assert metadata and metadata["population_size"] >= 12
+    assert metadata["price_history"]["length"] >= 2
