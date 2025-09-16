@@ -5,15 +5,22 @@ from __future__ import annotations
 import argparse
 import cProfile
 import gzip
+import hashlib
 import importlib.metadata as importlib_metadata
 import json
 import logging
 import os
+import platform
 import shutil
+import subprocess
+import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
+
+from datetime import UTC, datetime
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -73,6 +80,7 @@ from botcopier.config.settings import (
     TrainingConfig,
     load_settings,
 )
+from botcopier.exceptions import TrainingPipelineError
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.data.loading import _load_logs
 from botcopier.features.anomaly import _clip_train_features
@@ -390,12 +398,32 @@ else:  # pragma: no cover - fallback without numba
 
 def _write_dependency_snapshot(out_dir: Path) -> Path:
     """Record the current Python package versions."""
-    packages = sorted(
-        f"{dist.metadata['Name']}=={dist.version}"
-        for dist in importlib_metadata.distributions()
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "freeze"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        packages = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        if result.returncode != 0 and not packages:
+            logger.exception(
+                "pip freeze returned non-zero exit code %s", result.returncode
+            )
+    except Exception:  # pragma: no cover - pip not available
+        logger.exception("Failed to execute pip freeze; falling back to metadata")
+        packages = []
+    if not packages:
+        packages = sorted(
+            f"{dist.metadata['Name']}=={dist.version}"
+            for dist in importlib_metadata.distributions()
+        )
     dep_path = out_dir / "dependencies.txt"
-    dep_path.write_text("\n".join(packages))
+    dep_path.write_text("\n".join(packages) + ("\n" if packages else ""))
     return dep_path
 
 
@@ -561,6 +589,8 @@ def train(
     """
     data_dir = Path(data_dir)
     out_dir = Path(out_dir)
+    start_time = datetime.now(UTC)
+    run_identifier = uuid4().hex
     if dvc_repo is not None:
         dvc_repo_path: Path | None = Path(dvc_repo)
     else:
@@ -1120,7 +1150,7 @@ def train(
 
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
     if mlflow_active and not _HAS_MLFLOW:
-        raise RuntimeError("mlflow is required for tracking")
+        raise TrainingPipelineError("mlflow is required for tracking")
     if mlflow_active:
         if tracking_uri is not None:
             mlflow.set_tracking_uri(tracking_uri)
@@ -1131,8 +1161,16 @@ def train(
     if profile and fit_prof is not None:
         fit_prof.enable()
     span_model.__enter__()
+    mlflow_run_info: dict[str, str] = {}
     run_ctx = mlflow.start_run() if mlflow_active else nullcontext()
     with run_ctx:
+        if mlflow_active:
+            current_run = mlflow.active_run()
+            if current_run is not None:
+                mlflow_run_info = {
+                    "run_id": str(current_run.info.run_id),
+                    "experiment_id": str(current_run.info.experiment_id),
+                }
         n_splits = int(kwargs.get("n_splits", 3))
         gap = int(kwargs.get("cv_gap", 1))
         splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
@@ -1688,11 +1726,49 @@ def train(
             "sharpe_ratio": metrics.get("sharpe_ratio", 0.0),
             "sortino_ratio": metrics.get("sortino_ratio", 0.0),
         }
+        end_time = datetime.now(UTC)
+        duration = max(0.0, (end_time - start_time).total_seconds())
         out_dir.mkdir(parents=True, exist_ok=True)
-        model.setdefault("metadata", {})["seed"] = random_seed
+        metadata = model.setdefault("metadata", {})
+        metadata["seed"] = random_seed
+        metadata["training_started_at"] = start_time.isoformat()
+        metadata["training_completed_at"] = end_time.isoformat()
+        metadata["training_duration_seconds"] = duration
+        n_samples = int(getattr(X, "shape", (0,))[0]) if hasattr(X, "shape") else 0
+        if hasattr(X, "ndim") and X.ndim >= 2:
+            n_features_val = int(X.shape[1])
+        else:
+            n_features_val = int(len(feature_names))
+        metadata["n_samples"] = n_samples
+        metadata["n_features"] = n_features_val
+        env_info = metadata.setdefault("environment", {})
+        env_info["python"] = sys.version.split()[0]
+        env_info["platform"] = platform.platform()
+        experiment_meta = metadata.get("experiment", {})
+        if not experiment_meta:
+            experiment_meta = {"run_id": run_identifier, "tracking": "offline"}
+        else:
+            experiment_meta.setdefault("run_id", run_identifier)
+            experiment_meta.setdefault("tracking", "offline")
+        if mlflow_active:
+            experiment_meta["tracking"] = "mlflow"
+            tracking_uri = mlflow.get_tracking_uri()
+            if tracking_uri:
+                experiment_meta["tracking_uri"] = tracking_uri
+            if experiment_name:
+                experiment_meta["experiment_name"] = experiment_name
+            if mlflow_run_info:
+                experiment_meta["mlflow_run_id"] = mlflow_run_info.get("run_id")
+                experiment_meta["mlflow_experiment_id"] = mlflow_run_info.get(
+                    "experiment_id"
+                )
+        if dvc_repo_path is not None:
+            experiment_meta["dvc_repo"] = str(dvc_repo_path)
+        metadata["experiment"] = experiment_meta
         if config_hash:
             model["config_hash"] = config_hash
-            model.setdefault("metadata", {})["config_hash"] = config_hash
+            metadata["config_hash"] = config_hash
+        metadata["data_hashes_path"] = "data_hashes.json"
         model["data_hashes"] = data_hashes
         if curriculum_meta:
             model["curriculum"] = curriculum_meta
@@ -1719,6 +1795,15 @@ def train(
                     model["hrp_dendrogram"] = link.tolist()
             except Exception:  # pragma: no cover - best effort
                 logger.exception("Failed to compute HRP allocation")
+        deps_file = _write_dependency_snapshot(out_dir)
+        try:
+            relative_deps = deps_file.relative_to(out_dir)
+        except ValueError:
+            relative_deps = deps_file
+        metadata["dependencies_file"] = str(relative_deps)
+        metadata["dependencies_hash"] = hashlib.sha256(
+            deps_file.read_bytes()
+        ).hexdigest()
         model_params = ModelParams(**model)
         (out_dir / "model.json").write_text(model_params.model_dump_json())
         (out_dir / "data_hashes.json").write_text(json.dumps(data_hashes, indent=2))
@@ -1735,7 +1820,6 @@ def train(
                 risk_penalty += max(0.0, metrics.get("var_95", 0.0) - var_limit)
             reward = profit - complexity_penalty * complexity - risk_penalty
             controller.update(chosen_action, reward)
-        deps_file = _write_dependency_snapshot(out_dir)
         numeric_metrics = {
             k: float(v)
             for k, v in metrics.items()

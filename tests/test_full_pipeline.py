@@ -1,6 +1,9 @@
-import json
 import hashlib
 import math
+import json
+import platform
+import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -75,6 +78,32 @@ def test_full_pipeline(tmp_path: Path) -> None:
     assert model["data_hashes"][key] == expected_hash
     assert "risk_metrics" in model
     assert set(model["risk_metrics"].keys()) >= {"max_drawdown", "var_95"}
+    metadata = model.get("metadata", {})
+    assert metadata.get("seed") == 0
+    assert metadata.get("dependencies_file") == "dependencies.txt"
+    deps_path = out_dir / metadata["dependencies_file"]
+    assert deps_path.exists()
+    deps_lines = [line for line in deps_path.read_text().splitlines() if line.strip()]
+    assert deps_lines
+    assert any("==" in line for line in deps_lines)
+    assert metadata.get("dependencies_hash") == hashlib.sha256(
+        deps_path.read_bytes()
+    ).hexdigest()
+    assert metadata.get("data_hashes_path") == "data_hashes.json"
+    start = datetime.fromisoformat(metadata["training_started_at"])
+    end = datetime.fromisoformat(metadata["training_completed_at"])
+    assert start <= end
+    assert metadata["training_duration_seconds"] == pytest.approx(
+        (end - start).total_seconds()
+    )
+    assert metadata["n_samples"] > 0
+    assert metadata["n_features"] == len(model["feature_names"])
+    env_info = metadata.get("environment", {})
+    assert env_info.get("python") == sys.version.split()[0]
+    assert env_info.get("platform") == platform.platform()
+    experiment_meta = metadata.get("experiment", {})
+    assert experiment_meta.get("run_id")
+    assert experiment_meta.get("tracking") == "offline"
 
 
 @pytest.mark.integration
