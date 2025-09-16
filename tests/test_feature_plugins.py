@@ -55,6 +55,23 @@ class _DummyMemory:
         pass
 
 joblib.Memory = _DummyMemory
+class _DummyParallel:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __call__(self, iterable):
+        return [func() for func in iterable]
+
+
+def _dummy_delayed(func):
+    def wrapper(*args, **kwargs):
+        return lambda: func(*args, **kwargs)
+
+    return wrapper
+
+
+joblib.Parallel = _DummyParallel
+joblib.delayed = _dummy_delayed
 sys.modules.setdefault("joblib", joblib)
 
 from botcopier.features.engineering import FeatureConfig, configure_cache
@@ -114,3 +131,17 @@ def test_register_feature_direct():
     assert "direct" in cols
     assert out["direct"].iloc[0] == 2.0
     FEATURE_REGISTRY.pop("direct", None)
+
+
+def test_builtin_plugins_registered():
+    """Core feature plugins are exposed through the registry."""
+
+    registry.load_plugins()
+    available = set(FEATURE_REGISTRY)
+    expected = {
+        "lag_diff",
+        "technical_indicators",
+        "rolling_correlations",
+        "graph_embeddings",
+    }
+    assert expected.issubset(available)
