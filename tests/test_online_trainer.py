@@ -1,4 +1,5 @@
 import json
+import json
 import logging
 import subprocess
 import threading
@@ -107,6 +108,10 @@ def test_calibration_parameters_evolve(tmp_path: Path):
         {"a": 0.0, "b": 1.0, "y": 0},
     ]
     trainer.update(batch1)
+    initial = json.loads(model_path.read_text()).get("calibration")
+    # initial batch may not have enough samples for calibration
+    assert initial is None or initial.get("samples", 0) < trainer.calibration_min_samples
+    trainer.update(batch1)
     first = json.loads(model_path.read_text()).get("calibration")
     assert first is not None
     batch2 = [
@@ -117,6 +122,59 @@ def test_calibration_parameters_evolve(tmp_path: Path):
     second = json.loads(model_path.read_text()).get("calibration")
     assert second is not None
     assert first != second
+
+
+def test_feature_drift_triggers_event_and_reset(tmp_path: Path):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2)
+    trainer.drift_baseline_min = 4
+    trainer.drift_recent_min = 2
+    trainer.psi_threshold = 0.05
+    trainer.ks_threshold = 0.05
+    baseline = [
+        {"a": 0.0, "y": 0},
+        {"a": 0.1, "y": 1},
+    ]
+    for _ in range(3):
+        trainer.update(baseline)
+    before = json.loads(model_path.read_text())["model_hash"]
+    shift = [
+        {"a": 5.0, "y": 1},
+        {"a": 5.1, "y": 0},
+    ]
+    trainer.update(shift)
+    data = json.loads(model_path.read_text())
+    assert data["model_hash"] != before
+    events = data.get("online_drift_events")
+    assert events and any(evt.get("type") == "feature" for evt in events)
+    assert data.get("drift_status", {}).get("total_events", 0) >= 1
+
+
+def test_drift_resets_calibration_buffers(tmp_path: Path):
+    model_path = tmp_path / "model.json"
+    trainer = OnlineTrainer(model_path=model_path, batch_size=2)
+    trainer.drift_detector = PageHinkley(delta=0.0, threshold=0.1, min_samples=4)
+    baseline = [
+        {"a": 0.0, "y": 0},
+        {"a": 0.1, "y": 1},
+    ]
+    for _ in range(5):
+        trainer.update(baseline)
+    before_len = len(trainer.calib_scores)
+    assert before_len >= trainer.calibration_min_samples
+    shift = [
+        {"a": 5.0, "y": 1},
+        {"a": 5.2, "y": 0},
+    ]
+    trainer.update(shift)
+    after_len = len(trainer.calib_scores)
+    assert after_len <= len(shift)
+    assert after_len < before_len
+    trainer.update(baseline)
+    trainer.update(baseline)
+    cal = json.loads(model_path.read_text()).get("calibration")
+    assert cal is not None
+    assert cal.get("samples", 0) >= trainer.calibration_min_samples
 
 
 def test_drift_event_records_hash(monkeypatch, tmp_path: Path):
