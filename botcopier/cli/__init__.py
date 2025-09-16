@@ -187,7 +187,7 @@ def train(
     }
     if data_cfg.data is None or data_cfg.out is None:
         raise typer.BadParameter("data_dir and out_dir must be provided")
-    save_params(data_cfg, train_cfg, exec_cfg)
+    config_hash = save_params(data_cfg, train_cfg, exec_cfg)
     train_pipeline(
         Path(data_cfg.data),
         Path(data_cfg.out),
@@ -199,6 +199,7 @@ def train(
         hrp_allocation=train_cfg.hrp_allocation,
         strategy_search=train_cfg.strategy_search,
         reuse_controller=train_cfg.reuse_controller,
+        config_hash=config_hash,
     )
 
 

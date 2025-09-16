@@ -23,6 +23,7 @@ overrides supplied by a CLI script.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -110,30 +111,62 @@ class ExecutionConfig(BaseSettings):
     model_config = {"env_prefix": "EXEC_", "extra": "forbid"}
 
 
+def _serialise_settings(
+    data: DataConfig,
+    training: TrainingConfig,
+    execution: ExecutionConfig | None,
+) -> Dict[str, Dict[str, Any]]:
+    def _dump(model: BaseSettings) -> Dict[str, Any]:
+        dumped = model.model_dump(mode="python", exclude_none=True)
+        return {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in dumped.items()
+        }
+
+    serialised: Dict[str, Dict[str, Any]] = {
+        "data": _dump(data),
+        "training": _dump(training),
+    }
+    if execution is not None:
+        serialised["execution"] = _dump(execution)
+    return serialised
+
+
+def compute_settings_hash(
+    data: DataConfig,
+    training: TrainingConfig,
+    execution: ExecutionConfig | None = None,
+) -> str:
+    """Compute a deterministic hash for the resolved configuration values."""
+
+    serialised = _serialise_settings(data, training, execution)
+    payload = json.dumps(serialised, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def save_params(
     data: DataConfig,
     training: TrainingConfig,
     execution: ExecutionConfig | None = None,
     path: Path = Path("params.yaml"),
-) -> None:
-    """Persist resolved configuration values to ``params.yaml``."""
+) -> str:
+    """Persist resolved configuration values to ``params.yaml``.
+
+    Returns
+    -------
+    str
+        SHA256 hash of the resolved configuration.
+    """
+
+    serialised = _serialise_settings(data, training, execution)
     try:
         existing = yaml.safe_load(path.read_text()) or {}
     except Exception:
         existing = {}
-    existing["data"] = {
-        k: str(v) if isinstance(v, Path) else v for k, v in data.model_dump().items()
-    }
-    existing["training"] = {
-        k: str(v) if isinstance(v, Path) else v
-        for k, v in training.model_dump().items()
-    }
-    if execution is not None:
-        existing["execution"] = {
-            k: str(v) if isinstance(v, Path) else v
-            for k, v in execution.model_dump().items()
-        }
+    existing.update(serialised)
     path.write_text(yaml.safe_dump(existing, sort_keys=False))
+    payload = json.dumps(serialised, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 SCHEMA_PATH = (
@@ -177,17 +210,20 @@ def load_settings(
     _validate_schema(raw)
 
     overrides = overrides or {}
-    data_over = {k: v for k, v in overrides.items() if k in DataConfig.model_fields}
-    train_over = {
-        k: v for k, v in overrides.items() if k in TrainingConfig.model_fields
-    }
-    exec_over = {
-        k: v for k, v in overrides.items() if k in ExecutionConfig.model_fields
-    }
 
-    data_cfg = DataConfig(**{**raw.get("data", {}), **data_over})
-    train_cfg = TrainingConfig(**{**raw.get("training", {}), **train_over})
-    exec_cfg = ExecutionConfig(**{**raw.get("execution", {}), **exec_over})
+    def _section(name: str, model: type[BaseSettings]) -> Dict[str, Any]:
+        value = raw.get(name, {})
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            raise TypeError(f"{name} section must be a mapping")
+        fields = model.model_fields
+        extra = {k: v for k, v in overrides.items() if k in fields}
+        return {**value, **extra}
+
+    data_cfg = DataConfig(**_section("data", DataConfig))
+    train_cfg = TrainingConfig(**_section("training", TrainingConfig))
+    exec_cfg = ExecutionConfig(**_section("execution", ExecutionConfig))
     return data_cfg, train_cfg, exec_cfg
 
 
@@ -196,5 +232,6 @@ __all__ = [
     "TrainingConfig",
     "ExecutionConfig",
     "load_settings",
+    "compute_settings_hash",
     "save_params",
 ]

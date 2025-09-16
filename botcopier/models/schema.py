@@ -30,6 +30,9 @@ class ModelParams(BaseModel):
     feature_names: list[str] = Field(default_factory=list)
     feature_metadata: list[FeatureMetadata] = Field(default_factory=list)
     data_hashes: dict[str, str] = Field(default_factory=dict)
+    config_hash: str | None = Field(
+        default=None, description="SHA256 hash of the configuration used"
+    )
     version: Literal[1] = 1
 
     model_config = ConfigDict(extra="allow")

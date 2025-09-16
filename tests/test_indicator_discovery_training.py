@@ -96,11 +96,18 @@ def test_discovered_indicators_used_in_training(monkeypatch, tmp_path):
             rows.append(f"{label},{wr},{ap}\n")
         train_csv.write_text("".join(rows))
         out_dir = tmp_path / "out"
-        train_pipeline(train_csv, out_dir, model_json=model, cluster_correlation=1.0)
+        train_pipeline(
+            train_csv,
+            out_dir,
+            model_json=model,
+            cluster_correlation=1.0,
+            config_hash="abc123",
+        )
         model_trained = json.loads((out_dir / "model.json").read_text())
         assert any(f.startswith("sym_") for f in model_trained["feature_names"])
         assert model_trained["symbolic_indicators"]["formulas"] == [
             "add(win_rate,avg_profit)"
         ]
+        assert model_trained["config_hash"] == "abc123"
 
     asyncio.run(_run())

@@ -4,10 +4,12 @@ import math
 from pathlib import Path
 from typing import List
 
+import numpy as np
+import pandas as pd
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from pandera.errors import SchemaErrors
 from pydantic import BaseModel
-import numpy as np
 from sklearn.preprocessing import PowerTransformer
 
 from botcopier.metrics import (
@@ -17,6 +19,7 @@ from botcopier.metrics import (
     observe_latency,
     start_metrics_server,
 )
+from botcopier.data.feature_schema import FeatureSchema
 from botcopier.models.schema import FeatureMetadata
 
 try:  # optional feast dependency
@@ -121,16 +124,26 @@ async def predict(req: PredictionRequest) -> PredictionResponse:
         feat_dict = STORE.get_online_features(
             features=feature_refs, entity_rows=entity_rows
         ).to_dict()
+        try:
+            frame = pd.DataFrame({col: feat_dict[col] for col in feature_cols})
+        except KeyError as exc:
+            ERROR_COUNTER.labels(type="predict").inc()
+            raise HTTPException(
+                status_code=400,
+                detail=f"missing feature '{exc.args[0]}'",
+            ) from exc
+        try:
+            if not frame.empty:
+                FeatureSchema.validate(frame, lazy=True)
+        except SchemaErrors as exc:
+            ERROR_COUNTER.labels(type="predict").inc()
+            raise HTTPException(
+                status_code=400,
+                detail="feature schema validation failed",
+            ) from exc
         results: List[float] = []
         for i in range(len(req.symbols)):
-            try:
-                features = [feat_dict[f][i] for f in feature_cols]
-            except KeyError as exc:
-                ERROR_COUNTER.labels(type="predict").inc()
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"missing feature '{exc.args[0]}'",
-                ) from exc
+            features = frame.iloc[i].tolist()
             try:
                 if PT is not None and PT_IDX:
                     arr = np.asarray([features[j] for j in PT_IDX], dtype=float).reshape(1, -1)

@@ -3,6 +3,8 @@ import types
 
 import pytest
 from click.testing import CliRunner
+
+pytest.importorskip("typer")
 from typer.main import get_command
 
 
@@ -10,7 +12,13 @@ from typer.main import get_command
 def cli_app(monkeypatch):
     """Provide the BotCopier CLI command with heavy dependencies stubbed."""
     pipeline_stub = types.ModuleType("botcopier.training.pipeline")
-    pipeline_stub.train = lambda *a, **k: None
+    train_calls: dict[str, object] = {}
+
+    def train_stub(*args, **kwargs):
+        train_calls["args"] = args
+        train_calls["kwargs"] = kwargs
+
+    pipeline_stub.train = train_stub
     monkeypatch.setitem(sys.modules, "botcopier.training.pipeline", pipeline_stub)
 
     evaluation_stub = types.ModuleType("botcopier.scripts.evaluation")
@@ -30,6 +38,7 @@ def cli_app(monkeypatch):
     import botcopier.cli as cli_module
     cli_command = get_command(cli_module.app)
 
+    cli_module._train_calls = train_calls
     yield cli_command, cli_module
 
     sys.modules.pop("botcopier.cli", None)
@@ -100,3 +109,23 @@ def test_drift_monitor_help(cli_app):
     result = runner.invoke(cli, ["drift-monitor", "--help"], prog_name="botcopier")
     assert result.exit_code == 0
     assert "--baseline-file" in result.output
+
+
+def test_train_passes_config_hash(monkeypatch, cli_app, tmp_path):
+    cli, cli_module = cli_app
+
+    called: dict[str, object] = {}
+
+    def fake_train(*args, **kwargs):
+        called["kwargs"] = kwargs
+
+    monkeypatch.setattr(cli_module, "train_pipeline", fake_train)
+    monkeypatch.setattr(cli_module, "save_params", lambda *a, **k: "hash123")
+    data = tmp_path / "trades.csv"
+    data.write_text("label,value\n1,0.5\n")
+    out_dir = tmp_path / "out"
+    result = CliRunner().invoke(
+        cli, ["train", str(data), str(out_dir)], prog_name="botcopier"
+    )
+    assert result.exit_code == 0
+    assert called["kwargs"]["config_hash"] == "hash123"

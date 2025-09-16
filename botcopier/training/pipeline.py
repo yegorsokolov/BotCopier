@@ -548,6 +548,7 @@ def train(
     reuse_controller: bool = False,
     complexity_penalty: float = 0.1,
     dvc_repo: Path | str | None = None,
+    config_hash: str | None = None,
     **kwargs: object,
 ) -> object:
     """Train a model selected from the registry.
@@ -1689,6 +1690,9 @@ def train(
         }
         out_dir.mkdir(parents=True, exist_ok=True)
         model.setdefault("metadata", {})["seed"] = random_seed
+        if config_hash:
+            model["config_hash"] = config_hash
+            model.setdefault("metadata", {})["config_hash"] = config_hash
         model["data_hashes"] = data_hashes
         if curriculum_meta:
             model["curriculum"] = curriculum_meta
@@ -1818,6 +1822,10 @@ def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
         params = model
 
     features = np.asarray(X, dtype=float)
+    feature_names = params.get("feature_names") or model.get("feature_names", [])
+    if feature_names and len(feature_names) == features.shape[1]:
+        df = pd.DataFrame(features, columns=feature_names)
+        FeatureSchema.validate(df, lazy=True)
     clip_low = np.asarray(params.get("clip_low", model.get("clip_low", [])), dtype=float)
     clip_high = np.asarray(
         params.get("clip_high", model.get("clip_high", [])), dtype=float
