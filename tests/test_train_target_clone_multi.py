@@ -7,7 +7,7 @@ import numpy as np
 import botcopier.features.engineering as fe
 from botcopier.data.loading import _load_logs
 from botcopier.features.engineering import FeatureConfig, clear_cache, configure_cache
-from botcopier.features.technical import _extract_features
+from botcopier.features.engineering import _extract_features
 from botcopier.training.pipeline import train
 
 

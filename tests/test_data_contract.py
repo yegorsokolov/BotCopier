@@ -6,7 +6,7 @@ import pandas as pd
 import yaml
 
 from botcopier.data.loading import _load_logs
-from botcopier.features.technical import _extract_features
+from botcopier.features.engineering import _extract_features
 from botcopier.training.pipeline import train
 
 

@@ -21,7 +21,8 @@ except Exception:  # pragma: no cover - optional dependency
     ray = None  # type: ignore
     _HAS_RAY = False
 
-from botcopier.training.pipeline import MODEL_REGISTRY, train
+from botcopier.models.registry import MODEL_REGISTRY
+from botcopier.training.pipeline import train
 
 
 def main() -> None:

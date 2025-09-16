@@ -1,32 +1,7 @@
 from __future__ import annotations
 
-from typing import Callable, Dict
+from botcopier.models.registry import MODEL_REGISTRY, get_model, register_model
 
-_REGISTRY: Dict[str, Callable] = {}
+_REGISTRY = MODEL_REGISTRY
 
-
-def register_model(name: str, builder: Callable) -> None:
-    """Register a model builder under ``name``.
-
-    Parameters
-    ----------
-    name:
-        Identifier for the model.
-    builder:
-        Callable that returns a fitted model when invoked.
-    """
-    _REGISTRY[name] = builder
-
-
-def get_model(name: str) -> Callable:
-    """Retrieve a registered model builder by ``name``.
-
-    Raises
-    ------
-    KeyError
-        If ``name`` is not present in the registry.
-    """
-    try:
-        return _REGISTRY[name]
-    except KeyError as e:  # pragma: no cover - defensive
-        raise KeyError(f"Model '{name}' is not registered") from e
+__all__ = ["register_model", "get_model", "_REGISTRY"]

@@ -12,7 +12,7 @@ from botcopier.features.engineering import (
     configure_cache,
     train,
 )
-from botcopier.features.technical import _extract_features
+from botcopier.features.engineering import _extract_features
 from scripts.pretrain_contrastive import train as pretrain_encoder
 from scripts.replay_decisions import _recompute
 
