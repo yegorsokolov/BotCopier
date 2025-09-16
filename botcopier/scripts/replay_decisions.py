@@ -41,10 +41,11 @@ except Exception:  # pragma: no cover
     _HAS_TORCH = False
 
 if _HAS_TORCH:
-    from botcopier.models.deep import TabTransformer, TCNClassifier
+    from botcopier.models.deep import MixtureOfExperts, TabTransformer, TCNClassifier
 else:  # pragma: no cover - optional dependency
     TabTransformer = None  # type: ignore
     TCNClassifier = None  # type: ignore
+    MixtureOfExperts = None  # type: ignore
 from botcopier.training.pipeline import detect_resources
 
 try:  # optional graph embedding support
@@ -217,6 +218,35 @@ def _load_sequence_model(model: Dict, cls):
     return net
 
 
+def _load_moe_model(model: Dict):
+    if not _HAS_TORCH or MixtureOfExperts is None:
+        return None
+    net = model.get("_mixtureofexperts")
+    if net is not None:
+        return net
+    state = model.get("state_dict")
+    feature_names = model.get("feature_names", [])
+    gating = model.get("regime_gating", {})
+    regime_features = gating.get("feature_names", [])
+    if not state or not feature_names or not regime_features:
+        return None
+    arch = model.get("architecture", {})
+    weights = gating.get("weights") or []
+    experts_meta = model.get("experts") or []
+    n_experts = int(
+        arch.get("n_experts")
+        or (len(weights) if isinstance(weights, list) else 0)
+        or len(experts_meta)
+    )
+    dropout = float(arch.get("dropout", 0.0))
+    net = MixtureOfExperts(len(feature_names), len(regime_features), n_experts, dropout=dropout)
+    tensors = {k: torch.tensor(v, dtype=torch.float32) for k, v in state.items()}
+    net.load_state_dict(tensors)
+    net.eval()
+    model["_mixtureofexperts"] = net
+    return net
+
+
 def _predict_tabtransformer(model: Dict, features: Dict[str, float]) -> float:
     """Compute probability using a tabular transformer model."""
     if not _HAS_TORCH:
@@ -248,6 +278,50 @@ def _predict_tcn(model: Dict, features: Dict[str, float]) -> float:
         return float(torch.sigmoid(logit).item())
 
 
+def _predict_moe(model: Dict, features: Dict[str, float]) -> float:
+    feature_names = model.get("feature_names", [])
+    gating = model.get("regime_gating", {})
+    regime_names = gating.get("feature_names", [])
+    if not feature_names or not regime_names:
+        return _predict_logistic(model, features)
+    base_vec = np.array([float(features.get(n, 0.0)) for n in feature_names], dtype=float)
+    regime_vec = np.array([float(features.get(n, 0.0)) for n in regime_names], dtype=float)
+    if _HAS_TORCH:
+        net = _load_moe_model(model)
+        if net is not None:
+            with torch.no_grad():
+                base_t = torch.tensor(base_vec, dtype=torch.float32).unsqueeze(0)
+                regime_t = torch.tensor(regime_vec, dtype=torch.float32).unsqueeze(0)
+                prob, _ = net(base_t, regime_t)
+                return float(prob.squeeze(0).item())
+    experts = model.get("experts", [])
+    weights = np.asarray(gating.get("weights", []), dtype=float)
+    bias = np.asarray(gating.get("bias", []), dtype=float)
+    if not len(experts) or weights.size == 0 or bias.size == 0:
+        return _predict_logistic(model, features)
+    expert_logits = np.array(
+        [
+            base_vec @ np.asarray(exp.get("weights", []), dtype=float)
+            + float(exp.get("bias", 0.0))
+            for exp in experts
+        ],
+        dtype=float,
+    )
+    expert_prob = 1.0 / (1.0 + np.exp(-expert_logits))
+    if weights.ndim == 1:
+        weights = weights.reshape(1, -1)
+    gate_logits = regime_vec @ weights.T + bias
+    gate_logits = np.asarray(gate_logits, dtype=float).ravel()
+    if gate_logits.size == 0:
+        return _predict_logistic(model, features)
+    gate_logits = gate_logits - np.max(gate_logits)
+    gate_exp = np.exp(gate_logits)
+    if not np.isfinite(gate_exp).all():
+        gate_exp = np.ones_like(gate_exp)
+    gate = gate_exp / gate_exp.sum()
+    return float(np.dot(gate, expert_prob))
+
+
 def _load_logs(log_file: Path) -> pd.DataFrame:
     """Load decision logs from ``log_file``."""
     table = pq.read_table(log_file, schema=DECISION_LOG_SCHEMA)
@@ -264,10 +338,12 @@ def _recompute(
     """Recompute probabilities and collect statistics."""
     resources = detect_resources()
     model_type = model.get("model_type")
-    if model_type == "tabtransformer":
+    if model_type in {"tabtransformer", "transformer"}:
         pred_fn = _predict_tabtransformer
     elif model_type == "tcn":
         pred_fn = _predict_tcn
+    elif model_type == "moe":
+        pred_fn = _predict_moe
     elif model.get("state_dict"):
         pred_fn = _predict_tabtransformer
     else:
@@ -330,7 +406,11 @@ def _recompute(
         old_probs = df.get("prob")
 
     def features_from_row(row: pd.Series) -> Dict[str, float]:
-        return {k: row.get(k, 0.0) for k in model.get("feature_names", [])}
+        feat = {k: row.get(k, 0.0) for k in model.get("feature_names", [])}
+        gating = model.get("regime_gating", {})
+        for name in gating.get("feature_names", []) or []:
+            feat.setdefault(name, row.get(name, 0.0))
+        return feat
 
     new_probs = []
     for _, row in df.iterrows():

@@ -287,30 +287,9 @@ register_model("confidence_weighted", _fit_confidence_weighted)
 
 if _HAS_TORCH:
 
-    class MixtureOfExperts(torch.nn.Module):
-        """Simple mixture of experts with a softmax gating network."""
+    from torch.utils.data import DataLoader, TensorDataset
 
-        def __init__(
-            self,
-            n_features: int,
-            n_regime_features: int,
-            n_experts: int,
-        ) -> None:
-            super().__init__()
-            self.experts = torch.nn.ModuleList(
-                [torch.nn.Linear(n_features, 1) for _ in range(n_experts)]
-            )
-            self.gating = torch.nn.Linear(n_regime_features, n_experts)
-
-        def forward(
-            self, x: torch.Tensor, r: torch.Tensor
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-            gate_logits = self.gating(r)
-            gate = torch.softmax(gate_logits, dim=1)
-            expert_logits = torch.cat([e(x) for e in self.experts], dim=1)
-            expert_prob = torch.sigmoid(expert_logits)
-            out = (gate * expert_prob).sum(dim=1, keepdim=True)
-            return out, gate
+    from .deep import TabTransformer, TCNClassifier
 
     def _fit_moe(
         X: np.ndarray,
@@ -324,14 +303,20 @@ if _HAS_TORCH:
         grad_clip: float = 1.0,
         sample_weight: np.ndarray | None = None,
         device: str = "cpu",
+        dropout: float = 0.0,
     ) -> tuple[dict[str, object], Callable[[np.ndarray, np.ndarray], np.ndarray]]:
         """Train a Mixture-of-Experts model on ``X`` and ``y``."""
 
         n_experts = n_experts or regime_features.shape[1]
         dev = torch.device(device)
-        model = MixtureOfExperts(X.shape[1], regime_features.shape[1], n_experts).to(
-            dev
-        )
+        n_features = int(X.shape[1])
+        regime_dim = int(regime_features.shape[1])
+        model = MixtureOfExperts(
+            n_features,
+            regime_dim,
+            n_experts,
+            dropout=dropout,
+        ).to(dev)
         opt = torch.optim.Adam(model.parameters(), lr=lr)
         sw: torch.Tensor | None = None
         if sample_weight is not None:
@@ -354,6 +339,11 @@ if _HAS_TORCH:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
             opt.step()
 
+        state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(state)
+        model.to(dev)
+        model.eval()
+
         def _predict(arr: np.ndarray, reg: np.ndarray) -> np.ndarray:
             with torch.no_grad():
                 arr_t = torch.tensor(arr, dtype=torch.float32, device=dev)
@@ -363,6 +353,13 @@ if _HAS_TORCH:
 
         _predict.model = model  # type: ignore[attr-defined]
 
+        feature_clip_low = np.quantile(X, 0.01, axis=0)
+        feature_clip_high = np.quantile(X, 0.99, axis=0)
+        feature_clipped = np.clip(X, feature_clip_low, feature_clip_high)
+        feature_mean = feature_clipped.mean(axis=0)
+        feature_std = feature_clipped.std(axis=0)
+
+        state_dict = {k: v.numpy().tolist() for k, v in state.items()}
         meta = {
             "experts": [
                 {
@@ -377,6 +374,19 @@ if _HAS_TORCH:
                 "classes": list(range(n_experts)),
                 "feature_names": list(regime_feature_names),
             },
+            "state_dict": state_dict,
+            "architecture": {
+                "type": "MixtureOfExperts",
+                "num_features": n_features,
+                "regime_features": regime_dim,
+                "n_experts": int(n_experts),
+                "dropout": float(dropout),
+            },
+            "regime_features": list(regime_feature_names),
+            "clip_low": feature_clip_low.tolist(),
+            "clip_high": feature_clip_high.tolist(),
+            "feature_mean": feature_mean.tolist(),
+            "feature_std": feature_std.tolist(),
             "model_type": "moe",
         }
         return meta, _predict
@@ -492,7 +502,7 @@ if _HAS_TORCH:
 
     from torch.utils.data import DataLoader, TensorDataset
 
-    from .deep import TabTransformer, TCNClassifier
+    from .deep import MixtureOfExperts, TCNClassifier, TabTransformer
 
     def _sequence_stats(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         flat = X.reshape(-1, X.shape[-1])
@@ -698,6 +708,16 @@ if _HAS_TORCH:
                 "ff_dim": ff_dim,
                 "dropout": dropout,
             },
+            "architecture": {
+                "type": "TabTransformer",
+                "num_features": int(features),
+                "window": int(window),
+                "dim": int(dim),
+                "depth": int(depth),
+                "heads": int(heads),
+                "ff_dim": int(ff_dim),
+                "dropout": float(dropout),
+            },
             "sequence_order": list(range(window)),
         }
         return meta, _predict
@@ -781,6 +801,14 @@ if _HAS_TORCH:
                 "kernel_size": kernel_size,
                 "dropout": dropout,
             },
+            "architecture": {
+                "type": "TemporalConvNet",
+                "num_features": int(features),
+                "window": int(window),
+                "channels": [int(c) for c in cfg_channels],
+                "kernel_size": int(kernel_size),
+                "dropout": float(dropout),
+            },
             "sequence_order": list(range(window)),
         }
         return meta, _predict
@@ -808,6 +836,7 @@ else:  # pragma: no cover - torch optional
 __all__ = [
     "TabTransformer",
     "TCNClassifier",
+    "MixtureOfExperts",
     "fit_tab_transformer",
     "fit_temporal_cnn",
     "register_model",

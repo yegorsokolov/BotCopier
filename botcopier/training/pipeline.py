@@ -643,6 +643,12 @@ def train(
             "patience",
             "mixed_precision",
         },
+        "moe": {
+            "epochs",
+            "lr",
+            "n_experts",
+            "dropout",
+        },
     }
     extra_model_params = {
         key: kwargs[key]
