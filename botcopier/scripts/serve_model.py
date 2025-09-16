@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 from pandera.errors import SchemaErrors
 from pydantic import BaseModel
 from sklearn.preprocessing import PowerTransformer
@@ -16,6 +17,7 @@ from botcopier.metrics import (
     ERROR_COUNTER,
     TRADE_COUNTER,
     OOD_COUNTER,
+    latest_metrics,
     observe_latency,
     start_metrics_server,
 )
@@ -156,6 +158,14 @@ async def predict(req: PredictionRequest) -> PredictionResponse:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         TRADE_COUNTER.inc(len(req.symbols))
     return PredictionResponse(predictions=results)
+
+
+@app.get("/metrics")
+def metrics() -> Response:
+    """Expose Prometheus metrics for the model server."""
+
+    payload, content_type = latest_metrics()
+    return Response(content=payload, media_type=content_type)
 
 
 def main() -> None:

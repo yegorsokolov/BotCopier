@@ -5,7 +5,14 @@ import time
 from contextlib import contextmanager
 from typing import Iterator
 
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Histogram,
+    REGISTRY,
+    generate_latest,
+    start_http_server,
+)
 
 # Exposed metrics
 REQUEST_LATENCY = Histogram(
@@ -43,3 +50,15 @@ def observe_latency(operation: str) -> Iterator[None]:
         yield
     finally:
         REQUEST_LATENCY.labels(operation=operation).observe(time.perf_counter() - start)
+
+
+def latest_metrics() -> tuple[bytes, str]:
+    """Return the current metrics payload and content type.
+
+    This helper is intended for HTTP frameworks that expose metrics via a route
+    rather than starting :func:`start_http_server`.  The caller is responsible
+    for creating an appropriate :class:`~fastapi.responses.Response` (or
+    equivalent) using the returned content.
+    """
+
+    return generate_latest(REGISTRY), CONTENT_TYPE_LATEST

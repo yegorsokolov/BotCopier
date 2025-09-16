@@ -5,23 +5,86 @@ from typing import Optional
 
 
 class JsonFormatter(logging.Formatter):
-    """Simple JSON log formatter."""
+    """Serialise log records to JSON with a common schema."""
 
-    def format(self, record: logging.LogRecord) -> str:  # pragma: no cover - simple
-        log = {
+    #: Fields added by :class:`logging.LogRecord` that should be ignored when
+    #: merging ``extra`` attributes into the JSON payload.  The list mirrors the
+    #: attributes documented in :mod:`logging` to avoid leaking internal state.
+    _RESERVED = {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "message",
+        "module",
+        "msecs",
+        "msg",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "thread",
+        "threadName",
+    }
+
+    default_time_format = "%Y-%m-%dT%H:%M:%S"
+    default_msec_format = "%s.%03dZ"
+
+    def format(self, record: logging.LogRecord) -> str:  # pragma: no cover - thin
+        message = record.getMessage()
+        log: dict[str, object] = {
+            "timestamp": self.formatTime(record, self.datefmt),
             "level": record.levelname,
-            "name": record.name,
-            "message": record.getMessage(),
+            "logger": record.name,
         }
+
+        if isinstance(record.msg, dict):
+            log.update(self._coerce_dict(record.msg))
+        elif message:
+            log["message"] = message
+
+        # Attach structured context from ``extra`` parameters.
+        extras = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in self._RESERVED and not key.startswith("_") and value is not None
+        }
+        if extras:
+            log.update(self._coerce_dict(extras))
+
         if record.exc_info:
             log["exc_info"] = self.formatException(record.exc_info)
-        # Include trace context if present
+
+        # Include trace context when present.  OpenTelemetry injects the IDs as
+        # ``otelTraceID`` and ``otelSpanID`` attributes.
         trace_id = getattr(record, "otelTraceID", None)
         span_id = getattr(record, "otelSpanID", None)
-        if trace_id and span_id:
+        if trace_id:
             log["trace_id"] = trace_id
+        if span_id:
             log["span_id"] = span_id
-        return json.dumps(log)
+
+        return json.dumps(log, default=self._coerce)
+
+    def _coerce(self, value: object) -> object:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, (list, tuple, set)):
+            return [self._coerce(v) for v in value]
+        if isinstance(value, dict):
+            return {str(k): self._coerce(v) for k, v in value.items()}
+        return str(value)
+
+    def _coerce_dict(self, data: dict[str, object]) -> dict[str, object]:
+        return {key: self._coerce(val) for key, val in data.items()}
 
 
 def setup_logging(
@@ -44,12 +107,46 @@ def setup_logging(
         Exporter to use when tracing is enabled. ``"otlp"`` or ``"jaeger"``.
     """
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
+    env_level = os.getenv("BOTCOPIER_LOG_LEVEL")
+    if env_level:
+        try:
+            level = int(env_level)
+        except ValueError:
+            level_name = env_level.upper()
+            level = getattr(logging, level_name, level)
+
+    structured_flag = os.getenv("BOTCOPIER_LOG_FORMAT")
+    structured = True
+    if structured_flag:
+        structured = structured_flag.lower() not in {"plain", "text", "human"}
+    elif (env_structured := os.getenv("BOTCOPIER_JSON_LOGS")) is not None:
+        structured = env_structured.lower() in {"1", "true", "yes", "on"}
+
     root = logging.getLogger()
-    root.handlers.clear()
+    if not getattr(root, "_botcopier_configured", False):
+        root.handlers.clear()
+        root._botcopier_configured = True  # type: ignore[attr-defined]
+
+    handler: logging.Handler | None = None
+    for existing in root.handlers:
+        if isinstance(existing, logging.StreamHandler):
+            handler = existing
+            break
+    if handler is None:
+        handler = logging.StreamHandler()
+        root.addHandler(handler)
+
+    if structured:
+        handler.setFormatter(JsonFormatter())
+    else:
+        fmt = os.getenv(
+            "BOTCOPIER_LOG_FMT",
+            "%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+        datefmt = os.getenv("BOTCOPIER_LOG_DATEFMT", "%Y-%m-%dT%H:%M:%S%z")
+        handler.setFormatter(logging.Formatter(fmt=fmt, datefmt=datefmt))
+
     root.setLevel(level)
-    root.addHandler(handler)
 
     if enable_tracing:
         try:
@@ -93,4 +190,6 @@ def setup_logging(
         except Exception:  # pragma: no cover - optional
             pass
 
-    return logging.getLogger(name)
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    return logger
