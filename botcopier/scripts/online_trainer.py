@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterable, Dict, Iterable, List
 
+from datetime import datetime
+
 from pydantic import ValidationError
 
 from automl.controller import AutoMLController
@@ -37,6 +39,7 @@ from botcopier.config.settings import (
     load_settings,
     save_params,
 )
+from botcopier.exceptions import ModelError
 from botcopier.metrics import (
     ERROR_COUNTER,
     TRADE_COUNTER,
@@ -237,7 +240,10 @@ class OnlineTrainer:
         self.recent_probs: deque[float] = deque(maxlen=1000)
         self.calib_scores: deque[float] = deque(maxlen=1000)
         self.calib_labels: deque[int] = deque(maxlen=1000)
+        self.calibration_min_samples = 4
         self.calibrator: Any | None = None
+        self.calibration_method: str | None = None
+        self.calibration_metadata: Dict[str, Any] = {}
         self.conformal_lower: float | None = None
         self.conformal_upper: float | None = None
         self.gnn_state: Dict[str, Any] | None = None
@@ -268,6 +274,16 @@ class OnlineTrainer:
         self.last_drift_metric: float = 0.0
         self.last_drift_detected: bool = False
         self.drift_events: int = 0
+        self.pending_drift_metrics: Dict[str, float] | None = None
+        self.feature_reference: Dict[str, deque[float]] = {}
+        self.feature_recent: Dict[str, deque[float]] = {}
+        self.feature_drift_state: Dict[str, float] = {}
+        self.drift_window: int = 500
+        self.drift_baseline_min: int = 100
+        self.drift_recent_min: int = 50
+        self.psi_threshold: float = 0.2
+        self.ks_threshold: float = 0.2
+        self.drift_event_log: List[Dict[str, Any]] = []
         if self.model_path.exists():
             self._load()
         elif detect_resources:
@@ -319,7 +335,14 @@ class OnlineTrainer:
         self.adapt_log = data.get("adaptation_log", [])
         calib = data.get("calibration")
         if isinstance(calib, dict):
-            if calib.get("method") == "isotonic":
+            method = calib.get("method")
+            self.calibration_method = method
+            self.calibration_metadata = {
+                k: v
+                for k, v in calib.items()
+                if k not in {"coef", "intercept", "x", "y", "method"}
+            }
+            if method == "isotonic":
                 self.calibrator = None
             elif {"coef", "intercept"} <= calib.keys():
                 self.calibrator = LogisticRegression()
@@ -327,6 +350,34 @@ class OnlineTrainer:
                 self.calibrator.coef_ = np.array([[calib["coef"]]])
                 self.calibrator.intercept_ = np.array([calib["intercept"]])
                 self.calibrator.n_features_in_ = 1
+            else:
+                self.calibrator = None
+        drift_status = data.get("drift_status")
+        if isinstance(drift_status, dict):
+            self.feature_drift_state = {
+                "psi_max": float(drift_status.get("psi_max", 0.0)),
+                "ks_max": float(drift_status.get("ks_max", 0.0)),
+            }
+            if "total_events" in drift_status:
+                try:
+                    self.drift_events = int(drift_status.get("total_events", self.drift_events))
+                except (TypeError, ValueError):
+                    pass
+        events = data.get("online_drift_events")
+        if isinstance(events, list):
+            self.drift_event_log = [
+                {
+                    "time": e.get("time"),
+                    "type": e.get("type"),
+                    **{
+                        k: v
+                        for k, v in e.items()
+                        if k not in {"time", "type"}
+                    },
+                }
+                for e in events
+                if isinstance(e, dict)
+            ]
         if self.gnn_state and _HAS_TG and Path("symbol_graph.json").exists():
             try:
                 self.graph_dataset = GraphDataset(Path("symbol_graph.json"))
@@ -402,16 +453,31 @@ class OnlineTrainer:
                     "method": "isotonic",
                     "x": self.calibrator.X_thresholds_.tolist(),
                     "y": self.calibrator.y_thresholds_.tolist(),
+                    **self.calibration_metadata,
                 }
             else:
                 payload["calibration"] = {
+                    "method": self.calibration_method or "platt",
                     "coef": float(self.calibrator.coef_[0][0]),
                     "intercept": float(self.calibrator.intercept_[0]),
+                    **self.calibration_metadata,
                 }
+        elif self.calibration_method:
+            payload["calibration"] = {
+                "method": self.calibration_method,
+                **self.calibration_metadata,
+            }
+        if self.drift_event_log:
+            payload["online_drift_events"] = self.drift_event_log
+        if self.feature_drift_state:
+            payload["drift_status"] = {
+                **self.feature_drift_state,
+                "total_events": int(self.drift_events),
+            }
         try:
             params = load_params(self.model_path)
             existing = params.model_dump()
-        except (OSError, ValidationError):
+        except (OSError, ValidationError, ModelError):
             existing = {}
         existing.update(payload)
         if self.meta_weights is not None:
@@ -521,6 +587,15 @@ class OnlineTrainer:
         else:
             self.clf = SGDClassifier(loss="log_loss")
             self._prev_coef = None
+        self.calibrator = None
+        self.calibration_method = None
+        self.calibration_metadata = {}
+        self.calib_scores.clear()
+        self.calib_labels.clear()
+        for ref in self.feature_reference.values():
+            ref.clear()
+        for recent in self.feature_recent.values():
+            recent.clear()
         logger.info({"event": "regime_shift", "action": action})
 
     def _check_drift(self, value: float) -> None:
@@ -539,10 +614,176 @@ class OnlineTrainer:
                     abs(getattr(self.drift_detector, "_gneg", 0.0)),
                 )
             if detected:
+                metrics = {f"seq_{self.drift_test}": float(metric)}
                 self._handle_regime_shift()
                 self.drift_events += 1
+                self._record_drift_event(metrics, event_type="sequential")
         self.last_drift_metric = float(metric)
-        self.last_drift_detected = bool(detected)
+        if not detected:
+            if not self.last_drift_detected:
+                self.pending_drift_metrics = None
+            self.last_drift_detected = False
+
+    def _population_stability_index(
+        self, expected: np.ndarray, actual: np.ndarray, bins: int = 10
+    ) -> float:
+        quantiles = np.linspace(0, 1, bins + 1)
+        cut_points = np.unique(np.quantile(expected, quantiles))
+        if len(cut_points) <= 1:
+            return 0.0
+        expected_counts, _ = np.histogram(expected, bins=cut_points)
+        actual_counts, _ = np.histogram(actual, bins=cut_points)
+        expected_perc = expected_counts / max(len(expected), 1)
+        actual_perc = actual_counts / max(len(actual), 1)
+        eps = 1e-6
+        with np.errstate(divide="ignore", invalid="ignore"):
+            val = (expected_perc - actual_perc) * np.log(
+                (expected_perc + eps) / (actual_perc + eps)
+            )
+        val = np.nan_to_num(val, nan=0.0, neginf=0.0, posinf=0.0)
+        return float(np.sum(val))
+
+    def _kolmogorov_smirnov(self, expected: np.ndarray, actual: np.ndarray) -> float:
+        expected_sorted = np.sort(expected)
+        actual_sorted = np.sort(actual)
+        if expected_sorted.size == 0 or actual_sorted.size == 0:
+            return 0.0
+        all_vals = np.union1d(expected_sorted, actual_sorted)
+        cdf1 = np.searchsorted(expected_sorted, all_vals, side="right") / len(
+            expected_sorted
+        )
+        cdf2 = np.searchsorted(actual_sorted, all_vals, side="right") / len(
+            actual_sorted
+        )
+        return float(np.max(np.abs(cdf1 - cdf2)))
+
+    def _record_drift_event(
+        self,
+        metrics: Dict[str, float],
+        *,
+        event_type: str,
+        feature: str | None = None,
+    ) -> None:
+        metrics = {k: float(v) for k, v in metrics.items()}
+        event: Dict[str, Any] = {
+            "time": datetime.utcnow().isoformat(),
+            "type": event_type,
+            **metrics,
+        }
+        if feature is not None:
+            event["feature"] = feature
+        self.drift_event_log.append(event)
+        self.pending_drift_metrics = metrics
+        self.last_drift_metric = max(metrics.values()) if metrics else 0.0
+        self.last_drift_detected = True
+
+    def _update_feature_drift(self, X: np.ndarray) -> None:
+        psi_scores: List[float] = []
+        ks_scores: List[float] = []
+        for idx, name in enumerate(self.feature_names):
+            column = X[:, idx].astype(float)
+            ref = self.feature_reference.setdefault(
+                name, deque(maxlen=self.drift_window)
+            )
+            if len(ref) < self.drift_baseline_min:
+                ref.extend(column.tolist())
+                continue
+            recent = self.feature_recent.setdefault(
+                name, deque(maxlen=self.drift_window)
+            )
+            recent.extend(column.tolist())
+            required = max(self.drift_recent_min, max(1, self.drift_baseline_min // 2))
+            if len(recent) < required:
+                continue
+            ref_arr = np.asarray(ref, dtype=float)
+            rec_arr = np.asarray(recent, dtype=float)
+            if ref_arr.size == 0 or rec_arr.size == 0:
+                continue
+            psi = self._population_stability_index(ref_arr, rec_arr)
+            ks = self._kolmogorov_smirnov(ref_arr, rec_arr)
+            psi_scores.append(psi)
+            ks_scores.append(ks)
+            if psi > self.psi_threshold or ks > self.ks_threshold:
+                metrics = {f"psi_{name}": psi, f"ks_{name}": ks}
+                self._handle_regime_shift()
+                self.drift_events += 1
+                self._record_drift_event(metrics, event_type="feature", feature=name)
+                ref.clear()
+                ref.extend(recent)
+                recent.clear()
+                break
+        self.feature_drift_state = {
+            "psi_max": float(max(psi_scores)) if psi_scores else 0.0,
+            "ks_max": float(max(ks_scores)) if ks_scores else 0.0,
+        }
+
+    def _persist_drift_metrics_local(
+        self, metrics: Dict[str, float], model_hash: str | None
+    ) -> None:
+        ts = datetime.utcnow().isoformat()
+        try:
+            params = load_params(self.model_path)
+            data = params.model_dump()
+        except (OSError, ValidationError, ValueError, ModelError):
+            data = {}
+        data["drift_metric"] = max(metrics.values()) if metrics else 0.0
+        data["drift_metrics"] = metrics
+        history = data.setdefault("drift_history", [])
+        if isinstance(history, list):
+            history.append({"time": ts, **metrics})
+        events = data.setdefault("drift_events", [])
+        if isinstance(events, list):
+            entry: Dict[str, Any] = {"time": ts, **metrics}
+            if model_hash is not None:
+                entry["model_hash"] = model_hash
+            events.append(entry)
+        if model_hash is not None:
+            data["model_hash"] = model_hash
+        self.model_path.write_text(ModelParams(**data).model_dump_json())
+
+    def _fit_calibrator(self) -> None:
+        if len(self.calib_scores) < self.calibration_min_samples:
+            return
+        if len(set(self.calib_labels)) < 2:
+            return
+        scores = np.asarray(self.calib_scores, dtype=float).reshape(-1, 1)
+        labels = np.asarray(self.calib_labels, dtype=int)
+        try:
+            model = LogisticRegression()
+            model.fit(scores, labels)
+        except Exception:
+            try:
+                iso = IsotonicRegression(out_of_bounds="clip")
+                iso.fit(scores.ravel(), labels)
+            except Exception:
+                return
+            else:
+                self.calibrator = iso
+                self.calibration_method = "isotonic"
+                self.calibration_metadata = {
+                    "samples": int(len(self.calib_scores)),
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                return
+        else:
+            self.calibrator = model
+            self.calibration_method = "platt"
+            self.calibration_metadata = {
+                "samples": int(len(self.calib_scores)),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+    def _calibrate_probabilities(
+        self, raw_probs: np.ndarray, y: np.ndarray
+    ) -> np.ndarray:
+        self.calib_scores.extend(raw_probs.tolist())
+        self.calib_labels.extend(int(v) for v in y.tolist())
+        self._fit_calibrator()
+        if self.calibrator is not None:
+            if isinstance(self.calibrator, IsotonicRegression):
+                return self.calibrator.predict(raw_probs)
+            return self.calibrator.predict_proba(raw_probs.reshape(-1, 1))[:, 1]
+        return raw_probs
 
     def _append_buffer(self, records: List[Dict[str, Any]]) -> None:
         if not records:
@@ -597,6 +838,7 @@ class OnlineTrainer:
                     X, y = self._vectorise(batch)
                     mean_val = float(X.mean())
                     self._check_drift(mean_val)
+                    self._update_feature_drift(X)
                     # configure current learning rate
                     if hasattr(self.clf, "eta0"):
                         self.clf.eta0 = self.lr
@@ -619,29 +861,7 @@ class OnlineTrainer:
                     self.lr_history.append(lr_used)
                     try:
                         raw_probs = self.clf.predict_proba(X)[:, 1]
-                        self.calib_scores.extend(raw_probs.tolist())
-                        self.calib_labels.extend(y.tolist())
-                        if (
-                            len(self.calib_labels) >= 2
-                            and len(set(self.calib_labels)) > 1
-                        ):
-                            scores = np.array(self.calib_scores)
-                            labels = np.array(self.calib_labels)
-                            try:
-                                self.calibrator = IsotonicRegression(
-                                    out_of_bounds="clip"
-                                ).fit(scores, labels)
-                            except ValueError:
-                                self.calibrator = None
-                        if self.calibrator is not None:
-                            if isinstance(self.calibrator, IsotonicRegression):
-                                probs1 = self.calibrator.predict(raw_probs)
-                            else:
-                                probs1 = self.calibrator.predict_proba(
-                                    raw_probs.reshape(-1, 1)
-                                )[:, 1]
-                        else:
-                            probs1 = raw_probs
+                        probs1 = self._calibrate_probabilities(raw_probs, y)
                         probs = np.column_stack([1 - probs1, probs1])
                         self.recent_probs.extend(probs1.tolist())
                         arr = np.fromiter(self.recent_probs, dtype=float)
@@ -698,26 +918,34 @@ class OnlineTrainer:
                         log,
                         extra={"trace_id": ctx.trace_id, "span_id": ctx.span_id},
                     )
-                    if self.last_drift_detected and _update_model is not None:
+                    if self.last_drift_detected:
+                        metrics = self.pending_drift_metrics or {
+                            f"seq_{self.drift_test}": self.last_drift_metric
+                        }
                         try:
                             params = load_params(self.model_path)
                             model_hash = params.model_hash
                         except Exception:
                             model_hash = None
-                        _update_model(
-                            self.model_path,
-                            {f"seq_{self.drift_test}": self.last_drift_metric},
-                            True,
-                            model_hash=model_hash,
-                        )
+                        if _update_model is not None:
+                            _update_model(
+                                self.model_path,
+                                metrics,
+                                True,
+                                model_hash=model_hash,
+                            )
+                        else:
+                            self._persist_drift_metrics_local(metrics, model_hash)
                         logger.info(
                             {
                                 "event": "sequential_drift",
                                 "drift_metric": self.last_drift_metric,
+                                "metrics": metrics,
                                 "model_hash": model_hash,
                             }
                         )
                         self.last_drift_detected = False
+                        self.pending_drift_metrics = None
                     # decay learning rate for next batch
                     self.lr *= self.lr_decay
             except Exception:
