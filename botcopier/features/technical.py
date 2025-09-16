@@ -185,6 +185,22 @@ def _restore_frame(df: pd.DataFrame, backend: str | None):
     return df
 
 
+def _load_graph_dataset(
+    symbol_graph: dict | str | Path | None,
+) -> GraphDataset | None:
+    """Return a :class:`GraphDataset` for ``symbol_graph`` when available."""
+
+    if not _HAS_TG or compute_gnn_embeddings is None:
+        return None
+    if symbol_graph is None or isinstance(symbol_graph, dict):
+        return None
+    try:
+        return GraphDataset(symbol_graph)
+    except (OSError, ValueError) as exc:  # pragma: no cover - defensive
+        logger.exception("Failed to load graph dataset from %s", symbol_graph)
+    return None
+
+
 @register_feature("calendar")
 def _calendar_feature_plugin(
     df: pd.DataFrame | "pl.DataFrame",
@@ -527,6 +543,72 @@ def _rolling_corr_plugin(
     return out, feature_names, {}, {}
 
 
+@register_feature("graph_embeddings")
+def _graph_embedding_plugin(
+    df: pd.DataFrame | "pl.DataFrame",
+    feature_names: list[str],
+    *,
+    symbol_graph: dict | str | Path | None = None,
+    gnn_state: dict | None = None,
+    n_jobs: int | None = None,
+    **_: object,
+) -> FeatureResult:
+    """Attach GNN-based symbol embeddings when a graph is provided."""
+
+    gnn_state_out: dict[str, list[list[float]]] = gnn_state or {}
+    if symbol_graph is None:
+        return df, feature_names, {}, gnn_state_out
+    dataset = _load_graph_dataset(symbol_graph)
+    if dataset is None:
+        return df, feature_names, {}, gnn_state_out
+
+    pdf, backend = _maybe_to_pandas(df)
+    pdf = pdf.copy()
+    embeddings: dict[str, list[float]] = {}
+    executor: ThreadPoolExecutor | None = None
+
+    try:
+        if (
+            n_jobs is not None
+            and n_jobs > 1
+        ):
+            executor = ThreadPoolExecutor(max_workers=int(n_jobs))
+            future = executor.submit(
+                compute_gnn_embeddings, pdf.copy(), dataset, state_dict=gnn_state
+            )
+            embeddings, gnn_state_out = future.result()
+        elif compute_gnn_embeddings is not None:
+            embeddings, gnn_state_out = compute_gnn_embeddings(
+                pdf, dataset, state_dict=gnn_state
+            )
+    except (RuntimeError, ValueError) as exc:  # pragma: no cover - defensive
+        logger.exception("Failed to compute GNN embeddings")
+        embeddings = {}
+    finally:
+        if executor is not None:
+            executor.shutdown()
+
+    if not embeddings or "symbol" not in pdf.columns:
+        return _restore_frame(pdf, backend), feature_names, {}, gnn_state_out
+
+    emb_dim = len(next(iter(embeddings.values()), []))
+    if emb_dim == 0:
+        return _restore_frame(pdf, backend), feature_names, embeddings, gnn_state_out
+
+    sym_series = pdf["symbol"].astype(str)
+    for i in range(emb_dim):
+        col = f"graph_emb{i}"
+        pdf[col] = sym_series.map(lambda s, i=i: embeddings.get(s, [0.0] * emb_dim)[i])
+        if col not in feature_names:
+            feature_names.append(col)
+
+    out = _restore_frame(pdf, backend)
+    global _GNN_STATE
+    if gnn_state_out:
+        _GNN_STATE = gnn_state_out
+    return out, feature_names, embeddings, gnn_state_out
+
+
 def _load_symbolic_indicators(model_json: Path | str | None) -> dict:
     path = Path(model_json or "model.json")
     global _SYMBOLIC_CACHE
@@ -818,10 +900,9 @@ def _extract_features_impl(
 ) -> tuple[
     pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]
 ]:
-    """Attach graph embeddings, calendar flags and correlation features."""
+    """Attach calendar flags, correlation features and technical signals."""
     from . import engineering as fe  # avoid circular import
 
-    g_dataset: GraphDataset | None = None
     graph_data: dict | None = None
     if symbol_graph is not None:
         if not isinstance(symbol_graph, dict):
@@ -829,27 +910,6 @@ def _extract_features_impl(
                 graph_data = json.load(f_sg)
         else:
             graph_data = symbol_graph
-        if _HAS_TG and not isinstance(symbol_graph, dict):
-            try:
-                g_dataset = GraphDataset(symbol_graph)
-            except (OSError, ValueError) as exc:
-                logger.exception("Failed to load graph dataset from %s", symbol_graph)
-                g_dataset = None
-    embeddings: dict[str, list[float]] = {}
-    gnn_state_out: dict[str, list[list[float]]] = gnn_state or {}
-
-    executor: ThreadPoolExecutor | None = None
-    gnn_future = None
-    if (
-        n_jobs is not None
-        and n_jobs > 1
-        and g_dataset is not None
-        and compute_gnn_embeddings is not None
-    ):
-        executor = ThreadPoolExecutor(max_workers=n_jobs)
-        gnn_future = executor.submit(
-            compute_gnn_embeddings, df.copy(), g_dataset, state_dict=gnn_state
-        )
 
     use_polars = _HAS_POLARS and isinstance(df, pl.DataFrame)
     if use_polars and "event_time" in df.columns:
@@ -1179,34 +1239,8 @@ def _extract_features_impl(
             if "vol_rank" not in feature_names:
                 feature_names.append("vol_rank")
 
-    if gnn_future is not None:
-        try:
-            embeddings, gnn_state_out = gnn_future.result()
-        except (RuntimeError, ValueError) as exc:
-            logger.exception("Failed to compute GNN embeddings")
-            embeddings, gnn_state_out = {}, gnn_state_out
-        finally:
-            executor.shutdown()
-    elif g_dataset is not None and compute_gnn_embeddings is not None:
-        try:
-            embeddings, gnn_state_out = compute_gnn_embeddings(
-                df, g_dataset, state_dict=gnn_state
-            )
-        except (RuntimeError, ValueError) as exc:
-            logger.exception("Failed to compute GNN embeddings")
-            embeddings, gnn_state_out = {}, gnn_state_out
-    if embeddings and "symbol" in df.columns:
-        emb_dim = len(next(iter(embeddings.values())))
-        sym_series = df["symbol"].astype(str)
-        for i in range(emb_dim):
-            col = f"graph_emb{i}"
-            df[col] = sym_series.map(lambda s: embeddings.get(s, [0.0] * emb_dim)[i])
-        feature_names = feature_names + [f"graph_emb{i}" for i in range(emb_dim)]
     df, feature_names = _apply_symbolic_indicators(df, feature_names, model_json)
-    global _GNN_STATE
-    if gnn_state_out:
-        _GNN_STATE = gnn_state_out
-    return df, feature_names, embeddings, gnn_state_out
+    return df, feature_names, {}, {}
 
 
 def _extract_features(
@@ -1277,6 +1311,7 @@ def _extract_features(
         "technical_indicators",
         "rolling_correlations",
         "technical",
+        "graph_embeddings",
     ]
 
     plugins: list[str] = []
