@@ -84,10 +84,11 @@ from botcopier.exceptions import TrainingPipelineError
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.data.loading import _load_logs
 from botcopier.features.anomaly import _clip_train_features
-from botcopier.features.engineering import FeatureConfig, configure_cache
-from botcopier.features.technical import (
+from botcopier.features.engineering import (
+    FeatureConfig,
     _extract_features,
     _neutralize_against_market_index,
+    configure_cache,
 )
 from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
 from botcopier.models.schema import FeatureMetadata, ModelParams

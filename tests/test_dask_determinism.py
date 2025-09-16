@@ -2,7 +2,7 @@ from pathlib import Path
 import numpy as np
 
 from botcopier.data.loading import _load_logs
-from botcopier.features.technical import _extract_features
+from botcopier.features.engineering import _extract_features
 
 
 def test_pandas_dask_equivalence():

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Tuple
 
 try:  # pragma: no cover - registry may not be present in tests
-    from models.registry import _REGISTRY as _MODEL_REGISTRY  # type: ignore
+    from botcopier.models.registry import MODEL_REGISTRY as _MODEL_REGISTRY
 except Exception:  # pragma: no cover - best effort
     _MODEL_REGISTRY = {}
 
@@ -31,7 +31,7 @@ class AutoMLController:
         Mapping of model name to an integer representing its relative
         complexity. Higher values imply greater complexity penalty.  If
         ``None`` all models currently registered in
-        :mod:`models.registry` are used with a default complexity of 1.
+        :mod:`botcopier.models.registry` are used with a default complexity of 1.
     model_path:
         File used to persist the controller's policy and best action.
     reuse:

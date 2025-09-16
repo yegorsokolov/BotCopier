@@ -18,7 +18,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
-from models.registry import get_model, register_model
+from botcopier.models.registry import get_model, register_model
 
 # Optional model libraries and hyperparameter search
 try:  # pragma: no cover - optional dependency
