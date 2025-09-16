@@ -71,6 +71,7 @@ schemas = ["*.avsc"]
 botcopier = ["model.json"]
 
 [project.scripts]
+botcopier = "botcopier.cli:app"
 botcopier-serve-model = "botcopier.scripts.serve_model:main"
 botcopier-analyze-ticks = "botcopier.scripts.analyze_ticks:main"
 botcopier-flight-server = "botcopier.scripts.flight_server:main"

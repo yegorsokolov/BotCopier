@@ -45,6 +45,11 @@ torch_geometric
 networkx
 mlflow
 dvc
+mkdocs
+mkdocstrings[python]
+pymdown-extensions
+plantuml-markdown
+nbstripout
 
 # Optional extras
 opentelemetry-instrumentation; extra == "otel"

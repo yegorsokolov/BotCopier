@@ -18,18 +18,42 @@ pip install .[gpu]
 
 ## Usage
 
-After installation, several command line tools are available:
+The package exposes a consolidated Typer CLI under the ``botcopier`` command.
+Inspect the available subcommands with ``botcopier --help``. Common workflows
+include:
 
-- `botcopier-analyze-ticks` – compute metrics from exported tick history.
-- `botcopier-flight-server` – start an Arrow Flight server for trade and metric batches.
-- `botcopier-online-trainer` – continuously update a model from streaming events.
-- `botcopier-serve-model` – expose the distilled model via a FastAPI service.
+```bash
+# Train a lightweight model against the bundled sample data
+botcopier train notebooks/data ./artifacts --model-type logreg --random-seed 7
+
+# Evaluate predictions against the sample trade log
+botcopier evaluate notebooks/data/predictions.csv notebooks/data/trades_raw.csv --window 900
+
+# Launch the online trainer in streaming mode
+botcopier online-train --csv notebooks/data/trades_raw.csv --model ./models/latest/model.json
+```
+
+Legacy entry points such as ``botcopier-serve-model`` remain available for
+backwards compatibility and are now implemented internally on top of the Typer
+application.
 
 Example:
 
 ```bash
 botcopier-serve-model --host 0.0.0.0 --port 8000
 ```
+
+## Documentation and notebooks
+
+The MkDocs site, including automatic API reference pages powered by
+``mkdocstrings``, lives under ``docs/``. Build the site locally with live reload:
+
+```bash
+mkdocs serve
+```
+
+Example notebooks with pre-stripped outputs are provided in ``notebooks/``.
+Execute them with Jupyter to reproduce the getting started flow.
 
 ## Testing
 
@@ -38,6 +62,9 @@ Run the unit tests:
 ```bash
 pytest
 ```
+
+Run ``pre-commit run --all-files`` to apply formatting and ensure notebook
+outputs are stripped before pushing changes.
 
 ## Model distillation
 
@@ -55,6 +82,12 @@ The log loading helpers in the training pipeline (`botcopier.cli train`) and
 `scripts/model_fitting.py` accept a `chunk_size` argument. Providing a positive
 value streams DataFrame chunks instead of materialising the entire log in
 memory, enabling training on machines with limited RAM.
+
+## Contributing
+
+See [docs/contributing.md](docs/contributing.md) for development workflow and
+testing expectations. New contributions should document CLI additions and update
+the notebooks when appropriate.
 
 ## License
 

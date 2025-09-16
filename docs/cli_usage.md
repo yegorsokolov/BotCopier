@@ -15,6 +15,10 @@ Run ``botcopier --help`` to list available commands. Key subcommands include:
 - ``evaluate`` – compare predictions against realised trades.
 - ``online-train`` – update a model continuously from streaming data.
 - ``drift-monitor`` – monitor feature drift against a baseline.
+- ``serve-model`` – launch the FastAPI prediction service with Prometheus
+  instrumentation.
+- ``flight-server`` – expose Arrow Flight endpoints for streaming trade and
+  metric batches.
 
 ## Feature plugins
 

@@ -20,6 +20,8 @@ changes before opening a pull request.
 * Prefer small, focused commits with descriptive messages.
 * Run ``ruff`` or ``flake8`` locally if you have them installed; the CI will
   enforce linting on every push.
+* Keep notebooks output-free. The ``nbstripout`` hook is configured in
+  ``.pre-commit-config.yaml`` and should be run before pushing changes.
 
 ## Testing Checklist
 
@@ -30,13 +32,14 @@ Before submitting a pull request:
    pytest
    ```
 2. Execute representative smoke tests against the sample data to ensure the
-   pipeline still succeeds end-to-end:
+   Typer CLI still succeeds end-to-end:
    ```bash
-   python -m botcopier.training.pipeline /tmp/botcopier-sample ./artifacts --trials 2
+   botcopier train notebooks/data ./artifacts --model-type logreg --random-seed 7
+   botcopier evaluate notebooks/data/predictions.csv notebooks/data/trades_raw.csv --window 900
    ```
 3. Build the documentation and ensure no warnings are emitted:
    ```bash
-   mkdocs build
+   mkdocs build --strict
    ```
 4. Use ``pre-commit`` to apply formatting and static analysis:
    ```bash
@@ -50,6 +53,15 @@ Before submitting a pull request:
   behaviour.
 * Double-check that ``.github/workflows/docs.yml`` succeeds locally if your
   changes touch the documentation configuration.
+
+## Documentation and notebooks
+
+* Update ``docs/getting_started.md`` and ``docs/notebooks.md`` when onboarding
+  flows change.
+* Add or adjust notebooks under ``notebooks/`` when introducing new CLI
+  workflows so readers can reproduce the behaviour interactively.
+* Use ``mkdocs serve`` during development to preview documentation changes and
+  ``mkdocs build --strict`` before pushing.
 
 Please open an issue for major changes so we can discuss the approach and align
 on deliverables before large investments of time.
