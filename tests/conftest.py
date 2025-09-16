@@ -10,6 +10,8 @@ ALLOWED = {
     "test_benchmarks.py",
     "test_nats_publisher_async.py",
     "test_online_trainer_async.py",
+    "test_online_trainer.py",
+    "test_online_trainer_live_ticks.py",
     "property",
     "test_invariants.py",
     "optional",

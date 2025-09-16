@@ -66,7 +66,10 @@ from sklearn.exceptions import NotFittedError
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression, SGDClassifier
 
-from botcopier.training.pipeline import detect_resources
+try:
+    from botcopier.training.pipeline import detect_resources
+except Exception:  # pragma: no cover - optional heavy dependency
+    detect_resources = None  # type: ignore[assignment]
 
 try:  # drift metrics utilities
     if __package__:
@@ -598,7 +601,7 @@ class OnlineTrainer:
             recent.clear()
         logger.info({"event": "regime_shift", "action": action})
 
-    def _check_drift(self, value: float) -> None:
+    def _check_drift(self, value: float) -> bool:
         """Run sequential drift detector, store metric and handle regime shifts."""
         metric = 0.0
         detected = False
@@ -623,6 +626,7 @@ class OnlineTrainer:
             if not self.last_drift_detected:
                 self.pending_drift_metrics = None
             self.last_drift_detected = False
+        return detected
 
     def _population_stability_index(
         self, expected: np.ndarray, actual: np.ndarray, bins: int = 10
@@ -677,9 +681,10 @@ class OnlineTrainer:
         self.last_drift_metric = max(metrics.values()) if metrics else 0.0
         self.last_drift_detected = True
 
-    def _update_feature_drift(self, X: np.ndarray) -> None:
+    def _update_feature_drift(self, X: np.ndarray) -> bool:
         psi_scores: List[float] = []
         ks_scores: List[float] = []
+        detected = False
         for idx, name in enumerate(self.feature_names):
             column = X[:, idx].astype(float)
             ref = self.feature_reference.setdefault(
@@ -711,11 +716,13 @@ class OnlineTrainer:
                 ref.clear()
                 ref.extend(recent)
                 recent.clear()
+                detected = True
                 break
         self.feature_drift_state = {
             "psi_max": float(max(psi_scores)) if psi_scores else 0.0,
             "ks_max": float(max(ks_scores)) if ks_scores else 0.0,
         }
+        return detected
 
     def _persist_drift_metrics_local(
         self, metrics: Dict[str, float], model_hash: str | None
@@ -831,53 +838,68 @@ class OnlineTrainer:
             self.model_type = model_name
         self._prev_coef = None
 
+    def _partial_fit(self, X: np.ndarray, y: np.ndarray) -> None:
+        classes = getattr(self.clf, "classes_", None)
+        if classes is None or (isinstance(classes, np.ndarray) and classes.size == 0):
+            self.clf.partial_fit(X, y, classes=np.array([0, 1]))
+        else:
+            self.clf.partial_fit(X, y)
+
+    def _predict_proba_safe(self, X: np.ndarray) -> np.ndarray | None:
+        try:
+            probs = self.clf.predict_proba(X)
+        except (AttributeError, ValueError, NotFittedError, AssertionError):
+            return None
+        if probs.ndim == 1:
+            return probs
+        if probs.shape[1] == 2:
+            return probs[:, 1]
+        return probs.ravel()
+
     def update(self, batch: List[Dict[str, Any]]) -> bool:
         with observe_latency("train_batch"):
             try:
                 with tracer.start_as_current_span("train_batch") as span:
                     X, y = self._vectorise(batch)
-                    mean_val = float(X.mean())
-                    self._check_drift(mean_val)
-                    self._update_feature_drift(X)
-                    # configure current learning rate
                     if hasattr(self.clf, "eta0"):
                         self.clf.eta0 = self.lr
-                    old_coef = (
-                        self.clf.coef_[0].copy()
-                        if hasattr(self.clf, "coef_") and self.clf.coef_.size
-                        else None
-                    )
-                    if not hasattr(self.clf, "classes_"):
-                        self.clf.partial_fit(X, y, classes=np.array([0, 1]))
-                    else:
-                        self.clf.partial_fit(X, y)
-                    if old_coef is not None:
-                        new_coef = self.clf.coef_[0].copy()
-                        self.adapt_log.append(
-                            {"old": old_coef.tolist(), "new": new_coef.tolist()}
-                        )
-                        self.meta_weights = new_coef.tolist()
+                    drift_value = float(np.mean(X))
+                    self._partial_fit(X, y)
+                    raw_probs: np.ndarray | None = self._predict_proba_safe(X)
+                    seq_drift = self._check_drift(drift_value)
+                    feat_drift = self._update_feature_drift(X)
+                    if seq_drift or feat_drift:
+                        if hasattr(self.clf, "eta0"):
+                            self.clf.eta0 = self.lr
+                        self._partial_fit(X, y)
+                        raw_probs = self._predict_proba_safe(X)
                     lr_used = getattr(self.clf, "eta0", self.lr)
                     self.lr_history.append(lr_used)
-                    try:
-                        raw_probs = self.clf.predict_proba(X)[:, 1]
+                    if raw_probs is not None and raw_probs.size:
                         probs1 = self._calibrate_probabilities(raw_probs, y)
                         probs = np.column_stack([1 - probs1, probs1])
                         self.recent_probs.extend(probs1.tolist())
                         arr = np.fromiter(self.recent_probs, dtype=float)
-                        self.conformal_lower = float(np.quantile(arr, 0.05))
-                        self.conformal_upper = float(np.quantile(arr, 0.95))
-                    except ValueError:
-                        pass
+                        if arr.size:
+                            self.conformal_lower = float(np.quantile(arr, 0.05))
+                            self.conformal_upper = float(np.quantile(arr, 0.95))
                     if self.model_type == "confidence_weighted":
                         coef = self.clf.w.tolist()
                         intercept = float(self.clf.b)
                     else:
                         coef = self.clf.coef_[0].tolist()
                         intercept = float(self.clf.intercept_[0])
-                    prev = self._prev_coef
+                    prev_full = list(self._prev_coef) if self._prev_coef is not None else None
+                    prev_weights = (
+                        prev_full[:-1]
+                        if prev_full is not None and len(prev_full) == len(coef) + 1
+                        else None
+                    )
                     self._prev_coef = coef + [intercept]
-                    changed = prev != self._prev_coef
+                    changed = prev_full != self._prev_coef
+                    self.meta_weights = coef
+                    if self.model_type != "confidence_weighted" and prev_weights is not None:
+                        self.adapt_log.append({"old": prev_weights, "new": coef})
                     self._save()
                     acc = self._log_validation(X, y)
                     if self.controller is None and self.feature_names:
@@ -1067,6 +1089,8 @@ class OnlineTrainer:
                 batch.clear()
                 buffer_records.clear()
         finally:
+            if buffer_records:
+                self._append_buffer(buffer_records)
             ring.close()
 
     def tail_csv(self, path: Path) -> None:
@@ -1075,6 +1099,7 @@ class OnlineTrainer:
         path.parent.mkdir(parents=True, exist_ok=True)
         pos = 0
         batch: List[Dict[str, Any]] = []
+        buffer_records: List[Dict[str, Any]] = []
         while True:
             load = psutil.cpu_percent(interval=None)
             if load > self.cpu_threshold:
@@ -1085,22 +1110,37 @@ class OnlineTrainer:
                     reader = csv.DictReader(f)
                     for row in reader:
                         pos = f.tell()
-                        if "y" not in row and "label" not in row:
+                        raw = dict(row)
+                        label_val = raw.get("y") or raw.get("label")
+                        if label_val not in (None, ""):
+                            raw["y"] = label_val
+                        buffer_records.append(raw)
+                        if label_val in (None, ""):
+                            if len(buffer_records) >= self.batch_size:
+                                self._append_buffer(buffer_records)
+                                buffer_records.clear()
                             continue
-                        row["y"] = row.get("y") or row.get("label")
+                        row["y"] = label_val
                         batch.append(row)
                         if len(batch) >= self.batch_size:
                             load = psutil.cpu_percent(interval=None)
                             if load > self.cpu_threshold:
                                 time.sleep(self.sleep_seconds)
                             self.update(batch)
+                            self._append_buffer(buffer_records)
                             batch.clear()
+                            buffer_records.clear()
             if batch:
                 load = psutil.cpu_percent(interval=None)
                 if load > self.cpu_threshold:
                     time.sleep(self.sleep_seconds)
                 self.update(batch)
+                self._append_buffer(buffer_records)
                 batch.clear()
+                buffer_records.clear()
+            elif buffer_records:
+                self._append_buffer(buffer_records)
+                buffer_records.clear()
             time.sleep(1.0)
 
     async def consume_flight(self, host: str, port: int, path: str = "trades") -> None:
@@ -1114,6 +1154,7 @@ class OnlineTrainer:
         ticket = flight.Ticket(path.encode())
         offset = 0
         batch: List[Dict[str, Any]] = []
+        buffer_records: List[Dict[str, Any]] = []
         try:
             while True:
                 load = psutil.cpu_percent(interval=None)
@@ -1129,25 +1170,42 @@ class OnlineTrainer:
                     continue
                 if table.num_rows > offset:
                     for row in table.slice(offset).to_pylist():
-                        if "y" not in row and "label" not in row:
+                        raw = dict(row)
+                        label_val = raw.get("y") or raw.get("label")
+                        if label_val not in (None, ""):
+                            raw["y"] = label_val
+                        buffer_records.append(raw)
+                        if label_val in (None, ""):
+                            if len(buffer_records) >= self.batch_size:
+                                self._append_buffer(buffer_records)
+                                buffer_records.clear()
                             continue
-                        row["y"] = row.get("y") or row.get("label")
+                        row["y"] = label_val
                         batch.append(row)
                         if len(batch) >= self.batch_size:
                             load = psutil.cpu_percent(interval=None)
                             if load > self.cpu_threshold:
                                 await asyncio.sleep(self.sleep_seconds)
                             self.update(batch)
+                            self._append_buffer(buffer_records)
                             batch.clear()
+                            buffer_records.clear()
                     offset = table.num_rows
                 if batch:
                     load = psutil.cpu_percent(interval=None)
                     if load > self.cpu_threshold:
                         await asyncio.sleep(self.sleep_seconds)
                     self.update(batch)
+                    self._append_buffer(buffer_records)
                     batch.clear()
+                    buffer_records.clear()
+                elif buffer_records:
+                    self._append_buffer(buffer_records)
+                    buffer_records.clear()
                 await asyncio.sleep(1.0)
         finally:
+            if buffer_records:
+                self._append_buffer(buffer_records)
             client.close()
 
     async def consume_websocket(
