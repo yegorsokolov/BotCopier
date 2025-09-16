@@ -3,6 +3,16 @@ from pathlib import Path
 
 import pandas as pd
 
+import sys
+import types
+
+gplearn_mod = types.ModuleType("gplearn")
+gplearn_genetic = types.ModuleType("gplearn.genetic")
+gplearn_genetic.SymbolicTransformer = object
+sys.modules.setdefault("gplearn", gplearn_mod)
+sys.modules.setdefault("gplearn.genetic", gplearn_genetic)
+
+import botcopier.features.engineering as fe
 from botcopier.features.technical import _extract_features_impl
 from botcopier.training.pipeline import train
 
@@ -28,6 +38,19 @@ def test_extract_features_deterministic_n_jobs() -> None:
     feature_names: list[str] = []
     df1, fn1, emb1, gnn1 = _extract_features_impl(df.copy(), feature_names.copy(), n_jobs=1)
     df2, fn2, emb2, gnn2 = _extract_features_impl(df.copy(), feature_names.copy(), n_jobs=2)
+    pd.testing.assert_frame_equal(df1, df2)
+    assert fn1 == fn2
+    assert emb1 == emb2
+    assert gnn1 == gnn2
+
+
+def test_engineering_wrapper_respects_n_jobs() -> None:
+    df = _sample_df()
+    feature_names: list[str] = []
+    with fe._CONFIG.override(n_jobs=1):
+        df1, fn1, emb1, gnn1 = fe._extract_features(df.copy(), feature_names.copy())
+    with fe._CONFIG.override(n_jobs=2):
+        df2, fn2, emb2, gnn2 = fe._extract_features(df.copy(), feature_names.copy())
     pd.testing.assert_frame_equal(df1, df2)
     assert fn1 == fn2
     assert emb1 == emb2
