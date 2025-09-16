@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, Sequence
 
 from botcopier.scripts.evaluation import evaluate_strategy
+
+
+logger = logging.getLogger(__name__)
 
 
 def _load_returns(path: Path) -> Iterable[float]:
@@ -82,6 +86,7 @@ def promote(
         try:
             registry = json.loads(registry_path.read_text())
         except json.JSONDecodeError:
+            logger.exception("Failed to parse registry %s; starting empty", registry_path)
             registry = {}
 
     risk_report: Dict[str, Dict[str, Any]] = {}

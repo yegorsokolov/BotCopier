@@ -54,11 +54,11 @@ def _parse_time(value: str, *, symbol: str = "") -> datetime:
 def _load_predictions(pred_file: Path) -> pd.DataFrame:
     try:
         df = pd.read_csv(pred_file, delimiter=";")
-    except OSError as exc:
+    except OSError:
         err = DataError(
             f"Failed to read predictions {pred_file}", timestamp=datetime.now(UTC)
         )
-        logger.error("%s; using empty DataFrame", err, exc_info=exc)
+        logger.exception("%s; using empty DataFrame", err)
         cols = [
             "timestamp",
             "symbol",
@@ -154,11 +154,11 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
 def _load_actual_trades(log_file: Path) -> pd.DataFrame:
     try:
         df = pd.read_csv(log_file, delimiter=";")
-    except OSError as exc:
+    except OSError:
         err = DataError(
             f"Failed to read trade log {log_file}", timestamp=datetime.now(UTC)
         )
-        logger.error("%s; using empty DataFrame", err, exc_info=exc)
+        logger.exception("%s; using empty DataFrame", err)
         cols = [
             "open_time",
             "close_time",

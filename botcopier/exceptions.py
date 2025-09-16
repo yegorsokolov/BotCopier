@@ -55,4 +55,24 @@ class ServiceError(BotCopierError):
     """Errors originating from external services."""
 
 
-__all__ = ["BotCopierError", "DataError", "ModelError", "ServiceError"]
+class TrainingPipelineError(BotCopierError):
+    """Errors raised during the training pipeline orchestration."""
+
+
+class PromotionError(BotCopierError):
+    """Errors raised when promoting strategies between environments."""
+
+
+class EvaluationError(BotCopierError):
+    """Errors raised while evaluating model or strategy performance."""
+
+
+__all__ = [
+    "BotCopierError",
+    "DataError",
+    "ModelError",
+    "ServiceError",
+    "TrainingPipelineError",
+    "PromotionError",
+    "EvaluationError",
+]
