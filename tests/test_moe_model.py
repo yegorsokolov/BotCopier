@@ -1,14 +1,15 @@
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
-from sklearn.linear_model import LogisticRegression
+
+np = pytest.importorskip("numpy")
+torch = pytest.importorskip("torch")
+sklearn_linear = pytest.importorskip("sklearn.linear_model")
+LogisticRegression = sklearn_linear.LogisticRegression
 
 from botcopier.models.registry import get_model
 from botcopier.training.pipeline import train
-
-torch = pytest.importorskip("torch")
 
 
 def _make_dataset(tmp_path: Path):
@@ -40,6 +41,10 @@ def test_gating_probabilities_sum_to_one(tmp_path: Path):
         epochs=200,
         lr=0.1,
     )
+    arch = meta.get("architecture", {})
+    assert arch.get("type") == "MixtureOfExperts"
+    assert arch.get("n_experts") == 2
+    assert "state_dict" in meta and meta["state_dict"]
     model = pred_fn.model
     with torch.no_grad():
         gates = torch.softmax(
@@ -81,3 +86,7 @@ def test_moe_accuracy_exceeds_individual_experts(tmp_path: Path):
     train(data, out_dir, model_type="moe", regime_features=["g0", "g1"])
     saved = json.loads((out_dir / "model.json").read_text())
     assert "regime_gating" in saved and "experts" in saved
+    assert "state_dict" in saved and saved["state_dict"]
+    arch = saved.get("architecture", {})
+    assert arch.get("type") == "MixtureOfExperts"
+    assert arch.get("n_experts") == 2

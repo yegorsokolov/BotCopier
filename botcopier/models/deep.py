@@ -36,7 +36,7 @@ if _HAS_TORCH:
         def __init__(
             self,
             num_features: int,
-            window: int,
+            window: int | None = None,
             *,
             dim: int = 64,
             depth: int = 2,
@@ -45,10 +45,15 @@ if _HAS_TORCH:
             dropout: float = 0.1,
         ) -> None:
             super().__init__()
-            if window < 1:
+            if heads < 1:
+                raise ValueError("heads must be positive")
+            if dim % heads != 0:
+                raise ValueError("dim must be divisible by heads")
+            effective_window = int(window or 1)
+            if effective_window < 1:
                 raise ValueError("window must be positive")
-            self.num_features = num_features
-            self.window = window
+            self.num_features = int(num_features)
+            self.window = effective_window
             self.input_proj = nn.Linear(num_features, dim)
             encoder_layer = nn.TransformerEncoderLayer(
                 dim,
@@ -59,14 +64,18 @@ if _HAS_TORCH:
                 activation="gelu",
             )
             self.encoder = nn.TransformerEncoder(encoder_layer, depth)
-            self.positional = PositionalEncoding(window, dim)
+            self.positional = PositionalEncoding(effective_window, dim)
             self.norm = nn.LayerNorm(dim)
             self.dropout = nn.Dropout(dropout)
             self.head = nn.Linear(dim, 1)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            if x.dim() != 3:
-                raise ValueError("expected input of shape (batch, window, features)")
+            if x.dim() == 2:
+                x = x.unsqueeze(1)
+            elif x.dim() != 3:
+                raise ValueError(
+                    "expected input of shape (batch, window, features) or (batch, features)"
+                )
             if x.size(-1) != self.num_features:
                 raise ValueError("feature dimension mismatch")
             if x.size(1) > self.window:
@@ -149,9 +158,11 @@ if _HAS_TORCH:
             super().__init__()
             if kernel_size < 1:
                 raise ValueError("kernel_size must be positive")
+            self.num_inputs = int(num_inputs)
+            self.channels = tuple(int(c) for c in channels)
             layers: list[nn.Module] = []
             in_channels = num_inputs
-            for i, out_channels in enumerate(channels):
+            for i, out_channels in enumerate(self.channels):
                 dilation = 2**i
                 layers.append(
                     TemporalBlock(
@@ -168,7 +179,56 @@ if _HAS_TORCH:
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             if x.dim() != 3:
                 raise ValueError("expected input of shape (batch, channels, time)")
+            if x.size(1) != self.num_inputs:
+                raise ValueError("channel dimension mismatch")
             return self.network(x)
+
+
+    class MixtureOfExperts(nn.Module):
+        """Simple mixture of experts with a softmax gating network."""
+
+        def __init__(
+            self,
+            n_features: int,
+            n_regime_features: int,
+            n_experts: int,
+            *,
+            dropout: float = 0.0,
+        ) -> None:
+            super().__init__()
+            if n_experts < 1:
+                raise ValueError("n_experts must be positive")
+            if n_features < 1 or n_regime_features < 1:
+                raise ValueError("feature dimensions must be positive")
+            self.n_features = int(n_features)
+            self.n_regime_features = int(n_regime_features)
+            self.n_experts = int(n_experts)
+            self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+            self.experts = nn.ModuleList(
+                [nn.Linear(n_features, 1) for _ in range(self.n_experts)]
+            )
+            self.gating = nn.Linear(n_regime_features, self.n_experts)
+
+        def forward(
+            self, x: torch.Tensor, regime_features: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            if x.dim() != 2:
+                raise ValueError("expected expert features of shape (batch, features)")
+            if regime_features.dim() != 2:
+                raise ValueError("expected regime features of shape (batch, regime_features)")
+            if x.size(0) != regime_features.size(0):
+                raise ValueError("batch dimension mismatch between experts and regimes")
+            if x.size(1) != self.n_features:
+                raise ValueError("expert feature dimension mismatch")
+            if regime_features.size(1) != self.n_regime_features:
+                raise ValueError("regime feature dimension mismatch")
+            x = self.dropout(x)
+            gate_logits = self.gating(regime_features)
+            gate = torch.softmax(gate_logits, dim=1)
+            expert_logits = torch.cat([expert(x) for expert in self.experts], dim=1)
+            expert_prob = torch.sigmoid(expert_logits)
+            out = (gate * expert_prob).sum(dim=1, keepdim=True)
+            return out, gate
 
 
     class TCNClassifier(nn.Module):
@@ -224,6 +284,10 @@ else:  # pragma: no cover - fallback definitions when torch is unavailable
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError("PyTorch is required for TemporalConvNet")
 
+    class MixtureOfExperts:  # type: ignore[override]
+        def __init__(self, *args, **kwargs) -> None:
+            raise ImportError("PyTorch is required for MixtureOfExperts")
 
-__all__ = ["TabTransformer", "TemporalConvNet", "TCNClassifier"]
+
+__all__ = ["TabTransformer", "TemporalConvNet", "TCNClassifier", "MixtureOfExperts"]
 
