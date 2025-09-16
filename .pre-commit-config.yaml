@@ -17,3 +17,7 @@ repos:
       - id: mypy
         pass_filenames: false
         args: ["botcopier", "tests"]
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.6.1
+    hooks:
+      - id: nbstripout

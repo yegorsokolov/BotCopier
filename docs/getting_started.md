@@ -1,12 +1,12 @@
 # Getting Started
 
-Follow these steps to set up the BotCopier project locally and run a complete
-pipeline against the bundled sample data.
+Follow these steps to set up the BotCopier project locally and exercise the
+Typer-based CLI against the bundled sample data.
 
 ## Prerequisites
 
-* Python 3.9 or newer.
-* A virtual environment (``venv`` or ``conda``) is strongly recommended.
+* Python 3.10 or newer (matching the ``pyproject.toml`` requirement).
+* A virtual environment (``python -m venv .venv``) is strongly recommended.
 * Optional: Docker if you plan to run the observability stack defined in
   ``docs/docker-compose.yml``.
 
@@ -14,58 +14,83 @@ pipeline against the bundled sample data.
 
 1. Clone the repository and change into the directory.
 2. Create and activate a virtual environment.
-3. Install dependencies:
+3. Install the project in editable mode together with the developer extras:
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
-4. Install the documentation toolchain (needed for MkDocs builds):
+4. Install the documentation toolchain and notebook helper used in the
+   repository:
    ```bash
-   pip install "mkdocs>=1.5" "mkdocstrings[python]" "pymdown-extensions"
+   pip install "mkdocs>=1.5" "mkdocstrings[python]" "pymdown-extensions" \
+               "plantuml-markdown" nbstripout
    ```
-   Training runs snapshot the environment to ``dependencies.txt`` in their output
-   directories. Reinstall from this file to reproduce the exact package
-   versions:
+5. Enable the ``pre-commit`` hooks (formatters, static analysis, ``nbstripout``):
    ```bash
-   pip install -r dependencies.txt
+   pre-commit install
    ```
 
-## Using the Sample Data
-
-A compact CSV sample is provided at ``tests/fixtures/trades_small.csv``. Create a
-working directory with the expected filenames:
+Training runs snapshot the dependency versions to ``dependencies.txt`` inside
+each output directory. Reinstall from that file to reproduce historic runs:
 
 ```bash
-mkdir -p /tmp/botcopier-sample
-cp tests/fixtures/trades_small.csv /tmp/botcopier-sample/trades_raw.csv
+pip install -r dependencies.txt
 ```
 
-You can now execute the training pipeline end-to-end:
+## First run with the sample data
+
+The ``notebooks/data`` directory ships with a minimal ``trades_raw.csv`` and a
+matching ``predictions.csv`` file. Use them to try the CLI locally:
 
 ```bash
-python -m botcopier.training.pipeline /tmp/botcopier-sample ./artifacts \
-  --model-type logreg \
-  --metrics accuracy f1 \
-  --random-seed 123
+# Train a lightweight model using the Typer CLI
+botcopier train notebooks/data ./artifacts --model-type logreg --random-seed 7
+
+# Inspect the produced model card
+head -n 20 ./artifacts/model_card.md
 ```
 
-The pipeline writes model checkpoints, evaluation metrics, and a model card into
-``./artifacts``. Inspect ``artifacts/model_card.md`` for a human readable
-summary of the run.
+Evaluate the bundled predictions against the same log:
+
+```bash
+botcopier evaluate notebooks/data/predictions.csv notebooks/data/trades_raw.csv --window 900
+```
+
+Both commands write their configuration snapshot to ``params.yaml`` and print a
+JSON metrics summary so you can track changes between runs.
+
+## Explore the notebooks
+
+Open the notebooks in ``notebooks/`` for an executable walk-through of the same
+workflow. ``nbstripout`` is configured in ``.pre-commit-config.yaml`` to keep the
+outputs clean when you save the notebooks.
 
 ## Documentation
 
-Build the documentation locally with:
+Build the documentation locally with live reload:
+
 ```bash
 mkdocs serve
 ```
-This launches a local server with live reload. To produce the static site that
-is uploaded in CI, run ``mkdocs build``.
 
-## Running Tests
+CI invokes ``mkdocs build --strict`` on every pull request; run it locally
+before pushing to catch warnings:
 
-Execute the test suite to ensure everything is working:
+```bash
+mkdocs build --strict
+```
+
+## Running tests
+
+Execute the automated tests to ensure everything is working:
+
 ```bash
 pytest
 ```
-Consider running ``pytest -m slow`` periodically to exercise the more
-computationally expensive integration tests.
+
+For a broader smoke test, run the integration suite and property-based tests
+when time permits:
+
+```bash
+pytest -m integration
+HYPOTHESIS_MAX_EXAMPLES=25 pytest tests/property
+```

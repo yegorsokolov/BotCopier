@@ -1,0 +1,5 @@
+schema_version;event_id;event_time;action;ticket;symbol;order_type;lots;profit
+1;1001;2024.01.01 12:00;OPEN;101;EURUSD;1;0.10;12.5
+1;1002;2024.01.01 12:15;CLOSE;101;EURUSD;0;0.10;-4.1
+1;1003;2024.01.02 09:05;OPEN;102;EURUSD;1;0.20;18.7
+1;1004;2024.01.02 09:45;CLOSE;102;EURUSD;0;0.20;3.4

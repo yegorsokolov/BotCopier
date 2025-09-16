@@ -9,6 +9,8 @@ from typing import Any, Callable, Optional, TypeVar, cast
 
 import typer
 
+from botcopier.exceptions import BotCopierError
+from botcopier.training.pipeline import train as train_pipeline
 from config.settings import (
     DataConfig,
     ExecutionConfig,
@@ -16,8 +18,6 @@ from config.settings import (
     load_settings,
     save_params,
 )
-from botcopier.exceptions import BotCopierError
-from botcopier.training.pipeline import train as train_pipeline
 
 from ..scripts.drift_monitor import run as run_drift_monitor
 from ..scripts.evaluation import evaluate as eval_predictions
@@ -406,6 +406,45 @@ def drift_monitor(
         drift_scores=data_cfg.drift_scores,
         flag_file=data_cfg.flag_file,
     )
+
+
+@app.command("serve-model")
+@error_handler
+def serve_model(
+    host: str = typer.Option("0.0.0.0", help="Host interface for the FastAPI app"),
+    port: int = typer.Option(8000, help="HTTP port for serving predictions"),
+    metrics_port: int = typer.Option(8004, help="Prometheus metrics port"),
+) -> None:
+    """Run the FastAPI service that serves the distilled model."""
+
+    import uvicorn
+
+    from botcopier.metrics import start_metrics_server
+    from botcopier.scripts import serve_model as serve_module
+
+    start_metrics_server(metrics_port)
+    uvicorn.run(serve_module.app, host=host, port=port)
+
+
+@app.command("flight-server")
+@error_handler
+def flight_server(
+    host: str = typer.Option("0.0.0.0", help="Host interface for the Flight server"),
+    port: int = typer.Option(8815, help="Arrow Flight port"),
+    data_dir: Path = typer.Option(
+        Path("flight_logs"), help="Directory to persist batches"
+    ),
+) -> None:
+    """Start the Arrow Flight server that mirrors trades and metrics."""
+
+    from botcopier.scripts.flight_server import FlightServer
+
+    server = FlightServer(host, port, str(data_dir))
+    try:
+        server.serve()
+    except KeyboardInterrupt:  # pragma: no cover - user interrupt
+        typer.echo("Shutting down Flight server", err=True)
+        server.shutdown()
 
 
 __all__ = ["app", "error_handler"]

@@ -1,11 +1,13 @@
 site_name: BotCopier
 nav:
   - Home: index.md
-  - Getting Started: getting_started.md
+  - Getting Started:
+      - Quickstart: getting_started.md
+      - CLI Reference: cli_usage.md
+      - Example Notebooks: notebooks.md
   - Architecture: architecture.md
   - Data Flow: data_flow.md
   - Model Registry: model_registry.md
-  - CLI Usage: cli_usage.md
   - API Reference: api.md
   - Contributing:
       - Overview: contributing.md
