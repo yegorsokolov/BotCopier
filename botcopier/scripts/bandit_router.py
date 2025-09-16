@@ -19,8 +19,15 @@ from typing import List
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import Response
 from pydantic import BaseModel
 
+from botcopier.metrics import (
+    ERROR_COUNTER,
+    latest_metrics,
+    observe_latency,
+    start_metrics_server,
+)
 from botcopier.utils.random import set_seed
 
 
@@ -90,6 +97,7 @@ class BanditRouter:
 
     def update(self, idx: int, reward: float) -> None:
         if idx < 0 or idx >= self.models:
+            ERROR_COUNTER.labels(type="bandit_reward").inc()
             return
         with self.lock:
             self.total[idx] += 1
@@ -108,12 +116,19 @@ def create_app(router: BanditRouter) -> FastAPI:
 
     @app.get("/choose")
     def choose() -> dict[str, int]:
-        return {"model": router.choose()}
+        with observe_latency("bandit_choose"):
+            return {"model": router.choose()}
 
     @app.post("/reward")
     def reward(update: Reward) -> dict[str, str]:
-        router.update(update.model, update.reward)
+        with observe_latency("bandit_reward"):
+            router.update(update.model, update.reward)
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    def metrics() -> Response:
+        payload, content_type = latest_metrics()
+        return Response(content=payload, media_type=content_type)
 
     return app
 
@@ -128,11 +143,18 @@ def main() -> None:
     parser.add_argument("--method", choices=["thompson", "ucb"], default="thompson")
     parser.add_argument("--state-file", default="bandit_state.json")
     parser.add_argument("--random-seed", type=int, default=0)
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=9101,
+        help="Prometheus metrics port",
+    )
     args = parser.parse_args()
 
     set_seed(args.random_seed)
     router = BanditRouter(args.models, args.method, args.state_file)
     app = create_app(router)
+    start_metrics_server(args.metrics_port)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
