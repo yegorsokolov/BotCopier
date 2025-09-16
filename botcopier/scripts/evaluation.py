@@ -322,32 +322,50 @@ def evaluate(
 
     unused_trades = trades[~trades["ticket"].isin(matched_tickets)]
 
-    matched_mask = merged["ticket"].notna()
-    matches = int(matched_mask.sum())
-    profits = merged.loc[matched_mask, "profit"].astype(float)
-    net_profits = profits - (fee_per_trade + np.abs(profits) * slippage_bps * 1e-4)
-    trade_times = merged.loc[matched_mask, "close_time"]
+    merged = merged.copy()
+    merged["is_match"] = merged["ticket"].notna()
+    matched_df = merged.loc[merged["is_match"]].copy()
+    profits = matched_df["profit"].astype(float)
+    net_profits = profits - (
+        fee_per_trade + profits.abs() * slippage_bps * 1e-4
+    )
+    trade_times = matched_df["close_time"]
+
+    tp = len(matched_df)
+    matches = tp
+    fp = len(predictions) - tp
+    fn = len(trades) - tp
+    total = tp + fp + fn
+    accuracy = tp / total if total else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
 
     gross_profit = float(profits[profits >= 0].sum())
     gross_loss = float(-profits[profits < 0].sum())
+    profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
+    expectancy = (gross_profit - gross_loss) / tp if tp else 0.0
+    expected_return = float(profits.mean()) if tp else 0.0
+    expected_return_net = float(net_profits.mean()) if tp else 0.0
+    downside = profits[profits < 0]
+    downside_net = net_profits[net_profits < 0]
+    downside_risk = float(-downside.mean()) if not downside.empty else 0.0
+    risk_reward = expected_return - downside_risk
 
-    profit_array = profits.to_numpy(dtype=float) if matches else np.array([], dtype=float)
-    net_profit_array = (
-        net_profits.to_numpy(dtype=float) if matches else np.array([], dtype=float)
-    )
+    profit_array = profits.to_numpy(dtype=float)
+    net_profit_array = net_profits.to_numpy(dtype=float)
 
     sharpe = sortino = 0.0
-    sharpe_net = sortino_net = 0.0
     if profit_array.size > 1:
         mean_profit = float(np.mean(profit_array))
         std_profit = float(np.std(profit_array, ddof=1))
         if std_profit > 0:
             sharpe = mean_profit / std_profit
-        downside = profit_array[profit_array < 0]
-        if downside.size:
-            downside_std = float(np.sqrt(np.mean(downside**2)))
+        downside_arr = profit_array[profit_array < 0]
+        if downside_arr.size:
+            downside_std = float(np.sqrt(np.mean(downside_arr**2)))
             if downside_std > 0:
                 sortino = mean_profit / downside_std
+
+    sharpe_net = sortino_net = 0.0
     if net_profit_array.size > 1:
         mean_net = float(np.mean(net_profit_array))
         std_net = float(np.std(net_profit_array, ddof=1))
@@ -368,65 +386,49 @@ def evaluate(
         merged["executed_model_idx"].dropna().astype(int).value_counts().to_dict()
     )
     matches_per_model = (
-        merged.loc[matched_mask, "executed_model_idx"]
-        .dropna()
-        .astype(int)
-        .value_counts()
-        .to_dict()
+        matched_df["executed_model_idx"].dropna().astype(int).value_counts().to_dict()
     )
 
     mask_probs = merged["probability"].notna()
-    y_true = matched_mask.astype(int)
-    y_score = merged["probability"].fillna(0.0)
-    y_true_list = y_true[mask_probs].tolist()
-    y_score_list = y_score[mask_probs].tolist()
-    y_true_list.extend([1] * len(unused_trades))
-    y_score_list.extend([0.0] * len(unused_trades))
+    prob_scores = merged.loc[mask_probs, "probability"].astype(float).fillna(0.0)
+    y_true_probs = merged.loc[mask_probs, "is_match"].astype(int)
+    extra_true = np.ones(len(unused_trades), dtype=int)
+    extra_scores = np.zeros(len(unused_trades), dtype=float)
+    y_true_vector = np.concatenate([y_true_probs.to_numpy(dtype=int), extra_true])
+    y_score_vector = np.concatenate([prob_scores.to_numpy(dtype=float), extra_scores])
 
-    bound_in = 0
-    bound_total = 0
+    bound_in = bound_total = 0
     if conformal_lower is not None and conformal_upper is not None:
+        within = prob_scores.between(conformal_lower, conformal_upper)
         bound_total = int(mask_probs.sum())
-        bound_in = int(
-            (
-                (merged.loc[mask_probs, "probability"] >= conformal_lower)
-                & (merged.loc[mask_probs, "probability"] <= conformal_upper)
-            ).sum()
-        )
+        bound_in = int(within.sum())
 
-    mu = merged.loc[matched_mask, "value"]
-    log_v = merged.loc[matched_mask, "log_variance"]
+    mu = matched_df["value"]
+    log_v = matched_df["log_variance"]
     valid = mu.notna() & log_v.notna()
-    var = np.exp(log_v[valid])
-    p = profits[valid]
-    nll_values = 0.5 * (np.log(2 * np.pi) + log_v[valid] + ((p - mu[valid]) ** 2) / var)
-    nd = NormalDist()
-    z = nd.inv_cdf(0.05)
-    c = nd.pdf(z) / 0.05
-    es_pred_values = mu[valid] - np.sqrt(var) * c
+    if valid.any():
+        mu_vals = mu[valid].to_numpy(dtype=float)
+        log_v_vals = log_v[valid].to_numpy(dtype=float)
+        profits_valid = profits[valid].to_numpy(dtype=float)
+        var = np.exp(log_v_vals)
+        nll_values = 0.5 * (
+            np.log(2 * np.pi) + log_v_vals + ((profits_valid - mu_vals) ** 2) / var
+        )
+        nd = NormalDist()
+        z = nd.inv_cdf(0.05)
+        c = nd.pdf(z) / 0.05
+        es_pred_values = mu_vals - np.sqrt(var) * c
+    else:
+        nll_values = np.array([], dtype=float)
+        es_pred_values = np.array([], dtype=float)
 
-    tp = matches
-    fp = len(predictions) - matches
-    fn = len(trades) - matches
-    total = tp + fp + fn
-    accuracy = tp / total if total else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
-    profit_factor = gross_profit / gross_loss if gross_loss else float("inf")
-    expectancy = (gross_profit - gross_loss) / matches if matches else 0.0
-    expected_return = float(profits.mean()) if matches else 0.0
-    expected_return_net = float(net_profits.mean()) if matches else 0.0
-    downside = profits[profits < 0]
-    downside_net = net_profits[net_profits < 0]
-    downside_risk = float(-downside.mean()) if len(downside) else 0.0
-    risk_reward = expected_return - downside_risk
-
-    if matches:
-        sorted_profits = np.sort(profits.values)
-        n_tail = max(1, int(np.ceil(len(sorted_profits) * 0.05)))
+    if tp:
+        sorted_profits = np.sort(profit_array)
+        n_tail = max(1, int(np.ceil(sorted_profits.size * 0.05)))
         tail = sorted_profits[:n_tail]
         cvar = float(tail.mean())
-        var_95 = float(np.quantile(profits, 0.05))
-        es_95 = float(profits[profits <= var_95].mean())
+        var_95 = float(np.quantile(profit_array, 0.05))
+        es_95 = float(profit_array[profit_array <= var_95].mean())
         var_95_net = float(np.quantile(net_profit_array, 0.05))
         net_tail = net_profit_array[net_profit_array <= var_95_net]
         es_95_net = float(net_tail.mean()) if net_tail.size else float(var_95_net)
@@ -434,36 +436,34 @@ def evaluate(
         cvar = var_95 = es_95 = 0.0
         var_95_net = es_95_net = 0.0
 
-    # sharpe and precision metrics are handled via evaluation hooks
-
     roc_auc = pr_auc = brier = ece = None
     reliability = {"prob_true": [], "prob_pred": []}
-    if y_score_list:
-        brier = brier_score_loss(y_true_list, y_score_list)
+    if y_score_vector.size:
+        brier = brier_score_loss(y_true_vector, y_score_vector)
         try:
             prob_true, prob_pred = calibration_curve(
-                y_true_list, y_score_list, n_bins=10
+                y_true_vector, y_score_vector, n_bins=10
             )
             reliability = {
                 "prob_true": prob_true.tolist(),
                 "prob_pred": prob_pred.tolist(),
             }
             bins = np.linspace(0.0, 1.0, 11)
-            binids = np.digitize(y_score_list, bins[1:-1], right=True)
+            binids = np.digitize(y_score_vector, bins[1:-1], right=True)
             bin_counts = np.bincount(binids, minlength=10)
             counts = bin_counts[bin_counts > 0]
             ece = float(
-                np.sum(np.abs(prob_true - prob_pred) * (counts / len(y_score_list)))
+                np.sum(np.abs(prob_true - prob_pred) * (counts / len(y_score_vector)))
             )
         except ValueError:
             pass
-        if len(set(y_true_list)) > 1:
-            roc_auc = roc_auc_score(y_true_list, y_score_list)
-            pr_auc = average_precision_score(y_true_list, y_score_list)
+        if len(np.unique(y_true_vector)) > 1:
+            roc_auc = roc_auc_score(y_true_vector, y_score_vector)
+            pr_auc = average_precision_score(y_true_vector, y_score_vector)
 
     conformal = bound_in / bound_total if bound_total else None
-    nll_mean = float(nll_values.mean()) if len(nll_values) else None
-    es_pred_mean = float(es_pred_values.mean()) if len(es_pred_values) else None
+    nll_mean = float(nll_values.mean()) if nll_values.size else None
+    es_pred_mean = float(es_pred_values.mean()) if es_pred_values.size else None
 
     stats: Dict[str, object] = {
         "matched_events": matches,

@@ -1212,6 +1212,8 @@ def _extract_features_impl(
 def _extract_features(
     df: pd.DataFrame | "pl.DataFrame" | "dd.DataFrame",
     feature_names: list[str],
+    *,
+    n_jobs: int | None = None,
     **kwargs,
 ) -> tuple[
     pd.DataFrame | "pl.DataFrame" | "dd.DataFrame",
@@ -1220,10 +1222,8 @@ def _extract_features(
     dict[str, list[list[float]]],
 ]:
     """Run enabled feature plugins and return augmented ``df`` and metadata."""
-    from .engineering import (  # late import to avoid circular deps
-        _CONFIG,
-        _FEATURE_RESULTS,
-    )
+    from . import engineering as fe  # late import to avoid circular deps
+    from .engineering import _CONFIG, _FEATURE_RESULTS
 
     plugin_overrides_raw = kwargs.pop("plugins", None)
     if plugin_overrides_raw is None:
@@ -1247,6 +1247,7 @@ def _extract_features(
         sample_kwargs = dict(kwargs)
         if plugin_overrides_list:
             sample_kwargs["plugins"] = list(plugin_overrides_list)
+        sample_kwargs.setdefault("n_jobs", n_jobs)
         sample_out, feature_names, embeddings, gnn_state = _extract_features(
             sample, list(feature_names), **sample_kwargs
         )
@@ -1255,6 +1256,7 @@ def _extract_features(
             apply_kwargs = dict(kwargs)
             if plugin_overrides_list:
                 apply_kwargs["plugins"] = list(plugin_overrides_list)
+            apply_kwargs.setdefault("n_jobs", n_jobs)
             out, _, _, _ = _extract_features(
                 pdf, list(feature_names), **apply_kwargs
             )
@@ -1288,10 +1290,14 @@ def _extract_features(
 
     if "technical" not in plugins and "technical" in FEATURE_REGISTRY:
         plugins.append("technical")
+
+    sequential_plugins = [name for name in plugins if name in base_plugins]
+    optional_plugins = [name for name in plugins if name not in sequential_plugins]
+
     embeddings: dict[str, list[float]] = {}
     gnn_state: dict[str, list[list[float]]] = {}
     calendar_executed = False
-    for name in plugins:
+    for name in sequential_plugins:
         func = FEATURE_REGISTRY.get(name)
         if func is None:
             logger.warning("Feature plugin %s not found", name)
@@ -1304,6 +1310,18 @@ def _extract_features(
         gnn_state.update(gnn or {})
         if name == "calendar":
             calendar_executed = True
+
+    if optional_plugins:
+        df, feature_names, emb_extra, gnn_extra = fe._apply_parallel_plugins(
+            df,
+            feature_names,
+            optional_plugins,
+            kwargs=kwargs,
+            n_jobs=n_jobs,
+            calendar_executed=calendar_executed,
+        )
+        embeddings.update(emb_extra)
+        gnn_state.update(gnn_extra)
     if embeddings:
         emb_dim = len(next(iter(embeddings.values())))
         for i in range(emb_dim):
