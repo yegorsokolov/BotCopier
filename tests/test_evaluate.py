@@ -5,6 +5,11 @@ import sys
 
 import pytest
 
+pytest.importorskip("numpy")
+import numpy as np
+
+from botcopier.scripts.evaluation import search_decision_threshold
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.evaluation import evaluate
 
@@ -81,6 +86,30 @@ def test_evaluate(tmp_path: Path):
     assert stats["pr_auc"] == 1.0
     assert stats["brier_score"] == pytest.approx(0.01)
     assert stats["reliability_curve"]["prob_true"]
+
+
+def test_search_decision_threshold_selects_best_profit() -> None:
+    y = np.array([1, 0, 1, 0], dtype=float)
+    probas = np.array([0.9, 0.6, 0.4, 0.2], dtype=float)
+    profits = np.array([2.0, -3.0, 1.5, -0.5], dtype=float)
+
+    threshold, metrics = search_decision_threshold(
+        y, probas, profits, objective="profit"
+    )
+
+    assert threshold == pytest.approx(0.9)
+    assert metrics["threshold_objective"] == "profit"
+    assert metrics["profit"] == pytest.approx(2.0)
+    assert metrics["max_drawdown"] == pytest.approx(0.0)
+
+
+def test_search_decision_threshold_respects_risk_limits() -> None:
+    y = np.array([1, 0, 1], dtype=float)
+    probas = np.ones_like(y) * 0.9
+    profits = np.array([-5.0, -4.0, -3.0], dtype=float)
+
+    with pytest.raises(ValueError):
+        search_decision_threshold(y, probas, profits, max_drawdown=1.0)
 
 
 def test_direction_mapping(tmp_path: Path):

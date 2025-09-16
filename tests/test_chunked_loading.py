@@ -1,6 +1,9 @@
 import json
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("pandas")
 import pandas as pd
 
 from botcopier.data.loading import _load_logs
@@ -54,3 +57,23 @@ def test_load_logs_memory_map_large_file(tmp_path):
     assert not isinstance(chunks, pd.DataFrame)
     sizes = [len(c) for c in chunks]
     assert sizes == [10]
+
+
+def test_chunked_loader_produces_meta_labels(tmp_path):
+    csv = tmp_path / "trades_raw.csv"
+    df = pd.DataFrame(
+        {
+            "label": [1, 0, 1, 0],
+            "price": [1.00, 0.95, 1.10, 1.05],
+            "spread": [0.02, 0.03, 0.02, 0.03],
+            "hour": [0, 1, 2, 3],
+        }
+    )
+    df.to_csv(csv, index=False)
+
+    chunks, _, _ = _load_logs(tmp_path, lite_mode=False, chunk_size=2)
+    chunk_list = list(chunks)
+    assert chunk_list
+    required_cols = {"take_profit", "stop_loss", "horizon", "tp_time", "sl_time", "meta_label"}
+    assert all(required_cols.issubset(chunk.columns) for chunk in chunk_list)
+    assert any(chunk["meta_label"].notna().any() for chunk in chunk_list)
