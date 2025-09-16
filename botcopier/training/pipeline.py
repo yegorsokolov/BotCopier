@@ -92,7 +92,10 @@ from botcopier.features.engineering import (
 )
 from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
 from botcopier.models.schema import FeatureMetadata, ModelParams
-from botcopier.scripts.evaluation import _classification_metrics
+from botcopier.scripts.evaluation import (
+    _classification_metrics,
+    search_decision_threshold,
+)
 from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.portfolio import hierarchical_risk_parity
 from botcopier.scripts.splitters import PurgedWalkForward
@@ -1268,13 +1271,6 @@ def train(
         best_params: dict[str, object] | None = None
         best_fold_metrics: list[dict[str, object]] = []
         metrics: dict[str, object] = {}
-        objective_metric_map = {
-            "profit": "profit",
-            "net_profit": "profit",
-            "sharpe": "sharpe_ratio",
-            "sortino": "sortino_ratio",
-        }
-        objective_key = objective_metric_map.get(threshold_objective, "profit")
         def _evaluate_thresholds_for_fold(
             fold_preds: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]]
         ) -> tuple[
@@ -1286,68 +1282,33 @@ def train(
             y_all = np.concatenate([fp[1] for fp in fold_preds])
             prob_all = np.concatenate([fp[2] for fp in fold_preds])
             profit_all = np.concatenate([fp[3] for fp in fold_preds])
-            if not np.any(np.abs(profit_all) > 0):
-                candidates = np.asarray([0.5], dtype=float)
-            else:
-                base_grid = (
-                    threshold_grid_values
-                    if threshold_grid_values is not None
-                    else np.asarray([], dtype=float)
+            try:
+                best_threshold, best_metrics = search_decision_threshold(
+                    y_all,
+                    prob_all,
+                    profit_all,
+                    objective=threshold_objective,
+                    threshold_grid=threshold_grid_values,
+                    metric_names=metric_names,
+                    max_drawdown=max_drawdown,
+                    var_limit=var_limit,
                 )
-                finite_probs = prob_all[np.isfinite(prob_all)]
-                candidate = np.concatenate(
-                    [
-                        base_grid,
-                        finite_probs,
-                        np.asarray([0.0, 0.5, 1.0], dtype=float),
-                    ]
-                )
-                candidate = candidate[(candidate >= 0.0) & (candidate <= 1.0)]
-                if candidate.size == 0:
-                    candidates = np.asarray([0.5], dtype=float)
-                else:
-                    candidates = np.unique(candidate)
-                    if candidates.size > 512:
-                        idx = np.linspace(0, candidates.size - 1, 512, dtype=int)
-                        candidates = candidates[idx]
-            best_metrics: dict[str, object] | None = None
-            best_threshold = float(candidates[0])
-            best_obj = -np.inf
-            for thr in candidates:
-                returns_all = profit_all * (prob_all >= thr)
-                metrics_all = _classification_metrics_cached(
-                    y_all, prob_all, returns_all, selected=metric_names
-                )
-                metrics_all["max_drawdown"] = _max_drawdown(returns_all)
-                metrics_all["var_95"] = _var_95(returns_all)
-                metrics_all["threshold"] = float(thr)
-                metrics_all["threshold_objective"] = threshold_objective
-                obj_val = metrics_all.get(objective_key)
-                if isinstance(obj_val, (int, float)) and not np.isnan(obj_val):
-                    obj_score = float(obj_val)
-                else:
-                    obj_score = -np.inf
-                if obj_score > best_obj or (
-                    np.isfinite(obj_score)
-                    and np.isclose(obj_score, best_obj)
-                    and float(thr) < best_threshold
-                ):
-                    best_obj = obj_score
-                    best_threshold = float(thr)
-                    best_metrics = metrics_all
-            if best_metrics is None:
-                best_metrics = {
-                    "threshold": best_threshold,
-                    "threshold_objective": threshold_objective,
-                }
+            except ValueError:
+                return 0.5, {}, []
             fold_metrics: list[tuple[int, dict[str, object]]] = []
             for fold_idx, y_val, prob_val, prof_val in fold_preds:
                 returns_fold = prof_val * (prob_val >= best_threshold)
                 metrics_fold = _classification_metrics_cached(
-                    y_val, prob_val, returns_fold, selected=metric_names
+                    y_val,
+                    prob_val,
+                    returns_fold,
+                    selected=metric_names,
+                    threshold=best_threshold,
                 )
-                metrics_fold["max_drawdown"] = _max_drawdown(returns_fold)
-                metrics_fold["var_95"] = _var_95(returns_fold)
+                metrics_fold.setdefault(
+                    "max_drawdown", _max_drawdown(returns_fold)
+                )
+                metrics_fold.setdefault("var_95", _var_95(returns_fold))
                 metrics_fold["threshold"] = float(best_threshold)
                 metrics_fold["threshold_objective"] = threshold_objective
                 fold_metrics.append((fold_idx, metrics_fold))
@@ -1482,11 +1443,13 @@ def train(
                     for k, v in metrics_dict.items():
                         if isinstance(v, (int, float)) and not np.isnan(v):
                             mlflow.log_metric(f"fold{fold_idx + 1}_{k}", float(v))
-            agg = {
-                k: float(
-                    np.nanmean(
-                        [
-                            m[k]
+        if not metrics:
+            raise ValueError("No decision threshold satisfied risk constraints")
+        agg = {
+            k: float(
+                np.nanmean(
+                    [
+                        m[k]
                             for m in fold_metrics
                             if isinstance(m.get(k), (int, float))
                         ]
@@ -1506,6 +1469,22 @@ def train(
             ]:
                 if key in combined_metrics and combined_metrics[key] is not None:
                     agg[key] = combined_metrics[key]
+            if max_drawdown is not None and agg.get("max_drawdown", 0.0) > max_drawdown:
+                logger.info(
+                    "Skipping params %s due to max drawdown %.6f exceeding limit %.6f",
+                    params,
+                    agg.get("max_drawdown", 0.0),
+                    max_drawdown,
+                )
+                continue
+            if var_limit is not None and agg.get("var_95", 0.0) > var_limit:
+                logger.info(
+                    "Skipping params %s due to var_95 %.6f exceeding limit %.6f",
+                    params,
+                    agg.get("var_95", 0.0),
+                    var_limit,
+                )
+                continue
             score = agg.get("roc_auc", float("nan"))
             if np.isnan(score):
                 score = agg.get("accuracy", 0.0)
@@ -1528,6 +1507,10 @@ def train(
             eval_prof.dump_stats(str(profiles_dir / "evaluation.prof"))
         metrics.setdefault("threshold", selected_threshold)
         metrics.setdefault("threshold_objective", threshold_objective)
+        if max_drawdown is not None and metrics.get("max_drawdown", 0.0) > max_drawdown:
+            raise ValueError("Selected model exceeds max_drawdown limit")
+        if var_limit is not None and metrics.get("var_95", 0.0) > var_limit:
+            raise ValueError("Selected model exceeds var_95 limit")
         metrics["ood_rate"] = ood_rate
         min_acc = float(kwargs.get("min_accuracy", 0.0))
         min_profit = float(kwargs.get("min_profit", -np.inf))

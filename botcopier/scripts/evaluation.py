@@ -533,15 +533,23 @@ def evaluate(
 
 @register_metric("accuracy")
 def _metric_accuracy(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
-    preds = (probas >= 0.5).astype(int)
+    preds = (probas >= threshold).astype(int)
     return float(accuracy_score(y_true, preds))
 
 
 @register_metric("roc_auc")
 def _metric_roc_auc(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float | None:
     return (
         float(roc_auc_score(y_true, probas)) if len(set(y_true.tolist())) > 1 else None
@@ -550,7 +558,11 @@ def _metric_roc_auc(
 
 @register_metric("pr_auc")
 def _metric_pr_auc(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float | None:
     return (
         float(average_precision_score(y_true, probas))
@@ -561,14 +573,22 @@ def _metric_pr_auc(
 
 @register_metric("brier_score")
 def _metric_brier(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
     return float(brier_score_loss(y_true, probas))
 
 
 @register_metric("reliability_curve")
 def _metric_reliability(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> Dict[str, List[float]]:
     try:
         prob_true, prob_pred = calibration_curve(y_true, probas, n_bins=10)
@@ -579,7 +599,11 @@ def _metric_reliability(
 
 @register_metric("ece")
 def _metric_ece(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
     """Expected calibration error."""
     bins = np.linspace(0.0, 1.0, 11)
@@ -595,9 +619,13 @@ def _metric_ece(
 
 
 def _returns(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None,
+    *,
+    threshold: float = 0.5,
 ) -> np.ndarray:
-    preds = (probas >= 0.5).astype(int)
+    preds = (probas >= threshold).astype(int)
     if profits is None:
         return np.where(preds == y_true, 1.0, -1.0)
     return profits
@@ -605,9 +633,13 @@ def _returns(
 
 @register_metric("sharpe_ratio")
 def _metric_sharpe(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
-    returns = _returns(y_true, probas, profits)
+    returns = _returns(y_true, probas, profits, threshold=threshold)
     if returns.size > 1:
         mean = float(np.mean(returns))
         std = float(np.std(returns, ddof=1))
@@ -618,9 +650,13 @@ def _metric_sharpe(
 
 @register_metric("sortino_ratio")
 def _metric_sortino(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
-    returns = _returns(y_true, probas, profits)
+    returns = _returns(y_true, probas, profits, threshold=threshold)
     if returns.size > 0:
         mean = float(np.mean(returns))
         downside = returns[returns < 0]
@@ -633,25 +669,37 @@ def _metric_sortino(
 
 @register_metric("max_drawdown")
 def _metric_drawdown(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
-    returns = _returns(y_true, probas, profits).tolist()
+    returns = _returns(y_true, probas, profits, threshold=threshold).tolist()
     return float(_abs_drawdown(returns))
 
 
 @register_metric("var_95")
 def _metric_var95(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
-    returns = _returns(y_true, probas, profits).tolist()
+    returns = _returns(y_true, probas, profits, threshold=threshold).tolist()
     return float(_var_95(returns))
 
 
 @register_metric("profit")
 def _metric_profit(
-    y_true: np.ndarray, probas: np.ndarray, profits: np.ndarray | None = None
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> float:
-    returns = _returns(y_true, probas, profits)
+    returns = _returns(y_true, probas, profits, threshold=threshold)
     return float(np.sum(returns))
 
 
@@ -660,6 +708,8 @@ def _classification_metrics(
     probas: np.ndarray,
     profits: np.ndarray | None = None,
     selected: Sequence[str] | None = None,
+    *,
+    threshold: float = 0.5,
 ) -> Dict[str, object]:
     """Compute classification and calibration metrics."""
 
@@ -667,6 +717,8 @@ def _classification_metrics(
     results: Dict[str, object] = {}
     for name, fn in get_metrics(selected).items():
         try:
+            results[name] = fn(y_true, probas, profits, threshold=threshold)
+        except TypeError:
             results[name] = fn(y_true, probas, profits)
         except (
             Exception
@@ -677,6 +729,156 @@ def _classification_metrics(
     return results
 
 
+def _candidate_thresholds(
+    probas: np.ndarray, threshold_grid: Sequence[float] | None
+) -> np.ndarray:
+    """Return sorted unique decision threshold candidates."""
+
+    if threshold_grid is None:
+        grid = np.asarray([], dtype=float)
+    else:
+        try:
+            grid = np.asarray(list(threshold_grid), dtype=float)
+        except TypeError:
+            grid = np.asarray([float(threshold_grid)], dtype=float)
+    finite_probs = probas[np.isfinite(probas)]
+    candidates = np.concatenate(
+        [grid, finite_probs, np.asarray([0.0, 0.5, 1.0], dtype=float)]
+    )
+    candidates = candidates[(candidates >= 0.0) & (candidates <= 1.0)]
+    if candidates.size == 0:
+        return np.asarray([0.5], dtype=float)
+    uniq = np.unique(candidates)
+    if uniq.size > 512:
+        idx = np.linspace(0, uniq.size - 1, 512, dtype=int)
+        uniq = uniq[idx]
+    return uniq
+
+
+def search_decision_threshold(
+    y_true: np.ndarray,
+    probas: np.ndarray,
+    profits: np.ndarray | None,
+    *,
+    objective: str = "profit",
+    threshold_grid: Sequence[float] | None = None,
+    metric_names: Sequence[str] | None = None,
+    max_drawdown: float | None = None,
+    var_limit: float | None = None,
+) -> tuple[float, Dict[str, object]]:
+    """Search for a decision threshold that maximises ``objective``.
+
+    Parameters
+    ----------
+    y_true:
+        Ground truth binary labels.
+    probas:
+        Predicted probabilities for the positive class.
+    profits:
+        Per-sample returns used for financial metrics.  If ``None`` the
+        threshold search operates on a synthetic +1/-1 payoff based on
+        classification correctness.
+    objective:
+        Optimisation objective.  Supported values: ``profit`` (default),
+        ``net_profit`` (alias of ``profit``), ``sharpe`` and ``sortino``.
+    threshold_grid:
+        Optional iterable of thresholds to evaluate in addition to the values
+        present in ``probas``.
+    metric_names:
+        Optional sequence restricting the computed metrics.
+    max_drawdown, var_limit:
+        Risk limits.  Thresholds producing metrics that breach these limits are
+        discarded.  If all thresholds breach the limits a ``ValueError`` is
+        raised.
+
+    Returns
+    -------
+    tuple
+        ``(best_threshold, metrics)`` for the selected threshold.
+    """
+
+    if np is None:  # pragma: no cover - optional dependency guard
+        raise ImportError("numpy is required for threshold search")
+
+    y_true = np.asarray(y_true, dtype=float)
+    probas = np.asarray(probas, dtype=float)
+    if profits is None:
+        profits = np.where(y_true == 1.0, 1.0, -1.0)
+    profits = np.asarray(profits, dtype=float)
+
+    candidates = _candidate_thresholds(probas, threshold_grid)
+    objective_metric_map = {
+        "profit": "profit",
+        "net_profit": "profit",
+        "sharpe": "sharpe_ratio",
+        "sortino": "sortino_ratio",
+    }
+    metric_key = objective_metric_map.get(objective, objective)
+    best_threshold = float(candidates[0])
+    best_metrics: Dict[str, object] | None = None
+    best_score = -np.inf
+
+    for thr in candidates:
+        returns = profits * (probas >= thr)
+        metrics = _classification_metrics(
+            y_true,
+            probas,
+            returns,
+            selected=metric_names,
+            threshold=float(thr),
+        )
+        metrics.setdefault("max_drawdown", float(_abs_drawdown(returns.tolist())))
+        metrics.setdefault("var_95", float(_var_95(returns.tolist())))
+        metrics["threshold"] = float(thr)
+        metrics["threshold_objective"] = objective
+
+        if max_drawdown is not None and metrics["max_drawdown"] > max_drawdown:
+            continue
+        if var_limit is not None and metrics["var_95"] > var_limit:
+            continue
+
+        obj_val = metrics.get(metric_key)
+        if isinstance(obj_val, (int, float)) and not math.isnan(obj_val):
+            score = float(obj_val)
+        else:
+            score = -np.inf
+
+        if score > best_score or (
+            np.isfinite(score)
+            and np.isclose(score, best_score)
+            and float(thr) < best_threshold
+        ):
+            best_score = score
+            best_threshold = float(thr)
+            best_metrics = metrics
+
+    if best_metrics is None:
+        limit_desc = []
+        if max_drawdown is not None:
+            limit_desc.append("max_drawdown")
+        if var_limit is not None:
+            limit_desc.append("var_95")
+        if limit_desc:
+            raise ValueError(
+                "No decision threshold satisfies risk limits: "
+                + ", ".join(limit_desc)
+            )
+        fallback = float(candidates[0])
+        returns = profits * (probas >= fallback)
+        best_metrics = _classification_metrics(
+            y_true,
+            probas,
+            returns,
+            selected=metric_names,
+            threshold=fallback,
+        )
+        best_metrics.setdefault("max_drawdown", float(_abs_drawdown(returns.tolist())))
+        best_metrics.setdefault("var_95", float(_var_95(returns.tolist())))
+        best_metrics["threshold"] = fallback
+        best_metrics["threshold_objective"] = objective
+        best_threshold = fallback
+
+    return best_threshold, best_metrics
 def bootstrap_metrics(
     y: np.ndarray,
     probs: np.ndarray,
