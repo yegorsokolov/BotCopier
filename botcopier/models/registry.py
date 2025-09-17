@@ -669,7 +669,12 @@ if _HAS_TORCH:
 
     from torch.utils.data import DataLoader, TensorDataset
 
-    from .deep import MixtureOfExperts, TCNClassifier, TabTransformer
+    from .deep import (
+        CrossModalTransformer,
+        MixtureOfExperts,
+        TCNClassifier,
+        TabTransformer,
+    )
 
     def _sequence_stats(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         flat = X.reshape(-1, X.shape[-1])
@@ -782,6 +787,114 @@ if _HAS_TORCH:
             if val_loss + 1e-6 < best_loss:
                 best_loss = val_loss
                 best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                patience_ctr = 0
+            else:
+                patience_ctr += 1
+                if patience_ctr >= max(1, patience):
+                    break
+        model.load_state_dict(best_state)
+        model.eval()
+        return best_state
+
+    def _train_crossmodal_model(
+        model: torch.nn.Module,
+        price_seq: np.ndarray,
+        news_seq: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None,
+        *,
+        epochs: int,
+        batch_size: int,
+        lr: float,
+        weight_decay: float,
+        grad_clip: float,
+        patience: int,
+        device: torch.device,
+        mixed_precision: bool,
+    ) -> dict[str, torch.Tensor]:
+        if price_seq.size == 0 or news_seq.size == 0:
+            raise ValueError("Empty training data for cross-modal model")
+        if price_seq.shape[0] != news_seq.shape[0]:
+            raise ValueError("Price and news sequences must align")
+        model.to(device)
+        price_t = torch.as_tensor(price_seq, dtype=torch.float32, device=device)
+        news_t = torch.as_tensor(news_seq, dtype=torch.float32, device=device)
+        y_t = torch.as_tensor(y, dtype=torch.float32, device=device)
+        if sample_weight is not None:
+            w_np = np.asarray(sample_weight, dtype=float)
+        else:
+            w_np = np.ones_like(y, dtype=float)
+        w_t = torch.as_tensor(w_np, dtype=torch.float32, device=device)
+        n_samples = price_t.shape[0]
+        if n_samples == 1:
+            price_train, price_val = price_t, price_t[:0]
+            news_train, news_val = news_t, news_t[:0]
+            y_train, y_val = y_t, y_t[:0]
+            w_train, w_val = w_t, w_t[:0]
+        else:
+            val_size = max(1, int(n_samples * 0.2))
+            if val_size >= n_samples:
+                val_size = n_samples - 1
+            split = n_samples - val_size
+            price_train, price_val = price_t[:split], price_t[split:]
+            news_train, news_val = news_t[:split], news_t[split:]
+            y_train, y_val = y_t[:split], y_t[split:]
+            w_train, w_val = w_t[:split], w_t[split:]
+        dataset = TensorDataset(price_train, news_train, y_train, w_train)
+        loader = DataLoader(
+            dataset,
+            batch_size=min(batch_size, len(dataset)) or 1,
+            shuffle=True,
+        )
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
+        amp_enabled = mixed_precision and device.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+
+        def _autocast():
+            if device.type == "cuda":
+                return torch.cuda.amp.autocast(enabled=amp_enabled)
+            return nullcontext()
+
+        best_loss = float("inf")
+        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        patience_ctr = 0
+        for _ in range(max(1, epochs)):
+            model.train()
+            for price_batch, news_batch, y_batch, w_batch in loader:
+                opt.zero_grad(set_to_none=True)
+                with _autocast():
+                    logits = model(price_batch, news_batch)
+                    batch_loss = loss_fn(logits, y_batch)
+                    denom = w_batch.sum()
+                    if denom.item() <= 0:
+                        loss = batch_loss.mean()
+                    else:
+                        loss = (batch_loss * w_batch).sum() / denom
+                scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(opt)
+                scaler.update()
+            model.eval()
+            with torch.no_grad():
+                if price_val.numel() == 0:
+                    val_loss = float(loss.item())
+                else:
+                    with _autocast():
+                        logits = model(price_val, news_val)
+                        val_raw = loss_fn(logits, y_val)
+                    denom = w_val.sum()
+                    if denom.item() <= 0:
+                        val_loss = float(val_raw.mean().item())
+                    else:
+                        val_loss = float((val_raw * w_val).sum().item() / denom.item())
+            if val_loss + 1e-6 < best_loss:
+                best_loss = val_loss
+                best_state = {
+                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                }
                 patience_ctr = 0
             else:
                 patience_ctr += 1
@@ -980,9 +1093,145 @@ if _HAS_TORCH:
         }
         return meta, _predict
 
+    def fit_crossmodal_transformer(
+        data: tuple[np.ndarray, np.ndarray] | list[np.ndarray],
+        y: np.ndarray,
+        *,
+        sample_weight: np.ndarray | None = None,
+        epochs: int = 50,
+        batch_size: int = 64,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
+        dropout: float = 0.1,
+        dim: int = 64,
+        depth: int = 2,
+        heads: int = 4,
+        ff_dim: int = 128,
+        patience: int = 5,
+        grad_clip: float = 1.0,
+        device: str = "cpu",
+        mixed_precision: bool = True,
+    ) -> tuple[dict[str, object], Callable[[tuple[np.ndarray, np.ndarray]], np.ndarray]]:
+        if not isinstance(data, (tuple, list)) or len(data) != 2:
+            raise ValueError("Cross-modal model expects price and news sequences")
+        price_seq = np.asarray(data[0], dtype=float)
+        news_seq = np.asarray(data[1], dtype=float)
+        if price_seq.ndim == 2:
+            price_seq = price_seq[:, np.newaxis, :]
+        if news_seq.ndim == 2:
+            news_seq = news_seq[:, np.newaxis, :]
+        if price_seq.shape[0] != news_seq.shape[0]:
+            raise ValueError("Price and news sequences must align")
+
+        price_clip_low, price_clip_high, price_mean, price_std = _sequence_stats(price_seq)
+        news_clip_low, news_clip_high, news_mean, news_std = _sequence_stats(news_seq)
+        price_norm = _normalise_windows(price_seq, price_clip_low, price_clip_high, price_mean, price_std)
+        news_norm = _normalise_windows(news_seq, news_clip_low, news_clip_high, news_mean, news_std)
+
+        price_window = price_norm.shape[1]
+        news_window = news_norm.shape[1]
+        price_features = price_norm.shape[-1]
+        news_features = news_norm.shape[-1]
+
+        dev = torch.device(device)
+        model = CrossModalTransformer(
+            price_features,
+            news_features,
+            price_window,
+            news_window,
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        state = _train_crossmodal_model(
+            model,
+            price_norm,
+            news_norm,
+            np.asarray(y, dtype=float),
+            sample_weight,
+            epochs=epochs,
+            batch_size=batch_size,
+            lr=lr,
+            weight_decay=weight_decay,
+            grad_clip=grad_clip,
+            patience=patience,
+            device=dev,
+            mixed_precision=mixed_precision,
+        )
+        model.load_state_dict(state)
+        model.to(dev)
+
+        price_std_safe = np.where(price_std == 0, 1.0, price_std)
+        news_std_safe = np.where(news_std == 0, 1.0, news_std)
+
+        def _predict(inputs: tuple[np.ndarray, np.ndarray] | list[np.ndarray]) -> np.ndarray:
+            if not isinstance(inputs, (tuple, list)) or len(inputs) != 2:
+                raise ValueError("Cross-modal predictor expects price and news inputs")
+            price_arr = np.asarray(inputs[0], dtype=float)
+            news_arr = np.asarray(inputs[1], dtype=float)
+            if price_arr.ndim == 2:
+                price_arr = price_arr[:, np.newaxis, :]
+            if news_arr.ndim == 2:
+                news_arr = news_arr[:, np.newaxis, :]
+            price_norm_local = (
+                np.clip(price_arr, price_clip_low, price_clip_high) - price_mean
+            ) / price_std_safe
+            news_norm_local = (
+                np.clip(news_arr, news_clip_low, news_clip_high) - news_mean
+            ) / news_std_safe
+            with torch.no_grad():
+                price_t = torch.as_tensor(price_norm_local, dtype=torch.float32, device=dev)
+                news_t = torch.as_tensor(news_norm_local, dtype=torch.float32, device=dev)
+                logits = model(price_t, news_t)
+                return torch.sigmoid(logits).cpu().numpy()
+
+        _predict.model = model  # type: ignore[attr-defined]
+        _predict.device = dev  # type: ignore[attr-defined]
+
+        meta = {
+            "state_dict": {k: v.numpy().tolist() for k, v in state.items()},
+            "clip_low": price_clip_low.tolist(),
+            "clip_high": price_clip_high.tolist(),
+            "mean": price_mean.tolist(),
+            "std": price_std.tolist(),
+            "feature_mean": price_mean.tolist(),
+            "feature_std": price_std.tolist(),
+            "news_clip_low": news_clip_low.tolist(),
+            "news_clip_high": news_clip_high.tolist(),
+            "news_mean": news_mean.tolist(),
+            "news_std": news_std.tolist(),
+            "news_window": int(news_window),
+            "window": int(price_window),
+            "config": {
+                "dim": dim,
+                "depth": depth,
+                "heads": heads,
+                "ff_dim": ff_dim,
+                "dropout": dropout,
+            },
+            "architecture": {
+                "type": "CrossModalTransformer",
+                "price_features": int(price_features),
+                "price_window": int(price_window),
+                "news_features": int(news_features),
+                "news_window": int(news_window),
+                "dim": int(dim),
+                "depth": int(depth),
+                "heads": int(heads),
+                "ff_dim": int(ff_dim),
+                "dropout": float(dropout),
+            },
+            "sequence_order": list(range(price_window)),
+            "news_sequence_order": list(range(news_window)),
+        }
+        return meta, _predict
+
     register_model("tabtransformer", fit_tab_transformer)
     register_model("tcn", fit_temporal_cnn)
     register_model("transformer", fit_tab_transformer)
+    register_model("crossmodal", fit_crossmodal_transformer)
 else:  # pragma: no cover - torch optional
 
     class TabTransformer:  # type: ignore[misc]
@@ -999,6 +1248,9 @@ else:  # pragma: no cover - torch optional
     def fit_temporal_cnn(*_, **__):  # pragma: no cover - trivial
         raise ImportError("PyTorch is required for TemporalConvNet")
 
+    def fit_crossmodal_transformer(*_, **__):  # pragma: no cover - trivial
+        raise ImportError("PyTorch is required for CrossModalTransformer")
+
 
 __all__ = [
     "TabTransformer",
@@ -1006,6 +1258,7 @@ __all__ = [
     "MixtureOfExperts",
     "fit_tab_transformer",
     "fit_temporal_cnn",
+    "fit_crossmodal_transformer",
     "register_model",
     "get_model",
     "MODEL_REGISTRY",

@@ -157,7 +157,7 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn"}
+SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn", "crossmodal"}
 
 
 def _compute_time_decay_weights(
@@ -259,6 +259,35 @@ def _summarise_weights(weights: np.ndarray) -> dict[str, float]:
         "mean": float(np.mean(arr)),
         "std": float(np.std(arr)),
     }
+
+
+def _load_news_embeddings(data_dir: Path) -> tuple[pd.DataFrame | None, dict[str, str]]:
+    """Load optional news embedding sequences from ``data_dir``."""
+
+    base = data_dir if data_dir.is_dir() else data_dir.parent
+    if base is None:
+        return None, {}
+    candidates = [
+        base / "news_embeddings.parquet",
+        base / "news_embeddings.csv",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            if path.suffix == ".parquet":
+                news_df = pd.read_parquet(path)
+            else:
+                news_df = pd.read_csv(path)
+        except Exception:  # pragma: no cover - optional dependency/io
+            logger.exception("Failed to load news embeddings from %s", path)
+            continue
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError:
+            digest = ""
+        return news_df, {str(path.resolve()): digest}
+    return None, {}
 
 
 def _build_sample_weights(
@@ -905,6 +934,19 @@ def train(
             "patience",
             "mixed_precision",
         },
+        "crossmodal": {
+            "epochs",
+            "batch_size",
+            "lr",
+            "weight_decay",
+            "dropout",
+            "dim",
+            "depth",
+            "heads",
+            "ff_dim",
+            "patience",
+            "mixed_precision",
+        },
         "moe": {
             "epochs",
             "lr",
@@ -1052,6 +1094,9 @@ def train(
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
     with tracer.start_as_current_span("data_load"):
         logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
+    news_embeddings_df, news_hashes = _load_news_embeddings(data_dir)
+    if news_hashes:
+        data_hashes.update({k: v for k, v in news_hashes.items() if v is not None})
     logger.info("Training data hashes: %s", data_hashes)
 
     profiles_dir = out_dir / "profiles"
@@ -1097,6 +1142,12 @@ def train(
     fs_repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
     span_ctx = tracer.start_as_current_span("feature_extraction")
     span_ctx.__enter__()
+    news_window_param = int(kwargs.get("news_window", kwargs.get("window", 5) or 5))
+    news_window_param = max(1, news_window_param)
+    news_horizon_seconds = float(kwargs.get("news_horizon_seconds", 3600.0))
+    news_seq_list: list[np.ndarray] = []
+    news_meta: dict[str, object] | None = None
+    news_sequences: np.ndarray | None = None
     y_list: list[np.ndarray] = []
     X_list: list[np.ndarray] = []
     profit_list: list[np.ndarray] = []
@@ -1124,8 +1175,29 @@ def train(
                 feature_names = list(FEATURE_COLUMNS)
             else:
                 chunk, feature_names, _, _ = _extract_features(
-                    chunk, feature_names, n_jobs=n_jobs, model_json=model_json
+                    chunk,
+                    feature_names,
+                    n_jobs=n_jobs,
+                    model_json=model_json,
+                    news_embeddings=news_embeddings_df,
+                    news_embedding_window=news_window_param,
+                    news_embedding_horizon=news_horizon_seconds,
                 )
+            meta_entry = technical_features._FEATURE_METADATA.get("__news_embeddings__")
+            if meta_entry is not None:
+                seq_arr = np.array(meta_entry.get("sequences", []), dtype=float, copy=True)
+                if seq_arr.size:
+                    news_seq_list.append(seq_arr)
+                    if news_meta is None:
+                        news_meta = {
+                            key: meta_entry.get(key)
+                            for key in (
+                                "window",
+                                "dimension",
+                                "columns",
+                                "horizon_seconds",
+                            )
+                        }
             FeatureSchema.validate(chunk[feature_names], lazy=True)
             if label_col is None:
                 label_col = next(
@@ -1178,8 +1250,29 @@ def train(
             feature_names = list(FEATURE_COLUMNS)
         else:
             df, feature_names, _, _ = _extract_features(
-                df, feature_names, n_jobs=n_jobs, model_json=model_json
+                df,
+                feature_names,
+                n_jobs=n_jobs,
+                model_json=model_json,
+                news_embeddings=news_embeddings_df,
+                news_embedding_window=news_window_param,
+                news_embedding_horizon=news_horizon_seconds,
             )
+        meta_entry = technical_features._FEATURE_METADATA.get("__news_embeddings__")
+        if meta_entry is not None:
+            seq_arr = np.array(meta_entry.get("sequences", []), dtype=float, copy=True)
+            if seq_arr.size:
+                news_seq_list.append(seq_arr)
+                if news_meta is None:
+                    news_meta = {
+                        key: meta_entry.get(key)
+                        for key in (
+                            "window",
+                            "dimension",
+                            "columns",
+                            "horizon_seconds",
+                        )
+                    }
         FeatureSchema.validate(df[feature_names], lazy=True)
         if _HAS_DASK and isinstance(df, dd.DataFrame):
             df = df.compute()
@@ -1297,6 +1390,11 @@ def train(
                 returns_df = None
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
+
+    if news_seq_list:
+        news_sequences = np.concatenate(news_seq_list, axis=0)
+    else:
+        news_sequences = None
 
     if profile and feature_prof is not None:
         feature_prof.disable()
@@ -1427,6 +1525,14 @@ def train(
 
     window_length = max(1, int(kwargs.get("window", 1)))
     sequence_data: np.ndarray | None = None
+    news_sequence_data: np.ndarray | None = None
+    if model_type == "crossmodal":
+        if news_sequences is None:
+            raise ValueError(
+                "news embeddings must be provided when using model_type='crossmodal'"
+            )
+        if news_sequences.shape[0] != X.shape[0]:
+            raise ValueError("news embeddings are not aligned with feature rows")
     if sequence_model:
         if X.shape[0] < window_length:
             raise ValueError("Not enough samples for the requested window length")
@@ -1443,8 +1549,11 @@ def train(
             R = R[window_length - 1 :]
         if returns_df is not None:
             returns_df = returns_df.iloc[window_length - 1 :].reset_index(drop=True)
+        if news_sequences is not None:
+            news_sequence_data = news_sequences[window_length - 1 :]
     else:
         sequence_data = None
+        news_sequence_data = None
 
     sample_weight = _normalise_weights(sample_weight)
     weight_stats = _summarise_weights(sample_weight)
@@ -1516,7 +1625,12 @@ def train(
                 train_idx = np.arange(0, X.shape[0] - 1)
                 val_idx = np.array([X.shape[0] - 1])
                 splits = [(train_idx, val_idx)]
-        model_inputs = sequence_data if sequence_model else X
+        if model_type == "crossmodal":
+            if sequence_data is None or news_sequence_data is None:
+                raise ValueError("crossmodal model requires sequence inputs")
+            model_inputs = (sequence_data, news_sequence_data)
+        else:
+            model_inputs = sequence_data if sequence_model else X
         val_dists = (
             np.concatenate([mahal_all[val_idx] for _, val_idx in splits])
             if mahal_all.size
@@ -1577,7 +1691,11 @@ def train(
         for params in param_grid:
             fold_predictions: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]] = []
             if distributed and _HAS_RAY:
-                X_ref = ray.put(model_inputs)
+                if model_type == "crossmodal":
+                    price_ref = ray.put(sequence_data)
+                    news_ref = ray.put(news_sequence_data)
+                else:
+                    X_ref = ray.put(model_inputs)
                 y_ref = ray.put(y)
                 profits_ref = ray.put(profits)
                 weight_ref = ray.put(sample_weight)
@@ -1585,7 +1703,11 @@ def train(
 
                 @ray.remote
                 def _run_fold(tr_idx, val_idx, fold):
-                    data = ray.get(X_ref)
+                    if model_type == "crossmodal":
+                        price_data = ray.get(price_ref)
+                        news_data = ray.get(news_ref)
+                    else:
+                        data = ray.get(X_ref)
                     y = ray.get(y_ref)
                     profits = ray.get(profits_ref)
                     weights = ray.get(weight_ref)
@@ -1617,12 +1739,29 @@ def train(
                             builder_kwargs["grad_clip"] = grad_clip
                         if meta_init is not None:
                             builder_kwargs["init_weights"] = meta_init
-                        model_fold, pred_fn = builder(
-                            data[tr_idx],
-                            y[tr_idx],
-                            **builder_kwargs,
-                        )
-                        prob_val = pred_fn(data[val_idx])
+                        if model_type == "crossmodal":
+                            train_input = (
+                                price_data[tr_idx],
+                                news_data[tr_idx],
+                            )
+                            model_fold, pred_fn = builder(
+                                train_input,
+                                y[tr_idx],
+                                **builder_kwargs,
+                            )
+                            prob_val = pred_fn(
+                                (
+                                    price_data[val_idx],
+                                    news_data[val_idx],
+                                )
+                            )
+                        else:
+                            model_fold, pred_fn = builder(
+                                data[tr_idx],
+                                y[tr_idx],
+                                **builder_kwargs,
+                            )
+                            prob_val = pred_fn(data[val_idx])
                     profits_val = profits[val_idx]
                     y_val = y[val_idx]
                     return (
@@ -1671,12 +1810,27 @@ def train(
                             builder_kwargs["grad_clip"] = grad_clip
                         if meta_init is not None:
                             builder_kwargs["init_weights"] = meta_init
-                        model_fold, pred_fn = builder(
-                            model_inputs[tr_idx],
-                            y[tr_idx],
-                            **builder_kwargs,
-                        )
-                        prob_val = pred_fn(model_inputs[val_idx])
+                        if model_type == "crossmodal":
+                            price_train = sequence_data[tr_idx]
+                            news_train = news_sequence_data[tr_idx]
+                            model_fold, pred_fn = builder(
+                                (price_train, news_train),
+                                y[tr_idx],
+                                **builder_kwargs,
+                            )
+                            prob_val = pred_fn(
+                                (
+                                    sequence_data[val_idx],
+                                    news_sequence_data[val_idx],
+                                )
+                            )
+                        else:
+                            model_fold, pred_fn = builder(
+                                model_inputs[tr_idx],
+                                y[tr_idx],
+                                **builder_kwargs,
+                            )
+                            prob_val = pred_fn(model_inputs[val_idx])
                     profits_val = profits[val_idx]
                     if profile and eval_prof is not None:
                         eval_prof.enable()
@@ -1951,6 +2105,22 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if model_type == "crossmodal" and news_meta is not None:
+            model["news_embeddings"] = {
+                "window": int(news_meta.get("window", news_window_param)),
+                "dimension": int(
+                    news_meta.get(
+                        "dimension",
+                        (news_sequence_data.shape[-1]
+                         if news_sequence_data is not None
+                         else 0),
+                    )
+                ),
+                "columns": list(news_meta.get("columns", [])),
+                "horizon_seconds": float(
+                    news_meta.get("horizon_seconds", news_horizon_seconds)
+                ),
+            }
         if half_life_days > 0.0:
             model["half_life_days"] = float(half_life_days)
         if vol_weight:
@@ -2072,6 +2242,15 @@ def train(
             n_features_val = int(len(feature_names))
         metadata["n_samples"] = n_samples
         metadata["n_features"] = n_features_val
+        if model_type == "crossmodal" and news_meta is not None and news_sequence_data is not None:
+            metadata["news_embeddings"] = {
+                "window": int(news_meta.get("window", news_window_param)),
+                "dimension": int(news_sequence_data.shape[-1]),
+                "columns": list(news_meta.get("columns", [])),
+                "horizon_seconds": float(
+                    news_meta.get("horizon_seconds", news_horizon_seconds)
+                ),
+            }
         env_info = metadata.setdefault("environment", {})
         env_info["python"] = sys.version.split()[0]
         env_info["platform"] = platform.platform()

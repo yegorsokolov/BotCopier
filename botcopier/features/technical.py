@@ -1101,6 +1101,9 @@ def _extract_features_impl(
     calendar_file: Path | None = None,
     event_window: float = 60.0,
     news_sentiment: pd.DataFrame | None = None,
+    news_embeddings: pd.DataFrame | None = None,
+    news_embedding_window: int = 5,
+    news_embedding_horizon: float = 3600.0,
     entity_graph: "nx.Graph" | dict | str | Path | None = None,
     neighbor_corr_windows: Iterable[int] | None = None,
     regime_model: dict | str | Path | None = None,
@@ -1425,6 +1428,106 @@ def _extract_features_impl(
         for col in news_sentiment.columns:
             if col != "symbol" and col not in feature_names:
                 feature_names.append(col)
+
+    if (
+        news_embeddings is not None
+        and news_embedding_window > 0
+        and "symbol" in df.columns
+    ):
+        try:
+            news_pdf = pd.DataFrame(news_embeddings)
+        except ValueError:
+            news_pdf = None
+        if news_pdf is not None:
+            cols = set(news_pdf.columns)
+            if "timestamp" not in cols and "event_time" in cols:
+                news_pdf = news_pdf.rename(columns={"event_time": "timestamp"})
+                cols = set(news_pdf.columns)
+            required = {"symbol", "timestamp"}
+            if required <= cols:
+                news_pdf = news_pdf.copy()
+                news_pdf["timestamp"] = pd.to_datetime(
+                    news_pdf["timestamp"], errors="coerce", utc=True
+                )
+                embed_cols = [
+                    c
+                    for c in news_pdf.columns
+                    if c not in {"symbol", "timestamp"}
+                ]
+                if embed_cols:
+                    news_pdf[embed_cols] = news_pdf[embed_cols].apply(
+                        pd.to_numeric, errors="coerce"
+                    )
+                    news_pdf[embed_cols] = news_pdf[embed_cols].fillna(0.0)
+                    news_pdf = news_pdf.dropna(subset=["timestamp"])
+                    news_pdf = news_pdf.sort_values(["symbol", "timestamp"])
+                    embed_dim = len(embed_cols)
+                    if embed_dim > 0:
+                        if _HAS_POLARS and isinstance(df, pl.DataFrame):
+                            price_pdf = df.to_pandas()
+                        else:
+                            price_pdf = (
+                                df.copy()
+                                if isinstance(df, pd.DataFrame)
+                                else pd.DataFrame(df)
+                            )
+                        if "event_time" in price_pdf.columns:
+                            price_pdf["event_time"] = pd.to_datetime(
+                                price_pdf["event_time"], errors="coerce", utc=True
+                            )
+                            event_times = price_pdf["event_time"].to_numpy()
+                        else:
+                            event_times = np.full(
+                                len(price_pdf),
+                                np.datetime64("NaT"),
+                                dtype="datetime64[ns]",
+                            )
+                        symbols = price_pdf["symbol"].astype(str).to_numpy()
+                        grouped = news_pdf.groupby("symbol", sort=False)
+                        sequences = np.zeros(
+                            (
+                                len(price_pdf),
+                                int(news_embedding_window),
+                                embed_dim,
+                            ),
+                            dtype=float,
+                        )
+                        horizon = max(0.0, float(news_embedding_horizon))
+                        horizon_delta = (
+                            pd.Timedelta(seconds=horizon) if horizon > 0 else None
+                        )
+                        for idx, (sym, ts) in enumerate(zip(symbols, event_times)):
+                            if sym not in grouped.groups:
+                                continue
+                            if isinstance(ts, np.datetime64) and np.isnat(ts):
+                                continue
+                            try:
+                                symbol_news = grouped.get_group(sym)
+                            except KeyError:
+                                continue
+                            if isinstance(ts, np.datetime64):
+                                ts_pd = pd.Timestamp(ts)
+                            else:
+                                ts_pd = pd.to_datetime(ts, utc=True, errors="coerce")
+                            if ts_pd is pd.NaT:
+                                continue
+                            relevant = symbol_news[symbol_news["timestamp"] <= ts_pd]
+                            if horizon_delta is not None:
+                                start_time = ts_pd - horizon_delta
+                                relevant = relevant[relevant["timestamp"] >= start_time]
+                            if relevant.empty:
+                                continue
+                            tail = relevant.tail(int(news_embedding_window))
+                            values = tail[embed_cols].to_numpy(dtype=float)
+                            seq = sequences[idx]
+                            seq[-len(values) :] = values
+                        _FEATURE_METADATA["__news_embeddings__"] = {
+                            "window": int(news_embedding_window),
+                            "dimension": int(embed_dim),
+                            "columns": list(embed_cols),
+                            "horizon_seconds": horizon,
+                            "sequences": sequences,
+                        }
 
     if entity_graph is not None and _HAS_NX and "symbol" in df.columns:
         if not isinstance(entity_graph, nx.Graph):
