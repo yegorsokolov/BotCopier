@@ -1925,7 +1925,26 @@ def train(
             probas = predict_fn(data_eval)
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
-        feature_metadata = [FeatureMetadata(original_column=fn) for fn in feature_names]
+        meta_lookup = getattr(technical_features, "_FEATURE_METADATA", {})
+        feature_metadata: list[FeatureMetadata] = []
+        for fn in feature_names:
+            meta_entry = meta_lookup.get(fn)
+            if isinstance(meta_entry, FeatureMetadata):
+                feature_metadata.append(meta_entry)
+                continue
+            if isinstance(meta_entry, dict):
+                original = str(meta_entry.get("original_column", fn))
+                transformations = list(meta_entry.get("transformations", []))
+                parameters = dict(meta_entry.get("parameters", {}))
+                feature_metadata.append(
+                    FeatureMetadata(
+                        original_column=original,
+                        transformations=transformations,
+                        parameters=parameters,
+                    )
+                )
+            else:
+                feature_metadata.append(FeatureMetadata(original_column=fn))
         model = {
             "feature_names": feature_names,
             "feature_metadata": feature_metadata,

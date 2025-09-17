@@ -17,6 +17,7 @@ dependencies = [
     "great_expectations",
     "scikit-learn",
     "gplearn",
+    "PyWavelets",
     "joblib",
     "river",
     "psutil",
