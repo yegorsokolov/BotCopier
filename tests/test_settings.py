@@ -67,9 +67,11 @@ def test_save_params_persists_and_hash(tmp_path: Path) -> None:
     train_cfg = TrainingConfig(batch_size=64, model=Path("model.json"))
     exec_cfg = ExecutionConfig(use_gpu=True)
 
-    digest = save_params(data_cfg, train_cfg, exec_cfg, path=cfg_path)
+    snapshot = save_params(data_cfg, train_cfg, exec_cfg, path=cfg_path)
     data_loaded, train_loaded, exec_loaded = load_settings(path=cfg_path)
     assert data_loaded.csv == Path("trades.csv")
     assert train_loaded.batch_size == 64
     assert exec_loaded.use_gpu is True
-    assert digest == compute_settings_hash(data_cfg, train_cfg, exec_cfg)
+    assert snapshot.digest == compute_settings_hash(data_cfg, train_cfg, exec_cfg)
+    serialised = snapshot.as_dict()
+    assert serialised["data"]["csv"] == "trades.csv"

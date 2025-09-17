@@ -289,7 +289,7 @@ def _run_indicator_script(
     cmd = [sys.executable, str(script), str(csv_path), "--model", str(model_json)]
     try:
         subprocess.run(cmd, check=True)
-    except Exception:
+    except (subprocess.CalledProcessError, OSError):
         logger.exception("indicator generation failed")
         return None
     finally:
@@ -300,7 +300,8 @@ def _run_indicator_script(
     try:
         data = json.loads(model_json.read_text())
         return data.get("symbolic_indicators", {}).get("formulas")
-    except Exception:
+    except (OSError, json.JSONDecodeError):
+        logger.exception("Failed to load generated symbolic indicators")
         return None
 
 
@@ -342,8 +343,10 @@ async def _writer_task(
                 try:
                     conn.execute(insert_sql, [row.get(f, "") for f in FIELDS])
                     conn.commit()
-                except Exception as e:  # pragma: no cover - disk or schema issues
-                    logger.error({"error": "file write failure", "details": str(e)})
+                except (sqlite3.Error, OSError) as exc:  # pragma: no cover - disk or schema issues
+                    logger.exception(
+                        {"error": "file write failure", "details": str(exc)}
+                    )
                 else:
                     recent.append(row)
                     if prom_updater is not None:

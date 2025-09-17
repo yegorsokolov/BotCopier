@@ -120,7 +120,20 @@ def test_train_passes_config_hash(monkeypatch, cli_app, tmp_path):
         called["kwargs"] = kwargs
 
     monkeypatch.setattr(cli_module, "train_pipeline", fake_train)
-    monkeypatch.setattr(cli_module, "save_params", lambda *a, **k: "hash123")
+
+    snapshot_payload = {
+        "data": {"data": "placeholder"},
+        "training": {},
+        "execution": {},
+    }
+
+    class _Snapshot:
+        digest = "hash123"
+
+        def as_dict(self) -> dict[str, dict[str, object]]:
+            return snapshot_payload
+
+    monkeypatch.setattr(cli_module, "save_params", lambda *a, **k: _Snapshot())
     data = tmp_path / "trades.csv"
     data.write_text("label,value\n1,0.5\n")
     out_dir = tmp_path / "out"
@@ -129,3 +142,4 @@ def test_train_passes_config_hash(monkeypatch, cli_app, tmp_path):
     )
     assert result.exit_code == 0
     assert called["kwargs"]["config_hash"] == "hash123"
+    assert called["kwargs"]["config_snapshot"] == snapshot_payload
