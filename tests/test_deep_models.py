@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 np = pytest.importorskip("numpy")
@@ -7,6 +10,7 @@ from botcopier.models.deep import CrossModalTransformer, TemporalConvNet
 from botcopier.models.registry import (
     TabTransformer,
     fit_crossmodal_transformer,
+    fit_multi_symbol_attention,
     fit_tab_transformer,
     fit_temporal_cnn,
 )
@@ -110,8 +114,59 @@ def test_crossmodal_forward_and_training():
     assert "news_clip_low" in meta
 
 
+def test_multi_symbol_attention_improves_accuracy():
+    rng = np.random.default_rng(42)
+    n_samples = 400
+    symbols = np.array(["EURUSD", "USDCHF"] * (n_samples // 2))
+    signal = rng.normal(size=n_samples)
+    y = np.where(symbols == "EURUSD", signal > 0, signal < 0).astype(float)
+    X = signal.reshape(-1, 1)
+
+    graph_path = Path("symbol_graph.json")
+    graph = json.loads(graph_path.read_text())
+    symbol_names = graph.get("symbols", [])
+    embeddings_map = graph.get("embeddings", {})
+    embeddings = np.array([embeddings_map[name] for name in symbol_names], dtype=float)
+    edge_index = graph.get("edge_index", [[], []])
+    neighbor_lists: list[list[int]] = [[] for _ in symbol_names]
+    for src, dst in zip(edge_index[0], edge_index[1]):
+        neighbor_lists[int(src)].append(int(dst))
+    for idx in range(len(symbol_names)):
+        if idx not in neighbor_lists[idx]:
+            neighbor_lists[idx].insert(0, idx)
+
+    symbol_to_idx = {name: i for i, name in enumerate(symbol_names)}
+    symbol_ids = np.array([symbol_to_idx[sym] for sym in symbols], dtype=int)
+
+    meta, predict = fit_multi_symbol_attention(
+        X,
+        y,
+        symbol_ids=symbol_ids,
+        symbol_names=symbol_names,
+        embeddings=embeddings,
+        neighbor_index=neighbor_lists,
+        epochs=30,
+        batch_size=64,
+        lr=5e-3,
+        dropout=0.0,
+        hidden_dim=32,
+        heads=2,
+        patience=5,
+        mixed_precision=False,
+    )
+    preds = predict((X, symbol_ids))
+    acc = ((preds >= 0.5).astype(float) == y).mean()
+    from sklearn.linear_model import LogisticRegression
+
+    baseline = LogisticRegression().fit(X, y).score(X, y)
+    assert acc > baseline + 0.1
+    assert meta["attention_weights"]["EURUSD"]
+    assert meta["neighbor_order"]["EURUSD"][0] == "EURUSD"
+
+
 __all__ = [
     "test_tabtransformer_forward_and_accuracy",
     "test_temporal_convnet_forward_and_accuracy",
     "test_crossmodal_forward_and_training",
+    "test_multi_symbol_attention_improves_accuracy",
 ]

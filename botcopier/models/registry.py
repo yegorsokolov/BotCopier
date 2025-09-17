@@ -672,6 +672,7 @@ if _HAS_TORCH:
     from .deep import (
         CrossModalTransformer,
         MixtureOfExperts,
+        SymbolContextAttention,
         TCNClassifier,
         TabTransformer,
     )
@@ -681,6 +682,16 @@ if _HAS_TORCH:
         clip_low = np.quantile(flat, 0.01, axis=0)
         clip_high = np.quantile(flat, 0.99, axis=0)
         clipped = np.clip(flat, clip_low, clip_high)
+        mean = clipped.mean(axis=0)
+        std = clipped.std(axis=0)
+        return clip_low, clip_high, mean, std
+
+    def _feature_stats(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if X.ndim != 2:
+            raise ValueError("expected 2D feature matrix")
+        clip_low = np.quantile(X, 0.01, axis=0)
+        clip_high = np.quantile(X, 0.99, axis=0)
+        clipped = np.clip(X, clip_low, clip_high)
         mean = clipped.mean(axis=0)
         std = clipped.std(axis=0)
         return clip_low, clip_high, mean, std
@@ -1228,10 +1239,249 @@ if _HAS_TORCH:
         }
         return meta, _predict
 
+    def fit_multi_symbol_attention(
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        symbol_ids: Sequence[int],
+        symbol_names: Sequence[str],
+        embeddings: np.ndarray,
+        neighbor_index: Sequence[Sequence[int]],
+        sample_weight: np.ndarray | None = None,
+        epochs: int = 30,
+        batch_size: int = 128,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-4,
+        dropout: float = 0.1,
+        hidden_dim: int = 64,
+        heads: int = 4,
+        patience: int = 5,
+        grad_clip: float = 1.0,
+        device: str = "cpu",
+        mixed_precision: bool = True,
+    ) -> tuple[dict[str, object], Callable[[tuple[np.ndarray, np.ndarray]], np.ndarray]]:
+        features = np.asarray(X, dtype=float)
+        targets = np.asarray(y, dtype=float)
+        symbols = np.asarray(symbol_ids, dtype=int)
+        emb_array = np.asarray(embeddings, dtype=float)
+        if features.ndim != 2:
+            raise ValueError("multi-symbol model expects a 2D feature matrix")
+        if targets.ndim != 1:
+            raise ValueError("targets must be 1-dimensional")
+        if symbols.shape[0] != features.shape[0] or targets.shape[0] != features.shape[0]:
+            raise ValueError("features, targets and symbol_ids must align")
+        if emb_array.ndim != 2 or emb_array.shape[0] != len(symbol_names):
+            raise ValueError("embeddings must match provided symbol_names")
+        if len(neighbor_index) != len(symbol_names):
+            raise ValueError("neighbor_index must align with symbol_names")
+
+        clip_low, clip_high, mean, std = _feature_stats(features)
+        std_safe = np.where(std == 0, 1.0, std)
+        norm_features = (np.clip(features, clip_low, clip_high) - mean) / std_safe
+
+        sanitized_neighbors: list[list[int]] = []
+        for idx, neigh in enumerate(neighbor_index):
+            unique: list[int] = []
+            for n in neigh:
+                if 0 <= int(n) < len(symbol_names) and int(n) not in unique:
+                    unique.append(int(n))
+            if idx not in unique:
+                unique.insert(0, idx)
+            sanitized_neighbors.append(unique)
+
+        dev = torch.device(device)
+        model = SymbolContextAttention(
+            norm_features.shape[1],
+            torch.as_tensor(emb_array, dtype=torch.float32),
+            sanitized_neighbors,
+            heads=heads,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+        )
+        model.to(dev)
+
+        features_t = torch.as_tensor(norm_features, dtype=torch.float32)
+        symbols_t = torch.as_tensor(symbols, dtype=torch.long)
+        targets_t = torch.as_tensor(targets, dtype=torch.float32)
+        if sample_weight is not None:
+            weight_np = np.asarray(sample_weight, dtype=float)
+        else:
+            weight_np = np.ones_like(targets, dtype=float)
+        weights_t = torch.as_tensor(weight_np, dtype=torch.float32)
+
+        n_samples = features_t.size(0)
+        if n_samples == 0:
+            raise ValueError("Empty training data")
+        if n_samples == 1:
+            train_slice = slice(0, 1)
+            val_slice = slice(1, 1)
+        else:
+            val_size = max(1, int(n_samples * 0.2))
+            if val_size >= n_samples:
+                val_size = n_samples - 1
+            split = n_samples - val_size
+            train_slice = slice(0, split)
+            val_slice = slice(split, n_samples)
+
+        dataset = TensorDataset(
+            features_t[train_slice],
+            symbols_t[train_slice],
+            targets_t[train_slice],
+            weights_t[train_slice],
+        )
+        loader = DataLoader(
+            dataset,
+            batch_size=min(batch_size, len(dataset)) or 1,
+            shuffle=True,
+        )
+        opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        loss_fn = torch.nn.BCEWithLogitsLoss(reduction="none")
+        amp_enabled = mixed_precision and dev.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+
+        def _autocast():
+            if dev.type == "cuda":
+                return torch.cuda.amp.autocast(enabled=amp_enabled)
+            return nullcontext()
+
+        best_loss = float("inf")
+        best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+        patience_ctr = 0
+        for _ in range(max(1, epochs)):
+            model.train()
+            for feat_b, sym_b, tgt_b, w_b in loader:
+                feat_b = feat_b.to(dev)
+                sym_b = sym_b.to(dev)
+                tgt_b = tgt_b.to(dev)
+                w_b = w_b.to(dev)
+                opt.zero_grad(set_to_none=True)
+                with _autocast():
+                    logits = model(feat_b, sym_b)
+                    loss_raw = loss_fn(logits, tgt_b)
+                    denom = w_b.sum()
+                    if denom.item() <= 0:
+                        loss = loss_raw.mean()
+                    else:
+                        loss = (loss_raw * w_b).sum() / denom
+                scaler.scale(loss).backward()
+                scaler.unscale_(opt)
+                if grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                scaler.step(opt)
+                scaler.update()
+
+            model.eval()
+            with torch.no_grad():
+                if val_slice.start == val_slice.stop:
+                    val_loss = float(loss.item())
+                else:
+                    feat_val = features_t[val_slice].to(dev)
+                    sym_val = symbols_t[val_slice].to(dev)
+                    tgt_val = targets_t[val_slice].to(dev)
+                    w_val = weights_t[val_slice].to(dev)
+                    with _autocast():
+                        logits = model(feat_val, sym_val)
+                        val_raw = loss_fn(logits, tgt_val)
+                    denom = w_val.sum()
+                    if denom.item() <= 0:
+                        val_loss = float(val_raw.mean().item())
+                    else:
+                        val_loss = float((val_raw * w_val).sum().item() / denom.item())
+            if val_loss + 1e-6 < best_loss:
+                best_loss = val_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                patience_ctr = 0
+            else:
+                patience_ctr += 1
+                if patience_ctr >= max(1, patience):
+                    break
+
+        model.load_state_dict(best_state)
+        model.to(dev)
+        model.eval()
+
+        def _predict(inputs: tuple[np.ndarray, np.ndarray] | list[np.ndarray]) -> np.ndarray:
+            if not isinstance(inputs, (tuple, list)) or len(inputs) != 2:
+                raise ValueError("multi-symbol predictor expects (features, symbol_ids)")
+            feats = np.asarray(inputs[0], dtype=float)
+            sym_local = np.asarray(inputs[1], dtype=int)
+            if feats.ndim != 2:
+                raise ValueError("features must be 2D")
+            if feats.shape[0] != sym_local.shape[0]:
+                raise ValueError("features and symbol_ids must align")
+            norm = (np.clip(feats, clip_low, clip_high) - mean) / std_safe
+            with torch.no_grad():
+                feat_t = torch.as_tensor(norm, dtype=torch.float32, device=dev)
+                sym_t = torch.as_tensor(sym_local, dtype=torch.long, device=dev)
+                logits = model(feat_t, sym_t)
+                return torch.sigmoid(logits).cpu().numpy()
+
+        _predict.model = model  # type: ignore[attr-defined]
+        _predict.device = dev  # type: ignore[attr-defined]
+
+        max_neigh = max(len(n) for n in sanitized_neighbors)
+        attn_sum = np.zeros((len(symbol_names), max_neigh), dtype=float)
+        attn_count = np.zeros(len(symbol_names), dtype=float)
+        if n_samples:
+            full_loader = DataLoader(
+                TensorDataset(features_t, symbols_t),
+                batch_size=min(batch_size, n_samples) or 1,
+                shuffle=False,
+            )
+            with torch.no_grad():
+                for feat_b, sym_b in full_loader:
+                    feat_b = feat_b.to(dev)
+                    sym_b = sym_b.to(dev)
+                    _, weights = model(feat_b, sym_b, return_attention=True)
+                    attn_np = weights.squeeze(1).cpu().numpy()
+                    for i, sym_idx in enumerate(sym_b.cpu().tolist()):
+                        attn_sum[sym_idx, : attn_np.shape[1]] += attn_np[i]
+                        attn_count[sym_idx] += 1
+
+        attn_avg = np.zeros_like(attn_sum)
+        for idx in range(len(symbol_names)):
+            if attn_count[idx] > 0:
+                attn_avg[idx] = attn_sum[idx] / attn_count[idx]
+        neighbor_order = {
+            symbol_names[i]: [symbol_names[j] for j in sanitized_neighbors[i]]
+            for i in range(len(symbol_names))
+        }
+        attention_weights = {
+            symbol_names[i]: attn_avg[i, : len(sanitized_neighbors[i])].tolist()
+            for i in range(len(symbol_names))
+        }
+
+        meta = {
+            "state_dict": {k: v.numpy().tolist() for k, v in best_state.items()},
+            "clip_low": clip_low.tolist(),
+            "clip_high": clip_high.tolist(),
+            "mean": mean.tolist(),
+            "std": std.tolist(),
+            "feature_mean": mean.tolist(),
+            "feature_std": std.tolist(),
+            "attention_weights": attention_weights,
+            "neighbor_order": neighbor_order,
+            "symbols": list(symbol_names),
+            "symbol_embeddings": {
+                symbol_names[i]: emb_array[i].tolist() for i in range(len(symbol_names))
+            },
+            "neighbor_index": [list(map(int, n)) for n in sanitized_neighbors],
+            "architecture": {
+                "type": "SymbolContextAttention",
+                "feature_dim": int(norm_features.shape[1]),
+                "embedding_dim": int(emb_array.shape[1]) if emb_array.ndim == 2 else 0,
+                "hidden_dim": int(hidden_dim),
+                "heads": int(heads),
+                "dropout": float(dropout),
+            },
+        }
+        return meta, _predict
+
     register_model("tabtransformer", fit_tab_transformer)
     register_model("tcn", fit_temporal_cnn)
     register_model("transformer", fit_tab_transformer)
     register_model("crossmodal", fit_crossmodal_transformer)
+    register_model("multi_symbol", fit_multi_symbol_attention)
 else:  # pragma: no cover - torch optional
 
     class TabTransformer:  # type: ignore[misc]
@@ -1251,14 +1501,19 @@ else:  # pragma: no cover - torch optional
     def fit_crossmodal_transformer(*_, **__):  # pragma: no cover - trivial
         raise ImportError("PyTorch is required for CrossModalTransformer")
 
+    def fit_multi_symbol_attention(*_, **__):  # pragma: no cover - trivial
+        raise ImportError("PyTorch is required for SymbolContextAttention")
+
 
 __all__ = [
     "TabTransformer",
     "TCNClassifier",
     "MixtureOfExperts",
+    "SymbolContextAttention",
     "fit_tab_transformer",
     "fit_temporal_cnn",
     "fit_crossmodal_transformer",
+    "fit_multi_symbol_attention",
     "register_model",
     "get_model",
     "MODEL_REGISTRY",

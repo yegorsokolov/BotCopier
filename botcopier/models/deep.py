@@ -196,6 +196,131 @@ if _HAS_TORCH:
             return self.head(fused).squeeze(-1)
 
 
+    class SymbolContextAttention(nn.Module):
+        """Aggregate neighbour context using multi-head attention."""
+
+        def __init__(
+            self,
+            feature_dim: int,
+            symbol_embeddings: torch.Tensor | Sequence[Sequence[float]],
+            neighbor_index: Sequence[Sequence[int]],
+            *,
+            heads: int = 4,
+            hidden_dim: int = 64,
+            dropout: float = 0.1,
+        ) -> None:
+            super().__init__()
+            if heads < 1:
+                raise ValueError("heads must be positive")
+            if hidden_dim < 1:
+                raise ValueError("hidden_dim must be positive")
+
+            if isinstance(symbol_embeddings, torch.Tensor):
+                emb_tensor = symbol_embeddings.detach().clone().float()
+            else:
+                emb_tensor = torch.as_tensor(symbol_embeddings, dtype=torch.float32)
+            if emb_tensor.ndim != 2:
+                raise ValueError("symbol_embeddings must be a 2D tensor")
+            if emb_tensor.size(0) == 0:
+                raise ValueError("symbol_embeddings must contain at least one symbol")
+
+            self.num_symbols, embed_dim = emb_tensor.shape
+            if embed_dim % heads != 0:
+                raise ValueError("embedding dimension must be divisible by heads")
+
+            if not neighbor_index:
+                raise ValueError("neighbor_index must not be empty")
+            max_neighbors = max(len(neigh) for neigh in neighbor_index)
+            if max_neighbors == 0:
+                raise ValueError("each symbol requires at least one neighbour (itself)")
+
+            pad = torch.full((self.num_symbols, max_neighbors), -1, dtype=torch.long)
+            for sym_idx, neigh in enumerate(neighbor_index):
+                if not neigh:
+                    continue
+                unique: list[int] = []
+                for n in neigh:
+                    if n < 0 or n >= self.num_symbols:
+                        continue
+                    if n not in unique:
+                        unique.append(int(n))
+                if sym_idx not in unique:
+                    unique.insert(0, sym_idx)
+                end = min(len(unique), max_neighbors)
+                pad[sym_idx, :end] = torch.as_tensor(unique[:end], dtype=torch.long)
+            self.register_buffer("neighbor_index", pad)
+
+            self.symbol_embeddings = nn.Parameter(emb_tensor)
+            self.feature_proj = nn.Linear(int(feature_dim), hidden_dim)
+            self.query_proj = nn.Linear(embed_dim, embed_dim)
+            self.key_proj = nn.Linear(embed_dim, embed_dim)
+            self.value_proj = nn.Linear(embed_dim, embed_dim)
+            self.context_proj = nn.Linear(embed_dim, hidden_dim)
+            self.attn = nn.MultiheadAttention(
+                embed_dim, heads, dropout=dropout, batch_first=True
+            )
+            self.norm = nn.LayerNorm(hidden_dim * 2)
+            self.dropout = nn.Dropout(dropout)
+            self.head = nn.Sequential(
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, 1),
+            )
+            self._last_attention: torch.Tensor | None = None
+
+        @property
+        def max_neighbors(self) -> int:
+            return int(self.neighbor_index.size(1))
+
+        def forward(
+            self,
+            features: torch.Tensor,
+            symbol_ids: torch.Tensor,
+            *,
+            return_attention: bool = False,
+        ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+            if features.dim() != 2:
+                raise ValueError("features must be a 2D tensor")
+            if symbol_ids.dim() != 1:
+                raise ValueError("symbol_ids must be a 1D tensor")
+            if features.size(0) != symbol_ids.size(0):
+                raise ValueError("batch dimension mismatch between features and symbol_ids")
+            if features.size(1) != self.feature_proj.in_features:
+                raise ValueError("feature dimension mismatch")
+
+            ids = symbol_ids.to(dtype=torch.long, device=features.device)
+            if ids.numel() and (
+                torch.min(ids) < 0 or torch.max(ids) >= self.num_symbols
+            ):
+                raise ValueError("symbol_ids contain invalid indices")
+
+            emb = self.symbol_embeddings[ids]
+            neigh_idx = self.neighbor_index[ids]
+            mask = neigh_idx < 0
+            if mask.any():
+                neigh_idx = neigh_idx.clone()
+                neigh_idx[mask] = 0
+            neigh_emb = self.symbol_embeddings[neigh_idx.to(features.device)]
+
+            query = self.query_proj(emb).unsqueeze(1)
+            key = self.key_proj(neigh_emb)
+            value = self.value_proj(neigh_emb)
+            attn_out, attn_weights = self.attn(
+                query, key, value, key_padding_mask=mask.to(features.device)
+            )
+            attn_vec = attn_out.squeeze(1)
+            feat_vec = self.feature_proj(features)
+            context = self.context_proj(attn_vec)
+            combined = torch.cat([feat_vec, context], dim=-1)
+            combined = self.norm(combined)
+            logits = self.head(self.dropout(combined)).squeeze(-1)
+            if return_attention:
+                return logits, attn_weights
+            self._last_attention = attn_weights.detach()
+            return logits
+
+
     class TemporalBlock(nn.Module):
         """Residual block used by :class:`TemporalConvNet`."""
 

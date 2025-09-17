@@ -43,6 +43,14 @@ class ModelParams(BaseModel):
     regime_gating: dict[str, Any] | None = Field(
         default=None, description="Serialised gating network parameters"
     )
+    attention_weights: dict[str, list[float]] = Field(
+        default_factory=dict,
+        description="Learned neighbour attention weights per symbol",
+    )
+    neighbor_order: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="Ordered neighbour symbols used by attention modules",
+    )
     version: Literal[1] = 1
 
     model_config = ConfigDict(extra="allow")
