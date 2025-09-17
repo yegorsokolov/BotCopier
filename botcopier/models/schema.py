@@ -33,6 +33,16 @@ class ModelParams(BaseModel):
     config_hash: str | None = Field(
         default=None, description="SHA256 hash of the configuration used"
     )
+    regime_features: list[str] = Field(
+        default_factory=list,
+        description="Feature names used by the Mixture-of-Experts gating network",
+    )
+    experts: list[dict[str, Any]] = Field(
+        default_factory=list, description="Serialised expert layer parameters"
+    )
+    regime_gating: dict[str, Any] | None = Field(
+        default=None, description="Serialised gating network parameters"
+    )
     version: Literal[1] = 1
 
     model_config = ConfigDict(extra="allow")

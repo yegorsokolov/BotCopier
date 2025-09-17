@@ -227,7 +227,7 @@ def _load_moe_model(model: Dict):
     state = model.get("state_dict")
     feature_names = model.get("feature_names", [])
     gating = model.get("regime_gating", {})
-    regime_features = gating.get("feature_names", [])
+    regime_features = gating.get("feature_names") or model.get("regime_features", [])
     if not state or not feature_names or not regime_features:
         return None
     arch = model.get("architecture", {})
@@ -281,7 +281,7 @@ def _predict_tcn(model: Dict, features: Dict[str, float]) -> float:
 def _predict_moe(model: Dict, features: Dict[str, float]) -> float:
     feature_names = model.get("feature_names", [])
     gating = model.get("regime_gating", {})
-    regime_names = gating.get("feature_names", [])
+    regime_names = gating.get("feature_names") or model.get("regime_features", [])
     if not feature_names or not regime_names:
         return _predict_logistic(model, features)
     base_vec = np.array([float(features.get(n, 0.0)) for n in feature_names], dtype=float)
@@ -408,7 +408,8 @@ def _recompute(
     def features_from_row(row: pd.Series) -> Dict[str, float]:
         feat = {k: row.get(k, 0.0) for k in model.get("feature_names", [])}
         gating = model.get("regime_gating", {})
-        for name in gating.get("feature_names", []) or []:
+        regime_names = gating.get("feature_names") or model.get("regime_features", [])
+        for name in regime_names:
             feat.setdefault(name, row.get(name, 0.0))
         return feat
 

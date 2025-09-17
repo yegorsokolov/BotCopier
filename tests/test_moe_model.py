@@ -9,6 +9,9 @@ sklearn_linear = pytest.importorskip("sklearn.linear_model")
 LogisticRegression = sklearn_linear.LogisticRegression
 
 from botcopier.models.registry import get_model
+from botcopier.models.schema import ModelParams
+from botcopier.scripts import generate_mql4_from_model as mql4
+from botcopier.scripts import replay_decisions as replay_mod
 from botcopier.training.pipeline import train
 
 
@@ -90,3 +93,58 @@ def test_moe_accuracy_exceeds_individual_experts(tmp_path: Path):
     arch = saved.get("architecture", {})
     assert arch.get("type") == "MixtureOfExperts"
     assert arch.get("n_experts") == 2
+
+
+def test_replay_predictions_align_with_trained_model(tmp_path: Path):
+    _, X, R, y, _ = _make_dataset(tmp_path)
+    builder = get_model("moe")
+    meta, pred_fn = builder(
+        X,
+        y,
+        regime_features=R,
+        regime_feature_names=["g0", "g1"],
+        epochs=200,
+        lr=0.1,
+    )
+    model_dict = {"feature_names": ["feat"], **meta}
+    features = {"feat": float(X[0, 0]), "g0": float(R[0, 0]), "g1": float(R[0, 1])}
+    expected = float(pred_fn(X[:1], R[:1])[0])
+    direct = replay_mod._predict_moe(model_dict.copy(), features)
+    assert np.isclose(direct, expected)
+    original_flag = replay_mod._HAS_TORCH
+    try:
+        replay_mod._HAS_TORCH = False
+        fallback = replay_mod._predict_moe(model_dict.copy(), features)
+    finally:
+        replay_mod._HAS_TORCH = original_flag
+    assert np.isclose(fallback, expected)
+
+
+def test_generate_mql4_renders_moe_parameters(tmp_path: Path, monkeypatch):
+    params = ModelParams(
+        feature_names=["feat"],
+        regime_features=["g0", "g1"],
+        experts=[
+            {"weights": [0.1], "bias": 0.0},
+            {"weights": [-0.2], "bias": 0.05},
+        ],
+        regime_gating={
+            "weights": [[0.3, -0.1], [0.2, 0.4]],
+            "bias": [0.0, 0.1],
+            "feature_names": ["g0", "g1"],
+        },
+        model_type="moe",
+    )
+    model_path = tmp_path / "model.json"
+    model_path.write_text(params.model_dump_json())
+    template_path = tmp_path / "StrategyTemplate.mq4"
+    template_path.write_text(Path("StrategyTemplate.mq4").read_text())
+    monkeypatch.setitem(mql4.FEATURE_MAP, "feat", "0.0")
+    monkeypatch.setitem(mql4.FEATURE_MAP, "g0", "0.0")
+    monkeypatch.setitem(mql4.FEATURE_MAP, "g1", "0.0")
+    mql4.insert_get_feature(model_path, template_path)
+    rendered = template_path.read_text()
+    assert "bool g_use_moe = true;" in rendered
+    assert "double g_moe_expert_weights" in rendered
+    assert "double g_moe_gate_weights" in rendered
+    assert "GetRegimeFeature" in rendered

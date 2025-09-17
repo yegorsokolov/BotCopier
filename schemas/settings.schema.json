@@ -325,6 +325,14 @@
           "title": "Features",
           "type": "array"
         },
+        "regime_features": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Regime Features",
+          "type": "array"
+        },
         "label": {
           "default": "best_model",
           "title": "Label",
