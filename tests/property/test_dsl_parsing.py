@@ -4,6 +4,8 @@ import numpy as np
 from hypothesis import given, settings, strategies as st
 
 from botcopier.strategy.dsl import (
+    ATR,
+    BollingerBand,
     Add,
     And,
     Constant,
@@ -15,9 +17,12 @@ from botcopier.strategy.dsl import (
     Or,
     Position,
     Price,
+    RollingVolatility,
+    RSI,
     SMA,
     StopLoss,
     Sub,
+    TrailingStop,
     deserialize,
     serialize,
 )
@@ -31,6 +36,15 @@ expr_strategy = st.recursive(
         st.builds(SMA, st.integers(1, 3)),
         st.builds(EMA, st.integers(1, 3)),
         st.builds(Constant, st.floats(-10, 10, allow_nan=False, allow_infinity=False)),
+        st.builds(RSI, st.integers(2, 5)),
+        st.builds(ATR, st.integers(2, 5)),
+        st.builds(
+            BollingerBand,
+            st.integers(2, 5),
+            st.floats(0.5, 3.0, allow_nan=False, allow_infinity=False),
+            st.sampled_from(["upper", "lower", "middle"]),
+        ),
+        st.builds(RollingVolatility, st.integers(2, 5)),
     ),
     lambda children: st.one_of(
         st.builds(Add, children, children),
@@ -43,6 +57,12 @@ expr_strategy = st.recursive(
         st.builds(Or, children, children),
         st.builds(Position, children, st.floats(-5, 5, allow_nan=False, allow_infinity=False)),
         st.builds(StopLoss, children, st.floats(0, 5, allow_nan=False, allow_infinity=False)),
+        st.builds(
+            TrailingStop,
+            children,
+            st.integers(2, 6),
+            st.floats(0, 2, allow_nan=False, allow_infinity=False),
+        ),
     ),
     max_leaves=10,
 )

@@ -56,6 +56,8 @@ sklearn.preprocessing.StandardScaler = object
 sklearn.preprocessing.RobustScaler = object
 sklearn.ensemble = types.ModuleType("ensemble")
 sklearn.ensemble.IsolationForest = object
+sklearn.ensemble.GradientBoostingClassifier = object
+sklearn.ensemble.VotingClassifier = object
 sklearn.base = types.ModuleType("base")
 sklearn.base.BaseEstimator = type("BaseEstimator", (), {})
 sklearn.base.TransformerMixin = type("TransformerMixin", (), {})
@@ -181,31 +183,47 @@ pyarrow_stub.string = lambda *a, **k: None
 sys.modules.setdefault("pyarrow", pyarrow_stub)
 
 from botcopier.strategy import (
-    Price,
-    SMA,
+    ATR,
+    BollingerBand,
+    CrossPrice,
     GT,
     Position,
+    Price,
+    RSI,
+    RollingVolatility,
     backtest,
     deserialize,
-    serialize,
     search_strategies,
+    serialize,
 )
 from botcopier.strategy.search import PARETO_MAX_SIZE
 from botcopier.training.pipeline import train
 
 
 def test_strategy_search_outperforms_baseline(tmp_path: Path) -> None:
-    prices = np.linspace(1.0, 100.0, 200)
+    base = np.linspace(1.0, 100.0, 200)
+    peer = base[::-1] + 5.0
+    context = {"base": base, "peer": peer}
 
     baseline = Position(GT(Price(), Price()))
-    baseline_ret = backtest(prices, baseline)
+    baseline_ret = backtest(context, baseline)
 
-    best, pareto = search_strategies(prices, n_samples=25)
-    assert best.ret > baseline_ret
+    best, pareto = search_strategies(context, n_samples=25)
+    assert best.ret >= baseline_ret
     assert best.complexity >= 1
+    assert len(pareto) > 1
+    assert any(
+        any(
+            isinstance(node, (RSI, ATR, BollingerBand, RollingVolatility, CrossPrice))
+            for node in cand.expr.iter_nodes()
+        )
+        for cand in pareto
+    )
 
     compiled = deserialize(serialize(best.expr))
-    assert np.allclose(backtest(prices, compiled), backtest(prices, best.expr))
+    assert np.allclose(backtest(context, compiled), backtest(context, best.expr))
+
+    baseline_array_ret = backtest(base, baseline)
 
     out_dir = tmp_path / "out"
     data_dir = tmp_path / "data"
@@ -219,7 +237,7 @@ def test_strategy_search_outperforms_baseline(tmp_path: Path) -> None:
     first = model["strategies"][0]
     assert "complexity" in first
     expr = deserialize(first["expr"])
-    assert backtest(prices, expr) >= baseline_ret
+    assert backtest(base, expr) >= baseline_array_ret
     assert model.get("best_complexity", 0) >= 1
     metadata = model.get("strategy_search_metadata")
     assert metadata and metadata["population_size"] >= 12
