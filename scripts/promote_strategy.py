@@ -68,6 +68,8 @@ def promote(
     budget_limit: float = 1.0,
     allowed_order_types: Sequence[str] = ("market", "limit"),
     min_order_compliance: float = 1.0,
+    min_stress_pnl: float = 0.0,
+    min_liquidity_fill_rate: float | None = None,
 ) -> None:
     """Evaluate strategies and promote those passing risk checks."""
 
@@ -114,6 +116,17 @@ def promote(
             reasons.append("budget")
         if metrics["order_type_compliance"] < min_order_compliance:
             reasons.append("order_type")
+        stress_summary = metrics.get("stress_summary", {})
+        stress_pnl_min = stress_summary.get("stress_pnl_min")
+        if stress_pnl_min is not None and stress_pnl_min < min_stress_pnl:
+            reasons.append("stress_pnl")
+        stress_fill = stress_summary.get("stress_limit_fill_rate_min")
+        if (
+            min_liquidity_fill_rate is not None
+            and stress_fill is not None
+            and stress_fill < min_liquidity_fill_rate
+        ):
+            reasons.append("stress_liquidity")
 
         risk_report[model_dir.name] = {**metrics, "reasons": reasons}
 
@@ -154,6 +167,18 @@ def main() -> None:
         default=1.0,
         help="Minimum fraction of trades with permitted order types",
     )
+    p.add_argument(
+        "--min-stress-pnl",
+        type=float,
+        default=0.0,
+        help="Minimum acceptable PnL across stress scenarios",
+    )
+    p.add_argument(
+        "--min-liquidity-fill-rate",
+        type=float,
+        default=None,
+        help="Minimum limit-order fill rate under liquidity stress",
+    )
     args = p.parse_args()
 
     promote(
@@ -166,6 +191,8 @@ def main() -> None:
         budget_limit=args.budget_limit,
         allowed_order_types=args.allowed_order_types,
         min_order_compliance=args.min_order_compliance,
+        min_stress_pnl=args.min_stress_pnl,
+        min_liquidity_fill_rate=args.min_liquidity_fill_rate,
     )
 
 
