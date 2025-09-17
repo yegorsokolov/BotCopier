@@ -18,6 +18,7 @@ import argparse
 import asyncio
 import csv
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -165,6 +166,97 @@ otel_handler.setFormatter(JsonFormatter())
 logger.addHandler(otel_handler)
 logger.setLevel(logging.INFO)
 
+
+class ReplayBuffer:
+    """Bounded replay memory prioritising high-loss observations."""
+
+    def __init__(self, capacity: int, *, min_weight: float = 1e-6) -> None:
+        self.capacity = max(0, int(capacity))
+        self.min_weight = float(min_weight)
+        self._items: list[tuple[list[float], int, float]] = []
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def add_batch(
+        self, X: np.ndarray, y: np.ndarray, weights: np.ndarray | float
+    ) -> None:
+        if not self.capacity:
+            return
+        X = np.asarray(X, dtype=float)
+        y = np.asarray(y, dtype=int)
+        weights_arr = (
+            np.full(y.shape, float(weights), dtype=float)
+            if np.isscalar(weights)
+            else np.asarray(weights, dtype=float)
+        )
+        if weights_arr.shape != y.shape:
+            weights_arr = np.broadcast_to(weights_arr, y.shape)
+        for row, label, weight in zip(X, y, weights_arr):
+            feats = [float(v) for v in row.tolist()]
+            self._items.append((feats, int(label), float(max(self.min_weight, weight))))
+        if len(self._items) > self.capacity:
+            del self._items[: len(self._items) - self.capacity]
+
+    def sample(
+        self, k: int, feature_dim: int
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if not self._items or not self.capacity or k <= 0 or feature_dim < 0:
+            return (
+                np.empty((0, max(feature_dim, 0)), dtype=float),
+                np.empty(0, dtype=int),
+                np.empty(0, dtype=float),
+            )
+        k = min(int(k), len(self._items))
+        weights = np.asarray([item[2] for item in self._items], dtype=float)
+        total = float(weights.sum())
+        probs = weights / total if total > 0 else None
+        idx = np.random.choice(len(self._items), size=k, replace=False, p=probs)
+        feats: list[list[float]] = []
+        labels: list[int] = []
+        sampled_weights: list[float] = []
+        for i in idx:
+            row, label, weight = self._items[int(i)]
+            if feature_dim and len(row) < feature_dim:
+                row = row + [0.0] * (feature_dim - len(row))
+            elif feature_dim and len(row) > feature_dim:
+                row = row[:feature_dim]
+            feats.append(row)
+            labels.append(label)
+            sampled_weights.append(weight)
+        return (
+            np.asarray(feats, dtype=float),
+            np.asarray(labels, dtype=int),
+            np.asarray(sampled_weights, dtype=float),
+        )
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "capacity": int(self.capacity),
+            "items": [
+                {"x": row, "y": label, "w": weight} for row, label, weight in self._items
+            ],
+        }
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any] | None, capacity: int) -> "ReplayBuffer":
+        buffer = cls(capacity)
+        if not state:
+            return buffer
+        items = state.get("items", []) if isinstance(state, Mapping) else []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            feats = item.get("x", [])
+            label = int(item.get("y", 0))
+            weight = float(item.get("w", 1.0))
+            buffer.add_batch(
+                np.asarray([feats], dtype=float),
+                np.asarray([label], dtype=int),
+                np.asarray([weight], dtype=float),
+            )
+        return buffer
+
 try:  # optional systemd notification support
     from systemd import daemon
 except ImportError:  # pragma: no cover - systemd not installed
@@ -211,6 +303,8 @@ class OnlineTrainer:
         *,
         tick_buffer_path: Path | str | None = None,
         tick_buffer_size: int = 100_000,
+        replay_capacity: int = 512,
+        replay_sample_size: int = 32,
         controller: AutoMLController | None = None,
         controller_kwargs: Mapping[str, Any] | None = None,
         drift_test: str = "page_hinkley",
@@ -259,6 +353,9 @@ class OnlineTrainer:
             else Path("data/live_ticks.parquet")
         )
         self.tick_buffer_size = tick_buffer_size
+        self.replay_capacity = max(0, int(replay_capacity))
+        self.replay_sample_size = max(0, int(replay_sample_size))
+        self.replay_buffer = ReplayBuffer(self.replay_capacity)
         self.controller: AutoMLController | None = controller
         self.controller_kwargs: Dict[str, Any] = dict(controller_kwargs or {})
         if self.controller is not None and self.controller_kwargs:
@@ -388,6 +485,17 @@ class OnlineTrainer:
                 for e in events
                 if isinstance(e, dict)
             ]
+        replay_state = data.get("replay_buffer")
+        try:
+            if self.replay_capacity:
+                self.replay_buffer = ReplayBuffer.from_state(
+                    replay_state if isinstance(replay_state, Mapping) else {},
+                    self.replay_capacity,
+                )
+            else:
+                self.replay_buffer = ReplayBuffer(0)
+        except Exception:
+            self.replay_buffer = ReplayBuffer(self.replay_capacity)
         if self.gnn_state and _HAS_TG and Path("symbol_graph.json").exists():
             try:
                 self.graph_dataset = GraphDataset(Path("symbol_graph.json"))
@@ -497,6 +605,8 @@ class OnlineTrainer:
         if self.adapt_log:
             existing["adaptation_log"] = self.adapt_log
         existing.setdefault("metadata", {})["seed"] = self.seed
+        if self.replay_buffer is not None:
+            existing["replay_buffer"] = self.replay_buffer.state_dict()
         to_hash = dict(existing)
         to_hash.pop("model_hash", None)
         try:
@@ -845,12 +955,22 @@ class OnlineTrainer:
             self.model_type = model_name
         self._prev_coef = None
 
-    def _partial_fit(self, X: np.ndarray, y: np.ndarray) -> None:
+    def _partial_fit(
+        self, X: np.ndarray, y: np.ndarray, sample_weight: np.ndarray | None = None
+    ) -> None:
         classes = getattr(self.clf, "classes_", None)
+        fit_kwargs: Dict[str, Any] = {}
+        if sample_weight is not None:
+            try:
+                signature = inspect.signature(self.clf.partial_fit)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None and "sample_weight" in signature.parameters:
+                fit_kwargs["sample_weight"] = sample_weight
         if classes is None or (isinstance(classes, np.ndarray) and classes.size == 0):
-            self.clf.partial_fit(X, y, classes=np.array([0, 1]))
+            self.clf.partial_fit(X, y, classes=np.array([0, 1]), **fit_kwargs)
         else:
-            self.clf.partial_fit(X, y)
+            self.clf.partial_fit(X, y, **fit_kwargs)
 
     def _predict_proba_safe(self, X: np.ndarray) -> np.ndarray | None:
         try:
@@ -863,33 +983,75 @@ class OnlineTrainer:
             return probs[:, 1]
         return probs.ravel()
 
+    def _compute_sample_loss(
+        self, probs: np.ndarray | None, y: np.ndarray
+    ) -> np.ndarray:
+        if probs is None:
+            return np.ones_like(y, dtype=float)
+        arr = np.asarray(probs, dtype=float).reshape(-1)
+        arr = np.clip(arr, 1e-6, 1 - 1e-6)
+        targets = y.astype(float).reshape(-1)
+        losses = -(targets * np.log(arr) + (1.0 - targets) * np.log(1.0 - arr))
+        return losses.astype(float)
+
     def update(self, batch: List[Dict[str, Any]]) -> bool:
         with observe_latency("train_batch"):
             try:
                 with tracer.start_as_current_span("train_batch") as span:
-                    X, y = self._vectorise(batch)
+                    X_new, y_new = self._vectorise(batch)
+                    feature_dim = X_new.shape[1] if X_new.ndim > 1 else 0
+                    pre_probs = self._predict_proba_safe(X_new)
+                    pre_loss = self._compute_sample_loss(pre_probs, y_new)
                     if hasattr(self.clf, "eta0"):
                         self.clf.eta0 = self.lr
-                    drift_value = float(np.mean(X))
-                    self._partial_fit(X, y)
-                    raw_probs: np.ndarray | None = self._predict_proba_safe(X)
+                    drift_value = float(np.mean(X_new)) if X_new.size else 0.0
+                    replay_X = np.empty((0, feature_dim), dtype=float)
+                    replay_y = np.empty(0, dtype=int)
+                    replay_weights = np.empty(0, dtype=float)
+                    if (
+                        self.replay_sample_size
+                        and feature_dim
+                        and len(self.replay_buffer)
+                    ):
+                        replay_X, replay_y, replay_weights = self.replay_buffer.sample(
+                            self.replay_sample_size, feature_dim
+                        )
+                    if replay_X.size:
+                        X_train = np.vstack([replay_X, X_new])
+                        y_train = np.concatenate([replay_y, y_new])
+                        new_weights = np.ones(len(y_new), dtype=float)
+                        sample_weight = np.concatenate([replay_weights, new_weights])
+                    else:
+                        X_train = X_new
+                        y_train = y_new
+                        sample_weight = None
+                    self._partial_fit(X_train, y_train, sample_weight=sample_weight)
+                    raw_probs: np.ndarray | None = self._predict_proba_safe(X_new)
                     seq_drift = self._check_drift(drift_value)
-                    feat_drift = self._update_feature_drift(X)
+                    feat_drift = self._update_feature_drift(X_new)
                     if seq_drift or feat_drift:
                         if hasattr(self.clf, "eta0"):
                             self.clf.eta0 = self.lr
-                        self._partial_fit(X, y)
-                        raw_probs = self._predict_proba_safe(X)
+                        self._partial_fit(
+                            X_train, y_train, sample_weight=sample_weight
+                        )
+                        raw_probs = self._predict_proba_safe(X_new)
                     lr_used = getattr(self.clf, "eta0", self.lr)
                     self.lr_history.append(lr_used)
+                    conformal_errors: np.ndarray | None = None
                     if raw_probs is not None and raw_probs.size:
-                        probs1 = self._calibrate_probabilities(raw_probs, y)
+                        probs1 = self._calibrate_probabilities(raw_probs, y_new)
+                        conformal_errors = np.abs(probs1 - y_new.astype(float))
                         probs = np.column_stack([1 - probs1, probs1])
                         self.recent_probs.extend(probs1.tolist())
                         arr = np.fromiter(self.recent_probs, dtype=float)
                         if arr.size:
                             self.conformal_lower = float(np.quantile(arr, 0.05))
                             self.conformal_upper = float(np.quantile(arr, 0.95))
+                    buffer_weights = pre_loss
+                    if conformal_errors is not None and conformal_errors.size:
+                        buffer_weights = pre_loss + conformal_errors
+                    self.replay_buffer.add_batch(X_new, y_new, buffer_weights)
                     if self.model_type == "confidence_weighted":
                         coef = self.clf.w.tolist()
                         intercept = float(self.clf.b)
@@ -908,7 +1070,7 @@ class OnlineTrainer:
                     if self.model_type != "confidence_weighted" and prev_weights is not None:
                         self.adapt_log.append({"old": prev_weights, "new": coef})
                     self._save()
-                    acc = self._log_validation(X, y)
+                    acc = self._log_validation(X_new, y_new)
                     if self.controller is None and self.feature_names:
                         try:
                             self.controller = AutoMLController(
