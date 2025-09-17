@@ -31,3 +31,17 @@ def test_predict_expected_value_schema_violation():
     X = np.array([[-1.0]])  # atr must be >= 0
     with pytest.raises(pa.errors.SchemaErrors):
         predict_expected_value(model, X)
+
+
+def test_predict_expected_value_feature_mismatch():
+    model = {
+        "feature_names": ["atr", "sl_dist_atr"],
+        "feature_mean": [0.0, 0.0],
+        "feature_std": [1.0, 1.0],
+        "coefficients": [1.0, 1.0],
+        "intercept": 0.0,
+    }
+    # Only provide a single column so the schema should reject the mismatch.
+    X = np.array([[1.0]])
+    with pytest.raises(ValueError):
+        predict_expected_value(model, X)
