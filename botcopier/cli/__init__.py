@@ -5,11 +5,16 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar, cast
+from typing import Any, Callable, Literal, Optional, TypeVar, cast
 
 import typer
 
 from botcopier.exceptions import BotCopierError
+from botcopier.scripts.analyze_ticks import (
+    compute_metrics,
+    compute_volatility,
+    load_ticks,
+)
 from botcopier.training.pipeline import train as train_pipeline
 from config.settings import (
     DataConfig,
@@ -62,6 +67,22 @@ def error_handler(func: F) -> F:
     return cast(F, wrapper)
 
 
+def _store_config(
+    ctx: typer.Context,
+    data_cfg: DataConfig,
+    train_cfg: TrainingConfig,
+    exec_cfg: ExecutionConfig,
+) -> None:
+    """Persist configuration objects on the Typer context."""
+
+    ctx.obj = ctx.obj or {}
+    ctx.obj["config"] = {
+        "data": data_cfg,
+        "training": train_cfg,
+        "execution": exec_cfg,
+    }
+
+
 @app.callback()
 @error_handler
 def main(
@@ -96,13 +117,7 @@ def main(
         exec_updates["profile"] = profile
     if exec_updates:
         exec_cfg = exec_cfg.model_copy(update=exec_updates)
-    ctx.obj = {
-        "config": {
-            "data": data_cfg,
-            "training": train_cfg,
-            "execution": exec_cfg,
-        }
-    }
+    _store_config(ctx, data_cfg, train_cfg, exec_cfg)
 
 
 def _cfg(ctx: typer.Context) -> tuple[DataConfig, TrainingConfig, ExecutionConfig]:
@@ -180,11 +195,7 @@ def train(
         train_cfg = train_cfg.model_copy(update={"strategy_search": strategy_search})
     if reuse_controller:
         train_cfg = train_cfg.model_copy(update={"reuse_controller": reuse_controller})
-    ctx.obj["config"] = {
-        "data": data_cfg,
-        "training": train_cfg,
-        "execution": exec_cfg,
-    }
+    _store_config(ctx, data_cfg, train_cfg, exec_cfg)
     if data_cfg.data is None or data_cfg.out is None:
         raise typer.BadParameter("data_dir and out_dir must be provided")
     snapshot = save_params(data_cfg, train_cfg, exec_cfg)
@@ -234,11 +245,7 @@ def evaluate(
     if eval_hooks is not None:
         hooks_list = [h.strip() for h in eval_hooks.split(",") if h.strip()]
         train_cfg = train_cfg.model_copy(update={"eval_hooks": hooks_list})
-    ctx.obj["config"] = {
-        "data": data_cfg,
-        "training": train_cfg,
-        "execution": exec_cfg,
-    }
+    _store_config(ctx, data_cfg, train_cfg, exec_cfg)
     if data_cfg.pred_file is None or data_cfg.actual_log is None:
         raise typer.BadParameter("pred_file and actual_log must be provided")
     save_params(data_cfg, train_cfg, exec_cfg)
@@ -329,11 +336,7 @@ def online_train(
         data_cfg = data_cfg.model_copy(update=updates_data)
     if updates_train:
         train_cfg = train_cfg.model_copy(update=updates_train)
-    ctx.obj["config"] = {
-        "data": data_cfg,
-        "training": train_cfg,
-        "execution": exec_cfg,
-    }
+    _store_config(ctx, data_cfg, train_cfg, exec_cfg)
     save_params(data_cfg, train_cfg, exec_cfg)
     import asyncio
 
@@ -381,11 +384,7 @@ def drift_monitor(
         train_cfg = train_cfg.model_copy(update={"drift_threshold": drift_threshold})
     if model_json:
         train_cfg = train_cfg.model_copy(update={"model": model_json})
-    ctx.obj["config"] = {
-        "data": data_cfg,
-        "training": train_cfg,
-        "execution": exec_cfg,
-    }
+    _store_config(ctx, data_cfg, train_cfg, exec_cfg)
     if (
         data_cfg.baseline_file is None
         or data_cfg.recent_file is None
@@ -447,6 +446,43 @@ def flight_server(
     except KeyboardInterrupt:  # pragma: no cover - user interrupt
         typer.echo("Shutting down Flight server", err=True)
         server.shutdown()
+
+
+@app.command("analyze-ticks")
+@error_handler
+def analyze_ticks(
+    tick_file: Path = typer.Argument(
+        ..., exists=True, help="CSV file with exported ticks"
+    ),
+    out: Optional[Path] = typer.Option(
+        None, help="Optional path to write summary metrics"
+    ),
+    vol_out: Optional[Path] = typer.Option(
+        None, help="Optional path to write per-interval volatility statistics"
+    ),
+    interval: str = typer.Option(
+        "hourly",
+        help="Interval grouping used when computing volatility",
+        case_sensitive=False,
+    ),
+) -> None:
+    """Compute aggregated tick statistics from exported MetaTrader data."""
+
+    rows = load_ticks(tick_file)
+    norm_interval = interval.lower()
+    if norm_interval not in {"hourly", "daily"}:
+        raise typer.BadParameter("interval must be either 'hourly' or 'daily'")
+    stats = compute_metrics(rows)
+    payload = json.dumps(stats, indent=2)
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(payload, encoding="utf-8")
+    else:
+        typer.echo(payload)
+    if vol_out:
+        vol_out.parent.mkdir(parents=True, exist_ok=True)
+        vols = compute_volatility(rows, interval=norm_interval)
+        vol_out.write_text(json.dumps(vols, indent=2), encoding="utf-8")
 
 
 __all__ = ["app", "error_handler"]

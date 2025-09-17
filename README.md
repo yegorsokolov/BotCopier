@@ -31,16 +31,9 @@ botcopier evaluate notebooks/data/predictions.csv notebooks/data/trades_raw.csv 
 
 # Launch the online trainer in streaming mode
 botcopier online-train --csv notebooks/data/trades_raw.csv --model ./models/latest/model.json
-```
 
-Legacy entry points such as ``botcopier-serve-model`` remain available for
-backwards compatibility and are now implemented internally on top of the Typer
-application.
-
-Example:
-
-```bash
-botcopier-serve-model --host 0.0.0.0 --port 8000
+# Generate summary metrics from exported tick history
+botcopier analyze-ticks notebooks/data/ticks.csv --interval daily
 ```
 
 ## Documentation and notebooks

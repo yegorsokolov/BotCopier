@@ -16,10 +16,9 @@ import subprocess
 import sys
 import time
 from contextlib import nullcontext
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-
-from datetime import UTC, datetime
 from uuid import uuid4
 
 import numpy as np
@@ -80,9 +79,9 @@ from botcopier.config.settings import (
     TrainingConfig,
     load_settings,
 )
-from botcopier.exceptions import TrainingPipelineError
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.data.loading import _load_logs
+from botcopier.exceptions import TrainingPipelineError
 from botcopier.features.anomaly import _clip_train_features
 from botcopier.features.engineering import (
     FeatureConfig,
@@ -206,9 +205,7 @@ def _compute_time_decay_weights(
     return weights
 
 
-def _compute_volatility_scaler(
-    profits: np.ndarray, *, window: int = 50
-) -> np.ndarray:
+def _compute_volatility_scaler(profits: np.ndarray, *, window: int = 50) -> np.ndarray:
     """Compute inverse volatility scaling factors for ``profits``."""
 
     if profits.size == 0:
@@ -306,7 +303,9 @@ def _serialize_mlflow_param(value: object) -> str:
     return str(value)
 
 
-def _version_artifacts_with_dvc(repo_root: Path | None, targets: Sequence[Path]) -> None:
+def _version_artifacts_with_dvc(
+    repo_root: Path | None, targets: Sequence[Path]
+) -> None:
     """Register the provided targets with a DVC repository if available."""
 
     if not (_HAS_DVC and repo_root):
@@ -418,7 +417,10 @@ def _write_dependency_snapshot(out_dir: Path) -> Path:
             logger.exception(
                 "pip freeze returned non-zero exit code %s", result.returncode
             )
-    except (OSError, subprocess.SubprocessError):  # pragma: no cover - pip not available
+    except (
+        OSError,
+        subprocess.SubprocessError,
+    ):  # pragma: no cover - pip not available
         logger.exception("Failed to execute pip freeze; falling back to metadata")
         packages = []
     if not packages:
@@ -1000,7 +1002,9 @@ def train(
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy().astype(float)
-                label_col = next((c for c in df.columns if str(c).startswith("label")), None)
+                label_col = next(
+                    (c for c in df.columns if str(c).startswith("label")), None
+                )
                 signs = np.unique(np.sign(profits[np.isfinite(profits)]))
                 if signs.size <= 1 and label_col is not None:
                     y = df[label_col].to_numpy().astype(float)
@@ -1018,9 +1022,7 @@ def train(
                 ret_cols = [
                     c for c in ["event_time", "symbol", "profit"] if c in df.columns
                 ]
-                returns_df = (
-                    df[ret_cols].to_pandas() if ret_cols else None
-                )
+                returns_df = df[ret_cols].to_pandas() if ret_cols else None
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
@@ -1029,7 +1031,9 @@ def train(
                 profits = np.zeros_like(y)
                 has_profit = False
                 event_times = (
-                    pd.to_datetime(df["event_time"].to_numpy(), errors="coerce").to_numpy()
+                    pd.to_datetime(
+                        df["event_time"].to_numpy(), errors="coerce"
+                    ).to_numpy()
                     if "event_time" in df.columns
                     else np.full(
                         df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
@@ -1273,11 +1277,10 @@ def train(
         best_params: dict[str, object] | None = None
         best_fold_metrics: list[dict[str, object]] = []
         metrics: dict[str, object] = {}
+
         def _evaluate_thresholds_for_fold(
             fold_preds: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]]
-        ) -> tuple[
-            float, dict[str, object], list[tuple[int, dict[str, object]]]
-        ]:
+        ) -> tuple[float, dict[str, object], list[tuple[int, dict[str, object]]]]:
             if not fold_preds:
                 return 0.5, {}, []
             fold_preds = sorted(fold_preds, key=lambda x: x[0])
@@ -1307,9 +1310,7 @@ def train(
                     selected=metric_names,
                     threshold=best_threshold,
                 )
-                metrics_fold.setdefault(
-                    "max_drawdown", _max_drawdown(returns_fold)
-                )
+                metrics_fold.setdefault("max_drawdown", _max_drawdown(returns_fold))
                 metrics_fold.setdefault("var_95", _var_95(returns_fold))
                 metrics_fold["threshold"] = float(best_threshold)
                 metrics_fold["threshold_objective"] = threshold_objective
@@ -1431,9 +1432,11 @@ def train(
                     if profile and eval_prof is not None:
                         eval_prof.disable()
                     fold_predictions.append((fold, y_sel, prob_sel, prof_sel))
-            threshold_value, combined_metrics, fold_metric_entries = _evaluate_thresholds_for_fold(
-                fold_predictions
-            )
+            (
+                threshold_value,
+                combined_metrics,
+                fold_metric_entries,
+            ) = _evaluate_thresholds_for_fold(fold_predictions)
             if not fold_metric_entries:
                 continue
             fold_metrics = [metrics_dict for _, metrics_dict in fold_metric_entries]
@@ -1450,43 +1453,42 @@ def train(
         agg = {
             k: float(
                 np.nanmean(
-                    [
-                        m[k]
-                            for m in fold_metrics
-                            if isinstance(m.get(k), (int, float))
-                        ]
-                    )
+                    [m[k] for m in fold_metrics if isinstance(m.get(k), (int, float))]
                 )
-                for k in fold_metrics[0].keys()
-                if k != "reliability_curve"
-            }
-            agg["threshold"] = float(threshold_value)
-            agg["threshold_objective"] = threshold_objective
-            for key in [
-                "reliability_curve",
-                "roc_auc",
-                "pr_auc",
-                "brier_score",
-                "ece",
-            ]:
-                if key in combined_metrics and combined_metrics[key] is not None:
-                    agg[key] = combined_metrics[key]
-            if max_drawdown is not None and agg.get("max_drawdown", 0.0) > max_drawdown:
-                logger.info(
-                    "Skipping params %s due to max drawdown %.6f exceeding limit %.6f",
-                    params,
-                    agg.get("max_drawdown", 0.0),
-                    max_drawdown,
-                )
-                continue
-            if var_limit is not None and agg.get("var_95", 0.0) > var_limit:
-                logger.info(
-                    "Skipping params %s due to var_95 %.6f exceeding limit %.6f",
-                    params,
-                    agg.get("var_95", 0.0),
-                    var_limit,
-                )
-                continue
+            )
+            for k in fold_metrics[0].keys()
+            if k != "reliability_curve"
+        }
+        agg["threshold"] = float(threshold_value)
+        agg["threshold_objective"] = threshold_objective
+        for key in [
+            "reliability_curve",
+            "roc_auc",
+            "pr_auc",
+            "brier_score",
+            "ece",
+        ]:
+            if key in combined_metrics and combined_metrics[key] is not None:
+                agg[key] = combined_metrics[key]
+        skip_due_to_drawdown = (
+            max_drawdown is not None and agg.get("max_drawdown", 0.0) > max_drawdown
+        )
+        if skip_due_to_drawdown:
+            logger.info(
+                "Skipping params %s due to max drawdown %.6f exceeding limit %.6f",
+                params,
+                agg.get("max_drawdown", 0.0),
+                max_drawdown,
+            )
+        skip_due_to_var = var_limit is not None and agg.get("var_95", 0.0) > var_limit
+        if skip_due_to_var:
+            logger.info(
+                "Skipping params %s due to var_95 %.6f exceeding limit %.6f",
+                params,
+                agg.get("var_95", 0.0),
+                var_limit,
+            )
+        if not (skip_due_to_drawdown or skip_due_to_var):
             score = agg.get("roc_auc", float("nan"))
             if np.isnan(score):
                 score = agg.get("accuracy", 0.0)
@@ -1598,7 +1600,9 @@ def train(
                             ]
                             model_inputs = X
                             builder_kwargs = dict(
-                                **gpu_kwargs, **(best_params or {}), **extra_model_params
+                                **gpu_kwargs,
+                                **(best_params or {}),
+                                **extra_model_params,
                             )
                             builder_kwargs["sample_weight"] = sample_weight
                             if model_type == "moe" or sequence_model:
@@ -1941,9 +1945,9 @@ def train(
                 base_params["regime_features"] = list(regime_features)
             if dvc_repo_path is not None:
                 base_params["dvc_repo"] = dvc_repo_path
-            mlflow.log_params({
-                k: _serialize_mlflow_param(v) for k, v in base_params.items()
-            })
+            mlflow.log_params(
+                {k: _serialize_mlflow_param(v) for k, v in base_params.items()}
+            )
             if best_params:
                 mlflow.log_params(
                     {
@@ -1964,17 +1968,13 @@ def train(
                 str(out_dir / "data_hashes.json"), artifact_path="model"
             )
             if config_snapshot_path is not None and config_snapshot_path.exists():
-                mlflow.log_artifact(
-                    str(config_snapshot_path), artifact_path="model"
-                )
+                mlflow.log_artifact(str(config_snapshot_path), artifact_path="model")
             model_uri = mlflow.get_artifact_uri("model/model.json")
             data_hash_uri = mlflow.get_artifact_uri("model/data_hashes.json")
             mlflow.log_param("model_uri", model_uri)
             mlflow.log_param("data_hashes_uri", data_hash_uri)
             if config_snapshot_path is not None:
-                snapshot_uri = mlflow.get_artifact_uri(
-                    "model/config_snapshot.json"
-                )
+                snapshot_uri = mlflow.get_artifact_uri("model/config_snapshot.json")
                 mlflow.log_param("config_snapshot_uri", snapshot_uri)
         span_eval.__exit__(None, None, None)
         return model_obj
@@ -1993,15 +1993,21 @@ def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
     if feature_names and len(feature_names) == features.shape[1]:
         df = pd.DataFrame(features, columns=feature_names)
         FeatureSchema.validate(df, lazy=True)
-    clip_low = np.asarray(params.get("clip_low", model.get("clip_low", [])), dtype=float)
+    clip_low = np.asarray(
+        params.get("clip_low", model.get("clip_low", [])), dtype=float
+    )
     clip_high = np.asarray(
         params.get("clip_high", model.get("clip_high", [])), dtype=float
     )
     if clip_low.size and clip_high.size and clip_low.shape == clip_high.shape:
         features = np.clip(features, clip_low, clip_high)
 
-    mean = np.asarray(params.get("feature_mean", model.get("feature_mean", [])), dtype=float)
-    std = np.asarray(params.get("feature_std", model.get("feature_std", [])), dtype=float)
+    mean = np.asarray(
+        params.get("feature_mean", model.get("feature_mean", [])), dtype=float
+    )
+    std = np.asarray(
+        params.get("feature_std", model.get("feature_std", [])), dtype=float
+    )
     if mean.size and std.size and mean.shape == std.shape:
         denom = np.where(std == 0, 1.0, std)
         features = features - mean
