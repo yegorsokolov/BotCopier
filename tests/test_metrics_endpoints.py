@@ -11,7 +11,6 @@ try:  # optional dependency in minimal environments
     from fastapi.testclient import TestClient
 except ModuleNotFoundError:  # pragma: no cover - fastapi not installed
     TestClient = None  # type: ignore[assignment]
-    pytestmark = pytest.mark.skip(reason="fastapi is not installed")
 
 from botcopier.metrics import ERROR_COUNTER, TRADE_COUNTER, start_metrics_server
 from botcopier.scripts import bandit_router
@@ -45,6 +44,7 @@ def test_metrics_server_exposes_counters():
     assert "botcopier_errors_total" in payload
 
 
+@pytest.mark.skipif(TestClient is None, reason="fastapi is not installed")
 def test_bandit_router_metrics_endpoint(tmp_path):
     state_file = tmp_path / "state.json"
     router = bandit_router.BanditRouter(models=1, method="thompson", state_file=str(state_file))
