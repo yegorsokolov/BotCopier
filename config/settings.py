@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,6 +36,22 @@ try:  # ``jsonschema`` is an optional dependency
     import jsonschema
 except Exception:  # pragma: no cover - library not available
     jsonschema = None  # type: ignore
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SettingsSnapshot:
+    """Frozen snapshot of resolved configuration values."""
+
+    digest: str
+    data: Dict[str, Dict[str, Any]]
+
+    def as_dict(self) -> Dict[str, Dict[str, Any]]:
+        """Return a deep copy of the stored configuration data."""
+
+        return json.loads(json.dumps(self.data, sort_keys=True))
 
 
 class DataConfig(BaseSettings):
@@ -149,24 +167,20 @@ def save_params(
     training: TrainingConfig,
     execution: ExecutionConfig | None = None,
     path: Path = Path("params.yaml"),
-) -> str:
-    """Persist resolved configuration values to ``params.yaml``.
-
-    Returns
-    -------
-    str
-        SHA256 hash of the resolved configuration.
-    """
+) -> SettingsSnapshot:
+    """Persist resolved configuration values to ``params.yaml``."""
 
     serialised = _serialise_settings(data, training, execution)
     try:
         existing = yaml.safe_load(path.read_text()) or {}
-    except Exception:
+    except (OSError, yaml.YAMLError):
+        logger.exception("Failed to read existing parameters from %s", path)
         existing = {}
     existing.update(serialised)
     path.write_text(yaml.safe_dump(existing, sort_keys=False))
     payload = json.dumps(serialised, sort_keys=True).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    digest = hashlib.sha256(payload).hexdigest()
+    return SettingsSnapshot(digest=digest, data=serialised)
 
 
 SCHEMA_PATH = (
@@ -234,4 +248,5 @@ __all__ = [
     "load_settings",
     "compute_settings_hash",
     "save_params",
+    "SettingsSnapshot",
 ]

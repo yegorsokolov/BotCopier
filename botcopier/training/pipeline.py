@@ -17,7 +17,7 @@ import sys
 import time
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -418,7 +418,7 @@ def _write_dependency_snapshot(out_dir: Path) -> Path:
             logger.exception(
                 "pip freeze returned non-zero exit code %s", result.returncode
             )
-    except Exception:  # pragma: no cover - pip not available
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - pip not available
         logger.exception("Failed to execute pip freeze; falling back to metadata")
         packages = []
     if not packages:
@@ -581,6 +581,7 @@ def train(
     complexity_penalty: float = 0.1,
     dvc_repo: Path | str | None = None,
     config_hash: str | None = None,
+    config_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
     **kwargs: object,
 ) -> object:
     """Train a model selected from the registry.
@@ -595,6 +596,7 @@ def train(
     out_dir = Path(out_dir)
     start_time = datetime.now(UTC)
     run_identifier = uuid4().hex
+    config_snapshot_path: Path | None = None
     if dvc_repo is not None:
         dvc_repo_path: Path | None = Path(dvc_repo)
     else:
@@ -1819,6 +1821,26 @@ def train(
         if config_hash:
             model["config_hash"] = config_hash
             metadata["config_hash"] = config_hash
+        if config_snapshot:
+            normalised = json.loads(json.dumps(config_snapshot, default=str))
+            config_snapshot_path = out_dir / "config_snapshot.json"
+            config_snapshot_path.write_text(
+                json.dumps(normalised, indent=2, sort_keys=True)
+            )
+            snapshot_digest = hashlib.sha256(
+                json.dumps(normalised, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            metadata["config_snapshot"] = normalised
+            try:
+                metadata["config_snapshot_path"] = str(
+                    config_snapshot_path.relative_to(out_dir)
+                )
+            except ValueError:
+                metadata["config_snapshot_path"] = str(config_snapshot_path)
+            metadata["config_snapshot_hash"] = snapshot_digest
+            if not config_hash:
+                metadata.setdefault("config_hash", snapshot_digest)
+                model.setdefault("config_hash", snapshot_digest)
         metadata["data_hashes_path"] = "data_hashes.json"
         model["data_hashes"] = data_hashes
         if curriculum_meta:
@@ -1889,14 +1911,15 @@ def train(
                 export_model(model_obj, X, out_dir / "model.onnx")
             except Exception:  # pragma: no cover - best effort
                 logger.exception("Failed to export ONNX model")
-        _version_artifacts_with_dvc(
-            dvc_repo_path,
-            [
-                data_dir,
-                out_dir / "model.json",
-                out_dir / "data_hashes.json",
-            ],
-        )
+        artifacts: list[Path] = [
+            data_dir,
+            out_dir / "model.json",
+            out_dir / "data_hashes.json",
+            deps_file,
+        ]
+        if config_snapshot_path is not None:
+            artifacts.append(config_snapshot_path)
+        _version_artifacts_with_dvc(dvc_repo_path, artifacts)
         if mlflow_active:
             base_params: dict[str, object] = {
                 "model_type": model_type,
@@ -1940,10 +1963,19 @@ def train(
             mlflow.log_artifact(
                 str(out_dir / "data_hashes.json"), artifact_path="model"
             )
+            if config_snapshot_path is not None and config_snapshot_path.exists():
+                mlflow.log_artifact(
+                    str(config_snapshot_path), artifact_path="model"
+                )
             model_uri = mlflow.get_artifact_uri("model/model.json")
             data_hash_uri = mlflow.get_artifact_uri("model/data_hashes.json")
             mlflow.log_param("model_uri", model_uri)
             mlflow.log_param("data_hashes_uri", data_hash_uri)
+            if config_snapshot_path is not None:
+                snapshot_uri = mlflow.get_artifact_uri(
+                    "model/config_snapshot.json"
+                )
+                mlflow.log_param("config_snapshot_uri", snapshot_uri)
         span_eval.__exit__(None, None, None)
         return model_obj
 

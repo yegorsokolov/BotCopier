@@ -58,6 +58,16 @@ except Exception:  # pragma: no cover - pyarrow not installed
 
 logger = logging.getLogger(__name__)
 
+if pa is not None:  # pragma: no cover - optional dependency guards
+    _PARQUET_EXCEPTIONS = (OSError, pa.ArrowInvalid, pa.ArrowIOError)
+else:  # pragma: no cover - pyarrow missing
+    _PARQUET_EXCEPTIONS = (OSError,)
+
+if flight is not None:  # pragma: no cover - optional dependency guards
+    _FLIGHT_EXCEPTIONS = (flight.FlightError, OSError)
+else:  # pragma: no cover - pyarrow.flight missing
+    _FLIGHT_EXCEPTIONS = (OSError,)
+
 SCHEMA_VERSION = 1
 
 
@@ -272,8 +282,14 @@ def validate_and_persist(table, schema, dest: Path) -> bool:
         dest.mkdir(parents=True, exist_ok=True)
         pq.write_to_dataset(table, root_path=str(dest))
         return True
-    except Exception as e:  # pragma: no cover - disk full etc.
-        logger.error({"error": "persist failure", "details": str(e), "path": str(dest)})
+    except _PARQUET_EXCEPTIONS as exc:  # pragma: no cover - disk full etc.
+        logger.exception(
+            {
+                "error": "persist failure",
+                "details": str(exc),
+                "path": str(dest),
+            }
+        )
         return False
 
 
@@ -323,8 +339,15 @@ def consume_flight(path: str, schema, dest: Path, host: str, port: int) -> None:
     ticket = flight.Ticket(path.encode())
     try:
         table = client.do_get(ticket).read_all()
-    except Exception as e:  # pragma: no cover - network issues
-        logger.warning({"error": "flight error", "details": str(e)})
+    except _FLIGHT_EXCEPTIONS as exc:  # pragma: no cover - network issues
+        logger.exception(
+            {
+                "error": "flight error",
+                "details": str(exc),
+                "endpoint": f"{host}:{port}",
+                "path": path,
+            }
+        )
         return
     validate_and_persist(table, schema, dest)
 

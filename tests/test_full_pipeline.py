@@ -56,6 +56,15 @@ def test_full_pipeline(tmp_path: Path) -> None:
     data_file = tmp_path / "trades_raw.csv"
     _write_training_logs(data_file)
 
+    config_snapshot = {
+        "data": {"data": str(data_file)},
+        "training": {"n_splits": 2, "lite_mode": True},
+        "execution": {"use_gpu": False},
+    }
+    snapshot_digest = hashlib.sha256(
+        json.dumps(config_snapshot, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
     # Train with minimal cross-validation to keep runtime low
     out_dir = tmp_path / "out"
     train(
@@ -65,6 +74,8 @@ def test_full_pipeline(tmp_path: Path) -> None:
         cv_gap=1,
         param_grid=[{}],
         lite_mode=True,
+        config_hash=snapshot_digest,
+        config_snapshot=config_snapshot,
     )
 
     model_path = out_dir / "model.json"
@@ -81,6 +92,13 @@ def test_full_pipeline(tmp_path: Path) -> None:
     metadata = model.get("metadata", {})
     assert metadata.get("seed") == 0
     assert metadata.get("dependencies_file") == "dependencies.txt"
+    assert metadata.get("config_hash") == snapshot_digest
+    assert metadata.get("config_snapshot_hash") == snapshot_digest
+    assert metadata.get("config_snapshot") == config_snapshot
+    assert metadata.get("config_snapshot_path") == "config_snapshot.json"
+    snapshot_file = out_dir / metadata["config_snapshot_path"]
+    assert snapshot_file.exists()
+    assert json.loads(snapshot_file.read_text()) == config_snapshot
     deps_path = out_dir / metadata["dependencies_file"]
     assert deps_path.exists()
     deps_lines = [line for line in deps_path.read_text().splitlines() if line.strip()]
