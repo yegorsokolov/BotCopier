@@ -160,6 +160,107 @@ logger = logging.getLogger(__name__)
 SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn", "crossmodal"}
 
 
+def _prepare_symbol_context(
+    symbols: Sequence[str],
+    symbol_graph: Mapping[str, object] | str | Path | None,
+) -> tuple[
+    dict[str, int],
+    list[str],
+    np.ndarray,
+    list[list[int]],
+    dict[str, list[str]],
+]:
+    """Return embedding and neighbour metadata for ``symbols``.
+
+    The returned tuple contains a mapping from symbol to index, the ordered
+    list of symbol names, an embedding matrix, integer neighbour lists and a
+    mapping of symbol name to neighbour ordering.  When ``symbol_graph`` is
+    ``None`` the function falls back to identity embeddings and self-only
+    neighbours so downstream consumers can continue operating.
+    """
+
+    unique_symbols = [str(sym) for sym in dict.fromkeys(symbols) if sym is not None]
+    graph_data: Mapping[str, object] | None
+    if symbol_graph is None:
+        graph_data = None
+    elif isinstance(symbol_graph, Mapping):
+        graph_data = symbol_graph
+    else:
+        try:
+            graph_data = json.loads(Path(symbol_graph).read_text())
+        except Exception:
+            logger.exception("Failed to load symbol graph from %s", symbol_graph)
+            graph_data = None
+
+    if graph_data:
+        graph_symbols = list(graph_data.get("symbols", []))
+        embeddings_map = graph_data.get("embeddings", {})
+        if not graph_symbols and isinstance(embeddings_map, Mapping):
+            graph_symbols = list(embeddings_map.keys())
+        embedding_dim = int(graph_data.get("embedding_dim", 0))
+        if embedding_dim <= 0 and isinstance(embeddings_map, Mapping) and embeddings_map:
+            first_vec = next(iter(embeddings_map.values()))
+            if isinstance(first_vec, Sequence):
+                embedding_dim = len(first_vec)
+        if embedding_dim <= 0:
+            embedding_dim = max(1, len(graph_symbols) or 1)
+        symbol_names = list(graph_symbols)
+        for sym in unique_symbols:
+            if sym not in symbol_names:
+                symbol_names.append(sym)
+        emb_matrix = np.zeros((len(symbol_names), embedding_dim), dtype=float)
+        if isinstance(embeddings_map, Mapping):
+            for idx, sym in enumerate(symbol_names):
+                vec = embeddings_map.get(sym)
+                if isinstance(vec, Sequence):
+                    arr = np.asarray(vec, dtype=float)
+                    if arr.shape[0] != embedding_dim:
+                        padded = np.zeros(embedding_dim, dtype=float)
+                        length = min(arr.shape[0], embedding_dim)
+                        padded[:length] = arr[:length]
+                        emb_matrix[idx] = padded
+                    else:
+                        emb_matrix[idx] = arr
+        edge_index = graph_data.get("edge_index")
+        neighbor_lists: list[list[int]] = [[] for _ in symbol_names]
+        if isinstance(edge_index, Sequence) and len(edge_index) == 2:
+            src_iter, dst_iter = edge_index
+            try:
+                for src, dst in zip(src_iter, dst_iter):
+                    src_i = int(src)
+                    dst_i = int(dst)
+                    if 0 <= src_i < len(graph_symbols) and 0 <= dst_i < len(graph_symbols):
+                        neighbor_lists[src_i].append(dst_i)
+            except TypeError:
+                logger.debug("symbol graph edge_index not iterable; skipping")
+        for idx in range(len(symbol_names)):
+            if not neighbor_lists[idx]:
+                neighbor_lists[idx] = [idx]
+            else:
+                # ensure self appears first and remove duplicates
+                seen: set[int] = set()
+                ordered: list[int] = []
+                if idx not in neighbor_lists[idx]:
+                    neighbor_lists[idx].insert(0, idx)
+                for item in neighbor_lists[idx]:
+                    if 0 <= item < len(symbol_names) and item not in seen:
+                        ordered.append(int(item))
+                        seen.add(int(item))
+                neighbor_lists[idx] = ordered or [idx]
+    else:
+        symbol_names = unique_symbols or []
+        embedding_dim = max(1, len(symbol_names) or 1)
+        emb_matrix = np.zeros((len(symbol_names), embedding_dim), dtype=float)
+        for i in range(len(symbol_names)):
+            emb_matrix[i, i % embedding_dim] = 1.0
+        neighbor_lists = [[i] for i in range(len(symbol_names))]
+
+    symbol_to_idx = {sym: i for i, sym in enumerate(symbol_names)}
+    neighbor_order = {
+        sym: [symbol_names[j] for j in neighbor_lists[idx]]
+        for sym, idx in symbol_to_idx.items()
+    }
+    return symbol_to_idx, symbol_names, emb_matrix, neighbor_lists, neighbor_order
 def _compute_time_decay_weights(
     event_times: np.ndarray | Sequence[object] | None, *, half_life_days: float
 ) -> np.ndarray:
@@ -947,6 +1048,17 @@ def train(
             "patience",
             "mixed_precision",
         },
+        "multi_symbol": {
+            "epochs",
+            "batch_size",
+            "lr",
+            "weight_decay",
+            "dropout",
+            "hidden_dim",
+            "heads",
+            "patience",
+            "mixed_precision",
+        },
         "moe": {
             "epochs",
             "lr",
@@ -1156,6 +1268,27 @@ def train(
     event_times: np.ndarray = np.array([], dtype="datetime64[ns]")
     label_col: str | None = None
     returns_df: pd.DataFrame | None = None
+    symbol_batches: list[np.ndarray] = []
+    symbols: np.ndarray = np.array([], dtype=str)
+    feature_extra_kwargs = {
+        key: kwargs[key]
+        for key in (
+            "symbol_graph",
+            "calendar_file",
+            "event_window",
+            "news_sentiment",
+            "entity_graph",
+            "neighbor_corr_windows",
+            "regime_model",
+            "tick_encoder",
+            "depth_cnn",
+            "calendar_features",
+            "pca_components",
+            "gnn_state",
+            "rank_features",
+        )
+        if key in kwargs
+    }
     if profile and feature_prof is not None:
         feature_prof.enable()
     if (
@@ -1182,6 +1315,7 @@ def train(
                     news_embeddings=news_embeddings_df,
                     news_embedding_window=news_window_param,
                     news_embedding_horizon=news_horizon_seconds,
+                    **feature_extra_kwargs,
                 )
             meta_entry = technical_features._FEATURE_METADATA.get("__news_embeddings__")
             if meta_entry is not None:
@@ -1206,6 +1340,8 @@ def train(
                 if label_col is None:
                     raise ValueError("no label column found")
             X_list.append(chunk[feature_names].fillna(0.0).to_numpy(dtype=float))
+            if "symbol" in chunk.columns:
+                symbol_batches.append(chunk["symbol"].astype(str).to_numpy())
             if "event_time" in chunk.columns:
                 event_time_list.append(
                     pd.to_datetime(chunk["event_time"], errors="coerce").to_numpy()
@@ -1238,6 +1374,10 @@ def train(
             if event_time_list
             else np.array([], dtype="datetime64[ns]")
         )
+        if symbol_batches:
+            symbols = np.concatenate(symbol_batches)
+        else:
+            symbols = np.array([], dtype=str)
     else:
         df = logs  # type: ignore[assignment]
         if _HAS_FEAST:
@@ -1257,6 +1397,7 @@ def train(
                 news_embeddings=news_embeddings_df,
                 news_embedding_window=news_window_param,
                 news_embedding_horizon=news_horizon_seconds,
+                **feature_extra_kwargs,
             )
         meta_entry = technical_features._FEATURE_METADATA.get("__news_embeddings__")
         if meta_entry is not None:
@@ -1276,6 +1417,8 @@ def train(
         FeatureSchema.validate(df[feature_names], lazy=True)
         if _HAS_DASK and isinstance(df, dd.DataFrame):
             df = df.compute()
+            if "symbol" in df.columns:
+                symbol_batches.append(df["symbol"].astype(str).to_numpy())
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy(dtype=float)
@@ -1309,6 +1452,8 @@ def train(
                     )
                 )
         elif isinstance(df, pd.DataFrame):
+            if "symbol" in df.columns:
+                symbol_batches.append(df["symbol"].astype(str).to_numpy())
             X = df[feature_names].fillna(0.0).to_numpy(dtype=float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy(dtype=float)
@@ -1347,6 +1492,8 @@ def train(
                 )
                 returns_df = None
         elif _HAS_POLARS and isinstance(df, pl.DataFrame):
+            if "symbol" in df.columns:
+                symbol_batches.append(df["symbol"].to_pandas().astype(str).to_numpy())
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy().astype(float)
@@ -1390,6 +1537,11 @@ def train(
                 returns_df = None
         else:  # pragma: no cover - defensive
             raise TypeError("Unsupported DataFrame type")
+
+        if symbol_batches:
+            symbols = np.concatenate(symbol_batches)
+        else:
+            symbols = np.array([], dtype=str)
 
     if news_seq_list:
         news_sequences = np.concatenate(news_seq_list, axis=0)
@@ -1551,6 +1703,8 @@ def train(
             returns_df = returns_df.iloc[window_length - 1 :].reset_index(drop=True)
         if news_sequences is not None:
             news_sequence_data = news_sequences[window_length - 1 :]
+        if symbols.size:
+            symbols = symbols[window_length - 1 :]
     else:
         sequence_data = None
         news_sequence_data = None
@@ -1571,6 +1725,22 @@ def train(
             logger.exception("Failed to record sample weight metrics")
     else:
         weight_stats = {"min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
+
+    symbol_indices = np.array([], dtype=int)
+    symbol_names_ctx: list[str] = []
+    symbol_embeddings_ctx = np.zeros((0, 0), dtype=float)
+    neighbor_lists_ctx: list[list[int]] = []
+    neighbor_order_ctx: dict[str, list[str]] = {}
+    if model_type == "multi_symbol":
+        symbol_map, symbol_names_ctx, symbol_embeddings_ctx, neighbor_lists_ctx, neighbor_order_ctx = _prepare_symbol_context(
+            symbols.tolist(), kwargs.get("symbol_graph")
+        )
+        if symbols.size:
+            symbol_indices = np.array([symbol_map.get(str(sym), -1) for sym in symbols], dtype=int)
+            if np.any(symbol_indices < 0):
+                raise ValueError("Encountered symbols without graph embeddings")
+        else:
+            symbol_indices = np.array([], dtype=int)
 
     # --- Baseline statistics for Mahalanobis distance ------------------
     feat_mean: np.ndarray = np.mean(X, axis=0) if X.size else np.array([])
@@ -1629,6 +1799,8 @@ def train(
             if sequence_data is None or news_sequence_data is None:
                 raise ValueError("crossmodal model requires sequence inputs")
             model_inputs = (sequence_data, news_sequence_data)
+        elif model_type == "multi_symbol":
+            model_inputs = (X, symbol_indices)
         else:
             model_inputs = sequence_data if sequence_model else X
         val_dists = (
@@ -1706,6 +1878,8 @@ def train(
                     if model_type == "crossmodal":
                         price_data = ray.get(price_ref)
                         news_data = ray.get(news_ref)
+                    elif model_type == "multi_symbol":
+                        data_feat, data_sym = ray.get(X_ref)
                     else:
                         data = ray.get(X_ref)
                     y = ray.get(y_ref)
@@ -1735,10 +1909,18 @@ def train(
                             **gpu_kwargs, **params, **extra_model_params
                         )
                         builder_kwargs["sample_weight"] = weights[tr_idx]
-                        if model_type == "moe" or sequence_model:
+                        if model_type in {"moe", "multi_symbol"} or sequence_model:
                             builder_kwargs["grad_clip"] = grad_clip
                         if meta_init is not None:
                             builder_kwargs["init_weights"] = meta_init
+                        if model_type == "multi_symbol":
+                            builder_kwargs.update(
+                                {
+                                    "symbol_names": symbol_names_ctx,
+                                    "embeddings": symbol_embeddings_ctx,
+                                    "neighbor_index": neighbor_lists_ctx,
+                                }
+                            )
                         if model_type == "crossmodal":
                             train_input = (
                                 price_data[tr_idx],
@@ -1755,6 +1937,15 @@ def train(
                                     news_data[val_idx],
                                 )
                             )
+                        elif model_type == "multi_symbol":
+                            local_kwargs = dict(builder_kwargs)
+                            local_kwargs["symbol_ids"] = data_sym[tr_idx]
+                            model_fold, pred_fn = builder(
+                                data_feat[tr_idx],
+                                y[tr_idx],
+                                **local_kwargs,
+                            )
+                            prob_val = pred_fn((data_feat[val_idx], data_sym[val_idx]))
                         else:
                             model_fold, pred_fn = builder(
                                 data[tr_idx],
@@ -1801,36 +1992,54 @@ def train(
                             ),
                         )
                         prob_val = pred_fn(X[val_idx], R[val_idx])
-                    else:
-                        builder_kwargs = dict(
-                            **gpu_kwargs, **params, **extra_model_params
+                else:
+                    builder_kwargs = dict(
+                        **gpu_kwargs, **params, **extra_model_params
+                    )
+                    builder_kwargs["sample_weight"] = sample_weight[tr_idx]
+                    if model_type in {"moe", "multi_symbol"} or sequence_model:
+                        builder_kwargs["grad_clip"] = grad_clip
+                    if meta_init is not None:
+                        builder_kwargs["init_weights"] = meta_init
+                    if model_type == "multi_symbol":
+                        builder_kwargs.update(
+                            {
+                                "symbol_names": symbol_names_ctx,
+                                "embeddings": symbol_embeddings_ctx,
+                                "neighbor_index": neighbor_lists_ctx,
+                            }
                         )
-                        builder_kwargs["sample_weight"] = sample_weight[tr_idx]
-                        if model_type == "moe" or sequence_model:
-                            builder_kwargs["grad_clip"] = grad_clip
-                        if meta_init is not None:
-                            builder_kwargs["init_weights"] = meta_init
-                        if model_type == "crossmodal":
-                            price_train = sequence_data[tr_idx]
-                            news_train = news_sequence_data[tr_idx]
-                            model_fold, pred_fn = builder(
-                                (price_train, news_train),
-                                y[tr_idx],
-                                **builder_kwargs,
+                    if model_type == "crossmodal":
+                        price_train = sequence_data[tr_idx]
+                        news_train = news_sequence_data[tr_idx]
+                        model_fold, pred_fn = builder(
+                            (price_train, news_train),
+                            y[tr_idx],
+                            **builder_kwargs,
+                        )
+                        prob_val = pred_fn(
+                            (
+                                sequence_data[val_idx],
+                                news_sequence_data[val_idx],
                             )
-                            prob_val = pred_fn(
-                                (
-                                    sequence_data[val_idx],
-                                    news_sequence_data[val_idx],
-                                )
-                            )
-                        else:
-                            model_fold, pred_fn = builder(
-                                model_inputs[tr_idx],
-                                y[tr_idx],
-                                **builder_kwargs,
-                            )
-                            prob_val = pred_fn(model_inputs[val_idx])
+                        )
+                    elif model_type == "multi_symbol":
+                        data_feat, data_sym = model_inputs
+                        local_kwargs = dict(builder_kwargs)
+                        local_kwargs["symbol_ids"] = data_sym[tr_idx]
+                        model_fold, pred_fn = builder(
+                            data_feat[tr_idx],
+                            y[tr_idx],
+                            **local_kwargs,
+                        )
+                        prob_val = pred_fn((data_feat[val_idx], data_sym[val_idx]))
+                    else:
+                        model_fold, pred_fn = builder(
+                            model_inputs[tr_idx],
+                            y[tr_idx],
+                            **builder_kwargs,
+                        )
+                        prob_val = pred_fn(model_inputs[val_idx])
                     profits_val = profits[val_idx]
                     if profile and eval_prof is not None:
                         eval_prof.enable()
@@ -1950,15 +2159,31 @@ def train(
                 **gpu_kwargs, **(best_params or {}), **extra_model_params
             )
             builder_kwargs["sample_weight"] = sample_weight
-            if model_type == "moe" or sequence_model:
+            if model_type in {"moe", "multi_symbol"} or sequence_model:
                 builder_kwargs["grad_clip"] = grad_clip
             if meta_init is not None:
                 builder_kwargs["init_weights"] = meta_init
-            model_data, predict_fn = builder(
-                model_inputs,
-                y,
-                **builder_kwargs,
-            )
+            if model_type == "multi_symbol":
+                builder_kwargs.update(
+                    {
+                        "symbol_names": symbol_names_ctx,
+                        "embeddings": symbol_embeddings_ctx,
+                        "neighbor_index": neighbor_lists_ctx,
+                        "symbol_ids": symbol_indices,
+                    }
+                )
+                data_features, _symbol_idx = model_inputs
+                model_data, predict_fn = builder(
+                    data_features,
+                    y,
+                    **builder_kwargs,
+                )
+            else:
+                model_data, predict_fn = builder(
+                    model_inputs,
+                    y,
+                    **builder_kwargs,
+                )
 
         # --- SHAP based feature selection ---------------------------------
         shap_threshold = float(kwargs.get("shap_threshold", 0.0))
@@ -2000,34 +2225,52 @@ def train(
                         zip(feature_names, mean_abs), key=lambda x: x[1], reverse=True
                     )
                     logger.info("SHAP importance ranking: %s", ranking)
-                    if shap_threshold > 0.0:
-                        mask = mean_abs >= shap_threshold
-                        if mask.sum() < len(feature_names):
-                            X = X[:, mask]
-                            feature_names = [
-                                fn for fn, keep in zip(feature_names, mask) if keep
-                            ]
-                            model_inputs = X
-                            builder_kwargs = dict(
-                                **gpu_kwargs,
-                                **(best_params or {}),
-                                **extra_model_params,
-                            )
-                            builder_kwargs["sample_weight"] = sample_weight
-                            if model_type == "moe" or sequence_model:
-                                builder_kwargs["grad_clip"] = grad_clip
-                            model_data, predict_fn = builder(
-                                model_inputs,
-                                y,
-                                **builder_kwargs,
-                            )
+                            if shap_threshold > 0.0:
+                                mask = mean_abs >= shap_threshold
+                                if mask.sum() < len(feature_names):
+                                    X = X[:, mask]
+                                    feature_names = [
+                                        fn for fn, keep in zip(feature_names, mask) if keep
+                                    ]
+                                    if model_type == "multi_symbol":
+                                        model_inputs = (X, symbol_indices)
+                                    else:
+                                        model_inputs = X
+                                    builder_kwargs = dict(
+                                        **gpu_kwargs,
+                                        **(best_params or {}),
+                                        **extra_model_params,
+                                    )
+                                    builder_kwargs["sample_weight"] = sample_weight
+                                    if model_type in {"moe", "multi_symbol"} or sequence_model:
+                                        builder_kwargs["grad_clip"] = grad_clip
+                                    if model_type == "multi_symbol":
+                                        builder_kwargs.update(
+                                            {
+                                                "symbol_names": symbol_names_ctx,
+                                                "embeddings": symbol_embeddings_ctx,
+                                                "neighbor_index": neighbor_lists_ctx,
+                                                "symbol_ids": symbol_indices,
+                                            }
+                                        )
+                                        model_data, predict_fn = builder(
+                                            model_inputs[0],
+                                            y,
+                                            **builder_kwargs,
+                                        )
+                                    else:
+                                        model_data, predict_fn = builder(
+                                            model_inputs,
+                                            y,
+                                            **builder_kwargs,
+                                        )
             except Exception:  # pragma: no cover - shap is optional
                 logger.exception("Failed to compute SHAP values")
         model_obj = getattr(predict_fn, "model", None)
 
         # --- Probability calibration ---------------------------------------
         calibration_info: dict[str, object] | None = None
-        if model_type != "moe" and not sequence_model:
+        if model_type != "moe" and model_type != "multi_symbol" and not sequence_model:
             base_model = getattr(predict_fn, "model", None)
             if base_model is not None and X.size and y.size:
                 cal_splitter = PurgedWalkForward(n_splits=n_splits, gap=gap)
@@ -2105,6 +2348,11 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        if model_type == "multi_symbol":
+            if "neighbor_order" not in model:
+                model["neighbor_order"] = neighbor_order_ctx
+            if "attention_weights" not in model:
+                model["attention_weights"] = {}
         if model_type == "crossmodal" and news_meta is not None:
             model["news_embeddings"] = {
                 "window": int(news_meta.get("window", news_window_param)),
