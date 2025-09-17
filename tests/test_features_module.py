@@ -1,5 +1,11 @@
 from datetime import datetime
 
+import pytest
+
+np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
+
+import botcopier.features.technical as technical
 from botcopier.features.engineering import _extract_features
 
 
@@ -55,3 +61,43 @@ def test_mandatory_features_present():
     feats, *_ = _extract_features(rows)
     for key in ["book_bid_vol", "book_ask_vol", "book_imbalance", "equity", "margin_level", "atr"]:
         assert key in feats[0]
+
+
+def test_news_embeddings_metadata():
+    rows = [
+        {
+            "event_time": datetime(2024, 1, 1, 0, 0, 0),
+            "symbol": "EURUSD",
+            "price": 1.1,
+            "profit": 0.1,
+        },
+        {
+            "event_time": datetime(2024, 1, 1, 0, 1, 0),
+            "symbol": "EURUSD",
+            "price": 1.15,
+            "profit": -0.2,
+        },
+    ]
+    news = pd.DataFrame(
+        [
+            {"symbol": "EURUSD", "timestamp": "2024-01-01T00:00:30Z", "emb0": 0.5, "emb1": -0.25},
+            {"symbol": "EURUSD", "timestamp": "2024-01-01T00:00:50Z", "emb0": 0.1, "emb1": 0.75},
+        ]
+    )
+    df, feature_names, _, _ = _extract_features(
+        rows,
+        [],
+        news_embeddings=news,
+        news_embedding_window=2,
+        news_embedding_horizon=120.0,
+    )
+    assert feature_names
+    meta = technical._FEATURE_METADATA.get("__news_embeddings__")
+    assert meta is not None
+    assert meta["window"] == 2
+    assert meta["dimension"] == 2
+    sequences = np.array(meta["sequences"], dtype=float)
+    assert sequences.shape == (len(df), 2, 2)
+    # most recent embedding should be last row
+    assert np.allclose(sequences[1, -1], np.array([0.1, 0.75]))
+    technical._FEATURE_METADATA.clear()

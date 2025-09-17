@@ -3,9 +3,10 @@ import pytest
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 
-from botcopier.models.deep import TemporalConvNet
+from botcopier.models.deep import CrossModalTransformer, TemporalConvNet
 from botcopier.models.registry import (
     TabTransformer,
+    fit_crossmodal_transformer,
     fit_tab_transformer,
     fit_temporal_cnn,
 )
@@ -74,7 +75,43 @@ def test_temporal_convnet_forward_and_accuracy():
     assert "state_dict" in meta and meta["state_dict"]
 
 
+def test_crossmodal_forward_and_training():
+    rng = np.random.default_rng(2)
+    price = rng.normal(size=(64, 3, 4))
+    news = rng.normal(size=(64, 2, 5))
+    y = (price[:, :, 0].mean(axis=1) + 0.5 * news[:, :, 0].mean(axis=1) > 0).astype(float)
+
+    torch.manual_seed(0)
+    net = CrossModalTransformer(price_features=4, news_features=5, price_window=3, news_window=2)
+    price_t = torch.tensor(price, dtype=torch.float32)
+    news_t = torch.tensor(news, dtype=torch.float32)
+    logits = net(price_t, news_t)
+    assert logits.shape == (price.shape[0],)
+
+    meta, predict = fit_crossmodal_transformer(
+        (price, news),
+        y,
+        epochs=6,
+        batch_size=16,
+        lr=5e-3,
+        dropout=0.0,
+        mixed_precision=False,
+    )
+    preds = predict((price, news))
+    acc = ((preds >= 0.5).astype(float) == y).mean()
+    assert acc > 0.6
+
+    arch = meta.get("architecture", {})
+    assert arch.get("type") == "CrossModalTransformer"
+    assert arch.get("price_features") == 4
+    assert arch.get("news_features") == 5
+    assert arch.get("price_window") == 3
+    assert arch.get("news_window") == 2
+    assert "news_clip_low" in meta
+
+
 __all__ = [
     "test_tabtransformer_forward_and_accuracy",
     "test_temporal_convnet_forward_and_accuracy",
+    "test_crossmodal_forward_and_training",
 ]

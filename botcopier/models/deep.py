@@ -89,6 +89,113 @@ if _HAS_TORCH:
             return self.head(h).squeeze(-1)
 
 
+    class CrossModalTransformer(nn.Module):
+        """Fuse price and news sequences using dual encoders with cross-attention."""
+
+        def __init__(
+            self,
+            price_features: int,
+            news_features: int,
+            price_window: int,
+            news_window: int,
+            *,
+            dim: int = 64,
+            depth: int = 2,
+            heads: int = 4,
+            ff_dim: int = 128,
+            dropout: float = 0.1,
+        ) -> None:
+            super().__init__()
+            if heads < 1:
+                raise ValueError("heads must be positive")
+            if dim % heads != 0:
+                raise ValueError("dim must be divisible by heads")
+            if price_window < 1 or news_window < 1:
+                raise ValueError("windows must be positive")
+            if price_features < 1 or news_features < 1:
+                raise ValueError("feature dimensions must be positive")
+
+            self.price_features = int(price_features)
+            self.news_features = int(news_features)
+            self.price_window = int(price_window)
+            self.news_window = int(news_window)
+
+            encoder_layer = nn.TransformerEncoderLayer(
+                dim,
+                heads,
+                ff_dim,
+                dropout=dropout,
+                batch_first=True,
+                activation="gelu",
+            )
+            news_layer = nn.TransformerEncoderLayer(
+                dim,
+                heads,
+                ff_dim,
+                dropout=dropout,
+                batch_first=True,
+                activation="gelu",
+            )
+
+            self.price_proj = nn.Linear(price_features, dim)
+            self.news_proj = nn.Linear(news_features, dim)
+            self.price_pos = PositionalEncoding(self.price_window, dim)
+            self.news_pos = PositionalEncoding(self.news_window, dim)
+            self.price_encoder = nn.TransformerEncoder(encoder_layer, depth)
+            self.news_encoder = nn.TransformerEncoder(news_layer, depth)
+            self.cross_attn = nn.MultiheadAttention(
+                dim, heads, dropout=dropout, batch_first=True
+            )
+            fused_dim = dim * 3
+            self.fuse_norm = nn.LayerNorm(fused_dim)
+            self.dropout = nn.Dropout(dropout)
+            self.head = nn.Sequential(
+                nn.Linear(fused_dim, dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(dim, 1),
+            )
+
+        def _validate_inputs(
+            self, price: torch.Tensor, news: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            if price.dim() == 2:
+                price = price.unsqueeze(1)
+            if news.dim() == 2:
+                news = news.unsqueeze(1)
+            if price.dim() != 3 or news.dim() != 3:
+                raise ValueError(
+                    "expected price and news inputs of shape (batch, window, features)"
+                )
+            if price.size(-1) != self.price_features:
+                raise ValueError("price feature dimension mismatch")
+            if news.size(-1) != self.news_features:
+                raise ValueError("news feature dimension mismatch")
+            if price.size(1) > self.price_window:
+                raise ValueError("price sequence exceeds configured window")
+            if news.size(1) > self.news_window:
+                raise ValueError("news sequence exceeds configured window")
+            return price, news
+
+        def forward(self, price: torch.Tensor, news: torch.Tensor) -> torch.Tensor:
+            price, news = self._validate_inputs(price, news)
+            price_h = self.price_proj(price)
+            price_h = self.price_pos(price_h)
+            price_h = self.price_encoder(price_h)
+
+            news_h = self.news_proj(news)
+            news_h = self.news_pos(news_h)
+            news_h = self.news_encoder(news_h)
+
+            attn_out, _ = self.cross_attn(price_h, news_h, news_h)
+            price_pool = price_h.mean(dim=1)
+            attn_pool = attn_out.mean(dim=1)
+            news_pool = news_h.mean(dim=1)
+            fused = torch.cat([price_pool, attn_pool, news_pool], dim=-1)
+            fused = self.dropout(self.fuse_norm(fused))
+            return self.head(fused).squeeze(-1)
+
+
     class TemporalBlock(nn.Module):
         """Residual block used by :class:`TemporalConvNet`."""
 
@@ -276,6 +383,10 @@ else:  # pragma: no cover - fallback definitions when torch is unavailable
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError("PyTorch is required for TabTransformer")
 
+    class CrossModalTransformer:  # type: ignore[override]
+        def __init__(self, *args, **kwargs) -> None:
+            raise ImportError("PyTorch is required for CrossModalTransformer")
+
     class TemporalConvNet:  # type: ignore[override]
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError("PyTorch is required for TemporalConvNet")
@@ -289,5 +400,11 @@ else:  # pragma: no cover - fallback definitions when torch is unavailable
             raise ImportError("PyTorch is required for MixtureOfExperts")
 
 
-__all__ = ["TabTransformer", "TemporalConvNet", "TCNClassifier", "MixtureOfExperts"]
+__all__ = [
+    "TabTransformer",
+    "CrossModalTransformer",
+    "TemporalConvNet",
+    "TCNClassifier",
+    "MixtureOfExperts",
+]
 
