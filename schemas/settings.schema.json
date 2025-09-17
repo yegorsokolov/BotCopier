@@ -428,6 +428,42 @@
           "title": "Reuse Controller",
           "type": "boolean"
         },
+        "controller_max_subset_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controller Max Subset Size"
+        },
+        "controller_episode_sample_size": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controller Episode Sample Size"
+        },
+        "controller_baseline_momentum": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.9,
+          "title": "Controller Baseline Momentum"
+        },
         "meta_weights": {
           "anyOf": [
             {

@@ -114,6 +114,9 @@ class TrainingConfig(BaseSettings):
     experiment_name: Optional[str] = None
     metrics: List[str] = []
     reuse_controller: bool = False
+    controller_max_subset_size: Optional[int] = None
+    controller_episode_sample_size: Optional[int] = None
+    controller_baseline_momentum: Optional[float] = 0.9
     meta_weights: Optional[Path] = None
 
     model_config = {"env_prefix": "TRAIN_", "extra": "forbid"}
