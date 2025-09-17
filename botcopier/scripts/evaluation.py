@@ -8,6 +8,15 @@ from pathlib import Path
 from statistics import NormalDist
 from typing import Dict, List, Optional, Sequence
 
+try:  # pragma: no cover - optional parallel dependency
+    from joblib import Parallel, delayed  # type: ignore
+
+    _HAS_JOBLIB = True
+except Exception:  # pragma: no cover
+    Parallel = None  # type: ignore
+    delayed = None  # type: ignore
+    _HAS_JOBLIB = False
+
 # ``evaluate_strategy`` is intentionally lightweight and may be imported in
 # environments where heavy scientific dependencies are absent.  The broader
 # evaluation utilities rely on :mod:`numpy`, :mod:`pandas` and scikit-learn,
@@ -40,6 +49,51 @@ from schemas.decisions import DECISION_SCHEMA
 from schemas.trades import TRADE_SCHEMA
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_n_jobs(n_jobs: int | None) -> int:
+    """Return an effective ``n_jobs`` respecting optional dependencies."""
+
+    if not n_jobs or n_jobs <= 1 or not _HAS_JOBLIB:
+        return 1
+    return int(n_jobs)
+
+
+def _vectorised_drawdown_matrix(returns: "np.ndarray") -> "np.ndarray":
+    """Compute column-wise absolute drawdown for a returns matrix."""
+
+    if np is None:  # pragma: no cover - optional dependency guard
+        raise ImportError("numpy is required for vectorised drawdown computation")
+    if returns.ndim == 1:
+        returns = returns[:, None]
+    cumulative = np.cumsum(returns, axis=0)
+    cumulative = np.vstack([np.zeros((1, cumulative.shape[1])), cumulative])
+    peaks = np.maximum.accumulate(cumulative, axis=0)
+    drawdowns = peaks - cumulative
+    return np.max(drawdowns, axis=0)
+
+
+def _vectorised_var95_matrix(returns: "np.ndarray") -> "np.ndarray":
+    """Compute column-wise 5%% value-at-risk using deterministic indexing."""
+
+    if np is None:  # pragma: no cover - optional dependency guard
+        raise ImportError("numpy is required for vectorised VaR computation")
+    if returns.ndim == 1:
+        returns = returns[:, None]
+    ordered = np.sort(returns, axis=0)
+    idx = int(0.05 * ordered.shape[0])
+    idx = min(max(idx, 0), ordered.shape[0] - 1)
+    return ordered[idx, :]
+
+
+def _as_float_array(data: Sequence[float] | "np.ndarray") -> "np.ndarray":
+    """Convert ``data`` to a 1-D ``float`` NumPy array."""
+
+    if np is None:  # pragma: no cover - optional dependency guard
+        raise ImportError("numpy is required for vectorised evaluation utilities")
+    if isinstance(data, np.ndarray):
+        return data.astype(float, copy=False)
+    return np.asarray(list(data), dtype=float)
 
 
 def _parse_time(value: str, *, symbol: str = "") -> datetime:
@@ -377,10 +431,8 @@ def evaluate(
             if downside_net_std > 0:
                 sortino_net = mean_net / downside_net_std
 
-    max_dd = _abs_drawdown(profit_array.tolist()) if profit_array.size else 0.0
-    max_dd_net = (
-        _abs_drawdown(net_profit_array.tolist()) if net_profit_array.size else 0.0
-    )
+    max_dd = _abs_drawdown(profit_array) if profit_array.size else 0.0
+    max_dd_net = _abs_drawdown(net_profit_array) if net_profit_array.size else 0.0
 
     predictions_per_model = (
         merged["executed_model_idx"].dropna().astype(int).value_counts().to_dict()
@@ -765,6 +817,7 @@ def search_decision_threshold(
     metric_names: Sequence[str] | None = None,
     max_drawdown: float | None = None,
     var_limit: float | None = None,
+    n_jobs: int | None = None,
 ) -> tuple[float, Dict[str, object]]:
     """Search for a decision threshold that maximises ``objective``.
 
@@ -807,6 +860,7 @@ def search_decision_threshold(
     profits = np.asarray(profits, dtype=float)
 
     candidates = _candidate_thresholds(probas, threshold_grid)
+    thresholds = candidates.astype(float)
     objective_metric_map = {
         "profit": "profit",
         "net_profit": "profit",
@@ -814,69 +868,78 @@ def search_decision_threshold(
         "sortino": "sortino_ratio",
     }
     metric_key = objective_metric_map.get(objective, objective)
-    best_threshold = float(candidates[0])
-    best_metrics: Dict[str, object] | None = None
-    best_score = -np.inf
+    returns_matrix = profits[:, None] * (probas[:, None] >= thresholds[None, :])
+    drawdowns = _vectorised_drawdown_matrix(returns_matrix)
+    var95_values = _vectorised_var95_matrix(returns_matrix)
 
-    for thr in candidates:
-        returns = profits * (probas >= thr)
+    def _compute(idx: int) -> tuple[float, Dict[str, object]]:
+        thr = float(thresholds[idx])
+        returns = returns_matrix[:, idx]
         metrics = _classification_metrics(
             y_true,
             probas,
             returns,
             selected=metric_names,
-            threshold=float(thr),
+            threshold=thr,
         )
-        metrics.setdefault("max_drawdown", float(_abs_drawdown(returns.tolist())))
-        metrics.setdefault("var_95", float(_var_95(returns.tolist())))
-        metrics["threshold"] = float(thr)
+        metrics.setdefault("max_drawdown", float(drawdowns[idx]))
+        metrics.setdefault("var_95", float(var95_values[idx]))
+        metrics["threshold"] = thr
         metrics["threshold_objective"] = objective
+        return thr, metrics
 
-        if max_drawdown is not None and metrics["max_drawdown"] > max_drawdown:
-            continue
-        if var_limit is not None and metrics["var_95"] > var_limit:
-            continue
+    effective_jobs = _resolve_n_jobs(n_jobs)
+    indices = range(len(thresholds))
+    if len(thresholds) == 1 or effective_jobs == 1 or not _HAS_JOBLIB:
+        evaluated = [_compute(i) for i in indices]
+    else:
+        evaluated = Parallel(n_jobs=effective_jobs, prefer="threads")(
+            delayed(_compute)(i) for i in indices
+        )
 
-        obj_val = metrics.get(metric_key)
-        if isinstance(obj_val, (int, float)) and not math.isnan(obj_val):
-            score = float(obj_val)
-        else:
-            score = -np.inf
+    thresholds_eval = np.asarray([thr for thr, _ in evaluated], dtype=float)
+    metrics_list = [metrics for _, metrics in evaluated]
 
-        if score > best_score or (
-            np.isfinite(score)
-            and np.isclose(score, best_score)
-            and float(thr) < best_threshold
-        ):
-            best_score = score
-            best_threshold = float(thr)
-            best_metrics = metrics
+    def _metric_value(metrics: Dict[str, object]) -> float:
+        val = metrics.get(metric_key)
+        if isinstance(val, (int, float)):
+            val = float(val)
+            if not math.isnan(val):
+                return val
+        return float("nan")
 
-    if best_metrics is None:
-        limit_desc = []
-        if max_drawdown is not None:
-            limit_desc.append("max_drawdown")
-        if var_limit is not None:
-            limit_desc.append("var_95")
-        if limit_desc:
+    metric_values = np.fromiter(
+        (_metric_value(metrics) for metrics in metrics_list),
+        dtype=float,
+        count=len(metrics_list),
+    )
+
+    risk_mask = np.ones_like(metric_values, dtype=bool)
+    if max_drawdown is not None:
+        risk_mask &= drawdowns <= max_drawdown
+    if var_limit is not None:
+        risk_mask &= var95_values <= var_limit
+
+    valid_mask = risk_mask & np.isfinite(metric_values)
+    if np.any(valid_mask):
+        candidate_scores = np.where(valid_mask, metric_values, np.nan)
+        best_idx = int(np.nanargmax(candidate_scores))
+        best_threshold = float(thresholds_eval[best_idx])
+        best_metrics = metrics_list[best_idx]
+    else:
+        if max_drawdown is not None or var_limit is not None:
+            limit_desc = []
+            if max_drawdown is not None:
+                limit_desc.append("max_drawdown")
+            if var_limit is not None:
+                limit_desc.append("var_95")
             raise ValueError(
                 "No decision threshold satisfies risk limits: "
                 + ", ".join(limit_desc)
             )
-        fallback = float(candidates[0])
-        returns = profits * (probas >= fallback)
-        best_metrics = _classification_metrics(
-            y_true,
-            probas,
-            returns,
-            selected=metric_names,
-            threshold=fallback,
-        )
-        best_metrics.setdefault("max_drawdown", float(_abs_drawdown(returns.tolist())))
-        best_metrics.setdefault("var_95", float(_var_95(returns.tolist())))
-        best_metrics["threshold"] = fallback
-        best_metrics["threshold_objective"] = objective
-        best_threshold = fallback
+        best_idx = 0
+        best_threshold = float(thresholds_eval[best_idx])
+        best_metrics = metrics_list[best_idx]
 
     return best_threshold, best_metrics
 def bootstrap_metrics(
@@ -884,6 +947,8 @@ def bootstrap_metrics(
     probs: np.ndarray,
     returns: np.ndarray,
     n_boot: int = 1000,
+    *,
+    n_jobs: int | None = None,
 ) -> Dict[str, Dict[str, float]]:
     """Estimate metric confidence intervals via bootstrapping.
 
@@ -897,6 +962,10 @@ def bootstrap_metrics(
         Profit/return per sample used for Sharpe, Sortino and profit metrics.
     n_boot:
         Number of bootstrap resamples.
+    n_jobs:
+        Optional parallelism level for independent bootstrap resamples.  When
+        ``None`` a sensible default is used.  Results are deterministic for any
+        thread count because bootstrap indices are generated up-front.
 
     Returns
     -------
@@ -904,6 +973,15 @@ def bootstrap_metrics(
         Mapping of metric names to a dict with ``mean`` and 95%% confidence
         interval bounds ``low`` and ``high``.
     """
+
+    if np is None:  # pragma: no cover - optional dependency guard
+        raise ImportError("numpy is required for bootstrap metrics")
+
+    y = np.asarray(y, dtype=float)
+    probs = np.asarray(probs, dtype=float)
+    returns = np.asarray(returns, dtype=float)
+    if y.size == 0 or n_boot <= 0:
+        return {}
 
     rng = np.random.default_rng(0)
     n = y.shape[0]
@@ -918,27 +996,53 @@ def bootstrap_metrics(
         "var_95",
         "profit",
     ]
-    collected: Dict[str, List[float]] = {k: [] for k in keys}
 
-    for _ in range(n_boot):
-        idx = rng.integers(0, n, size=n)
-        metrics = _classification_metrics(y[idx], probs[idx], returns[idx])
-        for k in keys:
-            v = metrics.get(k)
-            if v is not None:
-                collected[k].append(float(v))
+    index_samples = rng.integers(0, n, size=(n_boot, n))
 
-    results: Dict[str, Dict[str, float]] = {}
-    for k, vals in collected.items():
-        arr = np.asarray(vals, dtype=float)
-        mean = float(np.mean(arr))
-        low, high = np.quantile(arr, [0.025, 0.975])
-        results[k] = {"mean": mean, "low": float(low), "high": float(high)}
-
-    for k, v in results.items():
-        logger.info(
-            "%s: mean=%.6f, 95%% CI=(%.6f, %.6f)", k, v["mean"], v["low"], v["high"]
+    def _compute(sample_idx: "np.ndarray") -> "np.ndarray":
+        metrics = _classification_metrics(
+            y[sample_idx], probs[sample_idx], returns[sample_idx]
         )
+        return np.asarray(
+            [
+                float(metrics.get(k)) if metrics.get(k) is not None else np.nan
+                for k in keys
+            ],
+            dtype=float,
+        )
+
+    effective_jobs = _resolve_n_jobs(n_jobs)
+    if effective_jobs == 1 or n_boot == 1 or not _HAS_JOBLIB:
+        stacked = np.stack([_compute(idx) for idx in index_samples], axis=0)
+    else:
+        stacked = np.stack(
+            Parallel(n_jobs=effective_jobs, prefer="threads")(
+                delayed(_compute)(idx) for idx in index_samples
+            ),
+            axis=0,
+        )
+
+    valid_mask = ~np.all(np.isnan(stacked), axis=0)
+    key_array = np.asarray(keys, dtype=object)
+    results: Dict[str, Dict[str, float]] = {}
+    if np.any(valid_mask):
+        trimmed = stacked[:, valid_mask]
+        means = np.nanmean(trimmed, axis=0)
+        lows = np.nanquantile(trimmed, 0.025, axis=0)
+        highs = np.nanquantile(trimmed, 0.975, axis=0)
+        for key, mean, low, high in zip(key_array[valid_mask], means, lows, highs):
+            results[key] = {
+                "mean": float(mean),
+                "low": float(low),
+                "high": float(high),
+            }
+            logger.info(
+                "%s: mean=%.6f, 95%% CI=(%.6f, %.6f)",
+                key,
+                results[key]["mean"],
+                results[key]["low"],
+                results[key]["high"],
+            )
 
     with open("metrics.json", "w") as f:
         json.dump(results, f, indent=2)
@@ -973,28 +1077,43 @@ def _abs_drawdown(returns: Sequence[float]) -> float:
         Maximum peak-to-trough decline in absolute terms.
     """
 
-    cumulative = 0.0
-    peak = 0.0
-    max_dd = 0.0
-    for r in returns:
-        cumulative += r
-        if cumulative > peak:
-            peak = cumulative
-        drawdown = peak - cumulative
-        if drawdown > max_dd:
-            max_dd = drawdown
-    return float(max_dd)
+    if np is None:
+        cumulative = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for r in returns:
+            cumulative += r
+            if cumulative > peak:
+                peak = cumulative
+            drawdown = peak - cumulative
+            if drawdown > max_dd:
+                max_dd = drawdown
+        return float(max_dd)
+
+    arr = _as_float_array(returns)
+    if arr.size == 0:
+        return 0.0
+    cumulative = np.concatenate(([0.0], np.cumsum(arr)))
+    peaks = np.maximum.accumulate(cumulative)
+    drawdowns = peaks - cumulative
+    return float(np.max(drawdowns))
 
 
 def _risk(returns: Sequence[float]) -> float:
     """Sample standard deviation of returns."""
 
-    returns = list(returns)
-    if len(returns) < 2:
+    if np is None:
+        returns = list(returns)
+        if len(returns) < 2:
+            return 0.0
+        mean = sum(returns) / len(returns)
+        variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+        return math.sqrt(variance)
+
+    arr = _as_float_array(returns)
+    if arr.size < 2:
         return 0.0
-    mean = sum(returns) / len(returns)
-    variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
-    return math.sqrt(variance)
+    return float(np.std(arr, ddof=1))
 
 
 def _budget_utilisation(returns: Sequence[float], budget: float) -> float:
@@ -1004,10 +1123,14 @@ def _budget_utilisation(returns: Sequence[float], budget: float) -> float:
     than ``1.0`` indicate that the budget has been exceeded.
     """
 
-    used = float(sum(abs(r) for r in returns))
+    if np is None:
+        used = float(sum(abs(r) for r in returns))
+    else:
+        arr = _as_float_array(returns)
+        used = float(np.abs(arr).sum())
     if budget <= 0:
         return used
-    return used / budget
+    return used / float(budget)
 
 
 def _order_type_compliance(order_types: Sequence[str], allowed: Sequence[str]) -> float:
@@ -1023,10 +1146,20 @@ def _order_type_compliance(order_types: Sequence[str], allowed: Sequence[str]) -
 
     if not order_types:
         return 1.0
-    allowed_set = {o.lower() for o in allowed}
-    cleaned = [o.strip().lower() for o in order_types]
-    compliant = sum(1 for o in cleaned if o in allowed_set)
-    return compliant / len(cleaned)
+    if np is None:
+        allowed_set = {o.lower() for o in allowed}
+        cleaned = [o.strip().lower() for o in order_types]
+        compliant = sum(1 for o in cleaned if o in allowed_set)
+        return compliant / len(cleaned)
+
+    cleaned = np.char.lower(
+        np.char.strip(np.asarray(list(order_types), dtype=str))
+    )
+    allowed_arr = np.char.lower(np.asarray(list(allowed), dtype=str))
+    if allowed_arr.size == 0:
+        return 0.0 if cleaned.size else 1.0
+    mask = np.isin(cleaned, allowed_arr)
+    return float(mask.mean())
 
 
 def _var_95(returns: Sequence[float]) -> float:
@@ -1037,36 +1170,64 @@ def _var_95(returns: Sequence[float]) -> float:
     yields ``0.0``.
     """
 
-    if not returns:
+    if np is None:
+        if not returns:
+            return 0.0
+        ordered = sorted(returns)
+        idx = int(0.05 * len(ordered))
+        idx = min(max(idx, 0), len(ordered) - 1)
+        return float(ordered[idx])
+
+    arr = _as_float_array(returns)
+    if arr.size == 0:
         return 0.0
-    ordered = sorted(returns)
-    idx = int(0.05 * len(ordered))
-    idx = min(max(idx, 0), len(ordered) - 1)
+    ordered = np.sort(arr)
+    idx = int(0.05 * ordered.size)
+    idx = min(max(idx, 0), ordered.size - 1)
     return float(ordered[idx])
 
 
 def _volatility_spikes(returns: Sequence[float]) -> int:
     """Count of returns deviating more than three standard deviations."""
 
-    if not returns:
+    if np is None:
+        if not returns:
+            return 0
+        mean = sum(returns) / len(returns)
+        variance = sum((r - mean) ** 2 for r in returns) / len(returns)
+        std = math.sqrt(variance)
+        if std == 0:
+            return 0
+        return sum(1 for r in returns if abs(r - mean) > 3 * std)
+
+    arr = _as_float_array(returns)
+    if arr.size == 0:
         return 0
-    mean = sum(returns) / len(returns)
-    variance = sum((r - mean) ** 2 for r in returns) / len(returns)
-    std = math.sqrt(variance)
-    if std == 0:
+    mean = float(np.mean(arr))
+    std = float(np.std(arr, ddof=0))
+    if std == 0.0:
         return 0
-    return sum(1 for r in returns if abs(r - mean) > 3 * std)
+    deviations = np.abs(arr - mean) > (3.0 * std)
+    return int(np.count_nonzero(deviations))
 
 
 def _slippage_stats(slippage: Sequence[float]) -> tuple[float, float]:
     """Return mean and standard deviation of slippage values."""
 
-    slippage = list(slippage)
-    if not slippage:
+    if np is None:
+        slippage = list(slippage)
+        if not slippage:
+            return 0.0, 0.0
+        mean = sum(slippage) / len(slippage)
+        variance = sum((s - mean) ** 2 for s in slippage) / len(slippage)
+        return mean, math.sqrt(variance)
+
+    arr = _as_float_array(slippage)
+    if arr.size == 0:
         return 0.0, 0.0
-    mean = sum(slippage) / len(slippage)
-    variance = sum((s - mean) ** 2 for s in slippage) / len(slippage)
-    return mean, math.sqrt(variance)
+    mean = float(np.mean(arr))
+    std = float(np.std(arr, ddof=0))
+    return mean, std
 
 
 def evaluate_strategy(
@@ -1084,32 +1245,50 @@ def evaluate_strategy(
     live directory.
     """
 
-    returns = list(returns)
-    slip = list(slippage or [])
-    slip_mean, slip_std = _slippage_stats(slip)
-    mean = sum(returns) / len(returns) if returns else 0.0
-    risk = _risk(returns)
-    downside = [r for r in returns if r < 0]
-    if downside:
-        downside_std = math.sqrt(sum(r * r for r in downside) / len(downside))
+    returns_seq = list(returns)
+    slip_seq = list(slippage or [])
+    if np is not None:
+        returns_data = np.asarray(returns_seq, dtype=float)
+        slip_data = np.asarray(slip_seq, dtype=float)
     else:
-        downside_std = 0.0
+        returns_data = returns_seq
+        slip_data = slip_seq
+
+    slip_mean, slip_std = _slippage_stats(slip_data)
+    if np is not None and isinstance(returns_data, np.ndarray):
+        mean = float(np.mean(returns_data)) if returns_data.size else 0.0
+    else:
+        mean = sum(returns_seq) / len(returns_seq) if returns_seq else 0.0
+
+    risk = _risk(returns_data)
+    if np is not None and isinstance(returns_data, np.ndarray):
+        downside = returns_data[returns_data < 0]
+        downside_std = (
+            float(np.sqrt(np.mean(np.square(downside)))) if downside.size else 0.0
+        )
+    else:
+        downside = [r for r in returns_seq if r < 0]
+        downside_std = (
+            math.sqrt(sum(r * r for r in downside) / len(downside))
+            if downside
+            else 0.0
+        )
     sharpe = mean / risk if risk > 0 else 0.0
     sortino = mean / downside_std if downside_std > 0 else 0.0
-    drawdown = _abs_drawdown(returns)
+    drawdown = _abs_drawdown(returns_data)
     metrics = {
         "abs_drawdown": drawdown,
         "max_drawdown": drawdown,
         "risk": risk,
         "mean_return": mean,
-        "budget_utilisation": _budget_utilisation(returns, budget),
+        "budget_utilisation": _budget_utilisation(returns_data, budget),
         "order_type_compliance": _order_type_compliance(
             order_types, allowed_order_types
         ),
-        "var_95": _var_95(returns),
+        "var_95": _var_95(returns_data),
         "sharpe_ratio": sharpe,
         "sortino_ratio": sortino,
-        "volatility_spikes": _volatility_spikes(returns),
+        "volatility_spikes": _volatility_spikes(returns_data),
         "slippage_mean": slip_mean,
         "slippage_std": slip_std,
     }
