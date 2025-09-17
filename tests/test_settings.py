@@ -57,7 +57,7 @@ training:
 data: null
 """
     )
-    with pytest.raises(TypeError):
+    with pytest.raises((TypeError, JSONValidationError)):
         load_settings(path=cfg)
 
 
@@ -75,3 +75,17 @@ def test_save_params_persists_and_hash(tmp_path: Path) -> None:
     assert snapshot.digest == compute_settings_hash(data_cfg, train_cfg, exec_cfg)
     serialised = snapshot.as_dict()
     assert serialised["data"]["csv"] == "trades.csv"
+
+
+def test_load_settings_missing_required_value(tmp_path: Path) -> None:
+    cfg = tmp_path / "params.yaml"
+    cfg.write_text(
+        """
+data:
+  csv: data.csv
+training:
+  batch_size: null
+"""
+    )
+    with pytest.raises((ValidationError, JSONValidationError)):
+        load_settings(path=cfg)

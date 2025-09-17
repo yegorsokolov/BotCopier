@@ -1990,7 +1990,12 @@ def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
 
     features = np.asarray(X, dtype=float)
     feature_names = params.get("feature_names") or model.get("feature_names", [])
-    if feature_names and len(feature_names) == features.shape[1]:
+    if feature_names:
+        if len(feature_names) != features.shape[1]:
+            raise ValueError(
+                "feature matrix has %s columns but %s feature names provided"
+                % (features.shape[1], len(feature_names))
+            )
         df = pd.DataFrame(features, columns=feature_names)
         FeatureSchema.validate(df, lazy=True)
     clip_low = np.asarray(
