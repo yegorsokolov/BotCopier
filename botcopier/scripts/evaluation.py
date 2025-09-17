@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import NormalDist
@@ -43,6 +44,7 @@ except Exception:  # pragma: no cover
     ) = brier_score_loss = roc_auc_score = _missing  # type: ignore
 
 from botcopier.exceptions import DataError, ServiceError
+from botcopier.scripts.stress_test import run_stress_tests, summarise_stress_results
 from botcopier.utils.validation import validate_columns
 from metrics.registry import get_metrics, load_plugins, register_metric
 from schemas.decisions import DECISION_SCHEMA
@@ -564,6 +566,17 @@ def evaluate(
         stats["model_value_distribution"] = model_value_dist
     if model_value_quantiles:
         stats["model_value_quantiles"] = model_value_quantiles
+
+    order_types = (
+        matched_df["order_type"].astype(str).tolist()
+        if "order_type" in matched_df
+        else None
+    )
+    stress_results = run_stress_tests(profits.tolist(), order_types=order_types)
+    stats["stress_tests"] = {
+        name: asdict(result) for name, result in stress_results.items()
+    }
+    stats["stress_summary"] = summarise_stress_results(stress_results)
     ctx = {
         "tp": tp,
         "fp": fp,
@@ -1292,4 +1305,9 @@ def evaluate_strategy(
         "slippage_mean": slip_mean,
         "slippage_std": slip_std,
     }
+    stress_results = run_stress_tests(returns_seq, order_types=order_types)
+    metrics["stress_tests"] = {
+        name: asdict(result) for name, result in stress_results.items()
+    }
+    metrics["stress_summary"] = summarise_stress_results(stress_results)
     return metrics

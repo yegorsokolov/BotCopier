@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 
-from scripts.evaluation import bootstrap_metrics, evaluate_model
+from scripts.evaluation import bootstrap_metrics, evaluate_model, evaluate_strategy
 
 
 def test_evaluate_model():
@@ -56,3 +56,22 @@ def test_bootstrap_interval_shrinks(tmp_path):
     for key in ["sharpe_ratio", "sortino_ratio", "max_drawdown", "var_95"]:
         assert key in saved
         assert set(saved[key].keys()) == {"mean", "low", "high"}
+
+
+def test_evaluate_strategy_includes_stress_metrics():
+    returns = [0.12, -0.05, 0.08, 0.03]
+    order_types = ["market", "limit", "limit", "market"]
+    metrics = evaluate_strategy(
+        returns,
+        order_types,
+        [],
+        budget=10.0,
+        allowed_order_types=["market", "limit"],
+    )
+    assert "stress_tests" in metrics
+    assert "stress_summary" in metrics
+    baseline = metrics["stress_tests"]["baseline"]
+    shock = metrics["stress_tests"]["shock"]
+    assert shock["pnl"] <= baseline["pnl"]
+    summary = metrics["stress_summary"]
+    assert summary["stress_pnl_min"] <= baseline["pnl"]

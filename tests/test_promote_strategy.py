@@ -166,3 +166,41 @@ def test_promote_logs_additional_metrics(tmp_path: Path):
     assert "volatility_spikes" in metrics
     assert "slippage_mean" in metrics
     assert "slippage_std" in metrics
+    assert "stress_tests" in metrics
+    assert "stress_summary" in metrics
+    assert set(metrics["stress_tests"].keys()) >= {
+        "baseline",
+        "shock",
+        "volatility_regime",
+        "liquidity_drought",
+    }
+    assert "stress_pnl_min" in metrics["stress_summary"]
+
+
+def test_promote_rejects_on_stress(tmp_path: Path):
+    shadow = tmp_path / "shadow"
+    live = tmp_path / "live"
+    metrics_dir = tmp_path / "metrics"
+    registry = tmp_path / "models" / "active.json"
+
+    model = shadow / "stressy"
+    _write_returns(model / "oos.csv", [0.3, -0.3, 0.3, -0.3])
+
+    promote(
+        shadow,
+        live,
+        metrics_dir,
+        registry,
+        max_drawdown=1.0,
+        max_risk=1.0,
+        budget_limit=10.0,
+        min_stress_pnl=0.0,
+    )
+
+    assert model.exists()
+    assert not (live / "stressy").exists()
+    report = json.loads((metrics_dir / "risk.json").read_text())
+    reasons = report["stressy"]["reasons"]
+    assert "stress_pnl" in reasons
+    stress_summary = report["stressy"]["stress_summary"]
+    assert stress_summary["stress_pnl_min"] < 0.0
