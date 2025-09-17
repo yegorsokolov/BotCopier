@@ -453,13 +453,15 @@ def _trial_logger(
     """Return a callback that appends trial information to ``csv_path``."""
 
     def _callback(study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+        values = trial.values or (float("nan"), float("nan"), float("nan"))
         row = {
             "trial": trial.number,
             **trial.params,
             "seed": trial.user_attrs.get("seed"),
-            "profit": trial.values[0],
-            "sharpe": trial.values[1],
-            "max_drawdown": trial.values[2],
+            "profit": values[0],
+            "sharpe": values[1],
+            "max_drawdown": values[2],
+            "var_95": trial.user_attrs.get("var_95"),
         }
         df = pd.DataFrame([row])
         df.to_csv(csv_path, mode="a", header=not csv_path.exists(), index=False)
@@ -467,29 +469,60 @@ def _trial_logger(
     return _callback
 
 
-def _objective_factory(
-    max_drawdown: float | None, var_limit: float | None
-) -> Callable[[optuna.trial.Trial], tuple[float, float, float]]:
-    """Return a multi-objective that includes risk penalties."""
+def _resolve_data_path(data_cfg: DataConfig) -> Path:
+    """Return the primary data path from ``data_cfg``."""
 
-    def _objective(trial: optuna.trial.Trial) -> tuple[float, float, float]:
-        seed = trial.suggest_int("seed", 0, 9999)
-        trial.set_user_attr("seed", seed)
-        x = trial.suggest_float("x", -10.0, 10.0)
-        rng = np.random.default_rng(seed)
-        noise = rng.normal()
-        risk = abs(x) / 10.0
-        trial.set_user_attr("max_drawdown", risk)
-        trial.set_user_attr("var_95", risk)
-        profit = -((x - 2) ** 2) + noise
-        if max_drawdown is not None and risk > max_drawdown:
-            profit -= risk - max_drawdown
-        if var_limit is not None and risk > var_limit:
-            profit -= risk - var_limit
-        sharpe = profit / (risk + 1e-6)
-        return profit, sharpe, risk
+    for attr in ("data_dir", "data", "csv", "log_dir"):
+        value = getattr(data_cfg, attr, None)
+        if value is not None:
+            return Path(value)
+    raise ValueError(
+        "Data configuration must define 'data_dir', 'data', or 'csv' for optuna runs"
+    )
 
-    return _objective
+
+def _suggest_model_params(
+    trial: "optuna.trial.Trial", model_type: str
+) -> dict[str, float | int | bool]:
+    """Sample model-specific hyperparameters for ``model_type``."""
+
+    params: dict[str, float | int | bool] = {}
+    if model_type == "logreg":
+        params["C"] = trial.suggest_float("logreg_C", 1e-3, 10.0, log=True)
+        params["max_iter"] = trial.suggest_int("logreg_max_iter", 100, 600)
+    elif model_type == "confidence_weighted":
+        params["r"] = trial.suggest_float("cw_r", 0.25, 8.0, log=True)
+    elif model_type == "gradient_boosting":
+        params["learning_rate"] = trial.suggest_float(
+            "gb_learning_rate", 0.01, 0.3, log=True
+        )
+        params["n_estimators"] = trial.suggest_int("gb_n_estimators", 50, 250)
+        params["max_depth"] = trial.suggest_int("gb_max_depth", 2, 6)
+    elif model_type == "ensemble_voting":
+        params["C"] = trial.suggest_float("ensemble_C", 0.1, 10.0, log=True)
+        params["max_iter"] = trial.suggest_int("ensemble_max_iter", 100, 1000)
+        params["include_xgboost"] = trial.suggest_categorical(
+            "ensemble_include_xgb", [False, True]
+        )
+    elif model_type == "tabtransformer":
+        params["epochs"] = trial.suggest_int("tabtransformer_epochs", 5, 20)
+        params["batch_size"] = trial.suggest_categorical(
+            "tabtransformer_batch_size", [32, 64, 128]
+        )
+        params["lr"] = trial.suggest_float("tabtransformer_lr", 1e-4, 1e-2, log=True)
+        params["weight_decay"] = trial.suggest_float(
+            "tabtransformer_weight_decay", 1e-5, 1e-2, log=True
+        )
+        params["dropout"] = trial.suggest_float("tabtransformer_dropout", 0.0, 0.5)
+    elif model_type == "tcn":
+        params["epochs"] = trial.suggest_int("tcn_epochs", 5, 20)
+        params["batch_size"] = trial.suggest_categorical("tcn_batch_size", [16, 32, 64])
+        params["lr"] = trial.suggest_float("tcn_lr", 1e-4, 1e-2, log=True)
+        params["weight_decay"] = trial.suggest_float("tcn_weight_decay", 1e-5, 1e-2, log=True)
+        params["dropout"] = trial.suggest_float("tcn_dropout", 0.0, 0.5)
+        params["channels"] = trial.suggest_int("tcn_channels", 8, 64)
+        params["kernel_size"] = trial.suggest_int("tcn_kernel", 2, 6)
+    return params
 
 
 def run_optuna(
@@ -499,53 +532,259 @@ def run_optuna(
     *,
     max_drawdown: float | None = None,
     var_limit: float | None = None,
+    study_name: str | None = None,
+    storage: str | None = None,
+    sampler: "optuna.samplers.BaseSampler | None" = None,
+    settings_overrides: Mapping[str, Any] | None = None,
+    config_path: Path | str = Path("params.yaml"),
+    model_types: Sequence[str] | None = None,
+    feature_flags: Mapping[str, Sequence[bool]] | None = None,
+    train_kwargs: Mapping[str, Any] | None = None,
 ) -> optuna.study.Study:
-    """Run a small Optuna study and record trial information."""
+    """Run an Optuna study using the real training pipeline."""
+
+    if not _HAS_OPTUNA:  # pragma: no cover - defensive
+        raise RuntimeError("optuna is required to run hyperparameter optimisation")
 
     csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
     model_json_path = Path(model_json_path)
+    model_json_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path = Path(config_path)
 
-    sampler = optuna.samplers.RandomSampler(seed=0)
+    overrides = dict(settings_overrides or {})
+    data_cfg, train_cfg, exec_cfg = load_settings(overrides, path=config_path)
+    data_path = _resolve_data_path(data_cfg)
+    study_out_dir = Path(data_cfg.out_dir) if data_cfg.out_dir else model_json_path.parent
+    study_out_dir.mkdir(parents=True, exist_ok=True)
+    trials_dir = study_out_dir / "trials"
+    trials_dir.mkdir(exist_ok=True)
+
+    sampler = sampler or optuna.samplers.TPESampler(seed=0)
     study = optuna.create_study(
-        directions=["maximize", "maximize", "minimize"], sampler=sampler
+        directions=["maximize", "maximize", "minimize"],
+        sampler=sampler,
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=bool(study_name and storage),
     )
-    objective = _objective_factory(max_drawdown, var_limit)
-    study.optimize(objective, n_trials=n_trials, callbacks=[_trial_logger(csv_path)])
 
-    def _select_trial() -> optuna.trial.FrozenTrial:
-        candidates = [t for t in study.best_trials]
-        if max_drawdown is not None:
-            candidates = [t for t in candidates if t.values[2] <= max_drawdown]
-        if var_limit is not None:
-            candidates = [
-                t
-                for t in candidates
-                if t.user_attrs.get("var_95", t.values[2]) <= var_limit
-            ]
-        if not candidates:
-            candidates = list(study.best_trials)
-        return max(candidates, key=lambda t: (t.values[0], t.values[1]))
+    base_train_kwargs: dict[str, Any] = {
+        "model_type": train_cfg.model_type,
+        "cache_dir": train_cfg.cache_dir,
+        "tracking_uri": train_cfg.tracking_uri,
+        "experiment_name": train_cfg.experiment_name,
+        "features": list(train_cfg.features) if train_cfg.features else None,
+        "regime_features": (
+            list(train_cfg.regime_features) if train_cfg.regime_features else None
+        ),
+        "use_gpu": exec_cfg.use_gpu,
+        "metrics": list(train_cfg.metrics) if train_cfg.metrics else None,
+        "grad_clip": train_cfg.grad_clip,
+        "meta_weights": train_cfg.meta_weights,
+        "hrp_allocation": train_cfg.hrp_allocation,
+        "strategy_search": train_cfg.strategy_search,
+        "max_drawdown": max_drawdown,
+        "var_limit": var_limit,
+        "vol_weight": train_cfg.vol_weight,
+        "profile": exec_cfg.profile,
+        "reuse_controller": train_cfg.reuse_controller,
+        "random_seed": train_cfg.random_seed,
+    }
+    if train_cfg.half_life_days:
+        base_train_kwargs["half_life_days"] = train_cfg.half_life_days
+    if train_kwargs:
+        base_train_kwargs.update(train_kwargs)
 
-    best = _select_trial()
-    relative_csv = os.path.relpath(csv_path, model_json_path.parent)
-    risk = best.user_attrs.get("max_drawdown", 0.0)
-    model_data = {
-        "metadata": {
-            "hyperparam_log": relative_csv,
-            "selected_trial": {
-                "number": best.number,
-                "profit": best.values[0],
-                "sharpe": best.values[1],
-                "max_drawdown": best.values[2],
+    # Filter out None entries to avoid overriding defaults inside ``train``
+    base_train_kwargs = {
+        key: value for key, value in base_train_kwargs.items() if value is not None
+    }
+    base_param_grid = base_train_kwargs.pop("param_grid", None)
+
+    model_choices = list(model_types or [])
+    if model_choices:
+        invalid = [m for m in model_choices if m not in MODEL_REGISTRY]
+        if invalid:
+            raise ValueError(f"Unknown model types for optuna search: {invalid}")
+    flag_options = {
+        name: tuple(options)
+        for name, options in (feature_flags or {}).items()
+        if options
+    }
+
+    def _objective(trial: optuna.trial.Trial) -> tuple[float, float, float]:
+        trial_dir = trials_dir / f"trial_{trial.number}"
+        if trial_dir.exists():
+            shutil.rmtree(trial_dir)
+        trial_dir.mkdir(parents=True, exist_ok=True)
+
+        trial_kwargs = dict(base_train_kwargs)
+        if model_choices:
+            model_type = trial.suggest_categorical(
+                "model_type", sorted(set(model_choices))
+            )
+        else:
+            model_type = str(trial_kwargs.get("model_type", train_cfg.model_type))
+        trial_kwargs["model_type"] = model_type
+
+        for flag_name, options in flag_options.items():
+            value = trial.suggest_categorical(flag_name, list(options))
+            trial_kwargs[flag_name] = value
+
+        seed = trial.suggest_int("seed", 0, 9999)
+        trial_kwargs["random_seed"] = seed
+        trial.set_user_attr("seed", seed)
+
+        if "half_life_days" not in base_train_kwargs:
+            trial_kwargs["half_life_days"] = trial.suggest_float(
+                "half_life_days", 0.0, 30.0
+            )
+        model_params = _suggest_model_params(trial, model_type)
+        if model_params:
+            trial_kwargs["param_grid"] = [model_params]
+        elif base_param_grid is not None:
+            trial_kwargs["param_grid"] = [dict(p) for p in base_param_grid]
+        else:
+            trial_kwargs["param_grid"] = [{}]
+
+        try:
+            train(data_path, trial_dir, **trial_kwargs)
+        except Exception as exc:  # pragma: no cover - surfaced through optuna
+            trial.set_user_attr("exception", repr(exc))
+            raise
+
+        model_path = trial_dir / "model.json"
+        model_data = json.loads(model_path.read_text())
+        risk_metrics = model_data.get("risk_metrics", {})
+        metrics = model_data.get("cv_metrics", {})
+        profit = float(model_data.get("cv_profit", metrics.get("profit", 0.0) or 0.0))
+        sharpe = float(
+            risk_metrics.get("sharpe_ratio")
+            or metrics.get("sharpe_ratio")
+            or metrics.get("sharpe")
+            or 0.0
+        )
+        drawdown = float(
+            risk_metrics.get("max_drawdown")
+            or metrics.get("max_drawdown")
+            or 0.0
+        )
+        var95 = float(risk_metrics.get("var_95") or metrics.get("var_95") or 0.0)
+
+        trial.set_user_attr("artifact_dir", str(trial_dir))
+        trial.set_user_attr("model_path", str(model_path))
+        trial.set_user_attr("model_params", model_params)
+        trial.set_user_attr(
+            "metrics",
+            _serialise_metric_values(
+                {
+                    "cv_profit": profit,
+                    "risk_metrics": risk_metrics,
+                    "cv_metrics": metrics,
+                }
+            ),
+        )
+        trial.set_user_attr("max_drawdown", drawdown)
+        trial.set_user_attr("var_95", var95)
+
+        return profit, sharpe, drawdown
+
+    study.optimize(
+        _objective,
+        n_trials=n_trials,
+        callbacks=[_trial_logger(csv_path)],
+        catch=(Exception,),
+    )
+
+    completed = [
+        t
+        for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE and t.values is not None
+    ]
+    if not completed:
+        raise RuntimeError("No successful optuna trials completed")
+
+    candidates = [t for t in study.best_trials if t in completed]
+    if not candidates:
+        candidates = completed
+    if max_drawdown is not None:
+        candidates = [t for t in candidates if t.values[2] <= max_drawdown]
+    if var_limit is not None:
+        candidates = [
+            t for t in candidates if t.user_attrs.get("var_95", float("inf")) <= var_limit
+        ]
+    if not candidates:
+        candidates = completed
+    best = max(candidates, key=lambda t: (t.values[0], t.values[1]))
+
+    final_kwargs = dict(base_train_kwargs)
+    final_kwargs.pop("param_grid", None)
+    model_params_best = best.user_attrs.get("model_params") or {}
+    if model_params_best:
+        final_kwargs["param_grid"] = [model_params_best]
+    elif base_param_grid is not None:
+        final_kwargs["param_grid"] = [dict(p) for p in base_param_grid]
+    else:
+        final_kwargs["param_grid"] = [{}]
+    if model_choices and "model_type" in best.params:
+        final_kwargs["model_type"] = best.params["model_type"]
+    if "half_life_days" in best.params:
+        final_kwargs["half_life_days"] = best.params["half_life_days"]
+    for flag_name in flag_options:
+        if flag_name in best.params:
+            final_kwargs[flag_name] = best.params[flag_name]
+    if "seed" in best.params:
+        final_kwargs["random_seed"] = int(best.params["seed"])
+
+    train(data_path, study_out_dir, **final_kwargs)
+
+    final_model_path = study_out_dir / "model.json"
+    model_data = json.loads(final_model_path.read_text())
+    metadata = model_data.setdefault("metadata", {})
+    relative_csv = os.path.relpath(csv_path, study_out_dir)
+    metadata["hyperparam_log"] = relative_csv
+    selected_trial = {
+        "number": best.number,
+        "profit": float(best.values[0]),
+        "sharpe": float(best.values[1]),
+        "max_drawdown": float(best.values[2]),
+        "var_95": float(best.user_attrs.get("var_95", 0.0)),
+        "search_params": _serialise_metric_values(best.params),
+        "model_params": _serialise_metric_values(best.user_attrs.get("model_params", {})),
+    }
+    metadata["selected_trial"] = selected_trial
+    metadata["hyperparameter_optimization"] = {
+        "study_name": study.study_name,
+        "n_trials": len(completed),
+        "best_trial": {
+            "number": best.number,
+            "values": {
+                "profit": float(best.values[0]),
+                "sharpe": float(best.values[1]),
+                "max_drawdown": float(best.values[2]),
+                "var_95": float(best.user_attrs.get("var_95", 0.0)),
             },
-        },
-        "risk_params": {"max_drawdown": max_drawdown, "var_limit": var_limit},
-        "risk_metrics": {
-            "max_drawdown": risk,
-            "var_95": best.user_attrs.get("var_95", risk),
+            "params": _serialise_metric_values(best.params),
+            "model_params": _serialise_metric_values(
+                best.user_attrs.get("model_params", {})
+            ),
+            "artifact_dir": os.path.relpath(
+                best.user_attrs.get("artifact_dir", study_out_dir), study_out_dir
+            ),
         },
     }
-    model_json_path.write_text(json.dumps(model_data))
+
+    updated = ModelParams(**model_data)
+    final_model_path.write_text(updated.model_dump_json())
+    if model_json_path != final_model_path:
+        model_json_path.write_text(final_model_path.read_text())
+        for name in ("data_hashes.json", "dependencies.txt", "config_snapshot.json"):
+            src = study_out_dir / name
+            if src.exists():
+                dst = model_json_path.parent / name
+                if dst != src:
+                    dst.write_text(src.read_text())
 
     return study
 
