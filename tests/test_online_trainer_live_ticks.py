@@ -1,6 +1,7 @@
 import asyncio
 import json
 
+import numpy as np
 import pandas as pd
 
 from botcopier.scripts.online_trainer import OnlineTrainer
@@ -87,3 +88,64 @@ def test_live_tick_drift_retrain_and_recalibration(tmp_path):
     assert data.get("online_drift_events")
     calib = data.get("calibration")
     assert calib and calib.get("samples", 0) == trainer.calibration_metadata.get("samples")
+
+
+async def _stability_pre_drift_stream():
+    for _ in range(12):
+        yield {"feat": -1.0, "y": 0}
+        yield {"feat": 1.0, "y": 1}
+
+
+async def _stability_drift_only_stream():
+    for _ in range(24):
+        yield {"feat": 3.0, "y": 1}
+
+
+def test_replay_buffer_stability_and_memory(tmp_path):
+    replay_ring = tmp_path / "replay.ring"
+    plain_ring = tmp_path / "plain.ring"
+    replay_model = tmp_path / "replay_model.json"
+    plain_model = tmp_path / "plain_model.json"
+
+    trainer_replay = OnlineTrainer(
+        model_path=replay_model,
+        batch_size=8,
+        replay_capacity=64,
+        replay_sample_size=8,
+    )
+    trainer_plain = OnlineTrainer(
+        model_path=plain_model,
+        batch_size=8,
+        replay_capacity=64,
+        replay_sample_size=0,
+    )
+
+    asyncio.run(trainer_replay.consume_ticks(_stability_pre_drift_stream(), replay_ring))
+    asyncio.run(trainer_plain.consume_ticks(_stability_pre_drift_stream(), plain_ring))
+
+    asyncio.run(trainer_replay.consume_ticks(_stability_drift_only_stream(), replay_ring))
+    asyncio.run(trainer_plain.consume_ticks(_stability_drift_only_stream(), plain_ring))
+
+    eval_batch = [{"feat": -1.0, "y": 0}, {"feat": 1.0, "y": 1}] * 16
+    X_replay, y_eval = trainer_replay._vectorise(eval_batch)
+    acc_replay = float(np.mean(trainer_replay.clf.predict(X_replay) == y_eval))
+    X_plain, y_eval_plain = trainer_plain._vectorise(eval_batch)
+    acc_plain = float(np.mean(trainer_plain.clf.predict(X_plain) == y_eval_plain))
+    assert acc_replay >= acc_plain
+
+    assert len(trainer_replay.replay_buffer) <= trainer_replay.replay_buffer.capacity
+    saved = json.loads(replay_model.read_text())
+    state = saved.get("replay_buffer")
+    assert state is not None
+    assert len(state.get("items", [])) <= trainer_replay.replay_buffer.capacity
+    labels = [int(item.get("y", -1)) for item in state.get("items", [])]
+    assert any(lbl == 0 for lbl in labels)
+    assert any(lbl == 1 for lbl in labels)
+
+    restored = OnlineTrainer(
+        model_path=replay_model,
+        batch_size=8,
+        replay_capacity=64,
+        replay_sample_size=8,
+    )
+    assert len(restored.replay_buffer) == len(trainer_replay.replay_buffer)
