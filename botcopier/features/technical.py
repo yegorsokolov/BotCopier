@@ -28,6 +28,14 @@ try:  # optional polars dependency
 except ImportError:  # pragma: no cover - optional
     pl = None  # type: ignore
     _HAS_POLARS = False
+
+try:  # optional PyWavelets dependency
+    import pywt  # type: ignore
+
+    _HAS_PYWT = True
+except Exception:  # pragma: no cover - optional
+    pywt = None  # type: ignore
+    _HAS_PYWT = False
 from sklearn.linear_model import LinearRegression
 
 try:  # optional numba dependency
@@ -102,6 +110,9 @@ CSD_FREQ_BINS = 16
 _CSD_PARAMS: dict | None = None
 
 _SYMBOLIC_CACHE: dict | None = None
+
+_FEATURE_METADATA: dict[str, dict[str, Any]] = {}
+_FEATURE_METADATA_CACHE: dict[int, dict[str, dict[str, Any]]] = {}
 
 
 if _HAS_NUMBA:
@@ -296,6 +307,210 @@ def _lag_diff_feature_plugin(
         pdf[diff_col] = diff_series
         if diff_col not in feature_names:
             feature_names.append(diff_col)
+
+    out = _restore_frame(pdf, backend)
+    return out, feature_names, {}, {}
+
+
+@register_feature("wavelet_packets")
+def _wavelet_packet_feature_plugin(
+    df: pd.DataFrame | "pl.DataFrame",
+    feature_names: list[str],
+    *,
+    price_column: str | None = None,
+    volume_column: str | None = None,
+    wavelet: str = "db4",
+    wavelet_windows: Iterable[int] = (16, 32),
+    wavelet_level: int | None = None,
+    wavelet_stats: Iterable[str] = ("mean", "std", "energy"),
+    include_volume: bool = True,
+    wavelet_packets_enabled: bool | None = None,
+    **_: object,
+) -> FeatureResult:
+    """Generate wavelet packet statistics over rolling windows."""
+
+    if not _HAS_PYWT:
+        return df, feature_names, {}, {}
+
+    from . import engineering as fe  # local import to avoid circular dependency
+
+    config_enabled = False
+    if wavelet_packets_enabled is not None:
+        config_enabled = bool(wavelet_packets_enabled)
+    else:
+        config = getattr(fe, "_CONFIG", None)
+        if config is not None:
+            config_enabled = config.is_enabled("wavelet_packets")
+
+    if not config_enabled:
+        return df, feature_names, {}, {}
+
+    pdf, backend = _maybe_to_pandas(df)
+    if pdf.empty:
+        return df, feature_names, {}, {}
+
+    # Resolve price column preference
+    price_candidates = [
+        price_column,
+        "close" if "close" in pdf.columns else None,
+        "price" if "price" in pdf.columns else None,
+    ]
+    price_col = next((c for c in price_candidates if c and c in pdf.columns), None)
+
+    vol_candidates = [
+        volume_column,
+        "volume" if "volume" in pdf.columns else None,
+    ]
+    volume_col = next((c for c in vol_candidates if c and c in pdf.columns), None)
+
+    target_columns: list[str] = []
+    if price_col is not None:
+        target_columns.append(price_col)
+    if include_volume and volume_col is not None and volume_col not in target_columns:
+        target_columns.append(volume_col)
+
+    if not target_columns:
+        return df, feature_names, {}, {}
+
+    try:
+        wavelet_obj = pywt.Wavelet(wavelet)
+    except Exception:  # pragma: no cover - invalid configuration fallback
+        wavelet_obj = pywt.Wavelet("db4")
+        wavelet = wavelet_obj.name
+
+    windows = sorted({int(w) for w in wavelet_windows if int(w) > 1})
+    if not windows:
+        return df, feature_names, {}, {}
+
+    stat_funcs = {
+        "mean": lambda arr: float(np.mean(arr)) if arr.size else 0.0,
+        "std": lambda arr: float(np.std(arr)) if arr.size else 0.0,
+        "min": lambda arr: float(np.min(arr)) if arr.size else 0.0,
+        "max": lambda arr: float(np.max(arr)) if arr.size else 0.0,
+        "energy": lambda arr: float(np.sum(arr * arr)) if arr.size else 0.0,
+    }
+
+    stats_order: list[str] = []
+    for stat in wavelet_stats:
+        key = str(stat).lower()
+        if key in stat_funcs and key not in stats_order:
+            stats_order.append(key)
+
+    if not stats_order:
+        return df, feature_names, {}, {}
+
+    pdf = pdf.copy()
+    groups: list[pd.Index]
+    if "symbol" in pdf.columns:
+        groups = list(pdf.groupby("symbol", sort=False).groups.values())
+    else:
+        groups = [pdf.index]
+
+    added_any = False
+    global _FEATURE_METADATA
+
+    def _safe_packet(values: np.ndarray, level: int) -> tuple[pywt.WaveletPacket | None, int]:
+        for lvl in range(level, 0, -1):
+            try:
+                packet = pywt.WaveletPacket(
+                    data=values, wavelet=wavelet_obj, maxlevel=lvl, mode="symmetric"
+                )
+                return packet, lvl
+            except ValueError:
+                continue
+        return None, 0
+
+    for column in target_columns:
+        series = pd.to_numeric(pdf[column], errors="coerce")
+        series = series.fillna(method="ffill").fillna(0.0)
+
+        for win in windows:
+            max_possible = pywt.dwt_max_level(int(win), wavelet_obj.dec_len)
+            if max_possible <= 0:
+                continue
+            base_level = max_possible if wavelet_level is None else int(wavelet_level)
+            if base_level <= 0:
+                continue
+            base_level = max(1, min(base_level, max_possible))
+
+            combo_keys = [
+                (lvl, stat)
+                for lvl in range(1, base_level + 1)
+                for stat in stats_order
+            ]
+
+            for idx in groups:
+                if not len(idx):
+                    continue
+                idx_list = list(idx)
+                values = series.loc[idx_list].to_numpy(dtype=float)
+                result_arrays = {
+                    key: np.zeros(len(idx_list), dtype=float) for key in combo_keys
+                }
+
+                for pos, _ in enumerate(idx_list):
+                    start = max(0, pos - int(win) + 1)
+                    window_vals = values[start : pos + 1]
+                    if window_vals.size < wavelet_obj.dec_len:
+                        continue
+                    window_vals = np.asarray(window_vals, dtype=float)
+                    window_vals = np.nan_to_num(
+                        window_vals,
+                        nan=float(window_vals[-1]) if window_vals.size else 0.0,
+                        posinf=float(window_vals[-1]) if window_vals.size else 0.0,
+                        neginf=float(window_vals[-1]) if window_vals.size else 0.0,
+                    )
+
+                    avail_level = pywt.dwt_max_level(
+                        window_vals.size, wavelet_obj.dec_len
+                    )
+                    if avail_level <= 0:
+                        continue
+
+                    local_level = min(base_level, avail_level)
+                    packet, actual_level = _safe_packet(window_vals, local_level)
+                    if packet is None or actual_level == 0:
+                        continue
+
+                    for lvl in range(1, base_level + 1):
+                        if lvl > actual_level:
+                            coeffs = np.zeros(1, dtype=float)
+                        else:
+                            nodes = packet.get_level(lvl, order="natural")
+                            if nodes:
+                                coeffs = np.concatenate(
+                                    [np.asarray(node.data, dtype=float) for node in nodes]
+                                )
+                            else:
+                                coeffs = np.zeros(1, dtype=float)
+                        coeffs = np.nan_to_num(coeffs, nan=0.0, posinf=0.0, neginf=0.0)
+                        for stat in stats_order:
+                            result_arrays[(lvl, stat)][pos] = stat_funcs[stat](coeffs)
+
+                for lvl in range(1, base_level + 1):
+                    for stat in stats_order:
+                        feat_name = f"{column}_wp_w{int(win)}_L{lvl}_{stat}"
+                        pdf.loc[idx_list, feat_name] = result_arrays[(lvl, stat)]
+                        if feat_name not in feature_names:
+                            feature_names.append(feat_name)
+                        params = {
+                            "wavelet": wavelet_obj.name,
+                            "window": int(win),
+                            "level": int(lvl),
+                            "statistic": stat,
+                        }
+                        _FEATURE_METADATA.setdefault(
+                            feat_name,
+                            {
+                                "original_column": column,
+                                "transformations": ["wavelet_packets"],
+                                "parameters": params,
+                            },
+                        )
+                        added_any = True
+
+    if not added_any:
+        return df, feature_names, {}, {}
 
     out = _restore_frame(pdf, backend)
     return out, feature_names, {}, {}
@@ -897,6 +1112,7 @@ def _extract_features_impl(
     rank_features: bool = False,
     n_jobs: int | None = None,
     model_json: Path | str | None = None,
+    **_: object,
 ) -> tuple[
     pd.DataFrame, list[str], dict[str, list[float]], dict[str, list[list[float]]]
 ]:
@@ -1259,6 +1475,10 @@ def _extract_features(
     from . import engineering as fe  # late import to avoid circular deps
     from .engineering import _CONFIG, _FEATURE_RESULTS
 
+    global _FEATURE_METADATA
+    global _FEATURE_METADATA_CACHE
+    _FEATURE_METADATA = {}
+
     plugin_overrides_raw = kwargs.pop("plugins", None)
     if plugin_overrides_raw is None:
         plugin_overrides_raw = kwargs.pop("enabled_plugins", None)
@@ -1298,17 +1518,21 @@ def _extract_features(
 
         meta = sample_out.iloc[0:0]
         ddf = df.map_partitions(_apply, meta=meta)
+        _FEATURE_METADATA_CACHE[id(df)] = dict(_FEATURE_METADATA)
         return ddf, feature_names, embeddings, gnn_state
 
     key = id(df)
     if key in _FEATURE_RESULTS:
         logger.info("cache hit for _extract_features")
-        return _FEATURE_RESULTS[key]  # type: ignore[return-value]
+        cached = _FEATURE_RESULTS[key]
+        _FEATURE_METADATA = dict(_FEATURE_METADATA_CACHE.get(key, {}))
+        return cached  # type: ignore[return-value]
 
     base_plugins = [
         "calendar",
         "lag_diff",
         "technical_indicators",
+        "wavelet_packets",
         "rolling_correlations",
         "technical",
         "graph_embeddings",
@@ -1364,6 +1588,7 @@ def _extract_features(
             if col not in feature_names:
                 feature_names.append(col)
     _FEATURE_RESULTS[key] = (df, feature_names, embeddings, gnn_state)
+    _FEATURE_METADATA_CACHE[key] = dict(_FEATURE_METADATA)
     return df, feature_names, embeddings, gnn_state
 
 

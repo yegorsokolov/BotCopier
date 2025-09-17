@@ -238,12 +238,16 @@ def configure_cache(config: FeatureConfig) -> None:
     FEATURE_REGISTRY["augment_dtw_dataframe"] = _augmentation._augment_dtw_dataframe
     _technical._csd_pair = _cache_with_logging(_technical._csd_pair_impl, "_csd_pair")
     FEATURE_REGISTRY["technical"] = _technical._extract_features_impl
+    _technical._FEATURE_METADATA.clear()
+    _technical._FEATURE_METADATA_CACHE.clear()
 
 
 def clear_cache() -> None:
     """Remove all cached feature computations."""
     _MEMORY.clear()
     _FEATURE_RESULTS.clear()
+    _technical._FEATURE_METADATA.clear()
+    _technical._FEATURE_METADATA_CACHE.clear()
 
 
 def _cache_with_logging(func, name: str):

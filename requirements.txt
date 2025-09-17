@@ -4,6 +4,7 @@ dask[dataframe]
 great_expectations
 scikit-learn
 gplearn
+PyWavelets
 scipy
 joblib
 river

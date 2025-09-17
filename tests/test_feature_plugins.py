@@ -141,6 +141,7 @@ def test_builtin_plugins_registered():
     expected = {
         "lag_diff",
         "technical_indicators",
+        "wavelet_packets",
         "rolling_correlations",
         "graph_embeddings",
     }
