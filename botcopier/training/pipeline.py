@@ -589,6 +589,9 @@ def run_optuna(
         "vol_weight": train_cfg.vol_weight,
         "profile": exec_cfg.profile,
         "reuse_controller": train_cfg.reuse_controller,
+        "controller_max_subset_size": train_cfg.controller_max_subset_size,
+        "controller_episode_sample_size": train_cfg.controller_episode_sample_size,
+        "controller_baseline_momentum": train_cfg.controller_baseline_momentum,
         "random_seed": train_cfg.random_seed,
     }
     if train_cfg.half_life_days:
@@ -819,6 +822,9 @@ def train(
     profile: bool = False,
     controller: AutoMLController | None = None,
     reuse_controller: bool = False,
+    controller_max_subset_size: int | None = None,
+    controller_episode_sample_size: int | None = None,
+    controller_baseline_momentum: float | None = None,
     complexity_penalty: float = 0.1,
     dvc_repo: Path | str | None = None,
     config_hash: str | None = None,
@@ -849,9 +855,19 @@ def train(
 
     if model_json is not None:
         model_json = Path(model_json)
+    controller_kwargs: dict[str, object] = {}
+    if controller_max_subset_size is not None:
+        controller_kwargs["max_subset_size"] = controller_max_subset_size
+    if controller_episode_sample_size is not None:
+        controller_kwargs["episode_sample_size"] = controller_episode_sample_size
+    if controller_baseline_momentum is not None:
+        controller_kwargs["baseline_momentum"] = controller_baseline_momentum
+
     chosen_action: tuple[tuple[str, ...], str] | None = None
     if controller is not None:
         controller.model_path = out_dir / "model.json"
+        if controller_kwargs:
+            controller.configure(**controller_kwargs)
         if not reuse_controller:
             controller.reset()
         chosen_action, _ = controller.sample_action()
@@ -2462,6 +2478,27 @@ def main() -> None:
         help="Reuse saved AutoML controller policy if available",
     )
     p.add_argument(
+        "--controller-max-subset",
+        dest="controller_max_subset_size",
+        type=int,
+        default=None,
+        help="Maximum number of features per subset evaluated by the controller",
+    )
+    p.add_argument(
+        "--controller-sample-size",
+        dest="controller_episode_sample_size",
+        type=int,
+        default=None,
+        help="Number of feature subsets sampled per controller episode",
+    )
+    p.add_argument(
+        "--controller-baseline-momentum",
+        dest="controller_baseline_momentum",
+        type=float,
+        default=None,
+        help="Momentum for the controller reward baseline (0 disables)",
+    )
+    p.add_argument(
         "--use-meta",
         type=Path,
         dest="use_meta",
@@ -2486,6 +2523,9 @@ def main() -> None:
         profile=exec_cfg.profile,
         strategy_search=train_cfg.strategy_search,
         reuse_controller=train_cfg.reuse_controller,
+        controller_max_subset_size=train_cfg.controller_max_subset_size,
+        controller_episode_sample_size=train_cfg.controller_episode_sample_size,
+        controller_baseline_momentum=train_cfg.controller_baseline_momentum,
         meta_weights=train_cfg.meta_weights,
     )
 

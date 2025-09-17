@@ -174,6 +174,18 @@ def train(
         False,
         help="Reuse previously learned AutoML controller policy",
     ),
+    controller_max_subset_size: Optional[int] = typer.Option(
+        None,
+        help="Maximum number of features per subset evaluated by the controller",
+    ),
+    controller_episode_sample_size: Optional[int] = typer.Option(
+        None,
+        help="Number of feature subsets sampled per controller episode",
+    ),
+    controller_baseline_momentum: Optional[float] = typer.Option(
+        None,
+        help="Momentum for the controller's reward baseline (set to 0 to disable)",
+    ),
 ) -> None:
     """Train a model from trade logs."""
     data_cfg, train_cfg, exec_cfg = _cfg(ctx)
@@ -207,6 +219,18 @@ def train(
         train_cfg = train_cfg.model_copy(update={"strategy_search": strategy_search})
     if reuse_controller:
         train_cfg = train_cfg.model_copy(update={"reuse_controller": reuse_controller})
+    if controller_max_subset_size is not None:
+        train_cfg = train_cfg.model_copy(
+            update={"controller_max_subset_size": controller_max_subset_size}
+        )
+    if controller_episode_sample_size is not None:
+        train_cfg = train_cfg.model_copy(
+            update={"controller_episode_sample_size": controller_episode_sample_size}
+        )
+    if controller_baseline_momentum is not None:
+        train_cfg = train_cfg.model_copy(
+            update={"controller_baseline_momentum": controller_baseline_momentum}
+        )
     _store_config(ctx, data_cfg, train_cfg, exec_cfg)
     if data_cfg.data is None or data_cfg.out is None:
         raise typer.BadParameter("data_dir and out_dir must be provided")
@@ -223,6 +247,9 @@ def train(
         hrp_allocation=train_cfg.hrp_allocation,
         strategy_search=train_cfg.strategy_search,
         reuse_controller=train_cfg.reuse_controller,
+        controller_max_subset_size=train_cfg.controller_max_subset_size,
+        controller_episode_sample_size=train_cfg.controller_episode_sample_size,
+        controller_baseline_momentum=train_cfg.controller_baseline_momentum,
         regime_features=train_cfg.regime_features,
         config_hash=config_hash,
         config_snapshot=snapshot.as_dict(),

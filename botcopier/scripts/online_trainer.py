@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, AsyncIterable, Dict, Iterable, List
+from typing import Any, AsyncIterable, Dict, Iterable, List, Mapping
 
 from datetime import datetime
 
@@ -212,6 +212,7 @@ class OnlineTrainer:
         tick_buffer_path: Path | str | None = None,
         tick_buffer_size: int = 100_000,
         controller: AutoMLController | None = None,
+        controller_kwargs: Mapping[str, Any] | None = None,
         drift_test: str = "page_hinkley",
     ) -> None:
         self.model_path = Path(model_path)
@@ -259,6 +260,12 @@ class OnlineTrainer:
         )
         self.tick_buffer_size = tick_buffer_size
         self.controller: AutoMLController | None = controller
+        self.controller_kwargs: Dict[str, Any] = dict(controller_kwargs or {})
+        if self.controller is not None and self.controller_kwargs:
+            try:
+                self.controller.configure(**self.controller_kwargs)
+            except AttributeError:
+                pass
         self.prev_accuracy: float | None = None
         if _HAS_FEAST:
             repo = Path(__file__).resolve().parents[1] / "feature_store" / "feast_repo"
@@ -908,6 +915,7 @@ class OnlineTrainer:
                                 self.feature_names,
                                 {"sgd": 1, "confidence_weighted": 2},
                                 model_path=self.model_path,
+                                **self.controller_kwargs,
                             )
                         except Exception:
                             self.controller = None
@@ -1267,6 +1275,14 @@ async def run(data_cfg: DataConfig, train_cfg: TrainingConfig) -> None:
 
     set_seed(train_cfg.random_seed)
     save_params(data_cfg, train_cfg)
+    controller_kwargs: Dict[str, Any] = {}
+    if train_cfg.controller_max_subset_size is not None:
+        controller_kwargs["max_subset_size"] = train_cfg.controller_max_subset_size
+    if train_cfg.controller_episode_sample_size is not None:
+        controller_kwargs["episode_sample_size"] = train_cfg.controller_episode_sample_size
+    if train_cfg.controller_baseline_momentum is not None:
+        controller_kwargs["baseline_momentum"] = train_cfg.controller_baseline_momentum
+
     trainer = OnlineTrainer(
         train_cfg.model,
         train_cfg.batch_size,
@@ -1274,6 +1290,7 @@ async def run(data_cfg: DataConfig, train_cfg: TrainingConfig) -> None:
         lr_decay=train_cfg.lr_decay,
         seed=train_cfg.random_seed,
         online_model=train_cfg.online_model,
+        controller_kwargs=controller_kwargs or None,
     )
     start_metrics_server(train_cfg.metrics_port)
     _sd_notify_ready()

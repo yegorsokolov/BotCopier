@@ -24,7 +24,10 @@ def _toy_env(action: Action) -> float:
 def test_controller_converges(tmp_path: Path) -> None:
     random.seed(0)
     controller = AutoMLController(
-        ["f1", "f2"], {"m1": 1, "m2": 2}, model_path=tmp_path / "model.json"
+        ["f1", "f2"],
+        {"m1": 1, "m2": 2},
+        model_path=tmp_path / "model.json",
+        max_subset_size=2,
     )
     controller.train(_toy_env, episodes=500, alpha=0.2, penalty=0.01)
     best = controller.select_best()
@@ -47,3 +50,25 @@ def test_controller_reuse(tmp_path: Path) -> None:
     assert reused.last_action in reused.action_space
     fresh = AutoMLController(["f1", "f2"], {"m1": 1, "m2": 2}, model_path=path, reuse=False)
     assert fresh.select_best() != best
+
+
+def test_controller_limits_action_growth(tmp_path: Path) -> None:
+    random.seed(0)
+    features = [f"f{i}" for i in range(30)]
+    controller = AutoMLController(
+        features,
+        {"m1": 1, "m2": 2},
+        model_path=tmp_path / "model.json",
+        max_subset_size=2,
+        episode_sample_size=5,
+        reuse=False,
+    )
+
+    def constant_env(action: Action) -> float:
+        return float(len(action[0])) * 0.1
+
+    controller.train(constant_env, episodes=10, alpha=0.1, penalty=0.0)
+    actions = controller.action_space
+    assert actions
+    assert max(len(subset) for subset, _ in actions) <= 2
+    assert len(actions) <= 10 * 5 * len(controller.models)
