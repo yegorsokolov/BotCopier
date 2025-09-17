@@ -139,9 +139,9 @@ def test_generate_mql4_renders_moe_parameters(tmp_path: Path, monkeypatch):
     model_path.write_text(params.model_dump_json())
     template_path = tmp_path / "StrategyTemplate.mq4"
     template_path.write_text(Path("StrategyTemplate.mq4").read_text())
-    monkeypatch.setitem(mql4.FEATURE_MAP, "feat", "0.0")
-    monkeypatch.setitem(mql4.FEATURE_MAP, "g0", "0.0")
-    monkeypatch.setitem(mql4.FEATURE_MAP, "g1", "0.0")
+    monkeypatch.setitem(mql4.FEATURE_MAP, "feat", mql4.FeatureRuntime("0.0"))
+    monkeypatch.setitem(mql4.FEATURE_MAP, "g0", mql4.FeatureRuntime("0.0"))
+    monkeypatch.setitem(mql4.FEATURE_MAP, "g1", mql4.FeatureRuntime("0.0"))
     mql4.insert_get_feature(model_path, template_path)
     rendered = template_path.read_text()
     assert "bool g_use_moe = true;" in rendered
