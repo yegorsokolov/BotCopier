@@ -6,6 +6,16 @@ from pathlib import Path
 import pytest
 
 
+_SAMPLE_MODELS = Path(__file__).resolve().parent / "sample_models"
+
+
+def _copy_template(tmp_path: Path) -> Path:
+    template_src = Path(__file__).resolve().parents[1] / "StrategyTemplate.mq4"
+    template = tmp_path / "StrategyTemplate.mq4"
+    template.write_text(template_src.read_text())
+    return template
+
+
 def test_generated_features(tmp_path):
     model = tmp_path / "model.json"
     model.write_text(
@@ -259,4 +269,79 @@ def test_generation_fails_on_unmapped_feature(tmp_path):
             capture_output=True,
             text=True,
         )
-    assert "Update StrategyTemplate.mq4" in exc.value.stderr
+    assert "No runtime expressions for features" in exc.value.stderr
+    assert "unknown" in exc.value.stderr
+
+
+def test_logistic_sample_model_generates_indicator_helpers(tmp_path):
+    model_path = tmp_path / "model.json"
+    model_path.write_text((_SAMPLE_MODELS / "logistic_model.json").read_text())
+    template = _copy_template(tmp_path)
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            model_path,
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+
+    content = template.read_text()
+    assert "FftMagnitude(0)" in content
+    assert "FftPhase(1)" in content
+    assert "DepthMicroprice()" in content
+    assert "DepthCnnEmbedding(0)" in content
+    assert "// __INDICATOR_FUNCTIONS__" not in content
+
+
+def test_transformer_sample_enables_transformer_block(tmp_path):
+    model_path = tmp_path / "model.json"
+    model_path.write_text((_SAMPLE_MODELS / "transformer_model.json").read_text())
+    template = _copy_template(tmp_path)
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            model_path,
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+
+    content = template.read_text()
+    assert "bool g_use_transformer = true;" in content
+    assert "int g_transformer_window = 16;" in content
+    assert "double g_embed_weight[]" in content
+    assert "FftMagnitude(0)" in content
+
+
+def test_gnn_model_renders_symbol_embeddings(tmp_path):
+    model_path = tmp_path / "model.json"
+    model_path.write_text((_SAMPLE_MODELS / "gnn_model.json").read_text())
+    template = _copy_template(tmp_path)
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            model_path,
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+
+    content = template.read_text()
+    assert "double g_emb_EURUSD[]" in content
+    assert "double g_emb_USDJPY[]" in content
+    assert "case 1: return GraphEmbedding(0); // graph_emb0" in content
+    assert "GetRegimeFeature" in content and "GraphEmbedding(0)" in content
+    assert "// __SYMBOL_EMBEDDINGS_START__" not in content

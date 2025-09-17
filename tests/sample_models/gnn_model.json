@@ -1,0 +1,33 @@
+{
+  "feature_names": [
+    "spread",
+    "graph_emb0",
+    "graph_emb1",
+    "hour_cos"
+  ],
+  "regime_features": [
+    "graph_emb0",
+    "hour_cos"
+  ],
+    "symbol_embeddings": {
+      "EURUSD": [0.1, 0.2],
+      "USDJPY": [-0.15, 0.3]
+    },
+  "models": {
+    "logreg": {
+      "coefficients": [0.1, -0.05, 0.08, 0.02],
+      "intercept": 0.1,
+      "threshold": 0.5,
+      "feature_mean": [0.0, 0.0, 0.0, 0.0],
+      "feature_std": [1.0, 1.0, 1.0, 1.0],
+      "conformal_lower": 0.3,
+      "conformal_upper": 0.7
+    }
+  },
+  "regime_gating": {
+    "feature_names": [
+      "graph_emb0",
+      "hour_cos"
+    ]
+  }
+}

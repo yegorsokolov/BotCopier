@@ -10,42 +10,261 @@ compiled directly.
 from __future__ import annotations
 
 import argparse
+import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Iterable, Sequence
 
-from botcopier.models.registry import load_params
-from botcopier.models.schema import ModelParams
+try:
+    from botcopier.models.schema import ModelParams  # type: ignore[attr-defined]
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    ModelParams = None  # type: ignore[assignment]
+
+@dataclass(frozen=True)
+class FeatureRuntime:
+    """MQL4 runtime expression with optional helper dependencies."""
+
+    expr: str
+    helpers: tuple[str, ...] = ()
+
 
 # Mapping from feature name to MQL4 runtime expression.
 # Add new feature mappings here as additional model features appear.
-FEATURE_MAP: dict[str, str] = {
-    "spread": "MarketInfo(Symbol(), MODE_SPREAD)",
-    "ask": "MarketInfo(Symbol(), MODE_ASK)",
-    "bid": "MarketInfo(Symbol(), MODE_BID)",
-    "hour_sin": "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)",
-    "hour_cos": "MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)",
-    "dow_sin": "MathSin(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)",
-    "dow_cos": "MathCos(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)",
-    "month_sin": "MathSin((TimeMonth(TimeCurrent())-1)*2*MathPi()/12)",
-    "month_cos": "MathCos((TimeMonth(TimeCurrent())-1)*2*MathPi()/12)",
-    "dom_sin": "MathSin((TimeDay(TimeCurrent())-1)*2*MathPi()/31)",
-    "dom_cos": "MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31)",
-    "volume": "iVolume(Symbol(), PERIOD_CURRENT, 0)",
-    "slippage": "OrderSlippage()",
-    "equity": "AccountEquity()",
-    "margin_level": "AccountMarginLevel()",
-    "atr": "iATR(Symbol(), PERIOD_CURRENT, 14, 0)",
-    "event_flag": "CalendarFlag()",
-    "event_impact": "CalendarImpact()",
-    "news_sentiment": "NewsSentiment()",
-    "spread_lag_1": "MarketInfo(Symbol(), MODE_SPREAD)",
-    "spread*hour_sin": "MarketInfo(Symbol(), MODE_SPREAD) * MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)",
-    "spread*hour_cos": "MarketInfo(Symbol(), MODE_SPREAD) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)",
-    "spread*spread_lag_1": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
-    "spread*spread_lag_5": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
-    "spread*spread_diff": "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)",
-    "hour_sin*hour_cos": "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)",
+FEATURE_MAP: dict[str, FeatureRuntime] = {
+    "spread": FeatureRuntime("MarketInfo(Symbol(), MODE_SPREAD)"),
+    "ask": FeatureRuntime("MarketInfo(Symbol(), MODE_ASK)"),
+    "bid": FeatureRuntime("MarketInfo(Symbol(), MODE_BID)"),
+    "volume": FeatureRuntime("iVolume(Symbol(), PERIOD_CURRENT, 0)"),
+    "hour": FeatureRuntime("TimeHour(TimeCurrent())"),
+    "dayofweek": FeatureRuntime("TimeDayOfWeek(TimeCurrent())"),
+    "month": FeatureRuntime("TimeMonth(TimeCurrent())"),
+    "hour_sin": FeatureRuntime(
+        "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)"
+    ),
+    "hour_cos": FeatureRuntime(
+        "MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)"
+    ),
+    "dow_sin": FeatureRuntime(
+        "MathSin(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)"
+    ),
+    "dow_cos": FeatureRuntime(
+        "MathCos(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)"
+    ),
+    "month_sin": FeatureRuntime(
+        "MathSin((TimeMonth(TimeCurrent())-1)*2*MathPi()/12)"
+    ),
+    "month_cos": FeatureRuntime(
+        "MathCos((TimeMonth(TimeCurrent())-1)*2*MathPi()/12)"
+    ),
+    "dom_sin": FeatureRuntime(
+        "MathSin((TimeDay(TimeCurrent())-1)*2*MathPi()/31)"
+    ),
+    "dom_cos": FeatureRuntime(
+        "MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31)"
+    ),
+    "sma": FeatureRuntime(
+        "iMA(Symbol(), PERIOD_CURRENT, 5, 0, MODE_SMA, PRICE_CLOSE, 0)"
+    ),
+    "rsi": FeatureRuntime("iRSI(Symbol(), PERIOD_CURRENT, 14, PRICE_CLOSE, 0)"),
+    "macd": FeatureRuntime(
+        "iMACD(Symbol(), PERIOD_CURRENT, 12, 26, 9, PRICE_CLOSE, MODE_MAIN, 0)"
+    ),
+    "macd_signal": FeatureRuntime(
+        "iMACD(Symbol(), PERIOD_CURRENT, 12, 26, 9, PRICE_CLOSE, MODE_SIGNAL, 0)"
+    ),
+    "bollinger_upper": FeatureRuntime(
+        "iBands(Symbol(), PERIOD_CURRENT, 20, 2.0, 0, PRICE_CLOSE, MODE_UPPER, 0)"
+    ),
+    "bollinger_middle": FeatureRuntime(
+        "iBands(Symbol(), PERIOD_CURRENT, 20, 2.0, 0, PRICE_CLOSE, MODE_MAIN, 0)"
+    ),
+    "bollinger_lower": FeatureRuntime(
+        "iBands(Symbol(), PERIOD_CURRENT, 20, 2.0, 0, PRICE_CLOSE, MODE_LOWER, 0)"
+    ),
+    "atr": FeatureRuntime("iATR(Symbol(), PERIOD_CURRENT, 14, 0)"),
+    "slippage": FeatureRuntime("OrderSlippage()"),
+    "equity": FeatureRuntime("AccountEquity()"),
+    "margin_level": FeatureRuntime("AccountMarginLevel()"),
+    "event_flag": FeatureRuntime("CalendarFlag()"),
+    "event_impact": FeatureRuntime("CalendarImpact()"),
+    "news_sentiment": FeatureRuntime("NewsSentiment()"),
+    "depth_microprice": FeatureRuntime("DepthMicroprice()", ("orderbook",)),
+    "depth_vol_imbalance": FeatureRuntime(
+        "DepthVolumeImbalance()", ("orderbook",)
+    ),
+    "depth_order_flow_imbalance": FeatureRuntime(
+        "DepthOrderFlowImbalance()", ("orderbook",)
+    ),
+    "spread*hour_sin": FeatureRuntime(
+        "MarketInfo(Symbol(), MODE_SPREAD) * MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)"
+    ),
+    "spread*hour_cos": FeatureRuntime(
+        "MarketInfo(Symbol(), MODE_SPREAD) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)"
+    ),
+    "spread*spread_lag_1": FeatureRuntime(
+        "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)"
+    ),
+    "spread*spread_lag_5": FeatureRuntime(
+        "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)"
+    ),
+    "spread*spread_diff": FeatureRuntime(
+        "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)"
+    ),
+    "hour_sin*hour_cos": FeatureRuntime(
+        "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)"
+    ),
+}
+
+
+def _load_params(path: Path) -> dict[str, Any]:
+    raw = path.read_text()
+    data = json.loads(raw)
+    if ModelParams is not None:
+        try:
+            params = ModelParams.model_validate(data)
+            return params.model_dump()
+        except Exception:  # pragma: no cover - fallback when validation fails
+            return data
+    return data
+
+
+HELPER_SNIPPETS: dict[str, str] = {
+    "fft": """
+double FftMagnitude(int freq)
+{
+    int bars = iBars(Symbol(), PERIOD_CURRENT);
+    int N = 4;
+    if(freq < 0 || freq >= N || bars <= 0)
+        return 0.0;
+    double real = 0.0;
+    double imag = 0.0;
+    for(int k = 0; k < N && k < bars; k++)
+    {
+        double price = iClose(Symbol(), PERIOD_CURRENT, k);
+        double angle = 2.0 * MathPi() * freq * k / N;
+        real += price * MathCos(angle);
+        imag -= price * MathSin(angle);
+    }
+    return MathSqrt(real * real + imag * imag);
+}
+
+double FftPhase(int freq)
+{
+    int bars = iBars(Symbol(), PERIOD_CURRENT);
+    int N = 4;
+    if(freq < 0 || freq >= N || bars <= 0)
+        return 0.0;
+    double real = 0.0;
+    double imag = 0.0;
+    for(int k = 0; k < N && k < bars; k++)
+    {
+        double price = iClose(Symbol(), PERIOD_CURRENT, k);
+        double angle = 2.0 * MathPi() * freq * k / N;
+        real += price * MathCos(angle);
+        imag -= price * MathSin(angle);
+    }
+    return MathArctan2(imag, real);
+}
+""".strip(),
+    "orderbook": """
+bool CollectDepthStats(double &bid_vol, double &ask_vol, double &best_bid, double &best_ask)
+{
+    bid_vol = 0.0;
+    ask_vol = 0.0;
+    best_bid = MarketInfo(Symbol(), MODE_BID);
+    best_ask = MarketInfo(Symbol(), MODE_ASK);
+    MqlBookInfo book[];
+    if(!MarketBookGet(book))
+        return false;
+    double top_bid = 0.0;
+    double top_ask = 0.0;
+    int count = ArraySize(book);
+    for(int i = 0; i < count; i++)
+    {
+        MqlBookInfo entry = book[i];
+        if(entry.type == BOOK_TYPE_BUY)
+        {
+            bid_vol += entry.volume;
+            if(top_bid == 0.0 || entry.price > top_bid)
+                top_bid = entry.price;
+        }
+        else if(entry.type == BOOK_TYPE_SELL)
+        {
+            ask_vol += entry.volume;
+            if(top_ask == 0.0 || entry.price < top_ask)
+                top_ask = entry.price;
+        }
+    }
+    if(top_bid > 0.0)
+        best_bid = top_bid;
+    if(top_ask > 0.0)
+        best_ask = top_ask;
+    return true;
+}
+
+double DepthMicroprice()
+{
+    double bid_vol = 0.0;
+    double ask_vol = 0.0;
+    double best_bid = MarketInfo(Symbol(), MODE_BID);
+    double best_ask = MarketInfo(Symbol(), MODE_ASK);
+    CollectDepthStats(bid_vol, ask_vol, best_bid, best_ask);
+    double denom = bid_vol + ask_vol;
+    if(denom <= 1e-9)
+        return (best_bid + best_ask) / 2.0;
+    return (best_ask * bid_vol + best_bid * ask_vol) / denom;
+}
+
+double DepthVolumeImbalance()
+{
+    double bid_vol = 0.0;
+    double ask_vol = 0.0;
+    double best_bid = 0.0;
+    double best_ask = 0.0;
+    CollectDepthStats(bid_vol, ask_vol, best_bid, best_ask);
+    double denom = bid_vol + ask_vol;
+    if(denom <= 1e-9)
+        return 0.0;
+    return (bid_vol - ask_vol) / denom;
+}
+
+double DepthOrderFlowImbalance()
+{
+    static double prev_bid_vol = 0.0;
+    static double prev_ask_vol = 0.0;
+    double bid_vol = 0.0;
+    double ask_vol = 0.0;
+    double best_bid = 0.0;
+    double best_ask = 0.0;
+    CollectDepthStats(bid_vol, ask_vol, best_bid, best_ask);
+    double value = (bid_vol - prev_bid_vol) - (ask_vol - prev_ask_vol);
+    prev_bid_vol = bid_vol;
+    prev_ask_vol = ask_vol;
+    return value;
+}
+
+double DepthCnnEmbedding(int idx)
+{
+    double bid_vol = 0.0;
+    double ask_vol = 0.0;
+    double best_bid = 0.0;
+    double best_ask = 0.0;
+    CollectDepthStats(bid_vol, ask_vol, best_bid, best_ask);
+    double total = bid_vol + ask_vol;
+    double imbalance = 0.0;
+    if(total > 1e-9)
+        imbalance = (bid_vol - ask_vol) / total;
+    double features[4];
+    features[0] = best_bid;
+    features[1] = best_ask;
+    features[2] = total;
+    features[3] = imbalance;
+    if(idx >= 0 && idx < 4)
+        return features[idx];
+    return 0.0;
+}
+""".strip(),
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
@@ -53,75 +272,125 @@ CASE_TEMPLATE = "    case {idx}: return {expr}; // {name}"
 GET_REGIME_TEMPLATE = """double GetRegimeFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
 
 
-def build_switch(names: Sequence[str]) -> str:
-    """Render switch cases for each feature name.
+def _register_helpers(target: set[str], helpers: Iterable[str]) -> None:
+    for name in helpers:
+        if name not in HELPER_SNIPPETS:
+            raise KeyError(f"No helper implementation registered for '{name}'")
+        target.add(name)
 
-    Raises:
-        KeyError: If a feature name is missing from ``FEATURE_MAP``.
-    """
 
-    cases = []
+def _resolve_feature(name: str, helpers: set[str]) -> str:
+    runtime = FEATURE_MAP.get(name)
+    if runtime is not None:
+        _register_helpers(helpers, runtime.helpers)
+        return runtime.expr
+
+    if name.startswith("ratio_"):
+        try:
+            _, a, b = name.split("_", 2)
+        except ValueError:
+            raise KeyError(name) from None
+        return (
+            f'iClose("{a}", PERIOD_CURRENT, 0) / iClose("{b}", PERIOD_CURRENT, 0)'
+        )
+
+    if name.startswith("corr_"):
+        try:
+            _, a, b = name.split("_", 2)
+        except ValueError:
+            raise KeyError(name) from None
+        return f'RollingCorrelation("{a}", "{b}", 5)'
+
+    if name.startswith("graph_emb"):
+        try:
+            idx = int(name[len("graph_emb") :])
+        except ValueError:
+            raise KeyError(name) from None
+        return f"GraphEmbedding({idx})"
+
+    fft_map = {
+        "fft_0_mag": "FftMagnitude(0)",
+        "fft_0_phase": "FftPhase(0)",
+        "fft_1_mag": "FftMagnitude(1)",
+        "fft_1_phase": "FftPhase(1)",
+    }
+    if name in fft_map:
+        _register_helpers(helpers, ["fft"])
+        return fft_map[name]
+
+    if name.startswith("depth_cnn_"):
+        try:
+            idx = int(name.split("_")[-1])
+        except ValueError:
+            raise KeyError(name) from None
+        _register_helpers(helpers, ["orderbook"])
+        return f"DepthCnnEmbedding({idx})"
+
+    if name.startswith("spread_"):
+        runtime = FEATURE_MAP.get("spread")
+        if runtime is not None:
+            _register_helpers(helpers, runtime.helpers)
+            return runtime.expr
+
+    raise KeyError(name)
+
+
+def build_switch(names: Sequence[str], helpers: set[str]) -> str:
+    """Render switch cases for each feature name."""
+
+    cases: list[str] = []
+    missing: list[str] = []
     for i, name in enumerate(names):
-        if name in FEATURE_MAP:
-            expr = FEATURE_MAP[name]
-        elif name.startswith("ratio_"):
-            try:
-                _, a, b = name.split("_", 2)
-            except ValueError:
-                raise KeyError(f"Invalid ratio feature name '{name}'") from None
-            expr = (
-                f'iClose("{a}", PERIOD_CURRENT, 0) / iClose("{b}", PERIOD_CURRENT, 0)'
-            )
-        elif name.startswith("corr_"):
-            try:
-                _, a, b = name.split("_", 2)
-            except ValueError:
-                raise KeyError(f"Invalid corr feature name '{name}'") from None
-            expr = f'RollingCorrelation("{a}", "{b}", 5)'
-        elif name.startswith("graph_emb"):
-            try:
-                idx = int(name[len("graph_emb") :])
-            except ValueError:
-                raise KeyError(
-                    f"Invalid graph embedding feature name '{name}'"
-                ) from None
-            expr = f"GraphEmbedding({idx})"
-        elif name.startswith("spread_"):
-            expr = FEATURE_MAP.get("spread", "0")
-        else:
-            raise KeyError(
-                "No runtime expression for feature "
-                f"'{name}'. Update StrategyTemplate.mq4 or FEATURE_MAP to add it."
-            )
+        try:
+            expr = _resolve_feature(name, helpers)
+        except KeyError:
+            missing.append(name)
+            continue
         cases.append(CASE_TEMPLATE.format(idx=i, expr=expr, name=name))
+    if missing:
+        names_str = ", ".join(sorted(missing))
+        raise KeyError(
+            "No runtime expressions for features: "
+            f"{names_str}. Update StrategyTemplate.mq4 or FEATURE_MAP to add them."
+        )
     return GET_FEATURE_TEMPLATE.format(cases="\n".join(cases))
 
 
-def build_regime_switch(names: Sequence[str], feature_names: Sequence[str]) -> str:
-    """Render switch cases for regime features.
-
-    Regime features reuse :data:`FEATURE_MAP` expressions when available and
-    fall back to previously generated feature indices when the regime feature is
-    already part of the main feature vector.
-    """
+def build_regime_switch(
+    names: Sequence[str], feature_names: Sequence[str], helpers: set[str]
+) -> str:
+    """Render switch cases for regime features."""
 
     if not names:
         return "double GetRegimeFeature(int idx)\n{\n    return 0.0;\n}\n"
 
     feature_index = {name: idx for idx, name in enumerate(feature_names)}
     cases: list[str] = []
+    missing: list[str] = []
     for i, name in enumerate(names):
-        if name in FEATURE_MAP:
-            expr = FEATURE_MAP[name]
-        elif name in feature_index:
+        if name in feature_index:
             expr = f"GetFeature({feature_index[name]})"
         else:
-            raise KeyError(
-                "No runtime expression for regime feature "
-                f"'{name}'. Update StrategyTemplate.mq4 or FEATURE_MAP to add it."
-            )
+            try:
+                expr = _resolve_feature(name, helpers)
+            except KeyError:
+                missing.append(name)
+                continue
         cases.append(CASE_TEMPLATE.format(idx=i, expr=expr, name=name))
+    if missing:
+        names_str = ", ".join(sorted(missing))
+        raise KeyError(
+            "No runtime expressions for regime features: "
+            f"{names_str}. Update StrategyTemplate.mq4 or FEATURE_MAP to add them."
+        )
     return GET_REGIME_TEMPLATE.format(cases="\n".join(cases))
+
+
+def build_indicator_helpers(helpers: set[str]) -> str:
+    if not helpers:
+        return "// indicator helpers not required\n"
+    parts = [HELPER_SNIPPETS[name] for name in sorted(helpers)]
+    return "\n\n".join(parts) + "\n"
 
 
 def _build_session_models(data: dict) -> str:
@@ -320,30 +589,32 @@ def insert_get_feature(
     model: Path, template: Path, calendar_file: Path | None = None
 ) -> None:
     """Insert generated GetFeature and session models into ``template``."""
-    params = load_params(model)
-    data = params.model_dump()
+    data = _load_params(model)
     # If a distilled student exists and no explicit models are provided, expose
     # it under the ``models`` key so the template receives logistic coefficients.
     if "distilled" in data and not data.get("models"):
         data["models"] = {"logreg": data["distilled"]}
 
     feature_names = data.get("retained_features") or data.get("feature_names", [])
-    get_feature = build_switch(feature_names)
+    helpers: set[str] = set()
+    get_feature = build_switch(feature_names, helpers)
     gating = data.get("regime_gating") or {}
     regime_features = (
         gating.get("feature_names")
         or data.get("regime_features")
         or []
     )
-    get_regime = build_regime_switch(regime_features, feature_names)
+    get_regime = build_regime_switch(regime_features, feature_names, helpers)
     session_models = _build_session_models(data)
     symbol_emb = _build_symbol_embeddings(data.get("symbol_embeddings", {}))
     symbol_thresh = _build_symbol_thresholds(data.get("symbol_thresholds", {}))
     transformer_block = _build_transformer_params(data)
+    indicator_block = build_indicator_helpers(helpers)
     content = template.read_text()
     output = content.replace("// __GET_FEATURE__", get_feature)
     output = output.replace("// __GET_REGIME_FEATURE__", get_regime)
     output = output.replace("// __SESSION_MODELS__", session_models)
+    output = output.replace("// __INDICATOR_FUNCTIONS__", indicator_block)
     pattern_emb = re.compile(
         r"// __SYMBOL_EMBEDDINGS_START__.*// __SYMBOL_EMBEDDINGS_END__",
         re.DOTALL,
