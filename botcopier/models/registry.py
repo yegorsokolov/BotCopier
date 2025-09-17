@@ -472,6 +472,7 @@ if _HAS_TORCH:
         sample_weight: np.ndarray | None = None,
         device: str = "cpu",
         dropout: float = 0.0,
+        init_weights: object | None = None,
     ) -> tuple[dict[str, object], Callable[[np.ndarray, np.ndarray], np.ndarray]]:
         """Train a Mixture-of-Experts model on ``X`` and ``y``."""
 

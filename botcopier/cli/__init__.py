@@ -149,6 +149,14 @@ def train(
         "-f",
         help="Enable feature plugin; can be passed multiple times",
     ),
+    regime_features: Optional[list[str]] = typer.Option(
+        None,
+        "--regime-feature",
+        help=(
+            "Feature used by the Mixture-of-Experts gating network; "
+            "can be passed multiple times"
+        ),
+    ),
     orderbook_features: bool = typer.Option(
         False, help="Include order book derived features"
     ),
@@ -179,6 +187,10 @@ def train(
         train_cfg = train_cfg.model_copy(update={"cache_dir": cache_dir})
     if features is not None:
         train_cfg = train_cfg.model_copy(update={"features": list(features)})
+    if regime_features is not None:
+        train_cfg = train_cfg.model_copy(
+            update={"regime_features": list(regime_features)}
+        )
     if orderbook_features:
         feats = set(train_cfg.features or [])
         feats.add("orderbook")
@@ -211,6 +223,7 @@ def train(
         hrp_allocation=train_cfg.hrp_allocation,
         strategy_search=train_cfg.strategy_search,
         reuse_controller=train_cfg.reuse_controller,
+        regime_features=train_cfg.regime_features,
         config_hash=config_hash,
         config_snapshot=snapshot.as_dict(),
     )

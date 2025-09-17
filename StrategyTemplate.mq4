@@ -13,6 +13,14 @@ double g_conformal_lower;
 double g_conformal_upper;
 int g_order_types[];
 double g_order_thresholds[];
+bool g_use_moe = false;
+int g_moe_num_experts = 0;
+int g_moe_feature_dim = 0;
+int g_moe_regime_dim = 0;
+double g_moe_expert_weights[1] = {0.0};
+double g_moe_expert_bias[1] = {0.0};
+double g_moe_gate_weights[1] = {0.0};
+double g_moe_gate_bias[1] = {0.0};
 // __SESSION_MODELS__
 
 bool g_use_transformer = false;
@@ -453,6 +461,8 @@ double RollingCorrelation(string sym1, string sym2, int window)
 
 // __GET_FEATURE__
 
+// __GET_REGIME_FEATURE__
+
 
 double ApplyModel(double &coeffs[])
 {
@@ -556,10 +566,60 @@ double TransformerScore()
     return 1.0 / (1.0 + MathExp(-z));
 }
 
+double ScoreMixture()
+{
+    if(!g_use_moe || g_moe_num_experts <= 0 || g_moe_feature_dim <= 0 || g_moe_regime_dim <= 0)
+        return 0.0;
+
+    int experts = g_moe_num_experts;
+    int feat_dim = g_moe_feature_dim;
+    int reg_dim = g_moe_regime_dim;
+
+    double gate_logits[]; ArrayResize(gate_logits, experts);
+    double maxv = -1e10;
+    for(int e = 0; e < experts; e++)
+    {
+        double z = g_moe_gate_bias[e];
+        for(int r = 0; r < reg_dim; r++)
+        {
+            double val = GetRegimeFeature(r);
+            z += g_moe_gate_weights[e * reg_dim + r] * val;
+        }
+        gate_logits[e] = z;
+        if(z > maxv)
+            maxv = z;
+    }
+    double denom = 0.0;
+    for(int e = 0; e < experts; e++)
+    {
+        gate_logits[e] = MathExp(gate_logits[e] - maxv);
+        denom += gate_logits[e];
+    }
+    if(denom <= 0)
+        denom = 1.0;
+
+    double prob = 0.0;
+    for(int e = 0; e < experts; e++)
+    {
+        double gate = gate_logits[e] / denom;
+        double z = g_moe_expert_bias[e];
+        for(int f = 0; f < feat_dim; f++)
+        {
+            double val = GetFeature(f);
+            z += g_moe_expert_weights[e * feat_dim + f] * val;
+        }
+        double expert = 1.0 / (1.0 + MathExp(-z));
+        prob += gate * expert;
+    }
+    return prob;
+}
+
 double ScoreModel()
 {
     if(g_use_transformer)
         return TransformerScore();
+    if(g_use_moe)
+        return ScoreMixture();
     return 1.0 / (1.0 + MathExp(-ApplyModel(g_coeffs)));
 }
 

@@ -50,6 +50,7 @@ FEATURE_MAP: dict[str, str] = {
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
 CASE_TEMPLATE = "    case {idx}: return {expr}; // {name}"
+GET_REGIME_TEMPLATE = """double GetRegimeFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
 
 
 def build_switch(names: Sequence[str]) -> str:
@@ -94,6 +95,33 @@ def build_switch(names: Sequence[str]) -> str:
             )
         cases.append(CASE_TEMPLATE.format(idx=i, expr=expr, name=name))
     return GET_FEATURE_TEMPLATE.format(cases="\n".join(cases))
+
+
+def build_regime_switch(names: Sequence[str], feature_names: Sequence[str]) -> str:
+    """Render switch cases for regime features.
+
+    Regime features reuse :data:`FEATURE_MAP` expressions when available and
+    fall back to previously generated feature indices when the regime feature is
+    already part of the main feature vector.
+    """
+
+    if not names:
+        return "double GetRegimeFeature(int idx)\n{\n    return 0.0;\n}\n"
+
+    feature_index = {name: idx for idx, name in enumerate(feature_names)}
+    cases: list[str] = []
+    for i, name in enumerate(names):
+        if name in FEATURE_MAP:
+            expr = FEATURE_MAP[name]
+        elif name in feature_index:
+            expr = f"GetFeature({feature_index[name]})"
+        else:
+            raise KeyError(
+                "No runtime expression for regime feature "
+                f"'{name}'. Update StrategyTemplate.mq4 or FEATURE_MAP to add it."
+            )
+        cases.append(CASE_TEMPLATE.format(idx=i, expr=expr, name=name))
+    return GET_REGIME_TEMPLATE.format(cases="\n".join(cases))
 
 
 def _build_session_models(data: dict) -> str:
@@ -301,12 +329,20 @@ def insert_get_feature(
 
     feature_names = data.get("retained_features") or data.get("feature_names", [])
     get_feature = build_switch(feature_names)
+    gating = data.get("regime_gating") or {}
+    regime_features = (
+        gating.get("feature_names")
+        or data.get("regime_features")
+        or []
+    )
+    get_regime = build_regime_switch(regime_features, feature_names)
     session_models = _build_session_models(data)
     symbol_emb = _build_symbol_embeddings(data.get("symbol_embeddings", {}))
     symbol_thresh = _build_symbol_thresholds(data.get("symbol_thresholds", {}))
     transformer_block = _build_transformer_params(data)
     content = template.read_text()
     output = content.replace("// __GET_FEATURE__", get_feature)
+    output = output.replace("// __GET_REGIME_FEATURE__", get_regime)
     output = output.replace("// __SESSION_MODELS__", session_models)
     pattern_emb = re.compile(
         r"// __SYMBOL_EMBEDDINGS_START__.*// __SYMBOL_EMBEDDINGS_END__",
@@ -326,6 +362,65 @@ def insert_get_feature(
     if data.get("model_type") == "transformer" and not data.get("distilled"):
         output = output.replace(
             "bool g_use_transformer = false;", "bool g_use_transformer = true;"
+        )
+    if (
+        data.get("model_type") == "moe"
+        and regime_features
+        and data.get("experts")
+        and gating.get("weights")
+    ):
+        experts = data.get("experts") or []
+        n_experts = len(experts)
+        expert_dim = len(experts[0].get("weights", [])) if experts else 0
+        regime_dim = len(regime_features)
+
+        def _fmt(values: Sequence[float]) -> str:
+            return ", ".join(str(float(v)) for v in values)
+
+        expert_weights = [
+            float(w)
+            for exp in experts
+            for w in exp.get("weights", [])
+        ]
+        expert_bias = [float(exp.get("bias", 0.0)) for exp in experts]
+        gate_weights = gating.get("weights", [])
+        if gate_weights and isinstance(gate_weights[0], list):
+            gate_flat = [float(v) for row in gate_weights for v in row]
+        else:
+            gate_flat = [float(v) for v in gate_weights]
+        gate_bias = [float(v) for v in gating.get("bias", [])]
+        output = output.replace("bool g_use_moe = false;", "bool g_use_moe = true;")
+        output = output.replace(
+            "int g_moe_num_experts = 0;",
+            f"int g_moe_num_experts = {n_experts};",
+        )
+        output = output.replace(
+            "int g_moe_feature_dim = 0;",
+            f"int g_moe_feature_dim = {expert_dim};",
+        )
+        output = output.replace(
+            "int g_moe_regime_dim = 0;",
+            f"int g_moe_regime_dim = {regime_dim};",
+        )
+        weight_len = max(len(expert_weights), 1)
+        gate_len = max(len(gate_flat), 1)
+        bias_len = max(len(expert_bias), 1)
+        gate_bias_len = max(len(gate_bias), 1)
+        output = output.replace(
+            "double g_moe_expert_weights[1] = {0.0};",
+            f"double g_moe_expert_weights[{weight_len}] = {{{_fmt(expert_weights) if expert_weights else '0.0'}}};",
+        )
+        output = output.replace(
+            "double g_moe_expert_bias[1] = {0.0};",
+            f"double g_moe_expert_bias[{bias_len}] = {{{_fmt(expert_bias) if expert_bias else '0.0'}}};",
+        )
+        output = output.replace(
+            "double g_moe_gate_weights[1] = {0.0};",
+            f"double g_moe_gate_weights[{gate_len}] = {{{_fmt(gate_flat) if gate_flat else '0.0'}}};",
+        )
+        output = output.replace(
+            "double g_moe_gate_bias[1] = {0.0};",
+            f"double g_moe_gate_bias[{gate_bias_len}] = {{{_fmt(gate_bias) if gate_bias else '0.0'}}};",
         )
     cal_path = str(calendar_file) if calendar_file else "calendar.csv"
     output = output.replace("__CALENDAR_FILE__", cal_path)
