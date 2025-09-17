@@ -58,6 +58,13 @@ botcopier evaluate notebooks/data/predictions.csv notebooks/data/trades_raw.csv 
 Both commands write their configuration snapshot to ``params.yaml`` and print a
 JSON metrics summary so you can track changes between runs.
 
+When you have exported raw tick history from MetaTrader, compute quick summary
+statistics directly from the CLI:
+
+```bash
+botcopier analyze-ticks notebooks/data/ticks.csv --interval hourly
+```
+
 ## Explore the notebooks
 
 Open the notebooks in ``notebooks/`` for an executable walk-through of the same

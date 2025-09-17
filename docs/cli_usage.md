@@ -7,6 +7,8 @@ graph TD
     A[train] --> B[evaluate]
     B --> C[promote]
     C --> D[deploy]
+    A --> E[online-train]
+    A --> F[analyze-ticks]
 ```
 
 Run ``botcopier --help`` to list available commands. Key subcommands include:
@@ -19,6 +21,8 @@ Run ``botcopier --help`` to list available commands. Key subcommands include:
   instrumentation.
 - ``flight-server`` – expose Arrow Flight endpoints for streaming trade and
   metric batches.
+- ``analyze-ticks`` – compute summary metrics and volatility for exported tick
+  history files.
 
 ## Feature plugins
 

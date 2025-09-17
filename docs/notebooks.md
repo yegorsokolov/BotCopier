@@ -9,8 +9,10 @@ through Python helper functions.
 flowchart LR
     A[Sample Data] --> B[notebooks/getting_started.ipynb]
     A --> C[notebooks/model_evaluation.ipynb]
+    A --> F[notebooks/cli_walkthrough.ipynb]
     B --> D[Training Artifacts]
     C --> E[Evaluation Report]
+    F --> G[CLI metrics JSON]
 ```
 
 ## Available notebooks
@@ -20,6 +22,9 @@ flowchart LR
   metrics and model card.
 - ``model_evaluation.ipynb`` – demonstrates how to call ``botcopier
   evaluate`` with example predictions and render a concise metrics summary.
+- ``cli_walkthrough.ipynb`` – exercises the consolidated Typer CLI using
+  ``typer.testing.CliRunner`` to run ``train``, ``evaluate``, and ``analyze-ticks``
+  without leaving the notebook environment.
 
 Both notebooks are designed to run on a vanilla Python installation without
 special hardware. They rely exclusively on the files in ``notebooks/data`` so
