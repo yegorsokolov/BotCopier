@@ -10,6 +10,14 @@ from typing import Iterable, Sequence, TYPE_CHECKING
 
 from joblib import Memory, Parallel, delayed
 
+try:  # optional numpy dependency
+    import numpy as np  # type: ignore
+
+    _HAS_NUMPY = True
+except Exception:  # pragma: no cover - optional import
+    np = None  # type: ignore
+    _HAS_NUMPY = False
+
 try:  # optional polars dependency
     import polars as pl  # type: ignore
 
@@ -113,23 +121,35 @@ def _merge_feature_frames(
     import pandas as pd  # type: ignore
 
     base_pdf, to_original = _to_pandas_with_converter(base_df)
-    frames: list[pd.DataFrame] = [base_pdf]
-    feature_sequences: list[Sequence[str]] = []
-    for _, plugin_df, plugin_features in plugin_results:
-        plugin_pdf, _ = _to_pandas_with_converter(plugin_df)
-        frames.append(plugin_pdf)
-        feature_sequences.append(plugin_features)
+    plugin_frames, feature_arrays = zip(
+        *(
+            (
+                _to_pandas_with_converter(plugin_df)[0],
+                np.asarray(plugin_features, dtype=object)
+                if _HAS_NUMPY
+                else tuple(plugin_features),
+            )
+            for _, plugin_df, plugin_features in plugin_results
+        )
+    )
 
-    merged_pdf = pd.concat(frames, axis=1)
+    frames: list[pd.DataFrame] = [base_pdf, *plugin_frames]
+    merged_pdf = pd.concat(frames, axis=1, copy=False)
     merged_pdf = merged_pdf.loc[:, ~merged_pdf.columns.duplicated(keep="last")]
 
-    seen = set(feature_names)
-    merged_features = list(feature_names)
-    for names in feature_sequences:
-        for name in names:
-            if name not in seen:
-                merged_features.append(name)
-                seen.add(name)
+    if _HAS_NUMPY:
+        combined = np.concatenate(
+            [np.asarray(feature_names, dtype=object), *feature_arrays]
+        )
+        merged_features = (
+            pd.Index(combined, dtype=object).drop_duplicates().tolist()
+        )
+    else:  # pragma: no cover - fallback without numpy
+        merged_features = list(feature_names)
+        for names in feature_arrays:
+            for name in names:
+                if name not in merged_features:
+                    merged_features.append(name)
 
     return to_original(merged_pdf), merged_features
 
@@ -186,11 +206,16 @@ def _apply_parallel_plugins(
         [(name, res_df, res_features) for name, res_df, res_features, _, _ in results],
     )
 
-    embeddings: dict[str, list[float]] = {}
-    gnn_state: dict[str, list[list[float]]] = {}
-    for _, _, _, emb, gnn in results:
-        embeddings.update(emb)
-        gnn_state.update(gnn)
+    embeddings = {
+        key: value
+        for _, _, _, emb, _ in results
+        for key, value in (emb or {}).items()
+    }
+    gnn_state = {
+        key: value
+        for _, _, _, _, gnn in results
+        for key, value in (gnn or {}).items()
+    }
 
     return merged_df, merged_features, embeddings, gnn_state
 
