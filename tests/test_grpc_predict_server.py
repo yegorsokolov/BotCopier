@@ -28,10 +28,12 @@ def _free_port() -> int:
 
 
 def test_grpc_round_trip():
-    model = {"entry_coefficients": [0.5, -0.25], "entry_intercept": 0.1}
-    gps.MODEL = model
-    gps.COEFFS = [0.5, -0.25]
-    gps.INTERCEPT = 0.1
+    model = {
+        "entry_coefficients": [0.5, -0.25],
+        "entry_intercept": 0.1,
+        "threshold": 0.0,
+    }
+    gps._configure_runtime(model)
 
     async def _run() -> None:
         port = _free_port()
@@ -49,8 +51,9 @@ def test_grpc_round_trip():
 
 @pytest.mark.asyncio
 async def test_grpc_invalid_features_logged(caplog):
-    gps.COEFFS = [0.5, -0.25]
-    gps.INTERCEPT = 0.0
+    gps._configure_runtime(
+        {"entry_coefficients": [0.5, -0.25], "entry_intercept": 0.0, "threshold": 0.0}
+    )
     caplog.set_level(logging.ERROR)
 
     port = _free_port()

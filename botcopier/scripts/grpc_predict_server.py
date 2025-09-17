@@ -5,15 +5,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import math
+import pickle
 import signal
 from contextlib import suppress
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Sequence
 
 import grpc.aio as grpc
+
+import numpy as np
 
 # Make generated proto modules importable
 PROTO_DIR = Path(__file__).resolve().parent.parent.parent / "proto"
@@ -30,6 +34,10 @@ DEFAULT_MODEL_PATH = BASE_DIR / "model.json"
 MODEL: dict = {"entry_coefficients": [], "entry_intercept": 0.0}
 COEFFS: List[float] = []
 INTERCEPT: float = 0.0
+LINEAR_CONFIG: dict[str, object] = {}
+ENSEMBLE_MODELS: list[Callable[[Sequence[float]], float]] = []
+ENSEMBLE_WEIGHTS: Sequence[float] | None = None
+THRESHOLD: float = 0.5
 
 logger = logging.getLogger(__name__)
 
@@ -52,33 +60,206 @@ def _load_model(path: Path) -> dict:
     return model
 
 
-def _reload_model(path: Path) -> None:
-    """Refresh global model parameters from ``path``."""
+def _sigmoid(score: float) -> float:
+    return 1.0 / (1.0 + math.exp(-score))
 
-    global MODEL, COEFFS, INTERCEPT
-    model = _load_model(path)
+
+def _resolve_threshold(values: Sequence[object]) -> float:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.5
+
+
+def _make_logistic_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
+    coeffs = np.asarray(config.get("coefficients", []), dtype=float)
+    if coeffs.size == 0:
+        raise ValueError("missing logistic coefficients")
+    intercept = float(config.get("intercept", 0.0))
+    clip_low = np.asarray(config.get("clip_low", []), dtype=float)
+    clip_high = np.asarray(config.get("clip_high", []), dtype=float)
+    center = np.asarray(config.get("center", []), dtype=float)
+    scale = np.asarray(config.get("scale", []), dtype=float)
+
+    def _predict(features: Sequence[float]) -> float:
+        arr = np.asarray(features, dtype=float)
+        if arr.size != coeffs.size:
+            raise ServiceError("feature length mismatch")
+        if clip_low.size == arr.size and clip_high.size == arr.size:
+            arr = np.clip(arr, clip_low, clip_high)
+        if center.size == arr.size and scale.size == arr.size:
+            safe_scale = np.where(scale == 0, 1.0, scale)
+            arr = (arr - center) / safe_scale
+        score = float(np.dot(coeffs, arr) + intercept)
+        return float(_sigmoid(score))
+
+    return _predict
+
+
+def _make_gradient_boosting_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
+    payload = config.get("model")
+    if not payload:
+        raise ValueError("missing gradient boosting payload")
+    model = pickle.loads(base64.b64decode(payload))
+
+    def _predict(features: Sequence[float]) -> float:
+        arr = np.asarray(features, dtype=float).reshape(1, -1)
+        prob = model.predict_proba(arr)[0, 1]
+        return float(prob)
+
+    return _predict
+
+
+def _make_xgboost_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
+    try:
+        import xgboost as xgb  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("xgboost is required to load this estimator") from exc
+
+    booster_payload = config.get("booster")
+    if not booster_payload:
+        raise ValueError("missing xgboost booster payload")
+    booster = xgb.Booster()
+    booster.load_model(bytearray(base64.b64decode(booster_payload)))
+
+    def _predict(features: Sequence[float]) -> float:
+        arr = np.asarray(features, dtype=float).reshape(1, -1)
+        dmatrix = xgb.DMatrix(arr)
+        prob = booster.predict(dmatrix)
+        return float(prob[0])
+
+    return _predict
+
+
+def _predict_logistic(features: Sequence[float]) -> float:
+    if not LINEAR_CONFIG.get("coefficients"):
+        if not COEFFS:
+            raise ServiceError("model coefficients unavailable")
+        coeffs = np.asarray(COEFFS, dtype=float)
+        intercept = float(INTERCEPT)
+        clip_low = np.asarray([], dtype=float)
+        clip_high = np.asarray([], dtype=float)
+        center = np.asarray([], dtype=float)
+        scale = np.asarray([], dtype=float)
+    else:
+        coeffs = np.asarray(LINEAR_CONFIG.get("coefficients", []), dtype=float)
+        intercept = float(LINEAR_CONFIG.get("intercept", INTERCEPT))
+        clip_low = np.asarray(LINEAR_CONFIG.get("clip_low", []), dtype=float)
+        clip_high = np.asarray(LINEAR_CONFIG.get("clip_high", []), dtype=float)
+        center = np.asarray(LINEAR_CONFIG.get("center", []), dtype=float)
+        scale = np.asarray(LINEAR_CONFIG.get("scale", []), dtype=float)
+
+    arr = np.asarray(features, dtype=float)
+    if arr.size != coeffs.size:
+        raise ServiceError("feature length mismatch")
+    if clip_low.size == arr.size and clip_high.size == arr.size:
+        arr = np.clip(arr, clip_low, clip_high)
+    if center.size == arr.size and scale.size == arr.size:
+        safe_scale = np.where(scale == 0, 1.0, scale)
+        arr = (arr - center) / safe_scale
+    score = float(np.dot(coeffs, arr) + intercept)
+    return float(_sigmoid(score))
+
+
+def _configure_runtime(model: dict) -> None:
+    """Populate globals used during inference from ``model``."""
+
+    global MODEL, COEFFS, INTERCEPT, LINEAR_CONFIG, ENSEMBLE_MODELS, ENSEMBLE_WEIGHTS, THRESHOLD
     MODEL = model
-    COEFFS = [float(x) for x in model.get("entry_coefficients", [])]
-    INTERCEPT = float(model.get("entry_intercept", 0.0))
+    coeffs = model.get("entry_coefficients") or model.get("coefficients") or []
+    COEFFS = [float(x) for x in coeffs]
+    INTERCEPT = float(model.get("entry_intercept", model.get("intercept", 0.0)))
+    LINEAR_CONFIG = {
+        "coefficients": COEFFS,
+        "intercept": INTERCEPT,
+        "clip_low": model.get("clip_low", []),
+        "clip_high": model.get("clip_high", []),
+        "center": model.get("feature_mean", []),
+        "scale": model.get("feature_std", []),
+    }
+    ENSEMBLE_MODELS = []
+    ENSEMBLE_WEIGHTS = None
+    threshold_candidates: list[object] = []
+    ensemble_cfg = model.get("ensemble")
+    if isinstance(ensemble_cfg, dict):
+        weights = ensemble_cfg.get("weights")
+        if weights is not None:
+            ENSEMBLE_WEIGHTS = [float(w) for w in weights]
+        threshold_candidates.append(ensemble_cfg.get("threshold"))
+        for estimator in ensemble_cfg.get("estimators", []):
+            est_type = estimator.get("type")
+            try:
+                if est_type == "logistic":
+                    ENSEMBLE_MODELS.append(_make_logistic_predictor(estimator))
+                    coeffs_local = [float(x) for x in estimator.get("coefficients", [])]
+                    COEFFS = coeffs_local or COEFFS
+                    INTERCEPT = float(estimator.get("intercept", INTERCEPT))
+                    LINEAR_CONFIG = {
+                        "coefficients": coeffs_local or COEFFS,
+                        "intercept": INTERCEPT,
+                        "clip_low": estimator.get("clip_low", []),
+                        "clip_high": estimator.get("clip_high", []),
+                        "center": estimator.get("center", []),
+                        "scale": estimator.get("scale", []),
+                    }
+                elif est_type == "gradient_boosting":
+                    ENSEMBLE_MODELS.append(_make_gradient_boosting_predictor(estimator))
+                elif est_type == "xgboost":
+                    ENSEMBLE_MODELS.append(_make_xgboost_predictor(estimator))
+                else:
+                    logger.warning("Unsupported estimator type '%s'", est_type)
+            except Exception:  # pragma: no cover - defensive logging
+                logger.exception(
+                    "Failed to initialise estimator %s", estimator.get("name", est_type)
+                )
+    threshold_candidates.extend([model.get("decision_threshold"), model.get("threshold")])
+    THRESHOLD = _resolve_threshold(threshold_candidates)
     logger.info(
         "model_loaded",
         extra={
             "context": {
                 "coefficients": len(COEFFS),
                 "intercept": INTERCEPT,
-                "path": str(path),
+                "threshold": THRESHOLD,
+                "ensemble_estimators": len(ENSEMBLE_MODELS),
             }
         },
     )
 
+def _reload_model(path: Path) -> None:
+    """Refresh global model parameters from ``path``."""
+
+    model = _load_model(path)
+    _configure_runtime(model)
+    logger.info("model_source", extra={"context": {"path": str(path)}})
+
 
 def _predict_one(features: List[float]) -> float:
-    """Compute the logistic score for ``features``."""
+    """Return ensemble probability applying the configured threshold."""
 
-    if len(features) != len(COEFFS):
-        raise ServiceError("feature length mismatch")
-    score = sum(c * f for c, f in zip(COEFFS, features)) + INTERCEPT
-    return 1.0 / (1.0 + math.exp(-score))
+    if ENSEMBLE_MODELS:
+        probabilities: list[float] = []
+        for predictor in ENSEMBLE_MODELS:
+            probabilities.append(float(predictor(features)))
+        if not probabilities:
+            raise ServiceError("no ensemble estimators available")
+        if ENSEMBLE_WEIGHTS is not None and len(ENSEMBLE_WEIGHTS) == len(probabilities):
+            weight_sum = float(sum(ENSEMBLE_WEIGHTS))
+            if weight_sum > 0:
+                prob = float(
+                    sum(w * p for w, p in zip(ENSEMBLE_WEIGHTS, probabilities)) / weight_sum
+                )
+            else:
+                prob = float(sum(probabilities) / len(probabilities))
+        else:
+            prob = float(sum(probabilities) / len(probabilities))
+    else:
+        prob = _predict_logistic(features)
+    return prob if prob >= THRESHOLD else 0.0
 
 
 def _build_server(host: str, port: int) -> grpc.Server:

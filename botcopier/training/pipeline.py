@@ -1751,6 +1751,9 @@ def train(
         model["threshold"] = float(selected_threshold)
         model["decision_threshold"] = float(selected_threshold)
         model["threshold_objective"] = threshold_objective
+        ensemble_cfg = model.get("ensemble")
+        if isinstance(ensemble_cfg, dict):
+            ensemble_cfg.setdefault("threshold", float(selected_threshold))
         model["cv_accuracy"] = metrics.get("accuracy", 0.0)
         model["cv_profit"] = metrics.get("profit", 0.0)
         model["conformal_lower"] = 0.0

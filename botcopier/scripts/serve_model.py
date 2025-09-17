@@ -1,8 +1,11 @@
 import argparse
+import base64
 import json
+import logging
 import math
+import pickle
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -35,6 +38,221 @@ except Exception:  # pragma: no cover - optional
     FEATURE_COLUMNS = []  # type: ignore
     _HAS_FEAST = False
 
+
+logger = logging.getLogger(__name__)
+
+
+def _sigmoid(score: float) -> float:
+    return 1.0 / (1.0 + math.exp(-score))
+
+
+def _resolve_threshold(values: Sequence[object]) -> float:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.5
+
+
+def _make_logistic_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
+    coeffs = np.asarray(config.get("coefficients", []), dtype=float)
+    if coeffs.size == 0:
+        raise ValueError("missing logistic coefficients")
+    intercept = float(config.get("intercept", 0.0))
+    clip_low = np.asarray(config.get("clip_low", []), dtype=float)
+    clip_high = np.asarray(config.get("clip_high", []), dtype=float)
+    center = np.asarray(config.get("center", []), dtype=float)
+    scale = np.asarray(config.get("scale", []), dtype=float)
+
+    def _predict(features: Sequence[float]) -> float:
+        arr = np.asarray(features, dtype=float)
+        if arr.size != coeffs.size:
+            raise ValueError("feature length mismatch")
+        if clip_low.size == arr.size and clip_high.size == arr.size:
+            arr = np.clip(arr, clip_low, clip_high)
+        if center.size == arr.size and scale.size == arr.size:
+            safe_scale = np.where(scale == 0, 1.0, scale)
+            arr = (arr - center) / safe_scale
+        score = float(np.dot(coeffs, arr) + intercept)
+        return float(_sigmoid(score))
+
+    return _predict
+
+
+def _make_gradient_boosting_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
+    payload = config.get("model")
+    if not payload:
+        raise ValueError("missing gradient boosting payload")
+    model = pickle.loads(base64.b64decode(payload))
+
+    def _predict(features: Sequence[float]) -> float:
+        arr = np.asarray(features, dtype=float).reshape(1, -1)
+        prob = model.predict_proba(arr)[0, 1]
+        return float(prob)
+
+    return _predict
+
+
+def _make_xgboost_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
+    try:
+        import xgboost as xgb  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("xgboost is required to load this estimator") from exc
+
+    booster_payload = config.get("booster")
+    if not booster_payload:
+        raise ValueError("missing xgboost booster payload")
+    booster = xgb.Booster()
+    booster.load_model(bytearray(base64.b64decode(booster_payload)))
+
+    def _predict(features: Sequence[float]) -> float:
+        arr = np.asarray(features, dtype=float).reshape(1, -1)
+        dmatrix = xgb.DMatrix(arr)
+        prob = booster.predict(dmatrix)
+        return float(prob[0])
+
+    return _predict
+
+
+def _predict_logistic(features: Sequence[float], config: dict[str, object]) -> float:
+    coeffs = np.asarray(config.get("coefficients", []), dtype=float)
+    intercept = float(config.get("intercept", 0.0))
+    if coeffs.size == 0:
+        raise ValueError("model coefficients unavailable")
+    arr = np.asarray(features, dtype=float)
+    if arr.size != coeffs.size:
+        raise ValueError("feature length mismatch")
+    clip_low = np.asarray(config.get("clip_low", []), dtype=float)
+    clip_high = np.asarray(config.get("clip_high", []), dtype=float)
+    if clip_low.size == arr.size and clip_high.size == arr.size:
+        arr = np.clip(arr, clip_low, clip_high)
+    center = np.asarray(config.get("center", []), dtype=float)
+    scale = np.asarray(config.get("scale", []), dtype=float)
+    if center.size == arr.size and scale.size == arr.size:
+        safe_scale = np.where(scale == 0, 1.0, scale)
+        arr = (arr - center) / safe_scale
+    score = float(np.dot(coeffs, arr) + intercept)
+    return float(_sigmoid(score))
+
+
+def _configure_model(model: dict) -> None:
+    """Initialise globals controlling model inference."""
+
+    global MODEL, FEATURE_METADATA, _EXPECTED_COLS, FEATURE_NAMES
+    global PT_INFO, PT, PT_IDX
+    global OOD_INFO, OOD_MEAN, OOD_COV, OOD_INV, OOD_THRESHOLD
+    global LINEAR_CONFIG, ENSEMBLE_MODELS, ENSEMBLE_WEIGHTS, THRESHOLD
+
+    MODEL = model
+    FEATURE_METADATA = [FeatureMetadata(**m) for m in model.get("feature_metadata", [])]
+    _EXPECTED_COLS = [fm.original_column for fm in FEATURE_METADATA]
+    FEATURE_NAMES = model.get("feature_names", _EXPECTED_COLS or FEATURE_COLUMNS)
+    if FEATURE_METADATA and len(FEATURE_NAMES) != len(FEATURE_METADATA):
+        raise ValueError("feature_names and feature_metadata mismatch")
+
+    PT_INFO = model.get("power_transformer")
+    PT = None
+    PT_IDX = []
+    if PT_INFO:
+        PT = PowerTransformer(method="yeo-johnson")
+        PT.lambdas_ = np.asarray(PT_INFO.get("lambdas", []), dtype=float)
+        PT.n_features_in_ = PT.lambdas_.shape[0]
+        from sklearn.preprocessing import StandardScaler
+
+        scaler = StandardScaler()
+        scaler.mean_ = np.asarray(PT_INFO.get("mean", []), dtype=float)
+        scaler.scale_ = np.asarray(PT_INFO.get("scale", []), dtype=float)
+        PT._scaler = scaler
+        PT_IDX = [
+            FEATURE_NAMES.index(f)
+            for f in PT_INFO.get("features", [])
+            if f in FEATURE_NAMES
+        ]
+
+    OOD_INFO = model.get("ood", {})
+    OOD_MEAN = np.asarray(OOD_INFO.get("mean", []), dtype=float)
+    OOD_COV = np.asarray(OOD_INFO.get("covariance", []), dtype=float)
+    OOD_INV = np.linalg.pinv(OOD_COV) if OOD_COV.size else np.empty((0, 0))
+    OOD_THRESHOLD = float(OOD_INFO.get("threshold", float("inf")))
+
+    coeffs = model.get("entry_coefficients") or model.get("coefficients") or []
+    intercept = float(model.get("entry_intercept", model.get("intercept", 0.0)))
+    LINEAR_CONFIG = {
+        "coefficients": [float(x) for x in coeffs],
+        "intercept": intercept,
+        "clip_low": model.get("clip_low", []),
+        "clip_high": model.get("clip_high", []),
+        "center": model.get("feature_mean", []),
+        "scale": model.get("feature_std", []),
+    }
+    ENSEMBLE_MODELS = []
+    ENSEMBLE_WEIGHTS = None
+    threshold_candidates: list[object] = []
+    ensemble_cfg = model.get("ensemble")
+    if isinstance(ensemble_cfg, dict):
+        weights = ensemble_cfg.get("weights")
+        if weights is not None:
+            ENSEMBLE_WEIGHTS = [float(w) for w in weights]
+        threshold_candidates.append(ensemble_cfg.get("threshold"))
+        for estimator in ensemble_cfg.get("estimators", []):
+            est_type = estimator.get("type")
+            try:
+                if est_type == "logistic":
+                    ENSEMBLE_MODELS.append(_make_logistic_predictor(estimator))
+                    LINEAR_CONFIG = {
+                        "coefficients": [
+                            float(x)
+                            for x in estimator.get(
+                                "coefficients", LINEAR_CONFIG.get("coefficients", [])
+                            )
+                        ],
+                        "intercept": float(
+                            estimator.get("intercept", LINEAR_CONFIG.get("intercept", 0.0))
+                        ),
+                        "clip_low": estimator.get(
+                            "clip_low", LINEAR_CONFIG.get("clip_low", [])
+                        ),
+                        "clip_high": estimator.get(
+                            "clip_high", LINEAR_CONFIG.get("clip_high", [])
+                        ),
+                        "center": estimator.get("center", LINEAR_CONFIG.get("center", [])),
+                        "scale": estimator.get("scale", LINEAR_CONFIG.get("scale", [])),
+                    }
+                elif est_type == "gradient_boosting":
+                    ENSEMBLE_MODELS.append(_make_gradient_boosting_predictor(estimator))
+                elif est_type == "xgboost":
+                    ENSEMBLE_MODELS.append(_make_xgboost_predictor(estimator))
+                else:
+                    logger.warning("Unsupported estimator type '%s'", est_type)
+            except Exception:  # pragma: no cover - defensive logging
+                logger.exception(
+                    "Failed to initialise estimator %s", estimator.get("name", est_type)
+                )
+    threshold_candidates.extend([model.get("decision_threshold"), model.get("threshold")])
+    THRESHOLD = _resolve_threshold(threshold_candidates)
+
+
+MODEL: dict[str, object] = {"feature_names": [], "entry_coefficients": [], "entry_intercept": 0.0}
+FEATURE_METADATA: list[FeatureMetadata] = []
+_EXPECTED_COLS: list[str] = []
+FEATURE_NAMES: list[str] = []
+PT_INFO: dict[str, object] | None = None
+PT: PowerTransformer | None = None
+PT_IDX: List[int] = []
+OOD_INFO: dict[str, object] = {}
+OOD_MEAN = np.empty(0)
+OOD_COV = np.empty((0, 0))
+OOD_INV = np.empty((0, 0))
+OOD_THRESHOLD: float = float("inf")
+LINEAR_CONFIG: dict[str, object] = {}
+ENSEMBLE_MODELS: list[Callable[[Sequence[float]], float]] = []
+ENSEMBLE_WEIGHTS: Sequence[float] | None = None
+THRESHOLD: float = 0.5
+
+
 # Load model.json at startup
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "model.json"
@@ -44,35 +262,7 @@ try:
 except FileNotFoundError:
     MODEL = {"feature_names": [], "entry_coefficients": [], "entry_intercept": 0.0}
 
-FEATURE_METADATA = [FeatureMetadata(**m) for m in MODEL.get("feature_metadata", [])]
-_EXPECTED_COLS = [fm.original_column for fm in FEATURE_METADATA]
-FEATURE_NAMES = MODEL.get("feature_names", _EXPECTED_COLS or FEATURE_COLUMNS)
-if FEATURE_METADATA and len(FEATURE_NAMES) != len(FEATURE_METADATA):
-    raise ValueError("feature_names and feature_metadata mismatch")
-
-PT_INFO = MODEL.get("power_transformer")
-PT: PowerTransformer | None = None
-PT_IDX: List[int] = []
-if PT_INFO:
-    PT = PowerTransformer(method="yeo-johnson")
-    PT.lambdas_ = np.asarray(PT_INFO.get("lambdas", []), dtype=float)
-    PT.n_features_in_ = PT.lambdas_.shape[0]
-    from sklearn.preprocessing import StandardScaler
-    scaler = StandardScaler()
-    scaler.mean_ = np.asarray(PT_INFO.get("mean", []), dtype=float)
-    scaler.scale_ = np.asarray(PT_INFO.get("scale", []), dtype=float)
-    PT._scaler = scaler
-    PT_IDX = [
-        FEATURE_NAMES.index(f)
-        for f in PT_INFO.get("features", [])
-        if f in FEATURE_NAMES
-    ]
-
-OOD_INFO = MODEL.get("ood", {})
-OOD_MEAN = np.asarray(OOD_INFO.get("mean", []), dtype=float)
-OOD_COV = np.asarray(OOD_INFO.get("covariance", []), dtype=float)
-OOD_INV = np.linalg.pinv(OOD_COV) if OOD_COV.size else np.empty((0, 0))
-OOD_THRESHOLD = float(OOD_INFO.get("threshold", float("inf")))
+_configure_model(MODEL)
 
 if _HAS_FEAST:
     FS_REPO = BASE_DIR / "feature_store" / "feast_repo"
@@ -96,13 +286,10 @@ class PredictionResponse(BaseModel):
 
 
 def _predict_one(features: List[float]) -> float:
-    """Simple linear model with sigmoid activation."""
-    coeffs = MODEL.get("entry_coefficients", [])
-    intercept = MODEL.get("entry_intercept", 0.0)
+    """Compute an ensemble prediction applying the configured threshold."""
+
     expected = len(FEATURE_METADATA) or len(FEATURE_NAMES)
-    if len(coeffs) != expected:
-        raise ValueError("model definition inconsistent")
-    if len(features) != expected:
+    if expected and len(features) != expected:
         raise ValueError("feature length mismatch")
     if OOD_MEAN.size and OOD_INV.size:
         arr = np.asarray(features, dtype=float)
@@ -110,8 +297,24 @@ def _predict_one(features: List[float]) -> float:
         if dist > OOD_THRESHOLD:
             OOD_COUNTER.inc()
             return 0.0
-    score = sum(c * f for c, f in zip(coeffs, features)) + intercept
-    return 1.0 / (1.0 + math.exp(-score))
+    if ENSEMBLE_MODELS:
+        probabilities = [float(p(features)) for p in ENSEMBLE_MODELS]
+        if not probabilities:
+            raise ValueError("no ensemble estimators available")
+        if ENSEMBLE_WEIGHTS is not None and len(ENSEMBLE_WEIGHTS) == len(probabilities):
+            weight_sum = float(sum(ENSEMBLE_WEIGHTS))
+            if weight_sum > 0:
+                prob = float(
+                    sum(w * p for w, p in zip(ENSEMBLE_WEIGHTS, probabilities))
+                    / weight_sum
+                )
+            else:
+                prob = float(sum(probabilities) / len(probabilities))
+        else:
+            prob = float(sum(probabilities) / len(probabilities))
+    else:
+        prob = _predict_logistic(features, LINEAR_CONFIG)
+    return prob if prob >= THRESHOLD else 0.0
 
 
 @app.post("/predict", response_model=PredictionResponse)

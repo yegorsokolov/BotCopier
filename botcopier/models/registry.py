@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import pickle
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Callable, Dict, Sequence
@@ -11,6 +13,7 @@ from typing import Callable, Dict, Sequence
 import numpy as np
 from opentelemetry import trace
 from pydantic import ValidationError
+from sklearn.ensemble import GradientBoostingClassifier, VotingClassifier
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
@@ -130,6 +133,22 @@ class _FeatureClipper(BaseEstimator, TransformerMixin):
         return np.clip(X, self.low, self.high)
 
 
+def _extract_logreg_metadata(pipeline: Pipeline) -> dict[str, object]:
+    """Return metadata describing a fitted logistic regression pipeline."""
+
+    clf: LogisticRegression = pipeline.named_steps["logreg"]
+    scaler: RobustScaler = pipeline.named_steps["scale"]
+    clipper: _FeatureClipper = pipeline.named_steps["clip"]
+    return {
+        "coefficients": clf.coef_.ravel().tolist(),
+        "intercept": float(clf.intercept_[0]),
+        "feature_mean": scaler.center_.tolist(),
+        "feature_std": scaler.scale_.tolist(),
+        "clip_low": clipper.low.tolist(),
+        "clip_high": clipper.high.tolist(),
+    }
+
+
 class ConfidenceWeighted:
     """Simple diagonal Confidence-Weighted classifier.
 
@@ -233,24 +252,14 @@ def _fit_logreg(
         {"logreg__sample_weight": sample_weight} if sample_weight is not None else {}
     )
     pipeline.fit(X, y, **fit_kwargs)
-    clf: LogisticRegression = pipeline.named_steps["logreg"]
-    scaler: RobustScaler = pipeline.named_steps["scale"]
-    clipper: _FeatureClipper = pipeline.named_steps["clip"]
 
     def _predict(arr: np.ndarray) -> np.ndarray:
         return pipeline.predict_proba(arr)[:, 1]
 
     _predict.model = pipeline  # type: ignore[attr-defined]
 
-    meta = {
-        "coefficients": clf.coef_.ravel().tolist(),
-        "intercept": float(clf.intercept_[0]),
-        "training_rows": int(X.shape[0]),
-        "feature_mean": scaler.center_.tolist(),
-        "feature_std": scaler.scale_.tolist(),
-        "clip_low": clipper.low.tolist(),
-        "clip_high": clipper.high.tolist(),
-    }
+    meta = _extract_logreg_metadata(pipeline)
+    meta["training_rows"] = int(X.shape[0])
     cv_acc = pipeline.score(X, y)
     meta["cv_accuracy"] = float(cv_acc)
     return meta, _predict
@@ -284,6 +293,165 @@ def _fit_confidence_weighted(
 
 register_model("logreg", _fit_logreg)
 register_model("confidence_weighted", _fit_confidence_weighted)
+
+
+def _fit_gradient_boosting_classifier(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    sample_weight: np.ndarray | None = None,
+    random_state: int | None = None,
+    **params: float | int | str,
+) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
+    """Fit a :class:`~sklearn.ensemble.GradientBoostingClassifier`."""
+
+    default_params: dict[str, object] = {
+        "learning_rate": 0.1,
+        "n_estimators": 100,
+        "max_depth": 3,
+    }
+    if random_state is not None:
+        default_params.setdefault("random_state", random_state)
+    default_params.update(params)
+    model = GradientBoostingClassifier(**default_params)
+    fit_kwargs = {"sample_weight": sample_weight} if sample_weight is not None else {}
+    model.fit(X, y, **fit_kwargs)
+
+    def _predict(arr: np.ndarray) -> np.ndarray:
+        return model.predict_proba(arr)[:, 1]
+
+    _predict.model = model  # type: ignore[attr-defined]
+
+    serialised = base64.b64encode(pickle.dumps(model)).decode("utf-8")
+    meta = {
+        "gb_params": model.get_params(),
+        "gb_model": serialised,
+    }
+    return meta, _predict
+
+
+def _fit_voting_ensemble(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    sample_weight: np.ndarray | None = None,
+    weights: Sequence[float] | None = None,
+    include_xgboost: bool | None = None,
+    C: float = 1.0,
+    max_iter: int = 1000,
+    gb_params: dict[str, object] | None = None,
+    xgb_params: dict[str, object] | None = None,
+    random_state: int | None = None,
+) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
+    """Train a soft-voting ensemble combining linear and tree models."""
+
+    clip_low = np.quantile(X, 0.01, axis=0)
+    clip_high = np.quantile(X, 0.99, axis=0)
+    logreg = LogisticRegression(max_iter=max_iter, C=C)
+    pipeline = Pipeline(
+        [
+            ("clip", _FeatureClipper(clip_low, clip_high)),
+            ("scale", RobustScaler()),
+            ("logreg", logreg),
+        ]
+    )
+    gb_defaults: dict[str, object] = {
+        "learning_rate": 0.1,
+        "n_estimators": 100,
+        "max_depth": 3,
+    }
+    if random_state is not None:
+        gb_defaults.setdefault("random_state", random_state)
+    gb_defaults.update(gb_params or {})
+    gbrt = GradientBoostingClassifier(**gb_defaults)
+    estimators: list[tuple[str, object]] = [("logreg", pipeline), ("gbrt", gbrt)]
+    estimator_meta: list[dict[str, object]] = []
+    use_xgb = include_xgboost if include_xgboost is not None else _HAS_XGB
+    xgb_model = None
+    if use_xgb and _HAS_XGB:
+        xgb_defaults: dict[str, object] = {
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "use_label_encoder": False,
+            "verbosity": 0,
+        }
+        xgb_defaults.update(xgb_params or {})
+        xgb_model = xgb.XGBClassifier(**xgb_defaults)
+        estimators.append(("xgb", xgb_model))
+
+    ensemble = VotingClassifier(
+        estimators=estimators,
+        voting="soft",
+        weights=list(weights) if weights is not None else None,
+        flatten_transform=False,
+    )
+    fit_kwargs = {"sample_weight": sample_weight} if sample_weight is not None else {}
+    ensemble.fit(X, y, **fit_kwargs)
+
+    def _predict(arr: np.ndarray) -> np.ndarray:
+        return ensemble.predict_proba(arr)[:, 1]
+
+    _predict.model = ensemble  # type: ignore[attr-defined]
+
+    fitted_logreg: Pipeline = ensemble.named_estimators_["logreg"]  # type: ignore[index]
+    logreg_meta = _extract_logreg_metadata(fitted_logreg)
+    estimator_meta.append(
+        {
+            "name": "logreg",
+            "type": "logistic",
+            "coefficients": logreg_meta["coefficients"],
+            "intercept": logreg_meta["intercept"],
+            "clip_low": logreg_meta["clip_low"],
+            "clip_high": logreg_meta["clip_high"],
+            "center": logreg_meta["feature_mean"],
+            "scale": logreg_meta["feature_std"],
+        }
+    )
+    fitted_gbrt: GradientBoostingClassifier = ensemble.named_estimators_["gbrt"]  # type: ignore[index]
+    gb_serialised = base64.b64encode(pickle.dumps(fitted_gbrt)).decode("utf-8")
+    estimator_meta.append(
+        {
+            "name": "gradient_boosting",
+            "type": "gradient_boosting",
+            "model": gb_serialised,
+            "params": fitted_gbrt.get_params(),
+        }
+    )
+    if use_xgb and xgb_model is not None:
+        fitted_xgb = ensemble.named_estimators_.get("xgb")
+        if fitted_xgb is not None:
+            booster_bytes = fitted_xgb.get_booster().save_raw()
+            estimator_meta.append(
+                {
+                    "name": "xgboost",
+                    "type": "xgboost",
+                    "booster": base64.b64encode(booster_bytes).decode("utf-8"),
+                    "params": fitted_xgb.get_params(),
+                }
+            )
+
+    ensemble_info: dict[str, object] = {
+        "type": "soft_voting",
+        "weights": [float(w) for w in weights] if weights is not None else None,
+        "estimators": estimator_meta,
+    }
+
+    meta: dict[str, object] = {
+        "coefficients": logreg_meta["coefficients"],
+        "intercept": logreg_meta["intercept"],
+        "entry_coefficients": logreg_meta["coefficients"],
+        "entry_intercept": logreg_meta["intercept"],
+        "feature_mean": logreg_meta["feature_mean"],
+        "feature_std": logreg_meta["feature_std"],
+        "clip_low": logreg_meta["clip_low"],
+        "clip_high": logreg_meta["clip_high"],
+        "ensemble": ensemble_info,
+    }
+    return meta, _predict
+
+
+register_model("gradient_boosting", _fit_gradient_boosting_classifier)
+register_model("ensemble_voting", _fit_voting_ensemble)
 
 if _HAS_TORCH:
 
@@ -442,8 +610,6 @@ if _HAS_XGB:
 
         _predict.model = model  # type: ignore[attr-defined]
         booster_bytes = model.get_booster().save_raw()
-        import base64
-
         return {
             "booster": base64.b64encode(booster_bytes).decode("utf-8"),
             "xgb_params": model.get_params(),
