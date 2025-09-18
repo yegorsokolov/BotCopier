@@ -22,9 +22,11 @@ def test_crossmodal_attention_shape(tmp_path: Path):
     )
     ns = pd.DataFrame(
         {
-            "timestamp": pd.date_range("2020-01-01", periods=6, freq="T"),
+            "sentiment_timestamp": pd.date_range("2020-01-01", periods=6, freq="T"),
             "symbol": ["AAA"] * 6,
-            "score": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
+            "sentiment_headline_count": [1, 1, 2, 1, 3, 1],
+            "sentiment_emb_0": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
+            "sentiment_emb_1": [0.5, 0.4, 0.3, 0.2, 0.1, 0.0],
         }
     )
     out_dir = tmp_path / "out"
@@ -46,4 +48,7 @@ def test_crossmodal_attention_shape(tmp_path: Path):
     meta = json.loads((out_dir / "model.json").read_text())
     assert meta["model_type"] == "crossmodal"
     assert meta["feature_names"]
-    assert meta["sentiment_feature"] == "sentiment_score"
+    assert meta["sentiment_feature"] == "sentiment_emb_0"
+    sent_meta = meta.get("sentiment_embeddings")
+    assert sent_meta
+    assert sent_meta["dimension"] >= 2

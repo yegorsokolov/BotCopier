@@ -80,6 +80,35 @@ from botcopier.config.settings import (
     load_settings,
 )
 from botcopier.data.feature_schema import FeatureSchema
+
+
+def _encode_with_autoencoder(
+    X: np.ndarray, model_path: Path, *, latent_dim: int = 2
+) -> np.ndarray:
+    """Project ``X`` into a low-dimensional latent space using SVD."""
+
+    data = np.asarray(X, dtype=float)
+    if data.ndim != 2:
+        raise ValueError("X must be a 2D array")
+    samples, features = data.shape
+    if samples == 0 or features == 0:
+        return np.zeros((samples, min(latent_dim, features)), dtype=float)
+    k = int(max(1, min(latent_dim, features)))
+    mean = data.mean(axis=0, keepdims=True)
+    centered = data - mean
+    # Compute top-k singular vectors for a compact latent representation
+    u, s, vh = np.linalg.svd(centered, full_matrices=False)
+    basis = vh[:k]
+    embedding = centered @ basis.T
+    model_path = Path(model_path)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    save_path = model_path.with_suffix(".npy")
+    np.save(
+        save_path,
+        {"basis": basis.astype(float), "mean": mean.reshape(-1)},
+        allow_pickle=True,
+    )
+    return embedding.astype(float)
 from botcopier.data.loading import _load_logs
 from botcopier.exceptions import TrainingPipelineError
 from botcopier.features.anomaly import _clip_train_features
@@ -2225,45 +2254,45 @@ def train(
                         zip(feature_names, mean_abs), key=lambda x: x[1], reverse=True
                     )
                     logger.info("SHAP importance ranking: %s", ranking)
-                            if shap_threshold > 0.0:
-                                mask = mean_abs >= shap_threshold
-                                if mask.sum() < len(feature_names):
-                                    X = X[:, mask]
-                                    feature_names = [
-                                        fn for fn, keep in zip(feature_names, mask) if keep
-                                    ]
-                                    if model_type == "multi_symbol":
-                                        model_inputs = (X, symbol_indices)
-                                    else:
-                                        model_inputs = X
-                                    builder_kwargs = dict(
-                                        **gpu_kwargs,
-                                        **(best_params or {}),
-                                        **extra_model_params,
-                                    )
-                                    builder_kwargs["sample_weight"] = sample_weight
-                                    if model_type in {"moe", "multi_symbol"} or sequence_model:
-                                        builder_kwargs["grad_clip"] = grad_clip
-                                    if model_type == "multi_symbol":
-                                        builder_kwargs.update(
-                                            {
-                                                "symbol_names": symbol_names_ctx,
-                                                "embeddings": symbol_embeddings_ctx,
-                                                "neighbor_index": neighbor_lists_ctx,
-                                                "symbol_ids": symbol_indices,
-                                            }
-                                        )
-                                        model_data, predict_fn = builder(
-                                            model_inputs[0],
-                                            y,
-                                            **builder_kwargs,
-                                        )
-                                    else:
-                                        model_data, predict_fn = builder(
-                                            model_inputs,
-                                            y,
-                                            **builder_kwargs,
-                                        )
+                    if shap_threshold > 0.0:
+                        mask = mean_abs >= shap_threshold
+                        if mask.sum() < len(feature_names):
+                            X = X[:, mask]
+                            feature_names = [
+                                fn for fn, keep in zip(feature_names, mask) if keep
+                            ]
+                            if model_type == "multi_symbol":
+                                model_inputs = (X, symbol_indices)
+                            else:
+                                model_inputs = X
+                            builder_kwargs = dict(
+                                **gpu_kwargs,
+                                **(best_params or {}),
+                                **extra_model_params,
+                            )
+                            builder_kwargs["sample_weight"] = sample_weight
+                            if model_type in {"moe", "multi_symbol"} or sequence_model:
+                                builder_kwargs["grad_clip"] = grad_clip
+                            if model_type == "multi_symbol":
+                                builder_kwargs.update(
+                                    {
+                                        "symbol_names": symbol_names_ctx,
+                                        "embeddings": symbol_embeddings_ctx,
+                                        "neighbor_index": neighbor_lists_ctx,
+                                        "symbol_ids": symbol_indices,
+                                    }
+                                )
+                                model_data, predict_fn = builder(
+                                    model_inputs[0],
+                                    y,
+                                    **builder_kwargs,
+                                )
+                            else:
+                                model_data, predict_fn = builder(
+                                    model_inputs,
+                                    y,
+                                    **builder_kwargs,
+                                )
             except Exception:  # pragma: no cover - shap is optional
                 logger.exception("Failed to compute SHAP values")
         model_obj = getattr(predict_fn, "model", None)
@@ -2348,6 +2377,20 @@ def train(
             **model_data,
             "model_type": model_type,
         }
+        sent_embed_meta = technical_features._FEATURE_METADATA.get(
+            "sentiment_embeddings"
+        )
+        if isinstance(sent_embed_meta, dict):
+            sent_cols = list(sent_embed_meta.get("columns", []))
+            if sent_cols:
+                model["sentiment_feature"] = sent_cols[0]
+                model["sentiment_embeddings"] = {
+                    "columns": sent_cols,
+                    "dimension": int(
+                        sent_embed_meta.get("dimension", len(sent_cols))
+                    ),
+                    "source": sent_embed_meta.get("source", "news_sentiment"),
+                }
         if model_type == "multi_symbol":
             if "neighbor_order" not in model:
                 model["neighbor_order"] = neighbor_order_ctx

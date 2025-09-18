@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Fetch financial news and compute sentiment scores.
+"""Fetch financial news and compute contextual sentiment embeddings.
 
-This utility downloads recent headlines for given symbols and scores them using
-FinBERT from the :mod:`transformers` library.  Scores are stored in a SQLite
-and CSV file keeping only a rolling window of recent entries per symbol.  The
-CSV output can be consumed during model training or by a lightweight runtime
-service that provides the latest sentiment to trading algorithms.
+This utility downloads recent headlines for given symbols and encodes them
+using a modern :mod:`sentence_transformers` model.  The pooled embeddings are
+stored in a SQLite and CSV file keeping only a rolling window of recent entries
+per symbol.  The CSV output can be consumed during model training or by a
+lightweight runtime service that provides the latest embeddings to trading
+algorithms.
 
 Example
 -------
@@ -27,56 +28,55 @@ import argparse
 import csv
 import os
 import sqlite3
+import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List
 
-import requests
+import numpy as np
 import pandas as pd
+import requests
 
 
-_MODEL_NAME = "yiyanghkust/finbert-tone"
-_PIPELINE = None
+_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+_ENCODER = None
 
 
-def _get_pipeline():
-    """Lazily construct the FinBERT sentiment pipeline."""
-    global _PIPELINE
-    if _PIPELINE is None:
-        from transformers import (
-            AutoModelForSequenceClassification,
-            AutoTokenizer,
-            pipeline,
-        )
+def _get_encoder():
+    """Lazily construct the sentence transformer encoder."""
 
-        tokenizer = AutoTokenizer.from_pretrained(_MODEL_NAME)
-        model = AutoModelForSequenceClassification.from_pretrained(_MODEL_NAME)
-        _PIPELINE = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
-    return _PIPELINE
+    global _ENCODER
+    if _ENCODER is None:
+        from sentence_transformers import SentenceTransformer
+
+        _ENCODER = SentenceTransformer(_MODEL_NAME)
+    return _ENCODER
 
 
-def compute_sentiment(headlines: Iterable[str]) -> float:
-    """Return average FinBERT sentiment score for ``headlines``.
+def compute_embedding(headlines: Iterable[str]) -> tuple[np.ndarray, int]:
+    """Return a pooled sentence embedding and headline count."""
 
-    Positive scores indicate optimistic sentiment, negative scores indicate
-    pessimism.  Neutral headlines contribute ``0``.
-    """
-    nlp = _get_pipeline()
-    scores: List[float] = []
-    for hl in headlines:
-        if not hl:
-            continue
-        result = nlp(hl)[0]
-        label = result.get("label", "").lower()
-        score = float(result.get("score", 0.0))
-        if label.startswith("positive"):
-            scores.append(score)
-        elif label.startswith("negative"):
-            scores.append(-score)
-        else:
-            scores.append(0.0)
-    return float(sum(scores) / len(scores)) if scores else 0.0
+    encoder = _get_encoder()
+    texts = [str(h).strip() for h in headlines if isinstance(h, str) and h.strip()]
+    dim = int(getattr(encoder, "get_sentence_embedding_dimension", lambda: 0)())
+    if not texts:
+        if dim <= 0:
+            dim = 384  # fall back to the default dimension of MiniLM-L6
+        return np.zeros(dim, dtype=float), 0
+    emb = encoder.encode(
+        texts,
+        batch_size=min(len(texts), 32),
+        show_progress_bar=False,
+        convert_to_numpy=True,
+    )
+    if emb.ndim == 1:
+        pooled = emb.astype(float)
+    else:
+        pooled = emb.mean(axis=0).astype(float)
+    if dim <= 0:
+        dim = pooled.shape[-1]
+    return pooled, len(texts)
 
 
 def fetch_headlines(symbol: str) -> List[str]:
@@ -97,8 +97,26 @@ def fetch_headlines(symbol: str) -> List[str]:
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS sentiment (symbol TEXT, timestamp TEXT, score REAL)"
+        """
+        CREATE TABLE IF NOT EXISTS sentiment (
+            symbol TEXT,
+            timestamp TEXT,
+            embedding TEXT,
+            dimension INTEGER,
+            headline_count INTEGER
+        )
+        """
     )
+    cur = conn.execute("PRAGMA table_info(sentiment)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "embedding" not in cols:
+        conn.execute("ALTER TABLE sentiment ADD COLUMN embedding TEXT")
+    if "dimension" not in cols:
+        conn.execute("ALTER TABLE sentiment ADD COLUMN dimension INTEGER DEFAULT 0")
+    if "headline_count" not in cols:
+        conn.execute(
+            "ALTER TABLE sentiment ADD COLUMN headline_count INTEGER DEFAULT 0"
+        )
 
 
 def _prune_old_entries(conn: sqlite3.Connection, window: int) -> None:
@@ -124,23 +142,68 @@ def update_store(
     conn = sqlite3.connect(db_path)
     _ensure_schema(conn)
     now = datetime.now(timezone.utc).isoformat()
-    rows: List[Tuple[str, str, float]] = []
     for sym in symbols:
         headlines = fetch_headlines(sym)
-        score = compute_sentiment(headlines)
+        embedding, count = compute_embedding(headlines)
+        dim = int(embedding.shape[0]) if embedding.size else 0
+        emb_json = json.dumps(embedding.tolist())
         conn.execute(
-            "INSERT INTO sentiment(symbol, timestamp, score) VALUES(?,?,?)",
-            (sym, now, score),
+            """
+            INSERT INTO sentiment(symbol, timestamp, embedding, dimension, headline_count)
+            VALUES(?,?,?,?,?)
+            """,
+            (sym, now, emb_json, dim, count),
         )
-        rows.append((sym, now, score))
     _prune_old_entries(conn, window)
     conn.commit()
     # export to CSV for non-python consumers
     df = pd.read_sql_query(
-        "SELECT symbol, timestamp, score FROM sentiment ORDER BY timestamp",
+        """
+        SELECT symbol, timestamp, embedding, dimension, headline_count
+        FROM sentiment
+        ORDER BY timestamp
+        """,
         conn,
     )
     conn.close()
+    df = df.rename(
+        columns={
+            "timestamp": "sentiment_timestamp",
+            "dimension": "sentiment_dimension",
+            "headline_count": "sentiment_headline_count",
+        }
+    )
+    if df.empty:
+        df = df.drop(columns=["embedding"], errors="ignore")
+        df.to_csv(csv_path, index=False)
+        return
+
+    def _expand(row: pd.Series) -> List[float]:
+        emb_raw = row.get("embedding")
+        try:
+            values = json.loads(emb_raw) if isinstance(emb_raw, str) else []
+        except json.JSONDecodeError:
+            values = []
+        dim_val = int(row.get("sentiment_dimension") or len(values))
+        if dim_val and len(values) != dim_val:
+            values = list(values)[:dim_val]
+        return list(values)
+
+    embeddings = df.apply(_expand, axis=1)
+    max_dim = max((len(vec) for vec in embeddings), default=0)
+    if max_dim:
+        emb_mat = np.zeros((len(df), max_dim), dtype=float)
+        for idx, vec in enumerate(embeddings):
+            if not vec:
+                continue
+            arr = np.asarray(vec, dtype=float)
+            length = min(len(arr), max_dim)
+            emb_mat[idx, :length] = arr[:length]
+        emb_cols = [f"sentiment_emb_{i}" for i in range(max_dim)]
+        emb_df = pd.DataFrame(emb_mat, columns=emb_cols, index=df.index)
+        df = pd.concat([df.drop(columns=["embedding"]), emb_df], axis=1)
+    else:
+        df = df.drop(columns=["embedding"], errors="ignore")
     df.to_csv(csv_path, index=False)
 
 

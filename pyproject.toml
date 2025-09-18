@@ -48,6 +48,7 @@ dependencies = [
     "fastavro",
     "imbalanced-learn",
     "transformers",
+    "sentence-transformers",
     "mlflow",
     "dvc",
 ]
