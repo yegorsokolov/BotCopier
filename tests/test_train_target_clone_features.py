@@ -209,16 +209,20 @@ def test_news_sentiment_feature_join(tmp_path: Path) -> None:
 
     sentiment = tmp_path / "news_sentiment.csv"
     sentiment_rows = [
-        "symbol,timestamp,score\n",
-        "EURUSD,2020-01-01T00:30:00,0.5\n",
+        "symbol,sentiment_timestamp,sentiment_dimension,sentiment_headline_count,sentiment_emb_0,sentiment_emb_1\n",
+        "EURUSD,2020-01-01T00:30:00,2,3,0.5,-0.25\n",
     ]
     sentiment.write_text("".join(sentiment_rows))
 
     df, feature_cols, _ = _load_logs(trades)
     ns_df = pd.read_csv(sentiment)
     df, feature_cols, _, _ = _extract_features(df, feature_cols, news_sentiment=ns_df)
-    assert "sentiment_score" in feature_cols
-    assert df["sentiment_score"].notna().all()
+    embed_cols = [c for c in feature_cols if c.startswith("sentiment_emb_")]
+    assert embed_cols
+    for col in embed_cols:
+        assert df[col].notna().all()
+    assert "sentiment_headline_count" in feature_cols
+    assert (df["sentiment_headline_count"].fillna(0) >= 0).all()
 
 
 def test_augmentation_adds_rows_and_limits_ranges(tmp_path: Path) -> None:

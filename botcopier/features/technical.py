@@ -1424,10 +1424,78 @@ def _extract_features_impl(
             feature_names.extend(corr_cols)
 
     if news_sentiment is not None and "symbol" in df.columns:
-        df = df.merge(news_sentiment, on="symbol", how="left")
-        for col in news_sentiment.columns:
-            if col != "symbol" and col not in feature_names:
-                feature_names.append(col)
+        try:
+            sentiment_df = pd.DataFrame(news_sentiment)
+        except ValueError:
+            sentiment_df = None
+        if sentiment_df is not None:
+            sentiment_df = sentiment_df.copy()
+            rename_map = {}
+            for col in list(sentiment_df.columns):
+                if col.lower() == "timestamp":
+                    rename_map[col] = "sentiment_timestamp"
+            if rename_map:
+                sentiment_df = sentiment_df.rename(columns=rename_map)
+            numeric_cols: list[str] = []
+            embed_cols: list[str] = []
+            drop_cols: list[str] = []
+            for col in sentiment_df.columns:
+                if col == "symbol":
+                    continue
+                if col == "sentiment_timestamp":
+                    continue
+                if col == "sentiment_dimension":
+                    drop_cols.append(col)
+                    continue
+                if col.lower() == "embedding":
+                    drop_cols.append(col)
+                    continue
+                series = sentiment_df[col]
+                if pd.api.types.is_numeric_dtype(series):
+                    numeric_cols.append(col)
+                    if col.startswith("sentiment_emb_"):
+                        embed_cols.append(col)
+                else:
+                    drop_cols.append(col)
+            if drop_cols:
+                sentiment_df = sentiment_df.drop(columns=drop_cols, errors="ignore")
+            df = df.merge(sentiment_df, on="symbol", how="left")
+            for col in numeric_cols:
+                if col not in feature_names:
+                    feature_names.append(col)
+            if embed_cols:
+                embed_cols_sorted = sorted(
+                    embed_cols,
+                    key=lambda name: int(name.rsplit("_", 1)[-1])
+                    if name.rsplit("_", 1)[-1].isdigit()
+                    else name,
+                )
+                embed_dim = len(embed_cols_sorted)
+                _FEATURE_METADATA["sentiment_embeddings"] = {
+                    "columns": list(embed_cols_sorted),
+                    "dimension": int(embed_dim),
+                    "source": "news_sentiment",
+                }
+                for idx, col in enumerate(embed_cols_sorted):
+                    _FEATURE_METADATA[col] = {
+                        "original_column": "news_sentiment_embedding",
+                        "parameters": {
+                            "dimension": int(embed_dim),
+                            "component": int(idx),
+                            "source": "news_sentiment",
+                        },
+                    }
+            count_cols = [
+                c for c in numeric_cols if c.endswith("headline_count") or c.endswith("headline_counts")
+            ]
+            for col in count_cols:
+                _FEATURE_METADATA.setdefault(
+                    col,
+                    {
+                        "original_column": "headline_count",
+                        "parameters": {"source": "news_sentiment"},
+                    },
+                )
 
     if (
         news_embeddings is not None
