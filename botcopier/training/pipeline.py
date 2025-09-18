@@ -82,10 +82,193 @@ from botcopier.config.settings import (
 from botcopier.data.feature_schema import FeatureSchema
 
 
+AUTOENCODER_META_SUFFIX = ".meta.json"
+
+
+def _autoencoder_metadata_path(model_path: Path) -> Path:
+    """Return the metadata file path associated with ``model_path``."""
+
+    model_path = Path(model_path)
+    return model_path.with_name(model_path.name + AUTOENCODER_META_SUFFIX)
+
+
+def _serialise_autoencoder_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Coerce metadata values into JSON-serialisable types."""
+
+    def _convert(value: Any) -> Any:
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, (np.floating, np.integer)):
+            return value.item()
+        if isinstance(value, Mapping):
+            return {key: _convert(val) for key, val in value.items()}
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return [_convert(v) for v in value]
+        return value
+
+    return _convert(dict(metadata))
+
+
+def _save_autoencoder_metadata(model_path: Path, metadata: Mapping[str, Any]) -> Path:
+    """Persist ``metadata`` next to ``model_path`` and return the file path."""
+
+    meta_path = _autoencoder_metadata_path(model_path)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    serialised = _serialise_autoencoder_metadata(metadata)
+    meta_path.write_text(json.dumps(serialised, indent=2, sort_keys=True))
+    return meta_path
+
+
+def _load_autoencoder_metadata(model_path: Path) -> dict[str, Any] | None:
+    """Load metadata associated with ``model_path`` if present."""
+
+    meta_path = _autoencoder_metadata_path(model_path)
+    try:
+        return json.loads(meta_path.read_text())
+    except FileNotFoundError:
+        legacy = Path(model_path).with_suffix(".npy")
+        if legacy.exists():
+            try:
+                legacy_state = np.load(legacy, allow_pickle=True).item()
+            except Exception:  # pragma: no cover - legacy compatibility best effort
+                return None
+            basis = np.asarray(legacy_state.get("basis"), dtype=float)
+            mean = np.asarray(legacy_state.get("mean"), dtype=float)
+            if basis.size and mean.size:
+                return {
+                    "format": "svd",
+                    "latent_dim": int(basis.shape[0]),
+                    "input_dim": int(basis.shape[1]),
+                    "input_mean": mean.tolist(),
+                    "input_scale": [1.0] * int(basis.shape[1]),
+                    "weights": basis.tolist(),
+                    "bias": None,
+                }
+        return None
+    except json.JSONDecodeError:  # pragma: no cover - defensive guard
+        logger.exception("Failed to parse autoencoder metadata at %s", meta_path)
+        return None
+
+
+def _extract_torch_encoder_weights(model_path: Path) -> tuple[np.ndarray, np.ndarray | None]:
+    """Extract encoder weights and bias from a PyTorch checkpoint."""
+
+    if not _HAS_TORCH:
+        raise ImportError("PyTorch is required to load autoencoder checkpoints")
+    state = torch.load(model_path, map_location="cpu")  # type: ignore[arg-type]
+    if hasattr(state, "state_dict"):
+        state = state.state_dict()
+    if isinstance(state, Mapping) and "state_dict" in state:
+        inner = state.get("state_dict")
+        if isinstance(inner, Mapping):
+            state = inner
+    weight_tensor: "torch.Tensor | None"
+    bias_tensor: "torch.Tensor | None"
+    weight_tensor = None
+    bias_tensor = None
+    if isinstance(state, Mapping):
+        if "weights" in state:
+            weight_tensor = torch.as_tensor(state["weights"], dtype=torch.float32)
+            bias_val = state.get("bias")
+            if bias_val is not None:
+                bias_tensor = torch.as_tensor(bias_val, dtype=torch.float32)
+        if weight_tensor is None:
+            for key in (
+                "encoder.weight",
+                "encoder_linear.weight",
+                "weight",
+            ):
+                if key in state:
+                    weight_tensor = torch.as_tensor(state[key], dtype=torch.float32)
+                    bias_key = key.replace("weight", "bias")
+                    bias_val = state.get(bias_key)
+                    if bias_val is not None:
+                        bias_tensor = torch.as_tensor(bias_val, dtype=torch.float32)
+                    break
+        if weight_tensor is None:
+            for key, value in state.items():
+                if key.endswith("weight"):
+                    weight_tensor = torch.as_tensor(value, dtype=torch.float32)
+                    bias_key = key[: -len("weight")] + "bias"
+                    bias_val = state.get(bias_key)
+                    if bias_val is not None:
+                        bias_tensor = torch.as_tensor(bias_val, dtype=torch.float32)
+                    break
+    elif _HAS_TORCH and isinstance(state, torch.Tensor):  # type: ignore[redundant-expr]
+        weight_tensor = state.to(dtype=torch.float32)
+
+    if weight_tensor is None:
+        raise ValueError(f"No encoder weights found in checkpoint {model_path}")
+    weights = weight_tensor.cpu().numpy()
+    bias = bias_tensor.cpu().numpy() if bias_tensor is not None else None
+    return weights, bias
+
+
+def _extract_onnx_encoder_weights(
+    model_path: Path, input_dim: int
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Derive encoder weights and bias from an ONNX graph."""
+
+    try:
+        import onnxruntime as ort  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        raise ImportError("onnxruntime is required to load ONNX encoders") from exc
+
+    session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+    inputs = session.get_inputs()
+    if not inputs:
+        raise ValueError("ONNX encoder has no inputs")
+    input_name = inputs[0].name
+    zero = np.zeros((1, input_dim), dtype=np.float32)
+    bias_out = session.run(None, {input_name: zero})[0]
+    bias = np.asarray(bias_out[0], dtype=float)
+    identity = np.eye(input_dim, dtype=np.float32)
+    encoded_identity = session.run(None, {input_name: identity})[0]
+    weights_t = np.asarray(encoded_identity, dtype=float) - bias
+    weights = weights_t.T
+    return weights, bias
+
+
+def _apply_autoencoder_from_metadata(
+    X: np.ndarray, metadata: Mapping[str, Any]
+) -> np.ndarray:
+    """Project ``X`` using encoder weights described by ``metadata``."""
+
+    data = np.asarray(X, dtype=float)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.ndim != 2:
+        raise ValueError("Autoencoder input must be a 2D array")
+
+    mean = np.asarray(metadata.get("input_mean", []), dtype=float)
+    scale = np.asarray(metadata.get("input_scale", []), dtype=float)
+    if mean.size and mean.shape[0] == data.shape[1]:
+        data = data - mean
+    if scale.size and scale.shape[0] == data.shape[1]:
+        safe_scale = np.where(scale == 0, 1.0, scale)
+        data = data / safe_scale
+
+    weights = metadata.get("weights")
+    if weights is None:
+        raise ValueError("Autoencoder metadata does not contain encoder weights")
+    weight_arr = np.asarray(weights, dtype=float)
+    if weight_arr.ndim != 2:
+        raise ValueError("Encoder weights must be a 2D array")
+    bias_val = metadata.get("bias")
+    if bias_val is not None:
+        bias_arr = np.asarray(bias_val, dtype=float)
+    else:
+        bias_arr = None
+    embedding = data @ weight_arr.T
+    if bias_arr is not None:
+        embedding = embedding + bias_arr
+    return embedding.astype(float)
+
+
 def _encode_with_autoencoder(
     X: np.ndarray, model_path: Path, *, latent_dim: int = 2
 ) -> np.ndarray:
-    """Project ``X`` into a low-dimensional latent space using SVD."""
+    """Project ``X`` into a low-dimensional latent space using an encoder."""
 
     data = np.asarray(X, dtype=float)
     if data.ndim != 2:
@@ -93,21 +276,72 @@ def _encode_with_autoencoder(
     samples, features = data.shape
     if samples == 0 or features == 0:
         return np.zeros((samples, min(latent_dim, features)), dtype=float)
-    k = int(max(1, min(latent_dim, features)))
-    mean = data.mean(axis=0, keepdims=True)
+
+    model_path = Path(model_path)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    mean = data.mean(axis=0)
     centered = data - mean
-    # Compute top-k singular vectors for a compact latent representation
+    metadata: dict[str, Any] = {
+        "metadata_version": 1,
+        "input_dim": int(features),
+        "input_mean": mean.tolist(),
+        "input_scale": [1.0] * int(features),
+        "weights_file": model_path.name,
+    }
+
+    suffix = model_path.suffix.lower()
+    weights: np.ndarray | None = None
+    bias: np.ndarray | None = None
+
+    if model_path.exists():
+        try:
+            if suffix in {".pt", ".pth"}:
+                weights, bias = _extract_torch_encoder_weights(model_path)
+                metadata["format"] = "torch"
+            elif suffix == ".onnx":
+                weights, bias = _extract_onnx_encoder_weights(model_path, features)
+                metadata["format"] = "onnx"
+            else:
+                loaded_meta = _load_autoencoder_metadata(model_path)
+                if loaded_meta and loaded_meta.get("weights") is not None:
+                    weights = np.asarray(loaded_meta["weights"], dtype=float)
+                    bias_val = loaded_meta.get("bias")
+                    if bias_val is not None:
+                        bias = np.asarray(bias_val, dtype=float)
+                    metadata.update(
+                        {k: v for k, v in loaded_meta.items() if k not in {"weights", "bias"}}
+                    )
+            if weights is not None:
+                metadata.setdefault("latent_dim", int(weights.shape[0]))
+                metadata["weights"] = weights.tolist()
+                metadata["bias"] = bias.tolist() if bias is not None else None
+                embedding = centered @ weights.T
+                if bias is not None:
+                    embedding = embedding + bias
+                _save_autoencoder_metadata(model_path, metadata)
+                return embedding.astype(float)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.warning(
+                "Failed to load autoencoder weights from %s (%s); falling back to SVD",
+                model_path,
+                exc,
+            )
+
+    k = int(max(1, min(latent_dim, features)))
     u, s, vh = np.linalg.svd(centered, full_matrices=False)
     basis = vh[:k]
     embedding = centered @ basis.T
-    model_path = Path(model_path)
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path = model_path.with_suffix(".npy")
-    np.save(
-        save_path,
-        {"basis": basis.astype(float), "mean": mean.reshape(-1)},
-        allow_pickle=True,
+    metadata.update(
+        {
+            "format": "svd",
+            "latent_dim": int(k),
+            "weights": basis.tolist(),
+            "bias": None,
+        }
     )
+    with model_path.open("wb") as fh:
+        np.savez(fh, basis=basis.astype(np.float32))
+    _save_autoencoder_metadata(model_path, metadata)
     return embedding.astype(float)
 from botcopier.data.loading import _load_logs
 from botcopier.exceptions import TrainingPipelineError
@@ -1597,6 +1831,48 @@ def train(
         half_life_days=half_life_days,
         use_volatility=vol_weight,
     )
+    autoencoder_info: dict[str, Any] | None = None
+    if bool(kwargs.get("use_autoencoder")):
+        original_features = list(feature_names)
+        path_override = (
+            kwargs.get("autoencoder_path")
+            or kwargs.get("autoencoder_model")
+            or kwargs.get("autoencoder_checkpoint")
+        )
+        if path_override:
+            ae_path = Path(path_override)
+            if not ae_path.is_absolute():
+                ae_path = out_dir / ae_path
+        else:
+            ae_path = out_dir / "autoencoder.pt"
+        latent_override = kwargs.get("autoencoder_dim")
+        if latent_override is None:
+            latent_value = min(8, X.shape[1]) if X.shape[1] else 1
+        else:
+            latent_value = int(latent_override)
+        latent_value = int(max(1, min(latent_value, X.shape[1] or 1)))
+        embeddings = _encode_with_autoencoder(X, ae_path, latent_dim=latent_value)
+        metadata = _load_autoencoder_metadata(ae_path) or {}
+        metadata = dict(metadata)
+        metadata.setdefault("latent_dim", int(embeddings.shape[1]))
+        metadata["feature_names"] = [f"ae_{i}" for i in range(embeddings.shape[1])]
+        metadata["input_features"] = original_features
+        try:
+            rel_weights = os.path.relpath(ae_path, out_dir)
+        except ValueError:
+            rel_weights = str(ae_path)
+        metadata["weights_file"] = rel_weights
+        meta_path = _autoencoder_metadata_path(ae_path)
+        if meta_path.exists():
+            try:
+                rel_meta = os.path.relpath(meta_path, out_dir)
+            except ValueError:
+                rel_meta = str(meta_path)
+            metadata["metadata_file"] = rel_meta
+        _save_autoencoder_metadata(ae_path, metadata)
+        autoencoder_info = metadata
+        X = embeddings
+        feature_names = metadata["feature_names"]
     cluster_map: dict[str, list[str]] = {}
     encoder_meta: dict[str, object] | None = None
     regime_feature_names = list(regime_features or [])
@@ -2429,6 +2705,9 @@ def train(
             meta_entry["adapted"] = True
             model.setdefault("meta", meta_entry)
             model.setdefault("meta_weights", meta_init.tolist())
+        if autoencoder_info is not None:
+            auto_meta_copy = json.loads(json.dumps(autoencoder_info))
+            model["autoencoder"] = auto_meta_copy
         if encoder_meta is not None:
             model["masked_encoder"] = encoder_meta
         if getattr(technical_features, "_DEPTH_CNN_STATE", None) is not None:
@@ -2489,9 +2768,14 @@ def train(
                 "clip_low",
                 "clip_high",
             ]
+            if autoencoder_info is not None:
+                sm_keys.append("autoencoder")
             model["session_models"] = {
                 "asian": {k: model[k] for k in sm_keys if k in model}
             }
+        elif autoencoder_info is not None:
+            for sess in model["session_models"].values():
+                sess.setdefault("autoencoder", json.loads(json.dumps(autoencoder_info)))
         model["cv_metrics"] = serialised_cv_metrics
         model["threshold"] = float(selected_threshold)
         model["decision_threshold"] = float(selected_threshold)
@@ -2738,14 +3022,38 @@ def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
 
     features = np.asarray(X, dtype=float)
     feature_names = params.get("feature_names") or model.get("feature_names", [])
-    if feature_names:
-        if len(feature_names) != features.shape[1]:
+    autoencoder_meta = params.get("autoencoder") or model.get("autoencoder")
+    metadata: Mapping[str, Any] | None = None
+    schema_feature_names: Sequence[str] | None = None
+    if autoencoder_meta:
+        metadata = dict(autoencoder_meta)
+        input_feature_names = metadata.get("input_features")
+        if input_feature_names:
+            schema_feature_names = list(input_feature_names)
+        elif feature_names:
+            schema_feature_names = list(feature_names)
+    elif feature_names:
+        schema_feature_names = list(feature_names)
+
+    if schema_feature_names:
+        if len(schema_feature_names) != features.shape[1]:
             raise ValueError(
                 "feature matrix has %s columns but %s feature names provided"
-                % (features.shape[1], len(feature_names))
+                % (features.shape[1], len(schema_feature_names))
             )
-        df = pd.DataFrame(features, columns=feature_names)
+        df = pd.DataFrame(features, columns=schema_feature_names)
         FeatureSchema.validate(df, lazy=True)
+
+    if metadata is not None:
+        features = _apply_autoencoder_from_metadata(features, metadata)
+        latent_names = metadata.get("feature_names")
+        if latent_names:
+            if len(latent_names) != features.shape[1]:
+                raise ValueError(
+                    "autoencoder produced %s features but %s names provided"
+                    % (features.shape[1], len(latent_names))
+                )
+            feature_names = list(latent_names)
     clip_low = np.asarray(
         params.get("clip_low", model.get("clip_low", [])), dtype=float
     )
