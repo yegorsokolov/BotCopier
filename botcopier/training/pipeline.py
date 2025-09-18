@@ -1180,13 +1180,15 @@ def train(
         n_samples = population_size * n_generations
         search_seed = int(random_seed or 0)
 
-        best, pareto = search_strategies(
+        result = search_strategies(
             prices,
             seed=search_seed,
             population_size=population_size,
             n_generations=n_generations,
             n_samples=n_samples,
         )
+        best = result.best
+        pareto = result.pareto
         out_dir.mkdir(parents=True, exist_ok=True)
         model_path = out_dir / "model.json"
         try:
@@ -1206,7 +1208,7 @@ def train(
         existing["best_return"] = best.ret
         existing["best_risk"] = best.risk
         existing["best_complexity"] = best.complexity
-        existing["strategy_search_metadata"] = {
+        metadata = {
             "seed": search_seed,
             "population_size": population_size,
             "n_generations": n_generations,
@@ -1217,6 +1219,8 @@ def train(
                 "max": float(np.nanmax(prices)),
             },
         }
+        metadata.update(result.metadata)
+        existing["strategy_search_metadata"] = metadata
         model_path.write_text(json.dumps(existing, indent=2))
         return
     tracer = trace.get_tracer(__name__)

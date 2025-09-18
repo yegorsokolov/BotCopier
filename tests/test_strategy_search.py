@@ -182,6 +182,20 @@ pyarrow_stub.float64 = lambda *a, **k: None
 pyarrow_stub.string = lambda *a, **k: None
 sys.modules.setdefault("pyarrow", pyarrow_stub)
 
+joblib_stub = types.ModuleType("joblib")
+
+
+class _StubMemory:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def cache(self, func):
+        return func
+
+
+joblib_stub.Memory = _StubMemory
+sys.modules.setdefault("joblib", joblib_stub)
+
 from botcopier.strategy import (
     ATR,
     BollingerBand,
@@ -242,3 +256,64 @@ def test_strategy_search_outperforms_baseline(tmp_path: Path) -> None:
     metadata = model.get("strategy_search_metadata")
     assert metadata and metadata["population_size"] >= 12
     assert metadata["price_history"]["length"] >= 2
+    assert metadata.get("use_curriculum") is True
+    assert metadata.get("stage_count", 0) >= 1
+    assert metadata.get("curriculum")
+    first_stage = metadata["curriculum"][0]
+    assert first_stage["start_generation"] == 0
+    assert first_stage["max_depth"] >= 1
+    assert metadata["final_max_depth"] >= first_stage["max_depth"]
+
+
+def test_curriculum_scheduler_records_progress() -> None:
+    base = np.linspace(1.0, 250.0, 256) + np.sin(np.linspace(0.0, 6.0, 256)) * 4.0
+    peer = base[::-1] * 0.6 + 12.0
+    context = {"base": base, "peer": peer}
+
+    result = search_strategies(
+        context,
+        seed=7,
+        population_size=18,
+        n_generations=8,
+        n_samples=144,
+        use_curriculum=True,
+    )
+    metadata = result.metadata
+    stages = metadata.get("curriculum", [])
+    assert stages and metadata.get("use_curriculum") is True
+    assert metadata.get("stage_count") == len(stages)
+    assert stages[0]["start_generation"] == 0
+    assert stages[-1]["end_generation"] is not None
+    assert stages[-1]["max_depth"] == metadata["final_max_depth"]
+    assert any(stage.get("advance_reason") == "score" for stage in stages if stage.get("advance_reason"))
+    assert any(stage.get("score_threshold") is not None for stage in stages)
+
+
+def test_curriculum_outperforms_static_depth() -> None:
+    base = np.linspace(1.0, 320.0, 256) + np.cos(np.linspace(0.0, 5.0, 256)) * 6.0
+    peer = np.roll(base, 3) * 0.8 + 8.0
+    context = {"base": base, "peer": peer}
+
+    curriculum = search_strategies(
+        context,
+        seed=8,
+        population_size=20,
+        n_generations=8,
+        n_samples=160,
+        max_depth=4,
+        use_curriculum=True,
+    )
+    static = search_strategies(
+        context,
+        seed=8,
+        population_size=20,
+        n_generations=8,
+        n_samples=160,
+        max_depth=2,
+        use_curriculum=False,
+    )
+
+    assert curriculum.best.ret > static.best.ret
+    assert curriculum.best.complexity > static.best.complexity
+    assert curriculum.metadata.get("curriculum")
+    assert static.metadata.get("curriculum") == []
