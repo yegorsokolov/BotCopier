@@ -1,4 +1,5 @@
 from pathlib import Path
+from pathlib import Path
 from time import perf_counter
 
 import numpy as np
@@ -25,17 +26,19 @@ def _sample_df():
 
 def test_feature_cache_speed(tmp_path):
     df = _sample_df()
-    configure_cache(FeatureConfig(cache_dir=tmp_path, enabled_features={"csd"}))
+    config = configure_cache(
+        FeatureConfig(cache_dir=tmp_path, enabled_features={"csd"})
+    )
 
     start = perf_counter()
     f1, c1, _, _ = _extract_features(
-        df.copy(), [], symbol_graph=Path("symbol_graph.json")
+        df.copy(), [], symbol_graph=Path("symbol_graph.json"), config=config
     )
     t1 = perf_counter() - start
 
     start = perf_counter()
     f2, c2, _, _ = _extract_features(
-        df.copy(), [], symbol_graph=Path("symbol_graph.json")
+        df.copy(), [], symbol_graph=Path("symbol_graph.json"), config=config
     )
     t2 = perf_counter() - start
 
@@ -62,3 +65,19 @@ def test_classification_metrics_cache(tmp_path):
 
     assert r1 == r2
     assert t2 < t1
+
+
+def test_feature_config_isolation(tmp_path):
+    df = _sample_df()
+    config_csd = configure_cache(FeatureConfig(enabled_features={"csd"}))
+    feats_csd, cols_csd, _, _ = _extract_features(
+        df.copy(), [], symbol_graph=Path("symbol_graph.json"), config=config_csd
+    )
+    config_default = configure_cache(FeatureConfig())
+    feats_default, cols_default, _, _ = _extract_features(
+        df.copy(), [], symbol_graph=Path("symbol_graph.json"), config=config_default
+    )
+
+    assert any(col.startswith("csd_") for col in cols_csd)
+    assert not any(col.startswith("csd_") for col in cols_default)
+    assert set(feats_default.columns) == set(cols_default)

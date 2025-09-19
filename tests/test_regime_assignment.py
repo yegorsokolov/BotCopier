@@ -30,14 +30,16 @@ def test_regime_labels_assigned(tmp_path: Path, caplog) -> None:
     regime_path = tmp_path / "regime_model.json"
     _write_regime_model(regime_path)
     cache_dir = tmp_path / "cache"
-    configure_cache(FeatureConfig(cache_dir=cache_dir))
-    clear_cache()
-    df, feature_cols, _ = _load_logs(data)
+    feature_config = configure_cache(FeatureConfig(cache_dir=cache_dir))
+    clear_cache(feature_config)
+    df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
     with caplog.at_level(logging.INFO):
         df, feature_cols, _, _ = _extract_features(
-            df, feature_cols, regime_model=regime_path
+            df, feature_cols, regime_model=regime_path, config=feature_config
         )
-        _extract_features(df, feature_cols, regime_model=regime_path)
+        _extract_features(
+            df, feature_cols, regime_model=regime_path, config=feature_config
+        )
     assert "cache hit for _extract_features" in caplog.text
     assert df["regime"].tolist() == [0, 1]
     assert df["regime_0"].tolist() == [1.0, 0.0]
@@ -59,12 +61,16 @@ def test_per_regime_training(tmp_path: Path, caplog) -> None:
     _write_regime_model(regime_path)
     out_dir = tmp_path / "out"
     cache_dir = tmp_path / "cache"
-    configure_cache(FeatureConfig(cache_dir=cache_dir))
-    clear_cache()
+    feature_config = configure_cache(FeatureConfig(cache_dir=cache_dir))
+    clear_cache(feature_config)
     with caplog.at_level(logging.INFO):
-        df, feature_cols, _ = _load_logs(data)
-        _extract_features(df, feature_cols, regime_model=regime_path)
-        _extract_features(df, feature_cols, regime_model=regime_path)
+        df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
+        _extract_features(
+            df, feature_cols, regime_model=regime_path, config=feature_config
+        )
+        _extract_features(
+            df, feature_cols, regime_model=regime_path, config=feature_config
+        )
     assert "cache hit for _extract_features" in caplog.text
     train(data, out_dir, regime_model=regime_path, per_regime=True, cache_dir=cache_dir)
     model = json.loads((out_dir / "model.json").read_text())

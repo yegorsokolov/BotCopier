@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import Iterable, Sequence, TYPE_CHECKING
+from typing import Any, Callable, Iterable, Sequence, TYPE_CHECKING
 
 from joblib import Memory, Parallel, delayed
 
@@ -43,6 +43,57 @@ class FeatureConfig:
     kalman_params: dict = field(default_factory=lambda: KALMAN_DEFAULT_PARAMS.copy())
     enabled_features: set[str] = field(default_factory=set)
     n_jobs: int | None = None
+    memory: Memory = field(init=False, repr=False)
+    feature_results: dict[int, tuple] = field(default_factory=dict, repr=False)
+    feature_metadata_cache: dict[int, dict[str, dict[str, Any]]] = field(
+        default_factory=dict, repr=False
+    )
+    _cached_wrappers: dict[
+        str, tuple[Callable[..., object], Callable[..., object]]
+    ] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Initialise joblib memory using the current cache directory."""
+        if hasattr(self, "memory"):
+            try:
+                self.memory.clear()
+            except Exception:  # pragma: no cover - best effort cleanup
+                pass
+        self.memory = Memory(
+            str(self.cache_dir) if self.cache_dir else None, verbose=0
+        )
+        self._cached_wrappers.clear()
+
+    def cache_function(
+        self, name: str, func: Callable[..., Any]
+    ) -> Callable[..., Any]:
+        """Return a joblib cached wrapper for ``func`` tied to this config."""
+
+        entry = self._cached_wrappers.get(name)
+        if entry is None or entry[0] is not func:
+            cached_func = self.memory.cache(func)
+
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                if cached_func.check_call_in_cache(*args, **kwargs):
+                    logging.info("cache hit for %s", name)
+                return cached_func(*args, **kwargs)
+
+            wrapper.clear_cache = cached_func.clear  # type: ignore[attr-defined]
+            entry = (func, wrapper)
+            self._cached_wrappers[name] = entry
+        return entry[1]
+
+    def clear(self) -> None:
+        """Clear cached feature state bound to this configuration."""
+
+        self.memory.clear()
+        self.feature_results.clear()
+        self.feature_metadata_cache.clear()
+        self._cached_wrappers.clear()
 
     def is_enabled(self, flag: str) -> bool:
         return flag in self.enabled_features
@@ -50,27 +101,28 @@ class FeatureConfig:
     @contextmanager
     def override(self, **kwargs: object):
         """Temporarily override configuration values."""
+
         old = {k: getattr(self, k) for k in kwargs}
         try:
             for k, v in kwargs.items():
                 setattr(self, k, v)
-            configure_cache(self)
+            if "cache_dir" in kwargs:
+                self.refresh()
             yield self
         finally:
             for k, v in old.items():
                 setattr(self, k, v)
-            configure_cache(self)
+            if "cache_dir" in kwargs:
+                self.refresh()
 
 
-_CONFIG = FeatureConfig()
-_MEMORY = Memory(None, verbose=0)
-_FEATURE_RESULTS: dict[int, tuple] = {}
+_DEFAULT_FEATURE_CONFIG = FeatureConfig()
 
 
-def _resolve_n_jobs(n_jobs: int | None) -> int:
-    """Return an effective ``n_jobs`` respecting global configuration."""
+def _resolve_n_jobs(config: FeatureConfig, n_jobs: int | None) -> int:
+    """Return an effective ``n_jobs`` respecting the provided configuration."""
 
-    configured = _CONFIG.n_jobs if _CONFIG.n_jobs is not None else 1
+    configured = config.n_jobs if config.n_jobs is not None else 1
     effective = n_jobs if n_jobs is not None else configured
     if not effective or effective <= 1:
         return 1
@@ -159,6 +211,7 @@ def _apply_parallel_plugins(
     feature_names: Sequence[str],
     plugin_names: Sequence[str],
     *,
+    config: FeatureConfig,
     kwargs: dict,
     n_jobs: int | None = None,
     calendar_executed: bool = False,
@@ -170,7 +223,7 @@ def _apply_parallel_plugins(
 
     from .registry import FEATURE_REGISTRY
 
-    effective_jobs = _resolve_n_jobs(n_jobs)
+    effective_jobs = _resolve_n_jobs(config, n_jobs)
     tasks: list[tuple[str, object, dict]] = []
     for name in plugin_names:
         func = FEATURE_REGISTRY.get(name)
@@ -188,8 +241,8 @@ def _apply_parallel_plugins(
         name, func, plugin_kwargs = task
         local_df = _clone_frame(df)
         local_features = list(feature_names)
-        result_df, result_features, emb, gnn = func(
-            local_df, local_features, **plugin_kwargs
+        result_df, result_features, emb, gnn = _call_plugin(
+            func, config, local_df, local_features, plugin_kwargs
         )
         return name, result_df, result_features, emb or {}, gnn or {}
 
@@ -220,61 +273,67 @@ def _apply_parallel_plugins(
     return merged_df, merged_features, embeddings, gnn_state
 
 
-def configure_cache(config: FeatureConfig) -> None:
-    """Configure joblib cache directory for expensive feature functions."""
-    global _MEMORY, _CONFIG
-    _CONFIG = config
-    _MEMORY = Memory(str(config.cache_dir) if config.cache_dir else None, verbose=0)
+def _call_plugin(
+    func: Callable[..., tuple],
+    config: FeatureConfig,
+    df,
+    feature_names,
+    plugin_kwargs: dict,
+):
+    try:
+        return func(df, feature_names, config=config, **plugin_kwargs)
+    except TypeError as exc:
+        message = str(exc)
+        if "config" in message and "unexpected keyword argument" in message:
+            return func(df, feature_names, **plugin_kwargs)
+        raise
+
+
+def configure_cache(config: FeatureConfig | None = None) -> FeatureConfig:
+    """Prepare ``config`` for feature extraction and return it."""
+
+    cfg = config or FeatureConfig()
+    cfg.refresh()
+    cfg.feature_results.clear()
+    cfg.feature_metadata_cache.clear()
 
     from .registry import FEATURE_REGISTRY
 
-    _augmentation._augment_dataframe = _cache_with_logging(
-        _augmentation._augment_dataframe_impl, "_augment_dataframe"
-    )
-    FEATURE_REGISTRY["augment_dataframe"] = _augmentation._augment_dataframe
-    _augmentation._augment_dtw_dataframe = _cache_with_logging(
-        _augmentation._augment_dtw_dataframe_impl, "_augment_dtw_dataframe"
-    )
-    FEATURE_REGISTRY["augment_dtw_dataframe"] = _augmentation._augment_dtw_dataframe
-    _technical._csd_pair = _cache_with_logging(_technical._csd_pair_impl, "_csd_pair")
+    FEATURE_REGISTRY["augment_dataframe"] = _augmentation._augment_dataframe_impl
+    FEATURE_REGISTRY["augment_dtw_dataframe"] = _augmentation._augment_dtw_dataframe_impl
     FEATURE_REGISTRY["technical"] = _technical._extract_features_impl
     _technical._FEATURE_METADATA.clear()
-    _technical._FEATURE_METADATA_CACHE.clear()
+    return cfg
 
 
-def clear_cache() -> None:
-    """Remove all cached feature computations."""
-    _MEMORY.clear()
-    _FEATURE_RESULTS.clear()
+def clear_cache(config: FeatureConfig | None = None) -> None:
+    """Remove cached feature computations bound to ``config``."""
+
+    cfg = config or _DEFAULT_FEATURE_CONFIG
+    cfg.clear()
     _technical._FEATURE_METADATA.clear()
-    _technical._FEATURE_METADATA_CACHE.clear()
 
 
-def _cache_with_logging(func, name: str):
-    cached_func = _MEMORY.cache(func)
-
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        if cached_func.check_call_in_cache(*args, **kwargs):
-            logging.info("cache hit for %s", name)
-        return cached_func(*args, **kwargs)
-
-    wrapper.clear_cache = cached_func.clear  # type: ignore[attr-defined]
-    return wrapper
+def _augment_dataframe(*args, config: FeatureConfig | None = None, **kwargs):
+    cfg = config or _DEFAULT_FEATURE_CONFIG
+    func = cfg.cache_function("_augment_dataframe", _augmentation._augment_dataframe_impl)
+    return func(*args, **kwargs)
 
 
-def _augment_dataframe(*args, **kwargs):
-    return _augmentation._augment_dataframe(*args, **kwargs)
-
-
-def _augment_dtw_dataframe(*args, **kwargs):
-    return _augmentation._augment_dtw_dataframe(*args, **kwargs)
+def _augment_dtw_dataframe(*args, config: FeatureConfig | None = None, **kwargs):
+    cfg = config or _DEFAULT_FEATURE_CONFIG
+    func = cfg.cache_function(
+        "_augment_dtw_dataframe", _augmentation._augment_dtw_dataframe_impl
+    )
+    return func(*args, **kwargs)
 
 
 def _extract_features(*args, **kwargs):
+    config = kwargs.pop("config", None)
+    cfg = config or _DEFAULT_FEATURE_CONFIG
     call_kwargs = dict(kwargs)
-    call_kwargs.setdefault("n_jobs", _CONFIG.n_jobs)
-    return _technical._extract_features(*args, **call_kwargs)
+    call_kwargs.setdefault("n_jobs", cfg.n_jobs)
+    return _technical._extract_features(*args, config=cfg, **call_kwargs)
 
 
 def _neutralize_against_market_index(*args, **kwargs):
@@ -293,7 +352,7 @@ def _score_anomalies(*args, **kwargs):
     return _anomaly._score_anomalies(*args, **kwargs)
 
 
-configure_cache(_CONFIG)
+configure_cache(_DEFAULT_FEATURE_CONFIG)
 
 
 def train(*args, **kwargs):

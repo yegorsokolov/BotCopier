@@ -63,7 +63,8 @@ def _synthetic_rows():
 
 
 def test_pattern_detection_rows():
-    feats, *_ = extract_rows_features(_synthetic_rows())
+    config = fe.configure_cache(fe.FeatureConfig())
+    feats, *_ = extract_rows_features(_synthetic_rows(), config=config)
     assert feats[0]["pattern_hammer"] == 1.0
     assert feats[1]["pattern_doji"] == 1.0
     assert feats[2]["pattern_engulfing"] == 1.0
@@ -71,14 +72,14 @@ def test_pattern_detection_rows():
 
 def test_pattern_detection_dataframe(tmp_path, caplog):
     cache_dir = tmp_path / "cache"
-    configure_cache(FeatureConfig(cache_dir=cache_dir))
-    clear_cache()
+    config = configure_cache(FeatureConfig(cache_dir=cache_dir))
+    clear_cache(config)
     rows = _synthetic_rows()
     df = pd.DataFrame(rows)
     feature_cols = ["price"]
     with caplog.at_level(logging.INFO):
-        df, feature_cols, *_ = _extract_features(df, feature_cols)
-        _extract_features(df, feature_cols)
+        df, feature_cols, *_ = _extract_features(df, feature_cols, config=config)
+        _extract_features(df, feature_cols, config=config)
     assert "cache hit for _extract_features" in caplog.text
     assert "pattern_hammer" in feature_cols
     assert "pattern_doji" in feature_cols

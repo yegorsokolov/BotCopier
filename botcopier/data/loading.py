@@ -13,7 +13,11 @@ import pandas as pd
 from opentelemetry import trace
 
 from botcopier.exceptions import DataError
-from botcopier.features.augmentation import _augment_dataframe, _augment_dtw_dataframe
+from botcopier.features.engineering import (
+    FeatureConfig,
+    _augment_dataframe,
+    _augment_dtw_dataframe,
+)
 
 from ..scripts.data_validation import validate_logs
 
@@ -122,6 +126,7 @@ def _load_logs_impl(
     mmap_threshold: int = 50 * 1024 * 1024,
     depth_file: Path | None = None,
     dask: bool = False,
+    feature_config: FeatureConfig | None = None,
 ) -> Tuple[Iterable[pd.DataFrame] | pd.DataFrame, list[str], dict[str, str]]:
     """Load trade logs from ``trades_raw.csv``.
 
@@ -299,9 +304,9 @@ def _load_logs_impl(
 
         if augment_ratio > 0:
             if dtw_augment:
-                df = _augment_dtw_dataframe(df, augment_ratio)
+                df = _augment_dtw_dataframe(df, augment_ratio, config=feature_config)
             else:
-                df = _augment_dataframe(df, augment_ratio)
+                df = _augment_dataframe(df, augment_ratio, config=feature_config)
 
         return df, feature_cols
 

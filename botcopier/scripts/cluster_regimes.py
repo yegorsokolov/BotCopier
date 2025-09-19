@@ -23,7 +23,11 @@ except Exception:  # pragma: no cover - optional
 
 # Reuse data loading and feature extraction from training script
 from botcopier.data.loading import _load_calendar, _load_logs
-from botcopier.features.engineering import _extract_features
+from botcopier.features.engineering import (
+    FeatureConfig,
+    _extract_features,
+    configure_cache,
+)
 
 
 def cluster_features(
@@ -36,12 +40,14 @@ def cluster_features(
     event_window: float = 60.0,
 ) -> None:
     """Cluster feature vectors and write model to ``out_file``."""
-    rows_df, _, _ = _load_logs(data_dir)
+    feature_config = configure_cache(FeatureConfig())
+    rows_df, _, _ = _load_logs(data_dir, feature_config=feature_config)
     feats, *_ = _extract_features(
         rows_df.to_dict("records"),
         corr_map=corr_map,
         calendar_events=calendar_events,
         event_window=event_window,
+        config=feature_config,
     )
     if not feats:
         raise ValueError("No features found for clustering")

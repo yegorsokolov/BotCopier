@@ -7,9 +7,9 @@ import argparse
 import csv
 from pathlib import Path
 import sys
-import asyncio
+from concurrent import futures
 
-import grpc.aio as grpc
+import grpc
 from google.protobuf import empty_pb2
 
 sys.path.append(str(Path(__file__).resolve().parent.parent / "proto"))
@@ -79,32 +79,32 @@ class _LogService(log_service_pb2_grpc.LogServiceServicer):
                 writer.writerow(fields)
             writer.writerow([getattr(obj, f) for f in fields])
 
-    async def LogTrade(self, request, context):  # noqa: N802 gRPC naming
+    def LogTrade(self, request, context):  # noqa: N802 gRPC naming
         self._append(self.trade_out, TRADE_FIELDS, request)
         return empty_pb2.Empty()
 
-    async def LogMetrics(self, request, context):  # noqa: N802 gRPC naming
+    def LogMetrics(self, request, context):  # noqa: N802 gRPC naming
         self._append(self.metrics_out, METRIC_FIELDS, request)
         return empty_pb2.Empty()
 
 
-async def create_server(host: str, port: int, trade_out: Path, metrics_out: Path) -> grpc.Server:
-    server = grpc.server()
+def create_server(host: str, port: int, trade_out: Path, metrics_out: Path) -> grpc.Server:
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     log_service_pb2_grpc.add_LogServiceServicer_to_server(
         _LogService(trade_out, metrics_out),
         server,
     )
     server.add_insecure_port(f"{host}:{port}")
-    await server.start()
     return server
 
 
-async def serve(host: str, port: int, trade_out: Path, metrics_out: Path) -> None:
-    server = await create_server(host, port, trade_out, metrics_out)
-    await server.wait_for_termination()
+def serve(host: str, port: int, trade_out: Path, metrics_out: Path) -> None:
+    server = create_server(host, port, trade_out, metrics_out)
+    server.start()
+    server.wait_for_termination()
 
 
-async def async_main() -> None:
+def main() -> None:
     parser = argparse.ArgumentParser(description="gRPC log service")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=50051)
@@ -112,11 +112,7 @@ async def async_main() -> None:
     parser.add_argument("--metrics-out", default="metrics.csv", help="metrics CSV output")
     args = parser.parse_args()
 
-    await serve(args.host, args.port, Path(args.trade_out), Path(args.metrics_out))
-
-
-def main() -> None:
-    asyncio.run(async_main())
+    serve(args.host, args.port, Path(args.trade_out), Path(args.metrics_out))
 
 
 if __name__ == "__main__":

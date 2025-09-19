@@ -6,7 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Iterable, Tuple
+from typing import Any, Iterable, Tuple, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -112,7 +112,9 @@ _CSD_PARAMS: dict | None = None
 _SYMBOLIC_CACHE: dict | None = None
 
 _FEATURE_METADATA: dict[str, dict[str, Any]] = {}
-_FEATURE_METADATA_CACHE: dict[int, dict[str, dict[str, Any]]] = {}
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .engineering import FeatureConfig
 
 
 if _HAS_NUMBA:
@@ -325,6 +327,7 @@ def _wavelet_packet_feature_plugin(
     wavelet_stats: Iterable[str] = ("mean", "std", "energy"),
     include_volume: bool = True,
     wavelet_packets_enabled: bool | None = None,
+    config: "FeatureConfig" | None = None,
     **_: object,
 ) -> FeatureResult:
     """Generate wavelet packet statistics over rolling windows."""
@@ -338,9 +341,9 @@ def _wavelet_packet_feature_plugin(
     if wavelet_packets_enabled is not None:
         config_enabled = bool(wavelet_packets_enabled)
     else:
-        config = getattr(fe, "_CONFIG", None)
-        if config is not None:
-            config_enabled = config.is_enabled("wavelet_packets")
+        cfg = config or getattr(fe, "_DEFAULT_FEATURE_CONFIG", None)
+        if cfg is not None:
+            config_enabled = cfg.is_enabled("wavelet_packets")
 
     if not config_enabled:
         return df, feature_names, {}, {}
@@ -1097,6 +1100,7 @@ def _extract_features_impl(
     df: pd.DataFrame | "pl.DataFrame",
     feature_names: list[str],
     *,
+    config: "FeatureConfig" | None = None,
     symbol_graph: dict | str | Path | None = None,
     calendar_file: Path | None = None,
     event_window: float = 60.0,
@@ -1121,6 +1125,8 @@ def _extract_features_impl(
 ]:
     """Attach calendar flags, correlation features and technical signals."""
     from . import engineering as fe  # avoid circular import
+
+    cfg = config or fe._DEFAULT_FEATURE_CONFIG
 
     graph_data: dict | None = None
     if symbol_graph is not None:
@@ -1247,7 +1253,7 @@ def _extract_features_impl(
         )
         feature_names.extend(["pattern_hammer", "pattern_doji", "pattern_engulfing"])
 
-    if fe._CONFIG.is_enabled("orderbook") and all(
+    if cfg.is_enabled("orderbook") and all(
         c in df.columns for c in ["bid_depth", "ask_depth", "bid", "ask"]
     ):
         bid_depth = df["bid_depth"].apply(lambda x: np.asarray(x, dtype=float))
@@ -1289,8 +1295,8 @@ def _extract_features_impl(
                 if col not in feature_names:
                     feature_names.append(col)
 
-    if fe._CONFIG.is_enabled("kalman"):
-        params = fe._CONFIG.kalman_params
+    if cfg.is_enabled("kalman"):
+        params = cfg.kalman_params
         p_var = params.get("process_var", KALMAN_DEFAULT_PARAMS["process_var"])
         m_var = params.get("measurement_var", KALMAN_DEFAULT_PARAMS["measurement_var"])
         if "close" in df.columns:
@@ -1350,7 +1356,7 @@ def _extract_features_impl(
         feature_names.extend(["hurst", "fractal_dim"])
 
     if (
-        fe._CONFIG.is_enabled("csd")
+        cfg.is_enabled("csd")
         and graph_data
         and "symbol" in df.columns
         and "price" in df.columns
@@ -1375,12 +1381,13 @@ def _extract_features_impl(
         )
         global _CSD_PARAMS
         _CSD_PARAMS = {"window": CSD_WINDOW, "freq_bins": CSD_FREQ_BINS}
+        csd_func = cfg.cache_function("_csd_pair", _csd_pair_impl)
         for a, b in pairs:
             if a not in price_wide.columns or b not in price_wide.columns:
                 continue
             sa = price_wide[a].to_numpy()
             sb = price_wide[b].to_numpy()
-            freq_arr, coh_arr = _csd_pair(sa, sb, CSD_WINDOW, CSD_FREQ_BINS)
+            freq_arr, coh_arr = csd_func(sa, sb, CSD_WINDOW, CSD_FREQ_BINS)
             freq_series = pd.Series(freq_arr, index=price_wide.index)
             coh_series = pd.Series(coh_arr, index=price_wide.index)
             col_freq_ab = f"csd_freq_{b}"
@@ -1635,6 +1642,7 @@ def _extract_features(
     feature_names: list[str],
     *,
     n_jobs: int | None = None,
+    config: "FeatureConfig" | None = None,
     **kwargs,
 ) -> tuple[
     pd.DataFrame | "pl.DataFrame" | "dd.DataFrame",
@@ -1644,11 +1652,11 @@ def _extract_features(
 ]:
     """Run enabled feature plugins and return augmented ``df`` and metadata."""
     from . import engineering as fe  # late import to avoid circular deps
-    from .engineering import _CONFIG, _FEATURE_RESULTS
 
     global _FEATURE_METADATA
-    global _FEATURE_METADATA_CACHE
     _FEATURE_METADATA = {}
+
+    cfg = config or fe._DEFAULT_FEATURE_CONFIG
 
     plugin_overrides_raw = kwargs.pop("plugins", None)
     if plugin_overrides_raw is None:
@@ -1660,7 +1668,7 @@ def _extract_features(
     else:
         plugin_overrides_list = list(plugin_overrides_raw)
 
-    requested = set(_CONFIG.enabled_features)
+    requested = set(cfg.enabled_features)
     if plugin_overrides_list:
         requested.update(plugin_overrides_list)
 
@@ -1673,6 +1681,7 @@ def _extract_features(
         if plugin_overrides_list:
             sample_kwargs["plugins"] = list(plugin_overrides_list)
         sample_kwargs.setdefault("n_jobs", n_jobs)
+        sample_kwargs.setdefault("config", cfg)
         sample_out, feature_names, embeddings, gnn_state = _extract_features(
             sample, list(feature_names), **sample_kwargs
         )
@@ -1682,6 +1691,7 @@ def _extract_features(
             if plugin_overrides_list:
                 apply_kwargs["plugins"] = list(plugin_overrides_list)
             apply_kwargs.setdefault("n_jobs", n_jobs)
+            apply_kwargs.setdefault("config", cfg)
             out, _, _, _ = _extract_features(
                 pdf, list(feature_names), **apply_kwargs
             )
@@ -1689,15 +1699,15 @@ def _extract_features(
 
         meta = sample_out.iloc[0:0]
         ddf = df.map_partitions(_apply, meta=meta)
-        _FEATURE_METADATA_CACHE[id(df)] = dict(_FEATURE_METADATA)
+        cfg.feature_metadata_cache[id(df)] = dict(_FEATURE_METADATA)
         return ddf, feature_names, embeddings, gnn_state
 
     key = id(df)
-    if key in _FEATURE_RESULTS:
+    cached_results = cfg.feature_results.get(key)
+    if cached_results is not None:
         logger.info("cache hit for _extract_features")
-        cached = _FEATURE_RESULTS[key]
-        _FEATURE_METADATA = dict(_FEATURE_METADATA_CACHE.get(key, {}))
-        return cached  # type: ignore[return-value]
+        _FEATURE_METADATA = dict(cfg.feature_metadata_cache.get(key, {}))
+        return cached_results
 
     base_plugins = [
         "calendar",
@@ -1735,7 +1745,9 @@ def _extract_features(
         plugin_kwargs = dict(kwargs)
         if name == "technical" and calendar_executed:
             plugin_kwargs["calendar_features"] = False
-        df, feature_names, emb, gnn = func(df, feature_names, **plugin_kwargs)
+        df, feature_names, emb, gnn = fe._call_plugin(
+            func, cfg, df, feature_names, plugin_kwargs
+        )
         embeddings.update(emb or {})
         gnn_state.update(gnn or {})
         if name == "calendar":
@@ -1746,6 +1758,7 @@ def _extract_features(
             df,
             feature_names,
             optional_plugins,
+            config=cfg,
             kwargs=kwargs,
             n_jobs=n_jobs,
             calendar_executed=calendar_executed,
@@ -1758,8 +1771,8 @@ def _extract_features(
             col = f"graph_emb{i}"
             if col not in feature_names:
                 feature_names.append(col)
-    _FEATURE_RESULTS[key] = (df, feature_names, embeddings, gnn_state)
-    _FEATURE_METADATA_CACHE[key] = dict(_FEATURE_METADATA)
+    cfg.feature_results[key] = (df, feature_names, embeddings, gnn_state)
+    cfg.feature_metadata_cache[key] = dict(_FEATURE_METADATA)
     return df, feature_names, embeddings, gnn_state
 
 

@@ -102,7 +102,7 @@ def _sample_wavelet_df(rows: int = 48) -> pd.DataFrame:
 
 
 def test_wavelet_packets_features_and_metadata():
-    configure_cache(FeatureConfig(enabled_features={"wavelet_packets"}))
+    config = configure_cache(FeatureConfig(enabled_features={"wavelet_packets"}))
     try:
         df = _sample_wavelet_df()
         feature_names: list[str] = []
@@ -111,6 +111,7 @@ def test_wavelet_packets_features_and_metadata():
             feature_names,
             wavelet_windows=(16, 32),
             wavelet_stats=("mean", "energy"),
+            config=config,
         )
 
         expected_columns = {
@@ -154,6 +155,7 @@ def test_wavelet_packets_features_and_metadata():
             list(feats),
             wavelet_windows=(16, 32),
             wavelet_stats=("mean", "energy"),
+            config=config,
         )
         assert feats_cached == feats
         assert out_cached is out

@@ -16,9 +16,9 @@ def test_csd_features_shapes_and_ranges(tmp_path):
             data.append({"event_time": t, "symbol": sym, "price": p})
     df = pd.DataFrame(data)
 
-    configure_cache(FeatureConfig(enabled_features={"csd"}))
+    config = configure_cache(FeatureConfig(enabled_features={"csd"}))
     feats, cols, _, _ = _extract_features(
-        df.copy(), [], symbol_graph=Path("symbol_graph.json")
+        df.copy(), [], symbol_graph=Path("symbol_graph.json"), config=config
     )
     configure_cache(FeatureConfig())
 

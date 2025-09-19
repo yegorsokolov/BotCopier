@@ -237,8 +237,13 @@ def load_settings(
         if not isinstance(value, dict):
             raise TypeError(f"{name} section must be a mapping")
         fields = model.model_fields
-        extra = {k: v for k, v in overrides.items() if k in fields}
-        return {**value, **extra}
+        allowed = {k: v for k, v in value.items() if k in fields}
+        extra = {
+            k: v
+            for k, v in overrides.items()
+            if k in fields and v is not None
+        }
+        return {**allowed, **extra}
 
     data_cfg = DataConfig(**_section("data", DataConfig))
     train_cfg = TrainingConfig(**_section("training", TrainingConfig))

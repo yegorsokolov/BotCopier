@@ -101,13 +101,13 @@ def test_entry_point_plugin(monkeypatch):
     )
 
     # enable plugin via configuration
-    configure_cache(FeatureConfig(enabled_features={"ep"}))
+    config = configure_cache(FeatureConfig(enabled_features={"ep"}))
 
     # replace heavy technical plugin with a no-op for the test
     FEATURE_REGISTRY["technical"] = lambda df, names, **kwargs: (df, names, {}, {})
 
     df = pd.DataFrame({"price": [1.0]})
-    out, cols, *_ = technical._extract_features(df, [])
+    out, cols, *_ = technical._extract_features(df, [], config=config)
     assert "ep" in cols
     assert out["ep"].iloc[0] == 1.0
 
@@ -121,13 +121,13 @@ def test_register_feature_direct():
         names.append("direct")
         return df, names, {}, {}
 
-    configure_cache(FeatureConfig(enabled_features={"direct"}))
+    config = configure_cache(FeatureConfig(enabled_features={"direct"}))
 
     # replace heavy technical plugin with a no-op for the test
     FEATURE_REGISTRY["technical"] = lambda df, names, **kwargs: (df, names, {}, {})
 
     df = pd.DataFrame({"price": [1.0]})
-    out, cols, *_ = technical._extract_features(df, [])
+    out, cols, *_ = technical._extract_features(df, [], config=config)
     assert "direct" in cols
     assert out["direct"].iloc[0] == 2.0
     FEATURE_REGISTRY.pop("direct", None)
