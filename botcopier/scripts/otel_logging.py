@@ -2,11 +2,20 @@ import logging
 import os
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import format_span_id, format_trace_id
+
+try:  # pragma: no cover - optional OTLP exporter dependency
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # type: ignore[attr-defined]
+        OTLPSpanExporter,
+    )
+
+    _HAS_OTLP_EXPORTER = True
+except Exception:  # pragma: no cover - exporter is optional in tests
+    OTLPSpanExporter = None  # type: ignore[assignment]
+    _HAS_OTLP_EXPORTER = False
 
 
 class TraceContextFilter(logging.Filter):
@@ -37,7 +46,14 @@ def setup_logging(service_name: str, level: int = logging.INFO) -> trace.Tracer:
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
     if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
-        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+        if _HAS_OTLP_EXPORTER:
+            provider.add_span_processor(
+                BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
+            )
+        else:  # pragma: no cover - exporter optional in lightweight envs
+            logging.getLogger(__name__).warning(
+                "OTLP endpoint configured but otlp exporter not installed; tracing disabled"
+            )
     trace.set_tracer_provider(provider)
 
     try:  # prefer systemd journal if available
