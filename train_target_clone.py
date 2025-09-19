@@ -58,6 +58,12 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry
         help="Feature name to enable (repeatable)",
     )
     parser.add_argument(
+        "--retain-feature",
+        dest="feature_subset",
+        action="append",
+        help="Feature column to retain after extraction (repeatable)",
+    )
+    parser.add_argument(
         "--regime-feature",
         dest="regime_features",
         action="append",
@@ -98,6 +104,8 @@ if __name__ == "__main__":  # pragma: no cover - CLI entry
         overrides["model_type"] = args.model_type
     if args.features:
         overrides["features"] = args.features
+    if args.feature_subset:
+        overrides["feature_subset"] = args.feature_subset
     if args.regime_features:
         overrides["regime_features"] = args.regime_features
     if args.vol_weight is not None:

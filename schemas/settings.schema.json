@@ -325,6 +325,14 @@
           "title": "Features",
           "type": "array"
         },
+        "feature_subset": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Feature Subset",
+          "type": "array"
+        },
         "regime_features": {
           "default": [],
           "items": {

@@ -98,6 +98,7 @@ class TrainingConfig(BaseSettings):
     cache_dir: Optional[Path] = None
     model: Path = Path("model.json")
     features: List[str] = []
+    feature_subset: List[str] = []
     regime_features: List[str] = []
     label: str = "best_model"
     model_type: str = "logreg"

@@ -968,6 +968,9 @@ def run_optuna(
         "tracking_uri": train_cfg.tracking_uri,
         "experiment_name": train_cfg.experiment_name,
         "features": list(train_cfg.features) if train_cfg.features else None,
+        "feature_subset": (
+            list(train_cfg.feature_subset) if train_cfg.feature_subset else None
+        ),
         "regime_features": (
             list(train_cfg.regime_features) if train_cfg.regime_features else None
         ),
@@ -1195,6 +1198,7 @@ def train(
     tracking_uri: str | None = None,
     experiment_name: str | None = None,
     features: Sequence[str] | None = None,
+    feature_subset: Sequence[str] | None = None,
     distributed: bool = False,
     use_gpu: bool = False,
     random_seed: int = 0,
@@ -1256,6 +1260,44 @@ def train(
     if controller_baseline_momentum is not None:
         controller_kwargs["baseline_momentum"] = controller_baseline_momentum
 
+    enabled_feature_flags = list(features or [])
+    feature_subset_requested: list[str] | None = None
+    feature_subset_original: list[str] | None = None
+    feature_subset_applied: list[str] | None = None
+    dropped_feature_names: list[str] = []
+
+    def _normalise_feature_subset(value: object) -> list[str]:
+        if isinstance(value, (str, bytes)):
+            items = [value]
+        else:
+            try:
+                items = list(value)  # type: ignore[arg-type]
+            except TypeError:
+                items = [value]
+        subset_list: list[str] = []
+        for item in items:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                subset_list.append(text)
+        return subset_list
+
+    subset_source: object | None = feature_subset
+    subset_override = kwargs.pop("retain_features", None)
+    if subset_override is not None and subset_source is None:
+        subset_source = subset_override
+    subset_override = kwargs.pop("selected_features", None)
+    if subset_override is not None and subset_source is None:
+        subset_source = subset_override
+
+    if subset_source is not None:
+        subset_list = _normalise_feature_subset(subset_source)
+        if not subset_list:
+            raise ValueError("feature_subset must contain at least one feature")
+        feature_subset_requested = subset_list
+        feature_subset_original = list(subset_list)
+
     chosen_action: tuple[tuple[str, ...], str] | None = None
     if controller is not None:
         controller.model_path = out_dir / "model.json"
@@ -1264,7 +1306,12 @@ def train(
         if not reuse_controller:
             controller.reset()
         chosen_action, _ = controller.sample_action()
-        features = list(chosen_action[0])
+        subset_from_action = _normalise_feature_subset(list(chosen_action[0]))
+        if not subset_from_action:
+            raise ValueError("AutoMLController returned an empty feature subset")
+        feature_subset_requested = subset_from_action
+        feature_subset_original = list(subset_from_action)
+        enabled_feature_flags = list(subset_from_action)
         model_type = chosen_action[1]
 
     if model_type == "transformer":
@@ -1365,7 +1412,7 @@ def train(
             )
     set_seed(random_seed)
     configure_cache(
-        FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
+        FeatureConfig(cache_dir=cache_dir, enabled_features=set(enabled_feature_flags))
     )
     memory = Memory(str(cache_dir) if cache_dir else None, verbose=0)
     _classification_metrics_cached = memory.cache(_classification_metrics)
@@ -1809,6 +1856,38 @@ def train(
             symbols = np.concatenate(symbol_batches)
         else:
             symbols = np.array([], dtype=str)
+
+    if feature_subset_requested is not None:
+        missing = [name for name in feature_subset_requested if name not in feature_names]
+        if missing:
+            raise ValueError(
+                f"Requested features not found in extracted features: {missing}"
+            )
+        seen: set[str] = set()
+        keep_idx: list[int] = []
+        filtered_subset: list[str] = []
+        for name in feature_subset_requested:
+            if name in seen:
+                continue
+            idx = feature_names.index(name)
+            keep_idx.append(idx)
+            filtered_subset.append(feature_names[idx])
+            seen.add(name)
+        if not filtered_subset:
+            raise ValueError("feature_subset must contain at least one feature")
+        dropped_feature_names = [
+            feature_names[i] for i in range(len(feature_names)) if i not in keep_idx
+        ]
+        if dropped_feature_names:
+            logger.info(
+                "Restricting features to requested subset; dropping %s",
+                dropped_feature_names,
+            )
+        else:
+            logger.info("Restricting features to requested subset")
+        X = X[:, keep_idx]
+        feature_names = filtered_subset
+        feature_subset_applied = list(filtered_subset)
 
     if news_seq_list:
         news_sequences = np.concatenate(news_seq_list, axis=0)
@@ -2375,7 +2454,7 @@ def train(
                     for k, v in metrics_dict.items():
                         if isinstance(v, (int, float)) and not np.isnan(v):
                             mlflow.log_metric(f"fold{fold_idx + 1}_{k}", float(v))
-        if not metrics:
+        if not fold_metrics:
             raise ValueError("No decision threshold satisfied risk constraints")
         agg = {
             k: float(
@@ -2632,6 +2711,9 @@ def train(
         preds = (probas >= 0.5).astype(float)
         score = float((preds == y).mean())
         meta_lookup = getattr(technical_features, "_FEATURE_METADATA", {})
+        if feature_subset_original is not None:
+            feature_subset_applied = list(feature_names)
+
         feature_metadata: list[FeatureMetadata] = []
         for fn in feature_names:
             meta_entry = meta_lookup.get(fn)
@@ -2821,6 +2903,12 @@ def train(
             n_features_val = int(len(feature_names))
         metadata["n_samples"] = n_samples
         metadata["n_features"] = n_features_val
+        if feature_subset_original is not None:
+            metadata["requested_feature_subset"] = list(feature_subset_original)
+        if feature_subset_applied is not None:
+            metadata["final_feature_subset"] = list(feature_subset_applied)
+        if dropped_feature_names:
+            metadata["dropped_feature_subset"] = list(dropped_feature_names)
         if model_type == "crossmodal" and news_meta is not None and news_sequence_data is not None:
             metadata["news_embeddings"] = {
                 "window": int(news_meta.get("window", news_window_param)),
@@ -2971,8 +3059,12 @@ def train(
             }
             if n_jobs is not None:
                 base_params["n_jobs"] = n_jobs
-            if features is not None:
-                base_params["requested_features"] = list(features)
+            if enabled_feature_flags:
+                base_params["requested_features"] = list(enabled_feature_flags)
+            if feature_subset_original is not None:
+                base_params["requested_feature_subset"] = list(feature_subset_original)
+            if feature_subset_applied is not None:
+                base_params["selected_features"] = list(feature_subset_applied)
             if regime_features is not None:
                 base_params["regime_features"] = list(regime_features)
             if dvc_repo_path is not None:

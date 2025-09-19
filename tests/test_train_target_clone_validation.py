@@ -41,6 +41,8 @@ def test_voting_ensemble_improves_accuracy(tmp_path):
         "dom_cos",
     ]
     df = pd.DataFrame(X, columns=cols)
+    df["equity"] = df["equity"].abs()
+    df["margin_level"] = df["margin_level"].abs()
     df["label"] = y
     data_file = tmp_path / "trades_raw.csv"
     df.to_csv(data_file, index=False)
@@ -160,6 +162,8 @@ def test_profit_weighting_changes_coefficients(tmp_path):
         "dom_cos",
     ]
     df = pd.DataFrame(X, columns=cols)
+    df["equity"] = df["equity"].abs()
+    df["margin_level"] = df["margin_level"].abs()
     df["label"] = y
     df["profit"] = np.where(y == 1, 2.0, 0.5)
     data_file = tmp_path / "trades_raw.csv"
@@ -202,6 +206,8 @@ def test_optuna_cross_validation_respects_fold_count(tmp_path):
         "dom_cos",
     ]
     df = pd.DataFrame(X, columns=cols)
+    df["equity"] = df["equity"].abs()
+    df["margin_level"] = df["margin_level"].abs()
     df["label"] = y
     df["profit"] = (y * 2 - 1).astype(float)
     data_file = tmp_path / "trades_raw.csv"
@@ -275,6 +281,8 @@ def test_tabtransformer_predictions(tmp_path):
         "dom_cos",
     ]
     df = pd.DataFrame(X, columns=cols)
+    df["equity"] = df["equity"].abs()
+    df["margin_level"] = df["margin_level"].abs()
     df["label"] = y
     data_file = tmp_path / "trades_raw.csv"
     df.to_csv(data_file, index=False)
@@ -329,6 +337,8 @@ def test_tcn_predictions(tmp_path):
         "dom_cos",
     ]
     df = pd.DataFrame(X, columns=cols)
+    df["equity"] = df["equity"].abs()
+    df["margin_level"] = df["margin_level"].abs()
     df["label"] = y
     data_file = tmp_path / "trades_raw.csv"
     df.to_csv(data_file, index=False)
@@ -389,3 +399,79 @@ def test_expected_value_pipeline_outputs_expected_profit(tmp_path: Path) -> None
     pnl = X_scaled @ pnl_coef + params["pnl_model"]["intercept"]
     expected_manual = prob * pnl
     assert np.allclose(preds, expected_manual)
+
+
+def test_feature_subset_restricts_model_columns(tmp_path: Path) -> None:
+    X, y = make_classification(
+        n_samples=200,
+        n_features=11,
+        n_informative=5,
+        n_redundant=0,
+        random_state=7,
+    )
+    cols = [
+        "spread",
+        "slippage",
+        "equity",
+        "margin_level",
+        "volume",
+        "hour_sin",
+        "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
+    ]
+    df = pd.DataFrame(X, columns=cols)
+    df["equity"] = df["equity"].abs()
+    df["margin_level"] = df["margin_level"].abs()
+    df["label"] = y
+    data_file = tmp_path / "subset_trades.csv"
+    df.to_csv(data_file, index=False)
+
+    requested = ["spread", "volume", "hour_cos"]
+    out_dir = tmp_path / "subset_out"
+    train(data_file, out_dir, feature_subset=requested)
+
+    model_data = json.loads((out_dir / "model.json").read_text())
+    assert model_data["feature_names"] == requested
+    session = model_data["session_models"]["asian"]
+    assert len(session["coefficients"]) == len(requested)
+    metadata = model_data.get("metadata", {})
+    assert metadata.get("requested_feature_subset") == requested
+    assert metadata.get("final_feature_subset") == requested
+    dropped = metadata.get("dropped_feature_subset", [])
+    assert "slippage" in dropped
+    assert all(name not in dropped for name in requested)
+
+
+def test_feature_subset_missing_columns_raise(tmp_path: Path) -> None:
+    X, y = make_classification(
+        n_samples=100,
+        n_features=11,
+        n_informative=4,
+        n_redundant=0,
+        random_state=11,
+    )
+    cols = [
+        "spread",
+        "slippage",
+        "equity",
+        "margin_level",
+        "volume",
+        "hour_sin",
+        "hour_cos",
+        "month_sin",
+        "month_cos",
+        "dom_sin",
+        "dom_cos",
+    ]
+    df = pd.DataFrame(X, columns=cols)
+    df["equity"] = df["equity"].abs()
+    df["margin_level"] = df["margin_level"].abs()
+    df["label"] = y
+    data_file = tmp_path / "subset_missing.csv"
+    df.to_csv(data_file, index=False)
+
+    with pytest.raises(ValueError, match="Requested features not found"):
+        train(data_file, tmp_path / "subset_missing_out", feature_subset=["spread", "unknown"])
