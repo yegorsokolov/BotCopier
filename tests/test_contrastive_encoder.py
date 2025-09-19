@@ -28,8 +28,8 @@ def _write_ticks(dir_path: Path, n: int = 50) -> None:
 
 def test_contrastive_encoder_flow(tmp_path: Path, caplog):
     cache_dir = tmp_path / "cache"
-    configure_cache(FeatureConfig(cache_dir=cache_dir))
-    clear_cache()
+    feature_config = configure_cache(FeatureConfig(cache_dir=cache_dir))
+    clear_cache(feature_config)
     tick_dir = tmp_path / "ticks"
     tick_dir.mkdir()
     _write_ticks(tick_dir)
@@ -42,8 +42,10 @@ def test_contrastive_encoder_flow(tmp_path: Path, caplog):
     # verify feature extraction
     df = pd.DataFrame({f"tick_{i}": [float(i)] for i in range(window)})
     with caplog.at_level(logging.INFO):
-        df2, feats, _, _ = _extract_features(df.copy(), [], tick_encoder=enc_path)
-        _extract_features(df.copy(), [], tick_encoder=enc_path)
+        df2, feats, _, _ = _extract_features(
+            df.copy(), [], tick_encoder=enc_path, config=feature_config
+        )
+        _extract_features(df.copy(), [], tick_encoder=enc_path, config=feature_config)
     assert "cache hit for _extract_features" in caplog.text
     for i in range(dim):
         assert f"enc_{i}" in feats

@@ -12,8 +12,8 @@ def test_orderbook_features_shapes_and_ranges():
             "ask_depth": [[4, 5], [3, 6], [2, 7]],
         }
     )
-    configure_cache(FeatureConfig(enabled_features={"orderbook"}))
-    feats, cols, _, _ = _extract_features(df.copy(), [])
+    config = configure_cache(FeatureConfig(enabled_features={"orderbook"}))
+    feats, cols, _, _ = _extract_features(df.copy(), [], config=config)
     configure_cache(FeatureConfig())  # reset for other tests
 
     assert {"depth_microprice", "depth_vol_imbalance", "depth_order_flow_imbalance"} <= set(

@@ -36,8 +36,13 @@ def _sample_df() -> pd.DataFrame:
 def test_extract_features_deterministic_n_jobs() -> None:
     df = _sample_df()
     feature_names: list[str] = []
-    df1, fn1, emb1, gnn1 = _extract_features_impl(df.copy(), feature_names.copy(), n_jobs=1)
-    df2, fn2, emb2, gnn2 = _extract_features_impl(df.copy(), feature_names.copy(), n_jobs=2)
+    config = fe.configure_cache(fe.FeatureConfig())
+    df1, fn1, emb1, gnn1 = _extract_features_impl(
+        df.copy(), feature_names.copy(), n_jobs=1, config=config
+    )
+    df2, fn2, emb2, gnn2 = _extract_features_impl(
+        df.copy(), feature_names.copy(), n_jobs=2, config=config
+    )
     pd.testing.assert_frame_equal(df1, df2)
     assert fn1 == fn2
     assert emb1 == emb2
@@ -47,10 +52,14 @@ def test_extract_features_deterministic_n_jobs() -> None:
 def test_engineering_wrapper_respects_n_jobs() -> None:
     df = _sample_df()
     feature_names: list[str] = []
-    with fe._CONFIG.override(n_jobs=1):
-        df1, fn1, emb1, gnn1 = fe._extract_features(df.copy(), feature_names.copy())
-    with fe._CONFIG.override(n_jobs=2):
-        df2, fn2, emb2, gnn2 = fe._extract_features(df.copy(), feature_names.copy())
+    config1 = fe.configure_cache(fe.FeatureConfig(n_jobs=1))
+    df1, fn1, emb1, gnn1 = fe._extract_features(
+        df.copy(), feature_names.copy(), config=config1
+    )
+    config2 = fe.configure_cache(fe.FeatureConfig(n_jobs=2))
+    df2, fn2, emb2, gnn2 = fe._extract_features(
+        df.copy(), feature_names.copy(), config=config2
+    )
     pd.testing.assert_frame_equal(df1, df2)
     assert fn1 == fn2
     assert emb1 == emb2
