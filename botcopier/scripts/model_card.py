@@ -4,7 +4,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
-from jinja2 import Environment, select_autoescape
+try:  # pragma: no cover - optional dependency
+    from jinja2 import Environment, select_autoescape
+
+    _HAS_JINJA = True
+except Exception:  # pragma: no cover - fallback when jinja2 is unavailable
+    Environment = None  # type: ignore[assignment]
+    select_autoescape = None  # type: ignore[assignment]
+    _HAS_JINJA = False
 
 from botcopier.models.schema import ModelParams
 
@@ -50,10 +57,42 @@ def generate_model_card(
     output_path:
         Location to write the rendered markdown file.
     """
-    env = Environment(autoescape=select_autoescape())
-    template = env.from_string(_TEMPLATE)
+    output_path = Path(output_path)
     dep_ref = dependencies_path.name if dependencies_path else None
-    content = template.render(
-        params=model_params, metrics=metrics, dependencies_path=dep_ref
-    )
-    Path(output_path).write_text(content)
+
+    if _HAS_JINJA:
+        env = Environment(autoescape=select_autoescape())
+        template = env.from_string(_TEMPLATE)
+        content = template.render(
+            params=model_params, metrics=metrics, dependencies_path=dep_ref
+        )
+    else:  # pragma: no cover - exercised when optional dependency missing
+        feature_list = ", ".join(model_params.feature_names)
+        sections = ["# Model Card", "", "## Model Parameters"]
+        sections.append(f"- **Version:** {model_params.version}")
+        sections.append(f"- **Features:** {feature_list}")
+        metadata = getattr(model_params, "metadata", None) or {}
+        if metadata:
+            sections.append("")
+            sections.append("## Metadata")
+            for key, value in metadata.items():
+                sections.append(f"- **{key}:** {value}")
+        if metrics:
+            sections.append("")
+            sections.append("## Metrics")
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    sections.append(f"- **{key}:** {value:.4f}")
+                else:
+                    sections.append(f"- **{key}:** {value}")
+        if dep_ref:
+            sections.extend(
+                [
+                    "",
+                    "## Environment",
+                    f"See [dependencies]({dep_ref}) for the exact package versions.",
+                ]
+            )
+        content = "\n".join(sections) + "\n"
+
+    output_path.write_text(content)

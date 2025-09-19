@@ -102,8 +102,14 @@ except Exception:  # pragma: no cover - optional
 
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
-from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+try:  # pragma: no cover - optional OTLP exporters
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+    _HAS_OTEL_EXPORTERS = True
+except Exception:  # pragma: no cover - graceful fallback when exporters missing
+    OTLPLogExporter = OTLPSpanExporter = None  # type: ignore[assignment]
+    _HAS_OTEL_EXPORTERS = False
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
@@ -134,12 +140,19 @@ resource = Resource.create(
 )
 provider = TracerProvider(resource=resource)
 if endpoint := os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"):
-    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
+    if _HAS_OTEL_EXPORTERS:
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
+        )
+    else:  # pragma: no cover - exporters unavailable
+        logging.getLogger(__name__).warning(
+            "OTLP endpoint configured but otlp exporters not installed; tracing disabled"
+        )
 trace.set_tracer_provider(provider)
 tracer = trace.get_tracer(__name__)
 
 logger_provider = LoggerProvider(resource=resource)
-if endpoint:
+if endpoint and _HAS_OTEL_EXPORTERS:
     logger_provider.add_log_record_processor(
         BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint))
     )
