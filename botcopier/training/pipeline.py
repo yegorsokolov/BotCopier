@@ -121,6 +121,55 @@ def _dependency_lines(packages: Sequence[str]) -> list[str]:
     return lines
 
 
+def _normalise_feature_subset(
+    subset: Sequence[str] | str | None,
+) -> tuple[list[str], bool]:
+    """Return a deduplicated list of feature names and whether it was provided."""
+
+    if subset is None:
+        return [], False
+    if isinstance(subset, (str, bytes)):
+        items = [subset]
+    else:
+        items = list(subset)
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for raw in items:
+        if raw is None:
+            raise ValueError("feature subset cannot include null values")
+        name = str(raw).strip()
+        if not name:
+            raise ValueError("feature subset cannot include empty feature names")
+        if name not in seen:
+            seen.add(name)
+            normalised.append(name)
+    if not normalised:
+        raise ValueError("feature subset must contain at least one feature name")
+    return normalised, True
+
+
+def _filter_feature_matrix(
+    matrix: np.ndarray, feature_names: list[str], subset: Sequence[str]
+) -> tuple[np.ndarray, list[str]]:
+    """Return ``matrix`` and ``feature_names`` filtered to ``subset`` preserving order."""
+
+    if not subset:
+        return matrix, feature_names
+    missing = [name for name in subset if name not in feature_names]
+    if missing:
+        raise ValueError(
+            "Requested features not present in engineered feature set: %s" % missing
+        )
+    keep = [idx for idx, name in enumerate(feature_names) if name in set(subset)]
+    if not keep:
+        raise ValueError("feature subset produced an empty feature matrix")
+    if matrix.ndim != 2 or matrix.shape[1] != len(feature_names):
+        raise ValueError("feature matrix and feature name list are misaligned")
+    filtered = matrix[:, keep]
+    filtered_names = [feature_names[i] for i in keep]
+    return filtered, filtered_names
+
+
 def _session_statistics(df: pd.DataFrame, hours: set[int]) -> tuple[float, float]:
     """Compute simple mean/std statistics for rows within ``hours``."""
 
@@ -147,6 +196,7 @@ def _train_lightweight(
     extra_prices: Mapping[str, Sequence[float]] | None = None,
     config_hash: str | None = None,
     config_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
+    feature_subset: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Minimal training routine used for small fixture datasets."""
 
@@ -201,6 +251,20 @@ def _train_lightweight(
                 extra_stats[corr_name] = 0.0
                 extra_stats[ratio_name] = 1.0
 
+    requested_subset, subset_provided = _normalise_feature_subset(feature_subset)
+    if subset_provided:
+        missing = [name for name in requested_subset if name not in feature_names]
+        if missing:
+            raise ValueError(
+                "Requested features not available in lightweight feature set: %s"
+                % missing
+            )
+        keep_set = set(requested_subset)
+        feature_names = [name for name in feature_names if name in keep_set]
+        extra_stats = {name: value for name, value in extra_stats.items() if name in keep_set}
+        if not feature_names:
+            raise ValueError("feature subset produced an empty feature set")
+
     labels = df.get("label")
     if labels is None or labels.empty:
         labels = df.get("y")
@@ -243,11 +307,23 @@ def _train_lightweight(
         },
     }
 
+    def _router_values(values: Sequence[float]) -> list[float]:
+        if not feature_names:
+            return []
+        vals = list(values) if values else [0.0]
+        repeats = (len(feature_names) + len(vals) - 1) // len(vals)
+        repeated = vals * repeats
+        return repeated[: len(feature_names)]
+
     ensemble_router = {
         "intercept": [0.0, 0.1, -0.1],
-        "coefficients": [[0.5, -0.2], [0.1, 0.3], [-0.4, 0.2]],
-        "feature_mean": [0.0, 12.0],
-        "feature_std": [1.0, 6.0],
+        "coefficients": [
+            _router_values([0.5, -0.2]),
+            _router_values([0.1, 0.3]),
+            _router_values([-0.4, 0.2]),
+        ],
+        "feature_mean": _router_values([0.0, 12.0]),
+        "feature_std": _router_values([1.0, 6.0]),
     }
 
     sessions = {
@@ -321,6 +397,8 @@ def _train_lightweight(
         "dependencies_path": deps_path.name,
         "data_hashes_path": data_hash_path.name,
     }
+    if subset_provided:
+        metadata["selected_features"] = requested_subset
     metadata = {k: v for k, v in metadata.items() if v is not None}
 
     model_data: dict[str, Any] = {
@@ -1456,6 +1534,7 @@ def train(
     tracking_uri: str | None = None,
     experiment_name: str | None = None,
     features: Sequence[str] | None = None,
+    feature_subset: Sequence[str] | None = None,
     distributed: bool = False,
     use_gpu: bool = False,
     random_seed: int = 0,
@@ -1498,6 +1577,20 @@ def train(
     start_time = datetime.now(UTC)
     run_identifier = uuid4().hex
     config_snapshot_path: Path | None = None
+    subset_override = kwargs.pop("feature_subset", None)
+    if feature_subset is None and subset_override is not None:
+        subset_source = subset_override
+    else:
+        subset_source = feature_subset
+    selected_kwarg = kwargs.pop("selected_features", None)
+    if subset_source is None and selected_kwarg is not None:
+        subset_source = selected_kwarg
+    if subset_source is None:
+        user_subset: list[str] = []
+        subset_provided = False
+    else:
+        user_subset, subset_provided = _normalise_feature_subset(subset_source)
+    active_subset: list[str] = list(user_subset)
     extra_options = cast(dict[str, Any], dict(kwargs))
     if _should_use_lightweight(data_dir, extra_options):
         return _train_lightweight(
@@ -1508,6 +1601,7 @@ def train(
             ),
             config_hash=config_hash,
             config_snapshot=config_snapshot,
+            feature_subset=active_subset if active_subset else None,
         )
     if dvc_repo is not None:
         dvc_repo_path: Path | None = Path(dvc_repo)
@@ -1536,8 +1630,22 @@ def train(
         if not reuse_controller:
             controller.reset()
         chosen_action, _ = controller.sample_action()
-        features = list(chosen_action[0])
+        controller_subset, _ = _normalise_feature_subset(chosen_action[0])
+        if subset_provided:
+            allowed = set(user_subset)
+            invalid = [name for name in controller_subset if name not in allowed]
+            if invalid:
+                raise ValueError(
+                    "Controller selected features outside the allowed subset: %s"
+                    % invalid
+                )
+        if controller_subset:
+            active_subset = list(controller_subset)
+            subset_provided = True
+        features = list(controller_subset)
         model_type = chosen_action[1]
+
+    filtered_feature_subset: list[str] | None = None
 
     if model_type == "transformer":
         logger.warning(
@@ -2088,6 +2196,10 @@ def train(
             symbols = np.concatenate(symbol_batches)
         else:
             symbols = np.array([], dtype=str)
+
+    if active_subset:
+        X, feature_names = _filter_feature_matrix(X, feature_names, active_subset)
+        filtered_feature_subset = list(feature_names)
 
     if news_seq_list:
         news_sequences = np.concatenate(news_seq_list, axis=0)
@@ -3111,6 +3223,8 @@ def train(
             n_features_val = int(len(feature_names))
         metadata["n_samples"] = n_samples
         metadata["n_features"] = n_features_val
+        if filtered_feature_subset:
+            metadata["selected_features"] = list(filtered_feature_subset)
         if model_type == "crossmodal" and news_meta is not None and news_sequence_data is not None:
             metadata["news_embeddings"] = {
                 "window": int(news_meta.get("window", news_window_param)),
@@ -3263,6 +3377,8 @@ def train(
                 base_params["n_jobs"] = n_jobs
             if features is not None:
                 base_params["requested_features"] = list(features)
+            if filtered_feature_subset:
+                base_params["selected_features"] = list(filtered_feature_subset)
             if regime_features is not None:
                 base_params["regime_features"] = list(regime_features)
             if dvc_repo_path is not None:
