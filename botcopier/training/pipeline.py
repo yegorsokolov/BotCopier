@@ -1364,8 +1364,12 @@ def train(
                 [float(threshold_grid_param)], dtype=float
             )
     set_seed(random_seed)
-    configure_cache(
-        FeatureConfig(cache_dir=cache_dir, enabled_features=set(features or []))
+    feature_config = configure_cache(
+        FeatureConfig(
+            cache_dir=cache_dir,
+            enabled_features=set(features or []),
+            n_jobs=n_jobs,
+        )
     )
     memory = Memory(str(cache_dir) if cache_dir else None, verbose=0)
     _classification_metrics_cached = memory.cache(_classification_metrics)
@@ -1471,6 +1475,7 @@ def train(
         "dask",
     ]
     load_kwargs = {k: kwargs[k] for k in load_keys if k in kwargs}
+    load_kwargs.setdefault("feature_config", feature_config)
     with tracer.start_as_current_span("data_load"):
         logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
     news_embeddings_df, news_hashes = _load_news_embeddings(data_dir)
@@ -1582,6 +1587,7 @@ def train(
                     news_embeddings=news_embeddings_df,
                     news_embedding_window=news_window_param,
                     news_embedding_horizon=news_horizon_seconds,
+                    config=feature_config,
                     **feature_extra_kwargs,
                 )
             meta_entry = technical_features._FEATURE_METADATA.get("__news_embeddings__")
@@ -1664,6 +1670,7 @@ def train(
                 news_embeddings=news_embeddings_df,
                 news_embedding_window=news_window_param,
                 news_embedding_horizon=news_horizon_seconds,
+                config=feature_config,
                 **feature_extra_kwargs,
             )
         meta_entry = technical_features._FEATURE_METADATA.get("__news_embeddings__")

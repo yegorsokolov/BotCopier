@@ -127,8 +127,10 @@ class FeatureConfig:
         self.enabled_features = enabled_features
 
 engineering_mod.FeatureConfig = FeatureConfig
-engineering_mod.configure_cache = lambda config: None
-engineering_mod._extract_features = lambda df, names, n_jobs=None: (df, names, None, None)
+engineering_mod.configure_cache = lambda config: config
+engineering_mod._extract_features = (
+    lambda df, names, n_jobs=None, **kwargs: (df, names, None, None)
+)
 engineering_mod._neutralize_against_market_index = lambda df, n_jobs=None: df
 
 augmentation_mod = types.ModuleType("augmentation")

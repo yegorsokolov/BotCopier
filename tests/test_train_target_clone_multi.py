@@ -19,12 +19,14 @@ def test_multi_horizon_training(tmp_path: Path, caplog) -> None:
     data.write_text("".join(rows))
 
     cache_dir = tmp_path / "cache"
-    configure_cache(FeatureConfig(cache_dir=cache_dir))
-    clear_cache()
-    df, feature_cols, _ = _load_logs(data)
+    feature_config = configure_cache(FeatureConfig(cache_dir=cache_dir))
+    clear_cache(feature_config)
+    df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
     with caplog.at_level(logging.INFO):
-        df, feature_cols, _, _ = _extract_features(df, feature_cols)
-        _extract_features(df, feature_cols)
+        df, feature_cols, _, _ = _extract_features(
+            df, feature_cols, config=feature_config
+        )
+        _extract_features(df, feature_cols, config=feature_config)
     assert "cache hit for _extract_features" in caplog.text
     assert df["label_h5"].notna().all()
     assert df["label_h20"].notna().all()
