@@ -178,6 +178,58 @@ def test_profit_weighting_changes_coefficients(tmp_path):
     assert any(abs(a - b) > 1e-6 for a, b in zip(coeffs1, coeffs2))
 
 
+def _make_schema_compliant_frame(n: int) -> pd.DataFrame:
+    base = np.linspace(0.1, 1.0, n)
+    hours = np.tile(np.arange(24), int(np.ceil(n / 24)))[:n]
+    months = np.tile(np.arange(1, 13), int(np.ceil(n / 12)))[:n]
+    dom = np.tile(np.arange(1, 32), int(np.ceil(n / 31)))[:n]
+    df = pd.DataFrame(
+        {
+            "spread": 0.5 + base,
+            "slippage": 0.1 + base[::-1],
+            "equity": 1000.0 + base * 10.0,
+            "margin_level": 1.0 + base,
+            "volume": 10.0 + base * 5.0,
+            "hour_sin": np.sin(2 * np.pi * hours / 24.0),
+            "hour_cos": np.cos(2 * np.pi * hours / 24.0),
+            "month_sin": np.sin(2 * np.pi * months / 12.0),
+            "month_cos": np.cos(2 * np.pi * months / 12.0),
+            "dom_sin": np.sin(2 * np.pi * dom / 31.0),
+            "dom_cos": np.cos(2 * np.pi * dom / 31.0),
+        }
+    )
+    df["label"] = (base > 0.55).astype(int)
+    return df
+
+
+def test_feature_subset_filters_columns(tmp_path: Path) -> None:
+    df = _make_schema_compliant_frame(210)
+    data_file = tmp_path / "trades_raw.csv"
+    df.to_csv(data_file, index=False)
+
+    subset = ["spread", "volume", "hour_cos"]
+    out_dir = tmp_path / "out_subset"
+    train(data_file, out_dir, feature_subset=subset)
+
+    model = json.loads((out_dir / "model.json").read_text())
+    assert model["feature_names"] == subset
+    coeffs = model["session_models"]["asian"]["coefficients"]
+    assert len(coeffs) == len(subset)
+    assert model["metadata"].get("selected_features") == subset
+
+
+def test_feature_subset_missing_feature_raises(tmp_path: Path) -> None:
+    df = _make_schema_compliant_frame(210)
+    data_file = tmp_path / "trades_raw.csv"
+    df.to_csv(data_file, index=False)
+
+    out_dir = tmp_path / "out_missing"
+    with pytest.raises(ValueError) as excinfo:
+        train(data_file, out_dir, feature_subset=["spread", "missing_feature"])
+
+    assert "missing_feature" in str(excinfo.value)
+
+
 @pytest.mark.skipif(not _HAS_OPTUNA, reason="optuna not installed")
 def test_optuna_cross_validation_respects_fold_count(tmp_path):
     X, y = make_classification(
