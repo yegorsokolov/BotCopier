@@ -6,7 +6,6 @@ import argparse
 import cProfile
 import gzip
 import hashlib
-import importlib.metadata as importlib_metadata
 import json
 import logging
 import os
@@ -25,51 +24,13 @@ import numpy as np
 import pandas as pd
 import psutil
 from joblib import Memory
+from opentelemetry import trace
+from pydantic import ValidationError
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.feature_selection import mutual_info_classif
 from sklearn.preprocessing import PowerTransformer, StandardScaler
-
-try:  # optional polars support
-    import polars as pl  # type: ignore
-
-    _HAS_POLARS = True
-except ImportError:  # pragma: no cover - optional
-    pl = None  # type: ignore
-    _HAS_POLARS = False
-
-try:  # optional dask support
-    import dask.dataframe as dd  # type: ignore
-
-    _HAS_DASK = True
-except Exception:  # pragma: no cover - optional
-    dd = None  # type: ignore
-    _HAS_DASK = False
-
-try:  # optional optuna support
-    import optuna
-
-    _HAS_OPTUNA = True
-except ImportError:  # pragma: no cover - optional
-    optuna = None  # type: ignore
-    _HAS_OPTUNA = False
-
-try:  # optional numba support
-    from numba import njit
-
-    _HAS_NUMBA = True
-except Exception:  # pragma: no cover - optional
-
-    def njit(*a, **k):  # pragma: no cover - simple stub
-        def _inner(f):
-            return f
-
-        return _inner
-
-    _HAS_NUMBA = False
-from opentelemetry import trace
-from pydantic import ValidationError
 
 import botcopier.features.technical as technical_features
 from automl.controller import AutoMLController
@@ -80,608 +41,6 @@ from botcopier.config.settings import (
     load_settings,
 )
 from botcopier.data.feature_schema import FeatureSchema
-
-
-AUTOENCODER_META_SUFFIX = ".meta.json"
-
-
-def _should_use_lightweight(data_dir: Path, kwargs: Mapping[str, Any]) -> bool:
-    """Return ``True`` when a simplified training path should be used.
-
-    The unit tests exercise the pipeline on very small CSV fixtures where the
-    full training routine would be excessive.  When the dataset contains only a
-    handful of rows (or ``lite_mode`` is explicitly requested) we fall back to a
-    deterministic, lightweight implementation that produces the model artifacts
-    expected by the tests without pulling in heavy optional dependencies.
-    """
-
-    if kwargs.get("lite_mode"):
-        return True
-    data_path = Path(data_dir)
-    file = data_path if data_path.is_file() else data_path / "trades_raw.csv"
-    try:
-        with file.open("r", encoding="utf-8") as handle:
-            # subtract header row if present
-            row_count = sum(1 for _ in handle) - 1
-    except FileNotFoundError:
-        return False
-    return row_count <= 200
-
-
-def _dependency_lines(packages: Sequence[str]) -> list[str]:
-    """Return formatted dependency pin lines for ``packages``."""
-
-    lines: list[str] = []
-    for pkg in packages:
-        try:
-            version = importlib_metadata.version(pkg)
-        except importlib_metadata.PackageNotFoundError:
-            version = "0.0.0"
-        lines.append(f"{pkg}=={version}")
-    return lines
-
-
-def _normalise_feature_subset(
-    subset: Sequence[str] | str | None,
-) -> tuple[list[str], bool]:
-    """Return a deduplicated list of feature names and whether it was provided."""
-
-    if subset is None:
-        return [], False
-    if isinstance(subset, (str, bytes)):
-        items = [subset]
-    else:
-        items = list(subset)
-    normalised: list[str] = []
-    seen: set[str] = set()
-    for raw in items:
-        if raw is None:
-            raise ValueError("feature subset cannot include null values")
-        name = str(raw).strip()
-        if not name:
-            raise ValueError("feature subset cannot include empty feature names")
-        if name not in seen:
-            seen.add(name)
-            normalised.append(name)
-    if not normalised:
-        raise ValueError("feature subset must contain at least one feature name")
-    return normalised, True
-
-
-def _filter_feature_matrix(
-    matrix: np.ndarray, feature_names: list[str], subset: Sequence[str]
-) -> tuple[np.ndarray, list[str]]:
-    """Return ``matrix`` and ``feature_names`` filtered to ``subset`` preserving order."""
-
-    if not subset:
-        return matrix, feature_names
-    missing = [name for name in subset if name not in feature_names]
-    if missing:
-        raise ValueError(
-            "Requested features not present in engineered feature set: %s" % missing
-        )
-    keep = [idx for idx, name in enumerate(feature_names) if name in set(subset)]
-    if not keep:
-        raise ValueError("feature subset produced an empty feature matrix")
-    if matrix.ndim != 2 or matrix.shape[1] != len(feature_names):
-        raise ValueError("feature matrix and feature name list are misaligned")
-    filtered = matrix[:, keep]
-    filtered_names = [feature_names[i] for i in keep]
-    return filtered, filtered_names
-
-
-def _session_statistics(df: pd.DataFrame, hours: set[int]) -> tuple[float, float]:
-    """Compute simple mean/std statistics for rows within ``hours``."""
-
-    if df.empty:
-        return 0.0, 0.0
-    value_col = "price" if "price" in df.columns else "spread" if "spread" in df.columns else df.columns[-1]
-    if "hour" in df.columns:
-        mask = df["hour"].astype(int).isin(hours)
-        subset = df.loc[mask, value_col]
-        if subset.empty:
-            subset = df[value_col]
-    else:
-        subset = df[value_col]
-    subset = pd.to_numeric(subset, errors="coerce").dropna()
-    if subset.empty:
-        return 0.0, 0.0
-    return float(subset.mean()), float(subset.std(ddof=0) or 0.0)
-
-
-def _train_lightweight(
-    data_dir: Path,
-    out_dir: Path,
-    *,
-    extra_prices: Mapping[str, Sequence[float]] | None = None,
-    config_hash: str | None = None,
-    config_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
-    feature_subset: Sequence[str] | None = None,
-) -> dict[str, Any]:
-    """Minimal training routine used for small fixture datasets."""
-
-    start_time = datetime.now(UTC)
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
-
-    data_path = Path(data_dir)
-    csv_file = data_path if data_path.is_file() else data_path / "trades_raw.csv"
-    df = pd.read_csv(csv_file)
-    if "hour" in df.columns:
-        hours = df["hour"].astype(int).to_numpy()
-    else:
-        hours = np.zeros(len(df), dtype=int)
-        df["hour"] = hours
-    price_series = df.get("price", pd.Series(np.zeros(len(df))))
-    base_symbol = df.get("symbol", pd.Series(["EURUSD"]))[0]
-
-    base_features = [
-        "spread",
-        "slippage",
-        "equity",
-        "margin_level",
-        "volume",
-        "hour_sin",
-        "hour_cos",
-        "month_sin",
-        "month_cos",
-        "dom_sin",
-        "dom_cos",
-    ]
-    feature_names = list(base_features)
-
-    extra_stats: dict[str, float] = {}
-    if extra_prices:
-        for sym, values in extra_prices.items():
-            corr_name = f"corr_{base_symbol}_{sym}"
-            ratio_name = f"ratio_{base_symbol}_{sym}"
-            feature_names.extend([corr_name, ratio_name])
-            arr = np.asarray(list(values), dtype=float)
-            if arr.size and price_series.size:
-                shared = min(len(price_series), arr.size)
-                if shared >= 2 and np.std(arr[:shared]) > 0:
-                    extra_stats[corr_name] = float(
-                        np.corrcoef(price_series.iloc[:shared], arr[:shared])[0, 1]
-                    )
-                else:
-                    extra_stats[corr_name] = 0.0
-                base = arr[0] if arr[0] else 1.0
-                extra_stats[ratio_name] = float(arr[min(shared - 1, arr.size - 1)] / base)
-            else:
-                extra_stats[corr_name] = 0.0
-                extra_stats[ratio_name] = 1.0
-
-    requested_subset, subset_provided = _normalise_feature_subset(feature_subset)
-    if subset_provided:
-        missing = [name for name in requested_subset if name not in feature_names]
-        if missing:
-            raise ValueError(
-                "Requested features not available in lightweight feature set: %s"
-                % missing
-            )
-        keep_set = set(requested_subset)
-        feature_names = [name for name in feature_names if name in keep_set]
-        extra_stats = {name: value for name, value in extra_stats.items() if name in keep_set}
-        if not feature_names:
-            raise ValueError("feature subset produced an empty feature set")
-
-    labels = df.get("label")
-    if labels is None or labels.empty:
-        labels = df.get("y")
-    if labels is not None and len(labels):
-        accuracy = float((labels.astype(int) == labels.astype(int).mode()[0]).mean())
-        recall = float(labels.astype(int).mean())
-    else:
-        accuracy = recall = 0.5
-
-    feature_mean = float(price_series.mean()) if not price_series.empty else 0.0
-    feature_std = float(price_series.std(ddof=0) or 1.0)
-
-    models = {
-        "logreg": {
-            "coefficients": [0.1] * len(feature_names),
-            "intercept": 0.0,
-            "threshold": 0.5,
-            "feature_mean": [feature_mean] * len(feature_names),
-            "feature_std": [feature_std] * len(feature_names),
-            "conformal_lower": 0.2,
-            "conformal_upper": 0.8,
-        },
-        "xgboost": {
-            "coefficients": [0.05] * len(feature_names),
-            "intercept": -0.1,
-            "threshold": 0.55,
-            "feature_mean": [feature_mean] * len(feature_names),
-            "feature_std": [feature_std] * len(feature_names),
-            "conformal_lower": 0.15,
-            "conformal_upper": 0.85,
-        },
-        "lstm": {
-            "coefficients": [0.02] * len(feature_names),
-            "intercept": 0.05,
-            "threshold": 0.45,
-            "feature_mean": [feature_mean] * len(feature_names),
-            "feature_std": [feature_std] * len(feature_names),
-            "conformal_lower": 0.1,
-            "conformal_upper": 0.9,
-        },
-    }
-
-    def _router_values(values: Sequence[float]) -> list[float]:
-        if not feature_names:
-            return []
-        vals = list(values) if values else [0.0]
-        repeats = (len(feature_names) + len(vals) - 1) // len(vals)
-        repeated = vals * repeats
-        return repeated[: len(feature_names)]
-
-    ensemble_router = {
-        "intercept": [0.0, 0.1, -0.1],
-        "coefficients": [
-            _router_values([0.5, -0.2]),
-            _router_values([0.1, 0.3]),
-            _router_values([-0.4, 0.2]),
-        ],
-        "feature_mean": _router_values([0.0, 12.0]),
-        "feature_std": _router_values([1.0, 6.0]),
-    }
-
-    sessions = {
-        "asian": set(range(0, 8)),
-        "london": set(range(8, 16)),
-        "newyork": set(range(16, 24)),
-    }
-    session_models = {}
-    for name, hour_set in sessions.items():
-        mean, std = _session_statistics(df, hour_set)
-        session_models[name] = {
-            "feature_mean": [mean],
-            "feature_std": [std or 1.0],
-            "conformal_lower": 0.2,
-            "conformal_upper": 0.8,
-            "threshold": 0.5,
-            "metrics": {"accuracy": accuracy, "recall": recall},
-        }
-
-    metrics = {
-        "accuracy": accuracy,
-        "recall": recall,
-        "brier_score": 0.05,
-        "ece": 0.1,
-        "max_drawdown": 0.1,
-        "var_95": 0.05,
-        "threshold": 0.5,
-        "threshold_objective": "profit",
-    }
-
-    risk_metrics = {"max_drawdown": 0.1, "var_95": 0.05}
-
-    out_path.mkdir(parents=True, exist_ok=True)
-    deps_path = out_path / "dependencies.txt"
-    deps_lines = _dependency_lines(["numpy", "pandas", "scikit-learn"])
-    deps_path.write_text("\n".join(deps_lines) + "\n")
-    dependencies_hash = hashlib.sha256(deps_path.read_bytes()).hexdigest()
-
-    data_hash = hashlib.sha256(csv_file.read_bytes()).hexdigest()
-    data_hashes = {str(csv_file.resolve()): data_hash}
-    data_hash_path = out_path / "data_hashes.json"
-    data_hash_path.write_text(json.dumps(data_hashes, indent=2))
-
-    snapshot_path = None
-    snapshot_hash = None
-    if config_snapshot:
-        snapshot_path = out_path / "config_snapshot.json"
-        snapshot_path.write_text(json.dumps(config_snapshot, indent=2))
-        snapshot_hash = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
-
-    end_time = datetime.now(UTC)
-
-    metadata: dict[str, Any] = {
-        "seed": 0,
-        "dependencies_file": deps_path.name,
-        "dependencies_hash": dependencies_hash,
-        "config_hash": config_hash or "",
-        "config_snapshot": config_snapshot or {},
-        "config_snapshot_path": snapshot_path.name if snapshot_path else None,
-        "config_snapshot_hash": snapshot_hash if snapshot_hash else None,
-        "training_started_at": start_time.isoformat(),
-        "training_completed_at": end_time.isoformat(),
-        "training_duration_seconds": float((end_time - start_time).total_seconds()),
-        "n_samples": int(len(df)),
-        "n_features": int(len(feature_names)),
-        "environment": {
-            "python": sys.version.split()[0],
-            "platform": platform.platform(),
-        },
-        "experiment": {"run_id": uuid4().hex, "tracking": "offline"},
-        "dependencies_path": deps_path.name,
-        "data_hashes_path": data_hash_path.name,
-    }
-    if subset_provided:
-        metadata["selected_features"] = requested_subset
-    metadata = {k: v for k, v in metadata.items() if v is not None}
-
-    model_data: dict[str, Any] = {
-        "feature_names": feature_names,
-        "extra_features": extra_stats,
-        "models": models,
-        "ensemble_router": ensemble_router,
-        "session_models": session_models,
-        "conformal_lower": 0.2,
-        "conformal_upper": 0.8,
-        "data_hashes": data_hashes,
-        "metadata": metadata,
-        "cv_metrics": metrics,
-        "risk_metrics": risk_metrics,
-        "online_drift_events": [],
-        "drift_events": [],
-    }
-
-    model_hash = hashlib.sha256(json.dumps(model_data, sort_keys=True).encode()).hexdigest()
-    model_data["model_hash"] = model_hash
-
-    model_path = out_path / "model.json"
-    model_path.write_text(json.dumps(model_data, indent=2))
-
-    return model_data
-def _autoencoder_metadata_path(model_path: Path) -> Path:
-    """Return the metadata file path associated with ``model_path``."""
-
-    model_path = Path(model_path)
-    return model_path.with_name(model_path.name + AUTOENCODER_META_SUFFIX)
-
-
-def _serialise_autoencoder_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
-    """Coerce metadata values into JSON-serialisable types."""
-
-    def _convert(value: Any) -> Any:
-        if isinstance(value, np.ndarray):
-            return value.tolist()
-        if isinstance(value, (np.floating, np.integer)):
-            return value.item()
-        if isinstance(value, Mapping):
-            return {key: _convert(val) for key, val in value.items()}
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            return [_convert(v) for v in value]
-        return value
-
-    return _convert(dict(metadata))
-
-
-def _save_autoencoder_metadata(model_path: Path, metadata: Mapping[str, Any]) -> Path:
-    """Persist ``metadata`` next to ``model_path`` and return the file path."""
-
-    meta_path = _autoencoder_metadata_path(model_path)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
-    serialised = _serialise_autoencoder_metadata(metadata)
-    meta_path.write_text(json.dumps(serialised, indent=2, sort_keys=True))
-    return meta_path
-
-
-def _load_autoencoder_metadata(model_path: Path) -> dict[str, Any] | None:
-    """Load metadata associated with ``model_path`` if present."""
-
-    meta_path = _autoencoder_metadata_path(model_path)
-    try:
-        return json.loads(meta_path.read_text())
-    except FileNotFoundError:
-        legacy = Path(model_path).with_suffix(".npy")
-        if legacy.exists():
-            try:
-                legacy_state = np.load(legacy, allow_pickle=True).item()
-            except Exception:  # pragma: no cover - legacy compatibility best effort
-                return None
-            basis = np.asarray(legacy_state.get("basis"), dtype=float)
-            mean = np.asarray(legacy_state.get("mean"), dtype=float)
-            if basis.size and mean.size:
-                return {
-                    "format": "svd",
-                    "latent_dim": int(basis.shape[0]),
-                    "input_dim": int(basis.shape[1]),
-                    "input_mean": mean.tolist(),
-                    "input_scale": [1.0] * int(basis.shape[1]),
-                    "weights": basis.tolist(),
-                    "bias": None,
-                }
-        return None
-    except json.JSONDecodeError:  # pragma: no cover - defensive guard
-        logger.exception("Failed to parse autoencoder metadata at %s", meta_path)
-        return None
-
-
-def _extract_torch_encoder_weights(model_path: Path) -> tuple[np.ndarray, np.ndarray | None]:
-    """Extract encoder weights and bias from a PyTorch checkpoint."""
-
-    if not _HAS_TORCH:
-        raise ImportError("PyTorch is required to load autoencoder checkpoints")
-    state = torch.load(model_path, map_location="cpu")  # type: ignore[arg-type]
-    if hasattr(state, "state_dict"):
-        state = state.state_dict()
-    if isinstance(state, Mapping) and "state_dict" in state:
-        inner = state.get("state_dict")
-        if isinstance(inner, Mapping):
-            state = inner
-    weight_tensor: "torch.Tensor | None"
-    bias_tensor: "torch.Tensor | None"
-    weight_tensor = None
-    bias_tensor = None
-    if isinstance(state, Mapping):
-        if "weights" in state:
-            weight_tensor = torch.as_tensor(state["weights"], dtype=torch.float32)
-            bias_val = state.get("bias")
-            if bias_val is not None:
-                bias_tensor = torch.as_tensor(bias_val, dtype=torch.float32)
-        if weight_tensor is None:
-            for key in (
-                "encoder.weight",
-                "encoder_linear.weight",
-                "weight",
-            ):
-                if key in state:
-                    weight_tensor = torch.as_tensor(state[key], dtype=torch.float32)
-                    bias_key = key.replace("weight", "bias")
-                    bias_val = state.get(bias_key)
-                    if bias_val is not None:
-                        bias_tensor = torch.as_tensor(bias_val, dtype=torch.float32)
-                    break
-        if weight_tensor is None:
-            for key, value in state.items():
-                if key.endswith("weight"):
-                    weight_tensor = torch.as_tensor(value, dtype=torch.float32)
-                    bias_key = key[: -len("weight")] + "bias"
-                    bias_val = state.get(bias_key)
-                    if bias_val is not None:
-                        bias_tensor = torch.as_tensor(bias_val, dtype=torch.float32)
-                    break
-    elif _HAS_TORCH and isinstance(state, torch.Tensor):  # type: ignore[redundant-expr]
-        weight_tensor = state.to(dtype=torch.float32)
-
-    if weight_tensor is None:
-        raise ValueError(f"No encoder weights found in checkpoint {model_path}")
-    weights = weight_tensor.cpu().numpy()
-    bias = bias_tensor.cpu().numpy() if bias_tensor is not None else None
-    return weights, bias
-
-
-def _extract_onnx_encoder_weights(
-    model_path: Path, input_dim: int
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """Derive encoder weights and bias from an ONNX graph."""
-
-    try:
-        import onnxruntime as ort  # type: ignore
-    except Exception as exc:  # pragma: no cover - optional dependency
-        raise ImportError("onnxruntime is required to load ONNX encoders") from exc
-
-    session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-    inputs = session.get_inputs()
-    if not inputs:
-        raise ValueError("ONNX encoder has no inputs")
-    input_name = inputs[0].name
-    zero = np.zeros((1, input_dim), dtype=np.float32)
-    bias_out = session.run(None, {input_name: zero})[0]
-    bias = np.asarray(bias_out[0], dtype=float)
-    identity = np.eye(input_dim, dtype=np.float32)
-    encoded_identity = session.run(None, {input_name: identity})[0]
-    weights_t = np.asarray(encoded_identity, dtype=float) - bias
-    weights = weights_t.T
-    return weights, bias
-
-
-def _apply_autoencoder_from_metadata(
-    X: np.ndarray, metadata: Mapping[str, Any]
-) -> np.ndarray:
-    """Project ``X`` using encoder weights described by ``metadata``."""
-
-    data = np.asarray(X, dtype=float)
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    if data.ndim != 2:
-        raise ValueError("Autoencoder input must be a 2D array")
-
-    mean = np.asarray(metadata.get("input_mean", []), dtype=float)
-    scale = np.asarray(metadata.get("input_scale", []), dtype=float)
-    if mean.size and mean.shape[0] == data.shape[1]:
-        data = data - mean
-    if scale.size and scale.shape[0] == data.shape[1]:
-        safe_scale = np.where(scale == 0, 1.0, scale)
-        data = data / safe_scale
-
-    weights = metadata.get("weights")
-    if weights is None:
-        raise ValueError("Autoencoder metadata does not contain encoder weights")
-    weight_arr = np.asarray(weights, dtype=float)
-    if weight_arr.ndim != 2:
-        raise ValueError("Encoder weights must be a 2D array")
-    bias_val = metadata.get("bias")
-    if bias_val is not None:
-        bias_arr = np.asarray(bias_val, dtype=float)
-    else:
-        bias_arr = None
-    embedding = data @ weight_arr.T
-    if bias_arr is not None:
-        embedding = embedding + bias_arr
-    return embedding.astype(float)
-
-
-def _encode_with_autoencoder(
-    X: np.ndarray, model_path: Path, *, latent_dim: int = 2
-) -> np.ndarray:
-    """Project ``X`` into a low-dimensional latent space using an encoder."""
-
-    data = np.asarray(X, dtype=float)
-    if data.ndim != 2:
-        raise ValueError("X must be a 2D array")
-    samples, features = data.shape
-    if samples == 0 or features == 0:
-        return np.zeros((samples, min(latent_dim, features)), dtype=float)
-
-    model_path = Path(model_path)
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    mean = data.mean(axis=0)
-    centered = data - mean
-    metadata: dict[str, Any] = {
-        "metadata_version": 1,
-        "input_dim": int(features),
-        "input_mean": mean.tolist(),
-        "input_scale": [1.0] * int(features),
-        "weights_file": model_path.name,
-    }
-
-    suffix = model_path.suffix.lower()
-    weights: np.ndarray | None = None
-    bias: np.ndarray | None = None
-
-    if model_path.exists():
-        try:
-            if suffix in {".pt", ".pth"}:
-                weights, bias = _extract_torch_encoder_weights(model_path)
-                metadata["format"] = "torch"
-            elif suffix == ".onnx":
-                weights, bias = _extract_onnx_encoder_weights(model_path, features)
-                metadata["format"] = "onnx"
-            else:
-                loaded_meta = _load_autoencoder_metadata(model_path)
-                if loaded_meta and loaded_meta.get("weights") is not None:
-                    weights = np.asarray(loaded_meta["weights"], dtype=float)
-                    bias_val = loaded_meta.get("bias")
-                    if bias_val is not None:
-                        bias = np.asarray(bias_val, dtype=float)
-                    metadata.update(
-                        {k: v for k, v in loaded_meta.items() if k not in {"weights", "bias"}}
-                    )
-            if weights is not None:
-                metadata.setdefault("latent_dim", int(weights.shape[0]))
-                metadata["weights"] = weights.tolist()
-                metadata["bias"] = bias.tolist() if bias is not None else None
-                embedding = centered @ weights.T
-                if bias is not None:
-                    embedding = embedding + bias
-                _save_autoencoder_metadata(model_path, metadata)
-                return embedding.astype(float)
-        except Exception as exc:  # pragma: no cover - defensive fallback
-            logger.warning(
-                "Failed to load autoencoder weights from %s (%s); falling back to SVD",
-                model_path,
-                exc,
-            )
-
-    k = int(max(1, min(latent_dim, features)))
-    u, s, vh = np.linalg.svd(centered, full_matrices=False)
-    basis = vh[:k]
-    embedding = centered @ basis.T
-    metadata.update(
-        {
-            "format": "svd",
-            "latent_dim": int(k),
-            "weights": basis.tolist(),
-            "bias": None,
-        }
-    )
-    with model_path.open("wb") as fh:
-        np.savez(fh, basis=basis.astype(np.float32))
-    _save_autoencoder_metadata(model_path, metadata)
-    return embedding.astype(float)
 from botcopier.data.loading import _load_logs
 from botcopier.exceptions import TrainingPipelineError
 from botcopier.features.anomaly import _clip_train_features
@@ -701,560 +60,65 @@ from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.portfolio import hierarchical_risk_parity
 from botcopier.scripts.splitters import PurgedWalkForward
 from botcopier.training.curriculum import _apply_curriculum
+from botcopier.training.evaluation import (
+    HAS_OPTUNA,
+    HAS_RAY,
+    max_drawdown,
+    optuna,
+    ray,
+    resolve_data_path,
+    serialise_metric_values,
+    suggest_model_params,
+    trial_logger,
+    var_95,
+)
+from botcopier.training.preprocessing import (
+    HAS_DASK,
+    HAS_FEAST,
+    HAS_POLARS,
+    HAS_TORCH,
+    FEATURE_COLUMNS,
+    FeatureStore,
+    apply_autoencoder_from_metadata,
+    autoencoder_metadata_path,
+    filter_feature_matrix,
+    encode_with_autoencoder,
+    load_autoencoder_metadata,
+    load_news_embeddings,
+    normalise_feature_subset,
+    save_autoencoder_metadata,
+    should_use_lightweight,
+    train_lightweight,
+    dd,
+    pl,
+    torch,
+)
+from botcopier.training.sequence_builders import (
+    build_window_sequences,
+    prepare_symbol_context,
+)
+from botcopier.training.tracking import (
+    HAS_DVC,
+    HAS_MLFLOW,
+    DvcException,
+    DvcRepo,
+    mlflow,
+    serialize_mlflow_param,
+    version_artifacts_with_dvc,
+    write_dependency_snapshot,
+)
+from botcopier.training.weighting import (
+    build_sample_weights,
+    normalise_weights,
+    summarise_weights,
+)
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
 from metrics.aggregator import add_metric
 
-try:  # optional feast dependency
-    from feast import FeatureStore  # type: ignore
-
-    from botcopier.feature_store.feast_repo.feature_views import FEATURE_COLUMNS
-
-    _HAS_FEAST = True
-except Exception:  # pragma: no cover - optional
-    FeatureStore = None  # type: ignore
-    FEATURE_COLUMNS = []  # type: ignore
-    _HAS_FEAST = False
-
-try:  # optional torch dependency flag
-    import torch  # type: ignore
-
-    _HAS_TORCH = True
-except ImportError:  # pragma: no cover
-    torch = None  # type: ignore
-    _HAS_TORCH = False
-
-if _HAS_TORCH:
-    from botcopier.models.deep import TabTransformer, TCNClassifier
-else:  # pragma: no cover - optional dependency
-    TabTransformer = None  # type: ignore
-    TCNClassifier = None  # type: ignore
-
-try:  # optional mlflow dependency
-    import mlflow  # type: ignore
-
-    _HAS_MLFLOW = True
-except ImportError:  # pragma: no cover
-    mlflow = None  # type: ignore
-    _HAS_MLFLOW = False
-
-try:  # optional dvc dependency
-    from dvc.exceptions import DvcException
-    from dvc.repo import Repo as _DvcRepo
-
-    _HAS_DVC = True
-except Exception:  # pragma: no cover - optional
-    DvcException = Exception  # type: ignore
-    _DvcRepo = None  # type: ignore
-    _HAS_DVC = False
-
-try:  # optional ray dependency
-    import ray  # type: ignore
-
-    _HAS_RAY = True
-except ImportError:  # pragma: no cover
-    ray = None  # type: ignore
-    _HAS_RAY = False
-
-
 logger = logging.getLogger(__name__)
 
 SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn", "crossmodal"}
-
-
-def _prepare_symbol_context(
-    symbols: Sequence[str],
-    symbol_graph: Mapping[str, object] | str | Path | None,
-) -> tuple[
-    dict[str, int],
-    list[str],
-    np.ndarray,
-    list[list[int]],
-    dict[str, list[str]],
-]:
-    """Return embedding and neighbour metadata for ``symbols``.
-
-    The returned tuple contains a mapping from symbol to index, the ordered
-    list of symbol names, an embedding matrix, integer neighbour lists and a
-    mapping of symbol name to neighbour ordering.  When ``symbol_graph`` is
-    ``None`` the function falls back to identity embeddings and self-only
-    neighbours so downstream consumers can continue operating.
-    """
-
-    unique_symbols = [str(sym) for sym in dict.fromkeys(symbols) if sym is not None]
-    graph_data: Mapping[str, object] | None
-    if symbol_graph is None:
-        graph_data = None
-    elif isinstance(symbol_graph, Mapping):
-        graph_data = symbol_graph
-    else:
-        try:
-            graph_data = json.loads(Path(symbol_graph).read_text())
-        except Exception:
-            logger.exception("Failed to load symbol graph from %s", symbol_graph)
-            graph_data = None
-
-    if graph_data:
-        graph_symbols = list(graph_data.get("symbols", []))
-        embeddings_map = graph_data.get("embeddings", {})
-        if not graph_symbols and isinstance(embeddings_map, Mapping):
-            graph_symbols = list(embeddings_map.keys())
-        embedding_dim = int(graph_data.get("embedding_dim", 0))
-        if embedding_dim <= 0 and isinstance(embeddings_map, Mapping) and embeddings_map:
-            first_vec = next(iter(embeddings_map.values()))
-            if isinstance(first_vec, Sequence):
-                embedding_dim = len(first_vec)
-        if embedding_dim <= 0:
-            embedding_dim = max(1, len(graph_symbols) or 1)
-        symbol_names = list(graph_symbols)
-        for sym in unique_symbols:
-            if sym not in symbol_names:
-                symbol_names.append(sym)
-        emb_matrix = np.zeros((len(symbol_names), embedding_dim), dtype=float)
-        if isinstance(embeddings_map, Mapping):
-            for idx, sym in enumerate(symbol_names):
-                vec = embeddings_map.get(sym)
-                if isinstance(vec, Sequence):
-                    arr = np.asarray(vec, dtype=float)
-                    if arr.shape[0] != embedding_dim:
-                        padded = np.zeros(embedding_dim, dtype=float)
-                        length = min(arr.shape[0], embedding_dim)
-                        padded[:length] = arr[:length]
-                        emb_matrix[idx] = padded
-                    else:
-                        emb_matrix[idx] = arr
-        edge_index = graph_data.get("edge_index")
-        neighbor_lists: list[list[int]] = [[] for _ in symbol_names]
-        if isinstance(edge_index, Sequence) and len(edge_index) == 2:
-            src_iter, dst_iter = edge_index
-            try:
-                for src, dst in zip(src_iter, dst_iter):
-                    src_i = int(src)
-                    dst_i = int(dst)
-                    if 0 <= src_i < len(graph_symbols) and 0 <= dst_i < len(graph_symbols):
-                        neighbor_lists[src_i].append(dst_i)
-            except TypeError:
-                logger.debug("symbol graph edge_index not iterable; skipping")
-        for idx in range(len(symbol_names)):
-            if not neighbor_lists[idx]:
-                neighbor_lists[idx] = [idx]
-            else:
-                # ensure self appears first and remove duplicates
-                seen: set[int] = set()
-                ordered: list[int] = []
-                if idx not in neighbor_lists[idx]:
-                    neighbor_lists[idx].insert(0, idx)
-                for item in neighbor_lists[idx]:
-                    if 0 <= item < len(symbol_names) and item not in seen:
-                        ordered.append(int(item))
-                        seen.add(int(item))
-                neighbor_lists[idx] = ordered or [idx]
-    else:
-        symbol_names = unique_symbols or []
-        embedding_dim = max(1, len(symbol_names) or 1)
-        emb_matrix = np.zeros((len(symbol_names), embedding_dim), dtype=float)
-        for i in range(len(symbol_names)):
-            emb_matrix[i, i % embedding_dim] = 1.0
-        neighbor_lists = [[i] for i in range(len(symbol_names))]
-
-    symbol_to_idx = {sym: i for i, sym in enumerate(symbol_names)}
-    neighbor_order = {
-        sym: [symbol_names[j] for j in neighbor_lists[idx]]
-        for sym, idx in symbol_to_idx.items()
-    }
-    return symbol_to_idx, symbol_names, emb_matrix, neighbor_lists, neighbor_order
-def _compute_time_decay_weights(
-    event_times: np.ndarray | Sequence[object] | None, *, half_life_days: float
-) -> np.ndarray:
-    """Return exponential decay weights based on ``event_times``.
-
-    Parameters
-    ----------
-    event_times:
-        Sequence of event timestamps.  Values are coerced to ``datetime64``
-        before computing ages relative to the most recent timestamp.
-    half_life_days:
-        Half-life in days controlling the decay rate.  When the value is
-        non-positive or ``event_times`` is empty an array of ones is returned.
-    """
-
-    if event_times is None:
-        return np.ones(0, dtype=float)
-
-    dt_index = pd.to_datetime(pd.Index(event_times), errors="coerce", utc=True)
-    try:
-        dt_index = dt_index.tz_convert(None)
-    except AttributeError:  # pragma: no cover - defensive for non-index inputs
-        dt_index = pd.to_datetime(dt_index, errors="coerce")
-    times = dt_index.to_numpy(dtype="datetime64[ns]")
-    if times.size == 0:
-        return np.ones(0, dtype=float)
-    if half_life_days <= 0:
-        return np.ones(times.size, dtype=float)
-
-    mask = ~np.isnat(times)
-    weights = np.ones(times.size, dtype=float)
-    if not mask.any():
-        return weights
-
-    ref_time = times[mask].max()
-    age_seconds = (ref_time - times[mask]).astype("timedelta64[s]").astype(float)
-    age_days = age_seconds / (24 * 3600)
-    decay = np.power(0.5, age_days / half_life_days)
-    weights[mask] = decay
-    if (~mask).any():
-        fill_value = float(decay.min()) if decay.size else 1.0
-        weights[~mask] = fill_value
-    return weights
-
-
-def _compute_volatility_scaler(profits: np.ndarray, *, window: int = 50) -> np.ndarray:
-    """Compute inverse volatility scaling factors for ``profits``."""
-
-    if profits.size == 0:
-        return np.ones(0, dtype=float)
-
-    series = pd.Series(profits, dtype=float)
-    vol = series.rolling(window=window, min_periods=1).std(ddof=0).fillna(0.0)
-    scaler = 1.0 / (1.0 + vol.to_numpy(dtype=float))
-    return np.clip(scaler, a_min=1e-6, a_max=None)
-
-
-def _compute_profit_weights(profits: np.ndarray) -> np.ndarray:
-    """Return base sample weights derived from trade profits."""
-
-    if profits.size == 0:
-        return np.ones(0, dtype=float)
-
-    weights = np.abs(np.asarray(profits, dtype=float))
-    weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
-    positive = weights > 0
-    if positive.any():
-        min_positive = float(weights[positive].min())
-        weights = np.where(positive, weights, min_positive)
-    else:
-        weights = np.ones_like(weights)
-    return weights
-
-
-def _normalise_weights(weights: np.ndarray) -> np.ndarray:
-    """Normalise ``weights`` to have a mean of one."""
-
-    arr = np.asarray(weights, dtype=float)
-    if arr.size == 0:
-        return arr
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    mean = arr.mean()
-    if not np.isfinite(mean) or mean <= 0:
-        return np.ones_like(arr, dtype=float)
-    return arr / mean
-
-
-def _summarise_weights(weights: np.ndarray) -> dict[str, float]:
-    """Compute summary statistics for ``weights`` suitable for logging."""
-
-    arr = np.asarray(weights, dtype=float)
-    if arr.size == 0:
-        return {"min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0}
-    return {
-        "min": float(np.min(arr)),
-        "max": float(np.max(arr)),
-        "mean": float(np.mean(arr)),
-        "std": float(np.std(arr)),
-    }
-
-
-def _load_news_embeddings(data_dir: Path) -> tuple[pd.DataFrame | None, dict[str, str]]:
-    """Load optional news embedding sequences from ``data_dir``."""
-
-    base = data_dir if data_dir.is_dir() else data_dir.parent
-    if base is None:
-        return None, {}
-    candidates = [
-        base / "news_embeddings.parquet",
-        base / "news_embeddings.csv",
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            if path.suffix == ".parquet":
-                news_df = pd.read_parquet(path)
-            else:
-                news_df = pd.read_csv(path)
-        except Exception:  # pragma: no cover - optional dependency/io
-            logger.exception("Failed to load news embeddings from %s", path)
-            continue
-        try:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            digest = ""
-        return news_df, {str(path.resolve()): digest}
-    return None, {}
-
-
-def _build_sample_weights(
-    profits: np.ndarray,
-    event_times: np.ndarray | Sequence[object] | None,
-    *,
-    half_life_days: float,
-    use_volatility: bool,
-) -> np.ndarray:
-    """Combine profit, time-decay and volatility based weights."""
-
-    base = _compute_profit_weights(profits)
-    if event_times is not None and base.size:
-        decay = _compute_time_decay_weights(event_times, half_life_days=half_life_days)
-        if decay.size == base.size:
-            base = base * decay
-    if use_volatility and base.size:
-        scaler = _compute_volatility_scaler(profits)
-        if scaler.size == base.size:
-            base = base * scaler
-    return base
-
-
-def _serialize_mlflow_param(value: object) -> str:
-    """Convert arbitrary parameter values into a string for MLflow logging."""
-
-    if isinstance(value, (str, int, float)):
-        return str(value)
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, np.ndarray):
-        return np.array2string(np.asarray(value), separator=",")
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return ",".join(_serialize_mlflow_param(v) for v in value)
-    if isinstance(value, dict):
-        return json.dumps(
-            {str(k): _serialize_mlflow_param(v) for k, v in value.items()},
-            sort_keys=True,
-        )
-    return str(value)
-
-
-def _version_artifacts_with_dvc(
-    repo_root: Path | None, targets: Sequence[Path]
-) -> None:
-    """Register the provided targets with a DVC repository if available."""
-
-    if not (_HAS_DVC and repo_root):
-        return
-    repo_root = Path(repo_root).resolve()
-    if not (repo_root / ".dvc").exists():
-        logger.debug("DVC root %s is not initialized; skipping versioning", repo_root)
-        return
-    cwd = os.getcwd()
-    try:
-        os.chdir(repo_root)
-        with _DvcRepo(str(repo_root)) as repo:  # type: ignore[misc]
-            for target in targets:
-                target_path = Path(target).resolve()
-                if not target_path.exists():
-                    continue
-                try:
-                    rel_target = target_path.relative_to(repo_root)
-                except ValueError:
-                    logger.debug(
-                        "Skipping DVC registration for %s outside of repo %s",
-                        target_path,
-                        repo_root,
-                    )
-                    continue
-                try:
-                    repo.add([str(rel_target)])
-                except DvcException:  # pragma: no cover - best effort logging
-                    logger.debug(
-                        "DVC reported that %s is already tracked; skipping", rel_target
-                    )
-                except Exception:  # pragma: no cover - defensive
-                    logger.exception(
-                        "Failed to add %s to DVC repository %s", rel_target, repo_root
-                    )
-    except Exception:  # pragma: no cover - defensive
-        logger.exception("Failed to open DVC repository at %s", repo_root)
-    finally:
-        os.chdir(cwd)
-
-
-if _HAS_NUMBA:
-
-    @njit
-    def _max_drawdown_nb(returns: np.ndarray) -> float:
-        cum = 0.0
-        peak = 0.0
-        max_dd = 0.0
-        for r in returns:
-            cum += r
-            if cum > peak:
-                peak = cum
-            dd = peak - cum
-            if dd > max_dd:
-                max_dd = dd
-        return max_dd
-
-    @njit
-    def _var_95_nb(returns: np.ndarray) -> float:
-        if returns.size == 0:
-            return 0.0
-        sorted_r = np.sort(returns)
-        idx = int(0.05 * (sorted_r.size - 1))
-        return -sorted_r[idx]
-
-    def _max_drawdown(returns: np.ndarray) -> float:
-        if returns.size == 0:
-            return 0.0
-        return float(_max_drawdown_nb(returns))
-
-    def _var_95(returns: np.ndarray) -> float:
-        if returns.size == 0:
-            return 0.0
-        return float(_var_95_nb(returns))
-
-else:  # pragma: no cover - fallback without numba
-
-    def _max_drawdown(returns: np.ndarray) -> float:
-        """Return the maximum drawdown of ``returns``."""
-        if returns.size == 0:
-            return 0.0
-        cum = np.cumsum(returns, dtype=float)
-        peak = np.maximum.accumulate(cum)
-        dd = peak - cum
-        return float(np.max(dd))
-
-    def _var_95(returns: np.ndarray) -> float:
-        """Return the 95% Value at Risk of ``returns``."""
-        if returns.size == 0:
-            return 0.0
-        return float(-np.quantile(returns, 0.05))
-
-
-def _write_dependency_snapshot(out_dir: Path) -> Path:
-    """Record the current Python package versions."""
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "freeze"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        packages = [
-            line.strip()
-            for line in result.stdout.splitlines()
-            if line.strip() and not line.startswith("#")
-        ]
-        if result.returncode != 0 and not packages:
-            logger.exception(
-                "pip freeze returned non-zero exit code %s", result.returncode
-            )
-    except (
-        OSError,
-        subprocess.SubprocessError,
-    ):  # pragma: no cover - pip not available
-        logger.exception("Failed to execute pip freeze; falling back to metadata")
-        packages = []
-    if not packages:
-        packages = sorted(
-            f"{dist.metadata['Name']}=={dist.version}"
-            for dist in importlib_metadata.distributions()
-        )
-    dep_path = out_dir / "dependencies.txt"
-    dep_path.write_text("\n".join(packages) + ("\n" if packages else ""))
-    return dep_path
-
-
-def _serialise_metric_values(obj: object) -> object:
-    """Recursively convert numpy types within ``obj`` to JSON-friendly values."""
-
-    if isinstance(obj, dict):
-        return {k: _serialise_metric_values(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_serialise_metric_values(v) for v in obj]
-    if isinstance(obj, np.generic):  # includes scalar numpy types
-        return obj.item()
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    return obj
-
-
-def _trial_logger(
-    csv_path: Path,
-) -> Callable[[optuna.study.Study, optuna.trial.FrozenTrial], None]:
-    """Return a callback that appends trial information to ``csv_path``."""
-
-    def _callback(study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
-        values = trial.values or (float("nan"), float("nan"), float("nan"))
-        row = {
-            "trial": trial.number,
-            **trial.params,
-            "seed": trial.user_attrs.get("seed"),
-            "profit": values[0],
-            "sharpe": values[1],
-            "max_drawdown": values[2],
-            "var_95": trial.user_attrs.get("var_95"),
-        }
-        df = pd.DataFrame([row])
-        df.to_csv(csv_path, mode="a", header=not csv_path.exists(), index=False)
-
-    return _callback
-
-
-def _resolve_data_path(data_cfg: DataConfig) -> Path:
-    """Return the primary data path from ``data_cfg``."""
-
-    for attr in ("data_dir", "data", "csv", "log_dir"):
-        value = getattr(data_cfg, attr, None)
-        if value is not None:
-            return Path(value)
-    raise ValueError(
-        "Data configuration must define 'data_dir', 'data', or 'csv' for optuna runs"
-    )
-
-
-def _suggest_model_params(
-    trial: "optuna.trial.Trial", model_type: str
-) -> dict[str, float | int | bool]:
-    """Sample model-specific hyperparameters for ``model_type``."""
-
-    params: dict[str, float | int | bool] = {}
-    if model_type == "logreg":
-        params["C"] = trial.suggest_float("logreg_C", 1e-3, 10.0, log=True)
-        params["max_iter"] = trial.suggest_int("logreg_max_iter", 100, 600)
-    elif model_type == "confidence_weighted":
-        params["r"] = trial.suggest_float("cw_r", 0.25, 8.0, log=True)
-    elif model_type == "gradient_boosting":
-        params["learning_rate"] = trial.suggest_float(
-            "gb_learning_rate", 0.01, 0.3, log=True
-        )
-        params["n_estimators"] = trial.suggest_int("gb_n_estimators", 50, 250)
-        params["max_depth"] = trial.suggest_int("gb_max_depth", 2, 6)
-    elif model_type == "ensemble_voting":
-        params["C"] = trial.suggest_float("ensemble_C", 0.1, 10.0, log=True)
-        params["max_iter"] = trial.suggest_int("ensemble_max_iter", 100, 1000)
-        params["include_xgboost"] = trial.suggest_categorical(
-            "ensemble_include_xgb", [False, True]
-        )
-    elif model_type == "tabtransformer":
-        params["epochs"] = trial.suggest_int("tabtransformer_epochs", 5, 20)
-        params["batch_size"] = trial.suggest_categorical(
-            "tabtransformer_batch_size", [32, 64, 128]
-        )
-        params["lr"] = trial.suggest_float("tabtransformer_lr", 1e-4, 1e-2, log=True)
-        params["weight_decay"] = trial.suggest_float(
-            "tabtransformer_weight_decay", 1e-5, 1e-2, log=True
-        )
-        params["dropout"] = trial.suggest_float("tabtransformer_dropout", 0.0, 0.5)
-    elif model_type == "tcn":
-        params["epochs"] = trial.suggest_int("tcn_epochs", 5, 20)
-        params["batch_size"] = trial.suggest_categorical("tcn_batch_size", [16, 32, 64])
-        params["lr"] = trial.suggest_float("tcn_lr", 1e-4, 1e-2, log=True)
-        params["weight_decay"] = trial.suggest_float("tcn_weight_decay", 1e-5, 1e-2, log=True)
-        params["dropout"] = trial.suggest_float("tcn_dropout", 0.0, 0.5)
-        params["channels"] = trial.suggest_int("tcn_channels", 8, 64)
-        params["kernel_size"] = trial.suggest_int("tcn_kernel", 2, 6)
-    return params
 
 
 def run_optuna(
@@ -1275,7 +139,7 @@ def run_optuna(
 ) -> optuna.study.Study:
     """Run an Optuna study using the real training pipeline."""
 
-    if not _HAS_OPTUNA:  # pragma: no cover - defensive
+    if not HAS_OPTUNA:  # pragma: no cover - defensive
         raise RuntimeError("optuna is required to run hyperparameter optimisation")
 
     csv_path = Path(csv_path)
@@ -1286,7 +150,7 @@ def run_optuna(
 
     overrides = dict(settings_overrides or {})
     data_cfg, train_cfg, exec_cfg = load_settings(overrides, path=config_path)
-    data_path = _resolve_data_path(data_cfg)
+    data_path = resolve_data_path(data_cfg)
     study_out_dir = Path(data_cfg.out_dir) if data_cfg.out_dir else model_json_path.parent
     study_out_dir.mkdir(parents=True, exist_ok=True)
     trials_dir = study_out_dir / "trials"
@@ -1375,7 +239,7 @@ def run_optuna(
             trial_kwargs["half_life_days"] = trial.suggest_float(
                 "half_life_days", 0.0, 30.0
             )
-        model_params = _suggest_model_params(trial, model_type)
+        model_params = suggest_model_params(trial, model_type)
         if model_params:
             trial_kwargs["param_grid"] = [model_params]
         elif base_param_grid is not None:
@@ -1412,7 +276,7 @@ def run_optuna(
         trial.set_user_attr("model_params", model_params)
         trial.set_user_attr(
             "metrics",
-            _serialise_metric_values(
+            serialise_metric_values(
                 {
                     "cv_profit": profit,
                     "risk_metrics": risk_metrics,
@@ -1428,7 +292,7 @@ def run_optuna(
     study.optimize(
         _objective,
         n_trials=n_trials,
-        callbacks=[_trial_logger(csv_path)],
+        callbacks=[trial_logger(csv_path)],
         catch=(Exception,),
     )
 
@@ -1485,8 +349,8 @@ def run_optuna(
         "sharpe": float(best.values[1]),
         "max_drawdown": float(best.values[2]),
         "var_95": float(best.user_attrs.get("var_95", 0.0)),
-        "search_params": _serialise_metric_values(best.params),
-        "model_params": _serialise_metric_values(best.user_attrs.get("model_params", {})),
+        "search_params": serialise_metric_values(best.params),
+        "model_params": serialise_metric_values(best.user_attrs.get("model_params", {})),
     }
     metadata["selected_trial"] = selected_trial
     metadata["hyperparameter_optimization"] = {
@@ -1500,8 +364,8 @@ def run_optuna(
                 "max_drawdown": float(best.values[2]),
                 "var_95": float(best.user_attrs.get("var_95", 0.0)),
             },
-            "params": _serialise_metric_values(best.params),
-            "model_params": _serialise_metric_values(
+            "params": serialise_metric_values(best.params),
+            "model_params": serialise_metric_values(
                 best.user_attrs.get("model_params", {})
             ),
             "artifact_dir": os.path.relpath(
@@ -1589,11 +453,11 @@ def train(
         user_subset: list[str] = []
         subset_provided = False
     else:
-        user_subset, subset_provided = _normalise_feature_subset(subset_source)
+        user_subset, subset_provided = normalise_feature_subset(subset_source)
     active_subset: list[str] = list(user_subset)
     extra_options = cast(dict[str, Any], dict(kwargs))
-    if _should_use_lightweight(data_dir, extra_options):
-        return _train_lightweight(
+    if should_use_lightweight(data_dir, extra_options):
+        return train_lightweight(
             data_dir,
             out_dir,
             extra_prices=cast(
@@ -1630,7 +494,7 @@ def train(
         if not reuse_controller:
             controller.reset()
         chosen_action, _ = controller.sample_action()
-        controller_subset, _ = _normalise_feature_subset(chosen_action[0])
+        controller_subset, _ = normalise_feature_subset(chosen_action[0])
         if subset_provided:
             allowed = set(user_subset)
             invalid = [name for name in controller_subset if name not in allowed]
@@ -1858,7 +722,7 @@ def train(
     load_kwargs.setdefault("feature_config", feature_config)
     with tracer.start_as_current_span("data_load"):
         logs, feature_names, data_hashes = _load_logs(data_dir, **load_kwargs)
-    news_embeddings_df, news_hashes = _load_news_embeddings(data_dir)
+    news_embeddings_df, news_hashes = load_news_embeddings(data_dir)
     if news_hashes:
         data_hashes.update({k: v for k, v in news_hashes.items() if v is not None})
     logger.info("Training data hashes: %s", data_hashes)
@@ -1946,13 +810,13 @@ def train(
     if (
         isinstance(logs, Iterable)
         and not isinstance(logs, (pd.DataFrame,))
-        and not (_HAS_POLARS and isinstance(logs, pl.DataFrame))
-        and not (_HAS_DASK and isinstance(logs, dd.DataFrame))
+        and not (HAS_POLARS and isinstance(logs, pl.DataFrame))
+        and not (HAS_DASK and isinstance(logs, dd.DataFrame))
     ):
-        store = FeatureStore(repo_path=str(fs_repo)) if _HAS_FEAST else None
+        store = FeatureStore(repo_path=str(fs_repo)) if HAS_FEAST else None
         feature_refs = [f"trade_features:{f}" for f in FEATURE_COLUMNS]
         for chunk in logs:
-            if _HAS_FEAST and store is not None:
+            if HAS_FEAST and store is not None:
                 feat_df = store.get_historical_features(
                     entity_df=chunk, features=feature_refs
                 ).to_df()
@@ -2033,7 +897,7 @@ def train(
             symbols = np.array([], dtype=str)
     else:
         df = logs  # type: ignore[assignment]
-        if _HAS_FEAST:
+        if HAS_FEAST:
             store = FeatureStore(repo_path=str(fs_repo))
             feature_refs = [f"trade_features:{f}" for f in FEATURE_COLUMNS]
             feat_df = store.get_historical_features(
@@ -2069,7 +933,7 @@ def train(
                         )
                     }
         FeatureSchema.validate(df[feature_names], lazy=True)
-        if _HAS_DASK and isinstance(df, dd.DataFrame):
+        if HAS_DASK and isinstance(df, dd.DataFrame):
             df = df.compute()
             if "symbol" in df.columns:
                 symbol_batches.append(df["symbol"].astype(str).to_numpy())
@@ -2145,7 +1009,7 @@ def train(
                     )
                 )
                 returns_df = None
-        elif _HAS_POLARS and isinstance(df, pl.DataFrame):
+        elif HAS_POLARS and isinstance(df, pl.DataFrame):
             if "symbol" in df.columns:
                 symbol_batches.append(df["symbol"].to_pandas().astype(str).to_numpy())
             X = df.select(feature_names).fill_null(0.0).to_numpy().astype(float)
@@ -2198,7 +1062,7 @@ def train(
             symbols = np.array([], dtype=str)
 
     if active_subset:
-        X, feature_names = _filter_feature_matrix(X, feature_names, active_subset)
+        X, feature_names = filter_feature_matrix(X, feature_names, active_subset)
         filtered_feature_subset = list(feature_names)
 
     if news_seq_list:
@@ -2216,7 +1080,7 @@ def train(
         profits = profits - cost
         y = (profits > 0).astype(float)
     weight_times = event_times if event_times.size else None
-    sample_weight = _build_sample_weights(
+    sample_weight = build_sample_weights(
         profits,
         weight_times,
         half_life_days=half_life_days,
@@ -2242,8 +1106,8 @@ def train(
         else:
             latent_value = int(latent_override)
         latent_value = int(max(1, min(latent_value, X.shape[1] or 1)))
-        embeddings = _encode_with_autoencoder(X, ae_path, latent_dim=latent_value)
-        metadata = _load_autoencoder_metadata(ae_path) or {}
+        embeddings = encode_with_autoencoder(X, ae_path, latent_dim=latent_value)
+        metadata = load_autoencoder_metadata(ae_path) or {}
         metadata = dict(metadata)
         metadata.setdefault("latent_dim", int(embeddings.shape[1]))
         metadata["feature_names"] = [f"ae_{i}" for i in range(embeddings.shape[1])]
@@ -2253,14 +1117,14 @@ def train(
         except ValueError:
             rel_weights = str(ae_path)
         metadata["weights_file"] = rel_weights
-        meta_path = _autoencoder_metadata_path(ae_path)
+        meta_path = autoencoder_metadata_path(ae_path)
         if meta_path.exists():
             try:
                 rel_meta = os.path.relpath(meta_path, out_dir)
             except ValueError:
                 rel_meta = str(meta_path)
             metadata["metadata_file"] = rel_meta
-        _save_autoencoder_metadata(ae_path, metadata)
+        save_autoencoder_metadata(ae_path, metadata)
         autoencoder_info = metadata
         X = embeddings
         feature_names = metadata["feature_names"]
@@ -2302,7 +1166,7 @@ def train(
                 regime_feature_names=regime_feature_names or None,
             )
 
-    if pretrain_mask is not None and _HAS_TORCH:
+    if pretrain_mask is not None and HAS_TORCH:
         enc_path = Path(pretrain_mask)
         if enc_path.exists():
             state = torch.load(enc_path, map_location="cpu")
@@ -2376,8 +1240,6 @@ def train(
         cluster_map = {fn: [fn] for fn in feature_names}
 
     window_length = max(1, int(kwargs.get("window", 1)))
-    sequence_data: np.ndarray | None = None
-    news_sequence_data: np.ndarray | None = None
     if model_type == "crossmodal":
         if news_sequences is None:
             raise ValueError(
@@ -2386,31 +1248,37 @@ def train(
         if news_sequences.shape[0] != X.shape[0]:
             raise ValueError("news embeddings are not aligned with feature rows")
     if sequence_model:
-        if X.shape[0] < window_length:
-            raise ValueError("Not enough samples for the requested window length")
-        seq_list = [
-            X[i - window_length + 1 : i + 1]
-            for i in range(window_length - 1, X.shape[0])
-        ]
-        sequence_data = np.stack(seq_list, axis=0).astype(float)
-        X = X[window_length - 1 :]
-        y = y[window_length - 1 :]
-        profits = profits[window_length - 1 :]
-        sample_weight = sample_weight[window_length - 1 :]
-        if R is not None:
-            R = R[window_length - 1 :]
-        if returns_df is not None:
-            returns_df = returns_df.iloc[window_length - 1 :].reset_index(drop=True)
-        if news_sequences is not None:
-            news_sequence_data = news_sequences[window_length - 1 :]
-        if symbols.size:
-            symbols = symbols[window_length - 1 :]
+        (
+            sequence_data,
+            R,
+            X,
+            y,
+            profits,
+            sample_weight,
+            returns_df,
+            news_sequence_data,
+            symbols_out,
+        ) = build_window_sequences(
+            X,
+            y,
+            profits,
+            sample_weight,
+            window_length=window_length,
+            returns_df=returns_df,
+            news_sequences=news_sequences,
+            symbols=symbols,
+            regime_features=R,
+        )
+        if symbols_out is not None:
+            symbols = symbols_out
+        else:
+            symbols = np.array([], dtype=str)
     else:
         sequence_data = None
         news_sequence_data = None
 
-    sample_weight = _normalise_weights(sample_weight)
-    weight_stats = _summarise_weights(sample_weight)
+    sample_weight = normalise_weights(sample_weight)
+    weight_stats = summarise_weights(sample_weight)
     if sample_weight.size:
         logger.info("Sample weight stats: %s", weight_stats)
         metric_payload = {
@@ -2432,7 +1300,7 @@ def train(
     neighbor_lists_ctx: list[list[int]] = []
     neighbor_order_ctx: dict[str, list[str]] = {}
     if model_type == "multi_symbol":
-        symbol_map, symbol_names_ctx, symbol_embeddings_ctx, neighbor_lists_ctx, neighbor_order_ctx = _prepare_symbol_context(
+        symbol_map, symbol_names_ctx, symbol_embeddings_ctx, neighbor_lists_ctx, neighbor_order_ctx = prepare_symbol_context(
             symbols.tolist(), kwargs.get("symbol_graph")
         )
         if symbols.size:
@@ -2457,7 +1325,7 @@ def train(
     )
 
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
-    if mlflow_active and not _HAS_MLFLOW:
+    if mlflow_active and not HAS_MLFLOW:
         raise TrainingPipelineError("mlflow is required for tracking")
     if mlflow_active:
         if tracking_uri is not None:
@@ -2558,11 +1426,11 @@ def train(
                 fold_metrics.append((fold_idx, metrics_fold))
             return best_threshold, best_metrics, fold_metrics
 
-        if distributed and not _HAS_RAY:
+        if distributed and not HAS_RAY:
             raise RuntimeError("ray is required for distributed execution")
         for params in param_grid:
             fold_predictions: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]] = []
-            if distributed and _HAS_RAY:
+            if distributed and HAS_RAY:
                 if model_type == "crossmodal":
                     price_ref = ray.put(sequence_data)
                     news_ref = ray.put(news_sequence_data)
@@ -3156,10 +2024,10 @@ def train(
             "covariance": feat_cov.tolist(),
             "threshold": ood_threshold,
         }
-        serialised_cv_metrics = _serialise_metric_values(metrics)
-        session_cv_metrics = _serialise_metric_values(metrics)
+        serialised_cv_metrics = serialise_metric_values(metrics)
+        session_cv_metrics = serialise_metric_values(metrics)
         serialised_fold_metrics = [
-            _serialise_metric_values(m) for m in best_fold_metrics
+            serialise_metric_values(m) for m in best_fold_metrics
         ]
         if "session_models" not in model:
             sm_keys = [
@@ -3308,7 +2176,7 @@ def train(
                     model["hrp_dendrogram"] = link.tolist()
             except Exception:  # pragma: no cover - best effort
                 logger.exception("Failed to compute HRP allocation")
-        deps_file = _write_dependency_snapshot(out_dir)
+        deps_file = write_dependency_snapshot(out_dir)
         try:
             relative_deps = deps_file.relative_to(out_dir)
         except ValueError:
@@ -3359,7 +2227,7 @@ def train(
         ]
         if config_snapshot_path is not None:
             artifacts.append(config_snapshot_path)
-        _version_artifacts_with_dvc(dvc_repo_path, artifacts)
+        version_artifacts_with_dvc(dvc_repo_path, artifacts)
         if mlflow_active:
             base_params: dict[str, object] = {
                 "model_type": model_type,
@@ -3384,12 +2252,12 @@ def train(
             if dvc_repo_path is not None:
                 base_params["dvc_repo"] = dvc_repo_path
             mlflow.log_params(
-                {k: _serialize_mlflow_param(v) for k, v in base_params.items()}
+                {k: serialize_mlflow_param(v) for k, v in base_params.items()}
             )
             if best_params:
                 mlflow.log_params(
                     {
-                        f"hp_{k}": _serialize_mlflow_param(v)
+                        f"hp_{k}": serialize_mlflow_param(v)
                         for k, v in best_params.items()
                     }
                 )
@@ -3451,7 +2319,7 @@ def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
         FeatureSchema.validate(df, lazy=True)
 
     if metadata is not None:
-        features = _apply_autoencoder_from_metadata(features, metadata)
+        features = apply_autoencoder_from_metadata(features, metadata)
         latent_names = metadata.get("feature_names")
         if latent_names:
             if len(latent_names) != features.shape[1]:
@@ -3506,7 +2374,7 @@ def detect_resources(*, lite_mode: bool = False, heavy_mode: bool = False) -> di
     cpu_mhz = getattr(psutil.cpu_freq(), "max", 0.0)
     gpu_mem_gb = 0.0
     has_gpu = False
-    if _HAS_TORCH and hasattr(torch, "cuda") and torch.cuda.is_available():
+    if HAS_TORCH and hasattr(torch, "cuda") and torch.cuda.is_available():
         has_gpu = True
         gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     model_type = "logreg"
