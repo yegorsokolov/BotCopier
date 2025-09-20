@@ -173,6 +173,9 @@ def run_optuna(
         "tracking_uri": train_cfg.tracking_uri,
         "experiment_name": train_cfg.experiment_name,
         "features": list(train_cfg.features) if train_cfg.features else None,
+        "monotone_constraints": list(train_cfg.monotone_constraints)
+        if train_cfg.monotone_constraints
+        else None,
         "regime_features": (
             list(train_cfg.regime_features) if train_cfg.regime_features else None
         ),
@@ -192,6 +195,7 @@ def run_optuna(
         "controller_episode_combination_cap": train_cfg.controller_episode_combination_cap,
         "controller_baseline_momentum": train_cfg.controller_baseline_momentum,
         "random_seed": train_cfg.random_seed,
+        "catboost_monotone_draft": train_cfg.catboost_monotone_draft,
     }
     if train_cfg.half_life_days:
         base_train_kwargs["half_life_days"] = train_cfg.half_life_days
@@ -599,6 +603,12 @@ def train(
         for key in sequence_param_map.get(model_type, set())
         if key in kwargs
     }
+    monotone_constraints_cfg = kwargs.pop("monotone_constraints", None)
+    if monotone_constraints_cfg is not None:
+        extra_model_params["monotone_constraints"] = monotone_constraints_cfg
+    catboost_monotone_draft_cfg = kwargs.pop("catboost_monotone_draft", None)
+    if catboost_monotone_draft_cfg is not None:
+        extra_model_params["monotone_draft"] = catboost_monotone_draft_cfg
 
     half_life_value = half_life_days
     if half_life_value is None:

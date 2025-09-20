@@ -325,6 +325,21 @@
           "title": "Features",
           "type": "array"
         },
+        "monotone_constraints": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Monotone Constraints"
+        },
         "regime_features": {
           "default": [],
           "items": {
@@ -489,6 +504,18 @@
           ],
           "default": null,
           "title": "Meta Weights"
+        },
+        "catboost_monotone_draft": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Catboost Monotone Draft"
         }
       },
       "title": "TrainingConfig",

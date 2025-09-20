@@ -149,6 +149,56 @@ def _extract_logreg_metadata(pipeline: Pipeline) -> dict[str, object]:
     }
 
 
+def _prepare_monotone_constraints(
+    constraints: object,
+    n_features: int,
+    estimator_name: str,
+) -> list[int] | None:
+    """Normalise monotone constraints for tree-based estimators."""
+
+    if constraints is None:
+        return None
+    vector: list[int]
+    if isinstance(constraints, str):
+        cleaned = constraints.strip()
+        if not cleaned:
+            return None
+        cleaned = cleaned.strip("[]()")
+        cleaned = cleaned.replace(" ", "")
+        if not cleaned:
+            return None
+        parts = [part for part in cleaned.split(",") if part]
+        if not parts:
+            return None
+        try:
+            vector = [int(float(part)) for part in parts]
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(
+                f"{estimator_name} monotone_constraints must contain numeric values"
+            ) from exc
+    else:
+        try:
+            iterable = list(constraints)  # type: ignore[arg-type]
+        except TypeError as exc:
+            raise ValueError(
+                f"{estimator_name} monotone_constraints must be a sequence or string"
+            ) from exc
+        if not iterable:
+            return None
+        try:
+            vector = [int(float(value)) for value in iterable]
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ValueError(
+                f"{estimator_name} monotone_constraints must contain numeric values"
+            ) from exc
+    if len(vector) != n_features:
+        raise ValueError(
+            f"{estimator_name} monotone_constraints length {len(vector)} does not match "
+            f"feature count {n_features}"
+        )
+    return vector
+
+
 class ConfidenceWeighted:
     """Simple diagonal Confidence-Weighted classifier.
 
@@ -367,6 +417,17 @@ def _fit_gradient_boosting_classifier(
 ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
     """Fit a :class:`~sklearn.ensemble.GradientBoostingClassifier`."""
 
+    params = dict(params)
+    monotone_raw = params.pop("monotone_constraints", None)
+    monotone_vector = (
+        _prepare_monotone_constraints(
+            monotone_raw, X.shape[1], "GradientBoostingClassifier"
+        )
+        if monotone_raw is not None
+        else None
+    )
+    params.pop("monotone_draft", None)  # ignore CatBoost-specific alias
+    params.pop("catboost_monotone_draft", None)
     default_params: dict[str, object] = {
         "learning_rate": 0.1,
         "n_estimators": 100,
@@ -374,6 +435,8 @@ def _fit_gradient_boosting_classifier(
     }
     if random_state is not None:
         default_params.setdefault("random_state", random_state)
+    if monotone_vector is not None:
+        default_params["monotonic_cst"] = tuple(monotone_vector)
     default_params.update(params)
     model = GradientBoostingClassifier(**default_params)
     fit_kwargs = {"sample_weight": sample_weight} if sample_weight is not None else {}
@@ -649,6 +712,15 @@ if _HAS_XGB:
             ``"gpu_predictor"``.
         """
 
+        params = dict(params)
+        monotone_raw = params.pop("monotone_constraints", None)
+        monotone_vector = (
+            _prepare_monotone_constraints(monotone_raw, X.shape[1], "XGBClassifier")
+            if monotone_raw is not None
+            else None
+        )
+        params.pop("monotone_draft", None)
+        params.pop("catboost_monotone_draft", None)
         default_params: dict[str, object] = {
             "objective": "binary:logistic",
             "eval_metric": "logloss",
@@ -661,6 +733,10 @@ if _HAS_XGB:
                 predictor = "gpu_predictor"
         if predictor is not None:
             default_params.setdefault("predictor", predictor)
+        if monotone_vector is not None:
+            default_params["monotone_constraints"] = "(" + ",".join(
+                str(value) for value in monotone_vector
+            ) + ")"
         default_params.update(params)
         model = xgb.XGBClassifier(**default_params)
         fit_kwargs = {}
@@ -704,9 +780,28 @@ if _HAS_CATBOOST:
             CatBoost is installed with CUDA support.
         """
 
+        params = dict(params)
+        monotone_raw = params.pop("monotone_constraints", None)
+        alt_monotone = params.pop("catboost_monotone_constraints", None)
+        if monotone_raw is None and alt_monotone is not None:
+            monotone_raw = alt_monotone
+        monotone_vector = (
+            _prepare_monotone_constraints(
+                monotone_raw, X.shape[1], "CatBoostClassifier"
+            )
+            if monotone_raw is not None
+            else None
+        )
+        monotone_draft = params.pop("monotone_draft", None)
+        if monotone_draft is None:
+            monotone_draft = params.pop("catboost_monotone_draft", None)
         default_params: dict[str, object] = {"verbose": False}
         if device is not None:
             default_params.setdefault("device", device)
+        if monotone_vector is not None:
+            default_params["monotone_constraints"] = list(monotone_vector)
+        if monotone_draft is not None:
+            default_params["monotone_draft"] = str(monotone_draft)
         default_params.update(params)
         model = cb.CatBoostClassifier(**default_params)
         fit_kwargs = {}

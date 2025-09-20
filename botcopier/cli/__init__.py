@@ -253,6 +253,7 @@ def train(
         cache_dir=train_cfg.cache_dir,
         model_json=train_cfg.model,
         features=train_cfg.features,
+        monotone_constraints=train_cfg.monotone_constraints,
         random_seed=train_cfg.random_seed,
         hrp_allocation=train_cfg.hrp_allocation,
         strategy_search=train_cfg.strategy_search,
@@ -262,6 +263,7 @@ def train(
         controller_episode_combination_cap=train_cfg.controller_episode_combination_cap,
         controller_baseline_momentum=train_cfg.controller_baseline_momentum,
         regime_features=train_cfg.regime_features,
+        catboost_monotone_draft=train_cfg.catboost_monotone_draft,
         config_hash=config_hash,
         config_snapshot=snapshot.as_dict(),
     )
