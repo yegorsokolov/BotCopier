@@ -6,7 +6,11 @@ import pandas as pd
 import yaml
 
 from botcopier.data.loading import _load_logs
-from botcopier.features.engineering import _extract_features
+from botcopier.features.engineering import (
+    FeatureConfig,
+    _extract_features,
+    configure_cache,
+)
 from botcopier.training.pipeline import train
 
 
@@ -37,8 +41,11 @@ def test_data_contract(tmp_path: Path) -> None:
     assert len(model["coefficients"]) == len(expected)
 
     # validate feature types using extraction pipeline
-    logs, feature_names, _ = _load_logs(data_file)
-    df, feature_names, *_ = _extract_features(logs, feature_names)
+    feature_config = configure_cache(FeatureConfig())
+    logs, feature_names, _ = _load_logs(data_file, feature_config=feature_config)
+    df, feature_names, *_ = _extract_features(
+        logs, feature_names, config=feature_config
+    )
     for spec in schema["features"]:
         col = df[spec["name"]]
         assert pd.api.types.is_numeric_dtype(col)

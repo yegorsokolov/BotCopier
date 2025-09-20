@@ -6,7 +6,11 @@ np = pytest.importorskip("numpy")
 pd = pytest.importorskip("pandas")
 
 import botcopier.features.technical as technical
-from botcopier.features.engineering import _extract_features
+from botcopier.features.engineering import (
+    FeatureConfig,
+    _extract_features,
+    configure_cache,
+)
 
 
 def test_extract_features_basic():
@@ -36,7 +40,8 @@ def test_extract_features_basic():
             "spread": 2.0,
         },
     ]
-    feats, labels, *_ = _extract_features(rows)
+    config = configure_cache(FeatureConfig())
+    feats, labels, *_ = _extract_features(rows, config=config)
     assert len(feats) == 2
     assert labels.tolist() == [1, 0]
     assert "atr" in feats[0]
@@ -58,7 +63,8 @@ def test_mandatory_features_present():
             "profit": 1.0,
         }
     ]
-    feats, *_ = _extract_features(rows)
+    config = configure_cache(FeatureConfig())
+    feats, *_ = _extract_features(rows, config=config)
     for key in ["book_bid_vol", "book_ask_vol", "book_imbalance", "equity", "margin_level", "atr"]:
         assert key in feats[0]
 
@@ -84,12 +90,14 @@ def test_news_embeddings_metadata():
             {"symbol": "EURUSD", "timestamp": "2024-01-01T00:00:50Z", "emb0": 0.1, "emb1": 0.75},
         ]
     )
+    config = configure_cache(FeatureConfig())
     df, feature_names, _, _ = _extract_features(
         rows,
         [],
         news_embeddings=news,
         news_embedding_window=2,
         news_embedding_horizon=120.0,
+        config=config,
     )
     assert feature_names
     meta = technical._FEATURE_METADATA.get("__news_embeddings__")

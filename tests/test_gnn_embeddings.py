@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 import botcopier.features.technical as technical
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from sklearn.linear_model import LogisticRegression
 
 
@@ -16,14 +17,17 @@ def test_gnn_embeddings_deterministic(tmp_path: Path) -> None:
         "symbol": ["EURUSD", "USDCHF"],
     })
     sg_path = Path(__file__).resolve().parent.parent / "symbol_graph.json"
-    out, feats1, emb1, gstate1 = technical._extract_features(df.copy(), [], symbol_graph=sg_path)
+    config = configure_cache(FeatureConfig())
+    out, feats1, emb1, gstate1 = technical._extract_features(
+        df.copy(), [], symbol_graph=sg_path, config=config
+    )
     assert any(c.startswith("graph_emb") for c in feats1)
     assert emb1
     model_file = tmp_path / "model.json"
     model_file.write_text(json.dumps({"gnn_state": gstate1}))
     technical._GNN_STATE = None
     out2, feats2, emb2, gstate2 = technical._extract_features(
-        df.copy(), [], symbol_graph=sg_path, gnn_state=gstate1
+        df.copy(), [], symbol_graph=sg_path, gnn_state=gstate1, config=config
     )
     assert emb1 == emb2
     assert feats1 == feats2
@@ -38,11 +42,15 @@ def test_gnn_embeddings_improve_accuracy() -> None:
         rows.append(("EURUSD", 1.0, t, 1))
         rows.append(("USDCHF", 1.0, t, 0))
     df = pd.DataFrame(rows, columns=["symbol", "price", "event_time", "label"])
-    df_no, feats_no, _, _ = technical._extract_features(df.copy(), [])
+    config_plain = configure_cache(FeatureConfig())
+    df_no, feats_no, _, _ = technical._extract_features(df.copy(), [], config=config_plain)
     X_no = df_no[feats_no].to_numpy(dtype=float)
     y = df_no["label"].to_numpy(dtype=float)
     acc_no = LogisticRegression().fit(X_no, y).score(X_no, y)
-    df_g, feats_g, _, _ = technical._extract_features(df.copy(), [], symbol_graph=sg_path)
+    config_graph = configure_cache(FeatureConfig())
+    df_g, feats_g, _, _ = technical._extract_features(
+        df.copy(), [], symbol_graph=sg_path, config=config_graph
+    )
     X_g = df_g[feats_g].to_numpy(dtype=float)
     y_g = df_g["label"].to_numpy(dtype=float)
     acc_g = LogisticRegression().fit(X_g, y_g).score(X_g, y_g)

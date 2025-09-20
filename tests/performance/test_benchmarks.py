@@ -7,21 +7,30 @@ import pytest
 pytest.importorskip("pytest_benchmark")
 
 from botcopier.data.loading import _load_logs
-from botcopier.features.engineering import _extract_features
+from botcopier.features.engineering import (
+    FeatureConfig,
+    _extract_features,
+    configure_cache,
+)
 from botcopier.scripts.evaluation import evaluate
 
 
 def test_load_logs_benchmark(benchmark):
     """Benchmark the log loading routine."""
     data_file = Path("tests/fixtures/trades_small.csv")
-    benchmark(lambda: _load_logs(data_file))
+    benchmark(lambda: _load_logs(data_file, feature_config=configure_cache(FeatureConfig())))
 
 
 def test_feature_engineering_benchmark(benchmark):
     """Benchmark feature extraction."""
     data_file = Path("tests/fixtures/trades_small.csv")
-    df, feature_cols, _ = _load_logs(data_file)
-    benchmark(lambda: _extract_features(df.copy(), feature_names=list(feature_cols)))
+    config = configure_cache(FeatureConfig())
+    df, feature_cols, _ = _load_logs(data_file, feature_config=config)
+    benchmark(
+        lambda: _extract_features(
+            df.copy(), feature_names=list(feature_cols), config=configure_cache(FeatureConfig())
+        )
+    )
 
 
 def test_evaluation_benchmark(benchmark, tmp_path):

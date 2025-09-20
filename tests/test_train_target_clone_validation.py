@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 from sklearn.datasets import make_classification
 
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.training.pipeline import (
     train,
     _HAS_OPTUNA,
@@ -337,10 +338,11 @@ def test_tabtransformer_predictions(tmp_path):
     state = {k: torch.tensor(v) for k, v in model["state_dict"].items()}
     tt = TabTransformer(len(feature_names))
     tt.load_state_dict(state)
-    proc, fcols, _ = _load_logs(data_file)
+    feature_config = configure_cache(FeatureConfig())
+    proc, fcols, _ = _load_logs(data_file, feature_config=feature_config)
     if not isinstance(proc, pd.DataFrame):
         proc = pd.concat(list(proc), ignore_index=True)
-    proc, fcols, _, _ = _extract_features(proc, fcols)
+    proc, fcols, _, _ = _extract_features(proc, fcols, config=feature_config)
     X_infer = proc[feature_names].to_numpy(dtype=float)
     c_low = np.array(model["clip_low"]) ; c_high = np.array(model["clip_high"])
     X_infer = np.clip(X_infer, c_low, c_high)
@@ -391,10 +393,11 @@ def test_tcn_predictions(tmp_path):
     state = {k: torch.tensor(v) for k, v in model["state_dict"].items()}
     net = TCNClassifier(len(feature_names))
     net.load_state_dict(state)
-    proc, fcols, _ = _load_logs(data_file)
+    feature_config = configure_cache(FeatureConfig())
+    proc, fcols, _ = _load_logs(data_file, feature_config=feature_config)
     if not isinstance(proc, pd.DataFrame):
         proc = pd.concat(list(proc), ignore_index=True)
-    proc, fcols, _, _ = _extract_features(proc, fcols)
+    proc, fcols, _, _ = _extract_features(proc, fcols, config=feature_config)
     X_infer = proc[feature_names].to_numpy(dtype=float)
     c_low = np.array(model["clip_low"]) ; c_high = np.array(model["clip_high"])
     X_infer = np.clip(X_infer, c_low, c_high)
@@ -425,10 +428,11 @@ def test_expected_value_pipeline_outputs_expected_profit(tmp_path: Path) -> None
     train(data, out_dir, expected_value=True)
     model = json.loads((out_dir / "model.json").read_text())
     params = next(iter(model["session_models"].values()))
-    proc, fcols, _ = _load_logs(data)
+    feature_config = configure_cache(FeatureConfig())
+    proc, fcols, _ = _load_logs(data, feature_config=feature_config)
     if not isinstance(proc, pd.DataFrame):
         proc = pd.concat(list(proc), ignore_index=True)
-    proc, fcols, _, _ = _extract_features(proc, fcols)
+    proc, fcols, _, _ = _extract_features(proc, fcols, config=feature_config)
     X = proc[model["feature_names"]].to_numpy(dtype=float)
     preds = predict_expected_value(model, X)
     mean = np.array(params["feature_mean"])

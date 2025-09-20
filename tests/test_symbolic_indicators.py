@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.features.technical import _extract_features_impl
 from botcopier.features.indicator_discovery import evolve_indicators, evaluate_formula
 
@@ -34,8 +35,9 @@ def test_symbolic_indicators_improve_metrics(tmp_path: Path) -> None:
     series = evaluate_formula(df, ["a", "b"], formulas[0])
     assert np.isfinite(series).all()
 
+    config = configure_cache(FeatureConfig())
     df_feat, cols, *_ = _extract_features_impl(
-        df[["a", "b"]].copy(), ["a", "b"], model_json=model
+        df[["a", "b"]].copy(), ["a", "b"], model_json=model, config=config
     )
     assert any(c.startswith("sym_") for c in cols)
 
