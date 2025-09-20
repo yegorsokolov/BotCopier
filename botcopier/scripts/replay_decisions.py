@@ -75,11 +75,83 @@ except Exception:  # pragma: no cover - optional dependency
     _HAS_SB3 = False
 
 
+MODEL_DIR: Path | None = None
+
+
 def _load_model(model_file: Path) -> Dict:
     """Load model parameters from ``model_file``."""
     open_func = gzip.open if model_file.suffix == ".gz" else open
     with open_func(model_file, "rt") as f:
-        return json.load(f)
+        model = json.load(f)
+    global MODEL_DIR
+    MODEL_DIR = model_file.parent
+    return model
+
+
+def _masked_encoder_parameters(meta: Dict) -> tuple[np.ndarray | None, np.ndarray | None, list[str]]:
+    inputs = meta.get("input_features") or meta.get("original_features") or []
+    if isinstance(inputs, str):
+        inputs = [inputs]
+    input_cols = [str(col) for col in inputs]
+
+    weights = meta.get("weights")
+    bias = meta.get("bias")
+    weight_arr: np.ndarray | None
+    bias_arr: np.ndarray | None
+    if weights is not None:
+        weight_arr = np.asarray(weights, dtype=float)
+        bias_arr = np.asarray(bias, dtype=float) if bias is not None else None
+        return weight_arr, bias_arr, input_cols
+    weights_file = meta.get("weights_file")
+    if weights_file and MODEL_DIR is not None and _HAS_TORCH:
+        path = Path(weights_file)
+        if not path.is_absolute():
+            path = (MODEL_DIR / path).resolve()
+        if path.exists():
+            try:
+                state = torch.load(path, map_location="cpu")
+            except Exception:  # pragma: no cover - optional dependency
+                state = {}
+            if isinstance(state, dict):
+                state_dict = state.get("state_dict", state)
+                weight_tensor = state_dict.get("weight")
+                bias_tensor = state_dict.get("bias")
+                if isinstance(weight_tensor, torch.Tensor):
+                    weight_arr = weight_tensor.detach().cpu().numpy()
+                elif weight_tensor is not None:
+                    weight_arr = np.asarray(weight_tensor, dtype=float)
+                else:
+                    weight_arr = None
+                if isinstance(bias_tensor, torch.Tensor):
+                    bias_arr = bias_tensor.detach().cpu().numpy()
+                elif bias_tensor is not None:
+                    bias_arr = np.asarray(bias_tensor, dtype=float)
+                else:
+                    bias_arr = None
+                if weight_arr is not None:
+                    return weight_arr, bias_arr, input_cols
+    return None, None, input_cols
+
+
+def _project_features(model: Dict, features: Dict[str, float]) -> np.ndarray:
+    meta = model.get("masked_encoder")
+    if isinstance(meta, dict):
+        weights, bias, input_cols = _masked_encoder_parameters(meta)
+        if weights is not None:
+            cols = input_cols or meta.get("input_features") or []
+            if not cols:
+                cols = model.get("feature_names", [])
+            raw = np.array([float(features.get(name, 0.0)) for name in cols], dtype=float)
+            if raw.size != weights.shape[1]:
+                raise ValueError(
+                    f"masked encoder expected {weights.shape[1]} inputs, received {raw.size}"
+                )
+            encoded = raw @ weights.T
+            if bias is not None and bias.shape[0] == encoded.shape[0]:
+                encoded = encoded + bias
+            return encoded.astype(float)
+    names = model.get("feature_names", [])
+    return np.array([float(features.get(n, 0.0)) for n in names], dtype=float)
 
 
 def _predict_logistic(model: Dict, features: Dict[str, float]) -> float:
@@ -98,7 +170,14 @@ def _predict_logistic(model: Dict, features: Dict[str, float]) -> float:
     low = np.array(model.get("clip_low", [-np.inf] * len(names)), dtype=float)
     high = np.array(model.get("clip_high", [np.inf] * len(names)), dtype=float)
 
-    vec = np.array([float(features.get(n, 0.0)) for n in names])
+    vec = _project_features(model, features)
+    if vec.shape[0] != len(names):
+        names = names[: vec.shape[0]]
+        coeffs = coeffs[: vec.shape[0]]
+        mean = mean[: vec.shape[0]]
+        std = std[: vec.shape[0]]
+        low = low[: vec.shape[0]]
+        high = high[: vec.shape[0]]
     vec = np.clip(vec, low, high)
     if vec.shape[0] != len(coeffs):
         coeffs = coeffs[: vec.shape[0]]
@@ -140,7 +219,7 @@ def _predict_nn(model: Dict, features: Dict[str, float]) -> float:
     )
     low = np.array(model.get("clip_low", [-np.inf] * len(names)), dtype=float)
     high = np.array(model.get("clip_high", [np.inf] * len(names)), dtype=float)
-    vec = np.array([float(features.get(n, 0.0)) for n in names])
+    vec = _project_features(model, features)
     vec = np.clip(vec, low, high)
     std_safe = np.where(std == 0, 1, std)
     x = (vec - mean) / std_safe
