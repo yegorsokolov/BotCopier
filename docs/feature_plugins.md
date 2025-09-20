@@ -60,6 +60,13 @@ fancy = "my_pkg.metrics:fancy_metric"
 Metrics can be selected when training with ``--metric fancy`` or by setting
 ``training.metrics`` in a configuration file.
 
+Built-in evaluation metrics such as ``accuracy``, ``precision``, ``recall``,
+``profit``, ``sharpe_ratio``, ``sortino_ratio``, ``max_drawdown`` and ``var_95``
+depend on the optional scientific stack (``numpy``, ``pandas`` and
+``scikit-learn``).  When these packages are not installed the evaluation module
+raises ``ImportError("optional dependencies not installed")`` rather than
+attempting to run with partial functionality.
+
 ## Evaluation hooks
 
 Evaluation hooks extend the JSON payload returned by the ``evaluate`` command.
