@@ -20,9 +20,12 @@ should be used instead of the basic logistic regression.
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
+import io
 import json
 import math
+import pickle
 from pathlib import Path
 from typing import Dict
 
@@ -170,6 +173,85 @@ def _predict_nn(model: Dict, features: Dict[str, float]) -> float:
     h = np.tanh(np.dot(x, l1_w) + l1_b)
     z = np.dot(h, l2_w) + l2_b
     return float(1 / (1 + np.exp(-z)))
+
+
+def _load_gradient_boosting_model(model: Dict):
+    cached = model.get("_gb_model_instance")
+    if cached is not None:
+        return cached
+    payload = model.get("gb_model")
+    if not payload:
+        return None
+    estimator = pickle.loads(base64.b64decode(payload))
+    model["_gb_model_instance"] = estimator
+    return estimator
+
+
+def _predict_gradient_boosting(model: Dict, features: Dict[str, float]) -> float:
+    estimator = _load_gradient_boosting_model(model)
+    if estimator is None:
+        raise RuntimeError("gradient boosting model payload unavailable")
+    vec = _project_features(model, features).reshape(1, -1)
+    prob = estimator.predict_proba(vec)[0, 1]
+    return float(prob)
+
+
+def _load_xgboost_booster(model: Dict):
+    booster = model.get("_xgb_booster_instance")
+    if booster is not None:
+        return booster
+    payload = model.get("booster")
+    if not payload:
+        return None
+    try:
+        import xgboost as xgb  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("xgboost is required to load this estimator") from exc
+
+    booster = xgb.Booster()
+    booster.load_model(bytearray(base64.b64decode(payload)))
+    model["_xgb_booster_instance"] = booster
+    return booster
+
+
+def _predict_xgboost(model: Dict, features: Dict[str, float]) -> float:
+    booster = _load_xgboost_booster(model)
+    if booster is None:
+        raise RuntimeError("xgboost booster payload unavailable")
+    import xgboost as xgb  # type: ignore
+
+    vec = _project_features(model, features).reshape(1, -1)
+    dmatrix = xgb.DMatrix(vec)
+    prob = booster.predict(dmatrix)
+    return float(prob[0])
+
+
+def _load_catboost_model(model: Dict):
+    cat_model = model.get("_cb_model_instance")
+    if cat_model is not None:
+        return cat_model
+    payload = model.get("cb_model")
+    if not payload:
+        return None
+    try:
+        import catboost as cb  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("catboost is required to load this estimator") from exc
+
+    buffer = io.BytesIO(base64.b64decode(payload))
+    cat_model = cb.CatBoostClassifier()
+    cat_model.load_model(stream=buffer)
+    model["_cb_model_instance"] = cat_model
+    return cat_model
+
+
+def _predict_catboost(model: Dict, features: Dict[str, float]) -> float:
+    cat_model = _load_catboost_model(model)
+    if cat_model is None:
+        raise RuntimeError("catboost model payload unavailable")
+    vec = _project_features(model, features).reshape(1, -1)
+    prob = cat_model.predict_proba(vec)[0, 1]
+    return float(prob)
 
 
 def _prepare_sequence_window(
@@ -360,7 +442,13 @@ def _recompute(
     """Recompute probabilities and collect statistics."""
     resources = detect_resources()
     model_type = model.get("model_type")
-    if model_type in {"tabtransformer", "transformer"}:
+    if model.get("gb_model"):
+        pred_fn = _predict_gradient_boosting
+    elif model.get("booster"):
+        pred_fn = _predict_xgboost
+    elif model.get("cb_model"):
+        pred_fn = _predict_catboost
+    elif model_type in {"tabtransformer", "transformer"}:
         pred_fn = _predict_tabtransformer
     elif model_type == "tcn":
         pred_fn = _predict_tcn
