@@ -64,14 +64,14 @@ from botcopier.training.curriculum import _apply_curriculum
 from botcopier.training.evaluation import (
     HAS_OPTUNA,
     HAS_RAY,
-    max_drawdown,
+    max_drawdown as eval_max_drawdown,
     optuna,
     ray,
     resolve_data_path,
     serialise_metric_values,
     suggest_model_params,
     trial_logger,
-    var_95,
+    var_95 as eval_var_95,
 )
 from botcopier.training.preprocessing import (
     HAS_DASK,
@@ -459,7 +459,8 @@ def train(
         user_subset, subset_provided = normalise_feature_subset(subset_source)
     active_subset: list[str] = list(user_subset)
     extra_options = cast(dict[str, Any], dict(kwargs))
-    if should_use_lightweight(data_dir, extra_options):
+    force_heavy = bool(extra_options.pop("force_heavy", False))
+    if pretrain_mask is None and not force_heavy and should_use_lightweight(data_dir, extra_options):
         return train_lightweight(
             data_dir,
             out_dir,
@@ -1191,15 +1192,57 @@ def train(
             state = torch.load(enc_path, map_location="cpu")
             arch = state.get("architecture", [])
             if arch:
+                encoder_inputs = list(feature_names)
                 encoder = torch.nn.Linear(int(arch[0]), int(arch[1]))
                 encoder.load_state_dict(state["state_dict"])
                 encoder.eval()
                 with torch.no_grad():
                     X = encoder(torch.as_tensor(X, dtype=torch.float32)).numpy()
                 feature_names = [f"enc_{i}" for i in range(X.shape[1])]
+                state_dict = state.get("state_dict", {})
+                weight_tensor = state_dict.get("weight")
+                bias_tensor = state_dict.get("bias")
+                if isinstance(weight_tensor, torch.Tensor):
+                    weight_values = weight_tensor.detach().cpu().numpy()
+                elif weight_tensor is not None:
+                    weight_values = np.asarray(weight_tensor, dtype=float)
+                else:
+                    weight_values = encoder.weight.detach().cpu().numpy()
+                if isinstance(bias_tensor, torch.Tensor):
+                    bias_values: np.ndarray | None = bias_tensor.detach().cpu().numpy()
+                elif bias_tensor is not None:
+                    bias_values = np.asarray(bias_tensor, dtype=float)
+                else:
+                    bias_attr = getattr(encoder, "bias", None)
+                    bias_values = (
+                        bias_attr.detach().cpu().numpy()
+                        if isinstance(bias_attr, torch.Tensor)
+                        else None
+                    )
+                dest_path = out_dir / enc_path.name
+                try:
+                    if enc_path.resolve() != dest_path.resolve():
+                        dest_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(enc_path, dest_path)
+                except OSError:
+                    dest_path = enc_path
+                try:
+                    rel_weights = os.path.relpath(dest_path, out_dir)
+                except ValueError:
+                    rel_weights = str(dest_path)
                 encoder_meta = {
-                    "architecture": arch,
+                    "architecture": [int(arch[0]), int(arch[1])],
+                    "input_dim": int(arch[0]) if arch else len(encoder_inputs),
+                    "latent_dim": int(arch[1]) if len(arch) > 1 else int(X.shape[1]),
                     "mask_ratio": float(state.get("mask_ratio", 0.0)),
+                    "input_features": encoder_inputs,
+                    "weights_file": rel_weights,
+                    "weights": np.asarray(weight_values, dtype=float).tolist(),
+                    "bias": (
+                        np.asarray(bias_values, dtype=float).tolist()
+                        if bias_values is not None
+                        else None
+                    ),
                 }
 
     # --- Power transformation for highly skewed features -----------------
@@ -1438,8 +1481,8 @@ def train(
                     selected=metric_names,
                     threshold=best_threshold,
                 )
-                metrics_fold.setdefault("max_drawdown", _max_drawdown(returns_fold))
-                metrics_fold.setdefault("var_95", _var_95(returns_fold))
+                metrics_fold.setdefault("max_drawdown", eval_max_drawdown(returns_fold))
+                metrics_fold.setdefault("var_95", eval_var_95(returns_fold))
                 metrics_fold["threshold"] = float(best_threshold)
                 metrics_fold["threshold_objective"] = threshold_objective
                 fold_metrics.append((fold_idx, metrics_fold))
@@ -2041,12 +2084,20 @@ def train(
             ]
             if autoencoder_info is not None:
                 sm_keys.append("autoencoder")
+            if encoder_meta is not None:
+                sm_keys.append("masked_encoder")
             model["session_models"] = {
                 "asian": {k: model[k] for k in sm_keys if k in model}
             }
-        elif autoencoder_info is not None:
-            for sess in model["session_models"].values():
-                sess.setdefault("autoencoder", json.loads(json.dumps(autoencoder_info)))
+        else:
+            if autoencoder_info is not None:
+                for sess in model["session_models"].values():
+                    sess.setdefault(
+                        "autoencoder", json.loads(json.dumps(autoencoder_info))
+                    )
+            if encoder_meta is not None:
+                for sess in model["session_models"].values():
+                    sess.setdefault("masked_encoder", json.loads(json.dumps(encoder_meta)))
         model["cv_metrics"] = serialised_cv_metrics
         model["threshold"] = float(selected_threshold)
         model["decision_threshold"] = float(selected_threshold)

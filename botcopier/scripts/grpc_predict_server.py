@@ -19,6 +19,14 @@ import grpc.aio as grpc
 
 import numpy as np
 
+try:  # optional dependency used for masked encoder checkpoints
+    import torch
+
+    _HAS_TORCH = True
+except Exception:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore
+    _HAS_TORCH = False
+
 # Make generated proto modules importable
 PROTO_DIR = Path(__file__).resolve().parent.parent.parent / "proto"
 import sys
@@ -38,6 +46,10 @@ LINEAR_CONFIG: dict[str, object] = {}
 ENSEMBLE_MODELS: list[Callable[[Sequence[float]], float]] = []
 ENSEMBLE_WEIGHTS: Sequence[float] | None = None
 THRESHOLD: float = 0.5
+MODEL_DIR: Path | None = DEFAULT_MODEL_PATH.parent
+MASKED_ENCODER_WEIGHTS = np.empty((0, 0))
+MASKED_ENCODER_BIAS = np.empty(0)
+MASKED_ENCODER_INPUT_DIM = 0
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +85,106 @@ def _resolve_threshold(values: Sequence[object]) -> float:
         except (TypeError, ValueError):
             continue
     return 0.5
+
+
+def _load_masked_encoder_from_file(weights_file: object) -> tuple[np.ndarray | None, np.ndarray | None]:
+    if not weights_file:
+        return None, None
+    path = Path(str(weights_file))
+    if not path.is_absolute():
+        if MODEL_DIR is not None:
+            path = (MODEL_DIR / path).resolve()
+        else:
+            path = path.resolve()
+    if not path.exists():
+        logger.warning("masked encoder weights file not found: %s", path)
+        return None, None
+    if not _HAS_TORCH:
+        logger.warning(
+            "masked encoder weights file present at %s but torch is unavailable",
+            path,
+        )
+        return None, None
+    try:
+        assert torch is not None  # for type checkers
+        state = torch.load(path, map_location="cpu")
+    except Exception:  # pragma: no cover - optional dependency
+        logger.exception("failed to load masked encoder weights from %s", path)
+        return None, None
+    state_dict = state.get("state_dict", state) if isinstance(state, dict) else {}
+    weight_tensor = state_dict.get("weight")
+    bias_tensor = state_dict.get("bias")
+    if isinstance(weight_tensor, torch.Tensor):
+        weight_arr = weight_tensor.detach().cpu().numpy()
+    else:
+        weight_arr = (
+            np.asarray(weight_tensor, dtype=float)
+            if weight_tensor is not None
+            else None
+        )
+    if isinstance(bias_tensor, torch.Tensor):
+        bias_arr = bias_tensor.detach().cpu().numpy()
+    else:
+        bias_arr = np.asarray(bias_tensor, dtype=float) if bias_tensor is not None else None
+    return weight_arr, bias_arr
+
+
+def _initialise_masked_encoder(meta: dict[str, object] | None) -> None:
+    """Configure globals describing the optional masked encoder."""
+
+    global MASKED_ENCODER_WEIGHTS, MASKED_ENCODER_BIAS, MASKED_ENCODER_INPUT_DIM
+
+    MASKED_ENCODER_WEIGHTS = np.empty((0, 0))
+    MASKED_ENCODER_BIAS = np.empty(0)
+    MASKED_ENCODER_INPUT_DIM = 0
+
+    if not isinstance(meta, dict):
+        return
+
+    inputs = meta.get("input_features") or meta.get("original_features")
+    if isinstance(inputs, Sequence):
+        MASKED_ENCODER_INPUT_DIM = len(list(inputs))
+    elif isinstance(inputs, str):
+        MASKED_ENCODER_INPUT_DIM = 1
+
+    weights = meta.get("weights")
+    bias = meta.get("bias")
+    weight_arr: np.ndarray | None
+    bias_arr: np.ndarray | None
+    if weights is not None:
+        weight_arr = np.asarray(weights, dtype=float)
+        bias_arr = np.asarray(bias, dtype=float) if bias is not None else None
+    else:
+        weight_arr, bias_arr = _load_masked_encoder_from_file(meta.get("weights_file"))
+    if weight_arr is None:
+        if MASKED_ENCODER_INPUT_DIM:
+            logger.warning("masked encoder metadata present but weights unavailable")
+        return
+
+    MASKED_ENCODER_WEIGHTS = weight_arr.astype(float)
+    if bias_arr is not None:
+        MASKED_ENCODER_BIAS = bias_arr.astype(float)
+    if not MASKED_ENCODER_INPUT_DIM and MASKED_ENCODER_WEIGHTS.size:
+        MASKED_ENCODER_INPUT_DIM = MASKED_ENCODER_WEIGHTS.shape[1]
+
+
+def _apply_masked_encoder(features: Sequence[float]) -> list[float]:
+    if MASKED_ENCODER_WEIGHTS.size == 0:
+        return [float(x) for x in features]
+    arr = np.asarray(features, dtype=float)
+    expected = MASKED_ENCODER_WEIGHTS.shape[1]
+    if MASKED_ENCODER_INPUT_DIM and arr.size != MASKED_ENCODER_INPUT_DIM:
+        raise ServiceError(
+            f"masked encoder expected {MASKED_ENCODER_INPUT_DIM} inputs, received {arr.size}"
+        )
+    if arr.size != expected:
+        raise ServiceError(
+            f"masked encoder weight matrix expects {expected} inputs, received {arr.size}"
+        )
+    encoded = arr @ MASKED_ENCODER_WEIGHTS.T
+    if MASKED_ENCODER_BIAS.size == encoded.shape[0]:
+        encoded = encoded + MASKED_ENCODER_BIAS
+    return encoded.astype(float).tolist()
 
 
 def _make_logistic_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
@@ -218,6 +330,7 @@ def _configure_runtime(model: dict) -> None:
                 )
     threshold_candidates.extend([model.get("decision_threshold"), model.get("threshold")])
     THRESHOLD = _resolve_threshold(threshold_candidates)
+    _initialise_masked_encoder(model.get("masked_encoder"))
     logger.info(
         "model_loaded",
         extra={
@@ -233,7 +346,10 @@ def _configure_runtime(model: dict) -> None:
 def _reload_model(path: Path) -> None:
     """Refresh global model parameters from ``path``."""
 
+    global MODEL_DIR
+
     model = _load_model(path)
+    MODEL_DIR = path.parent.resolve()
     _configure_runtime(model)
     logger.info("model_source", extra={"context": {"path": str(path)}})
 
@@ -241,6 +357,7 @@ def _reload_model(path: Path) -> None:
 def _predict_one(features: List[float]) -> float:
     """Return ensemble probability applying the configured threshold."""
 
+    features = _apply_masked_encoder(features)
     if ENSEMBLE_MODELS:
         probabilities: list[float] = []
         for predictor in ENSEMBLE_MODELS:

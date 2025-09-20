@@ -9,7 +9,10 @@ from typing import Callable, List, Sequence
 
 import numpy as np
 import pandas as pd
-import uvicorn
+try:  # optional server dependency
+    import uvicorn
+except ImportError:  # pragma: no cover - optional dependency
+    uvicorn = None  # type: ignore
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pandera.errors import SchemaErrors
@@ -55,6 +58,89 @@ def _resolve_threshold(values: Sequence[object]) -> float:
         except (TypeError, ValueError):
             continue
     return 0.5
+
+
+def _load_masked_encoder_from_file(weights_file: object) -> tuple[np.ndarray | None, np.ndarray | None]:
+    if not weights_file:
+        return None, None
+    path = Path(str(weights_file))
+    if not path.is_absolute():
+        path = (MODEL_DIR / path).resolve()
+    if not path.exists():
+        logger.warning("Masked encoder weights file not found at %s", path)
+        return None, None
+    try:
+        import torch  # type: ignore
+
+        state = torch.load(path, map_location="cpu")
+        state_dict = state.get("state_dict", state)
+        weight_tensor = state_dict.get("weight")
+        bias_tensor = state_dict.get("bias")
+        if isinstance(weight_tensor, torch.Tensor):
+            weight_arr = weight_tensor.detach().cpu().numpy()
+        else:
+            weight_arr = (
+                np.asarray(weight_tensor, dtype=float)
+                if weight_tensor is not None
+                else None
+            )
+        if isinstance(bias_tensor, torch.Tensor):
+            bias_arr = bias_tensor.detach().cpu().numpy()
+        else:
+            bias_arr = np.asarray(bias_tensor, dtype=float) if bias_tensor is not None else None
+        return weight_arr, bias_arr
+    except Exception:  # pragma: no cover - optional torch dependency
+        logger.exception("Failed to load masked encoder weights from %s", path)
+        return None, None
+
+
+def _initialise_masked_encoder(meta: dict[str, object] | None) -> None:
+    """Populate globals describing the optional masked encoder."""
+
+    global MASKED_ENCODER_WEIGHTS, MASKED_ENCODER_BIAS, MASKED_ENCODER_INPUTS
+
+    MASKED_ENCODER_WEIGHTS = np.empty((0, 0))
+    MASKED_ENCODER_BIAS = np.empty(0)
+    MASKED_ENCODER_INPUTS = []
+
+    if not isinstance(meta, dict):
+        return
+
+    inputs = meta.get("input_features") or meta.get("original_features")
+    if isinstance(inputs, Sequence):
+        MASKED_ENCODER_INPUTS = [str(col) for col in inputs]
+
+    weights = meta.get("weights")
+    bias = meta.get("bias")
+    weight_arr: np.ndarray | None
+    bias_arr: np.ndarray | None
+    if weights is not None:
+        weight_arr = np.asarray(weights, dtype=float)
+        bias_arr = np.asarray(bias, dtype=float) if bias is not None else None
+    else:
+        weight_arr, bias_arr = _load_masked_encoder_from_file(meta.get("weights_file"))
+    if weight_arr is None:
+        if MASKED_ENCODER_INPUTS:
+            logger.warning("Masked encoder metadata present but weights unavailable")
+        return
+    MASKED_ENCODER_WEIGHTS = weight_arr.astype(float)
+    if bias_arr is not None:
+        MASKED_ENCODER_BIAS = bias_arr.astype(float)
+
+
+def _apply_masked_encoder(raw_features: Sequence[float]) -> list[float]:
+    if MASKED_ENCODER_WEIGHTS.size == 0:
+        return [float(x) for x in raw_features]
+    arr = np.asarray(raw_features, dtype=float)
+    expected = MASKED_ENCODER_WEIGHTS.shape[1]
+    if arr.size != expected:
+        raise ValueError(
+            f"masked encoder expected {expected} features, received {arr.size}"
+        )
+    encoded = arr @ MASKED_ENCODER_WEIGHTS.T
+    if MASKED_ENCODER_BIAS.size == encoded.shape[0]:
+        encoded = encoded + MASKED_ENCODER_BIAS
+    return encoded.astype(float).tolist()
 
 
 def _make_logistic_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
@@ -141,10 +227,11 @@ def _predict_logistic(features: Sequence[float], config: dict[str, object]) -> f
 def _configure_model(model: dict) -> None:
     """Initialise globals controlling model inference."""
 
-    global MODEL, FEATURE_METADATA, _EXPECTED_COLS, FEATURE_NAMES
+    global MODEL, FEATURE_METADATA, _EXPECTED_COLS, FEATURE_NAMES, INPUT_COLUMNS
     global PT_INFO, PT, PT_IDX
     global OOD_INFO, OOD_MEAN, OOD_COV, OOD_INV, OOD_THRESHOLD
     global LINEAR_CONFIG, ENSEMBLE_MODELS, ENSEMBLE_WEIGHTS, THRESHOLD
+    global MASKED_ENCODER_INPUTS
 
     MODEL = model
     FEATURE_METADATA = [FeatureMetadata(**m) for m in model.get("feature_metadata", [])]
@@ -152,6 +239,8 @@ def _configure_model(model: dict) -> None:
     FEATURE_NAMES = model.get("feature_names", _EXPECTED_COLS or FEATURE_COLUMNS)
     if FEATURE_METADATA and len(FEATURE_NAMES) != len(FEATURE_METADATA):
         raise ValueError("feature_names and feature_metadata mismatch")
+
+    INPUT_COLUMNS = list(_EXPECTED_COLS or FEATURE_NAMES or FEATURE_COLUMNS)
 
     PT_INFO = model.get("power_transformer")
     PT = None
@@ -234,11 +323,20 @@ def _configure_model(model: dict) -> None:
     threshold_candidates.extend([model.get("decision_threshold"), model.get("threshold")])
     THRESHOLD = _resolve_threshold(threshold_candidates)
 
+    encoder_meta = model.get("masked_encoder")
+    _initialise_masked_encoder(encoder_meta if isinstance(encoder_meta, dict) else None)
+    if MASKED_ENCODER_INPUTS:
+        INPUT_COLUMNS = list(MASKED_ENCODER_INPUTS)
+        _EXPECTED_COLS = list(MASKED_ENCODER_INPUTS)
+    elif not INPUT_COLUMNS:
+        INPUT_COLUMNS = list(FEATURE_COLUMNS)
+
 
 MODEL: dict[str, object] = {"feature_names": [], "entry_coefficients": [], "entry_intercept": 0.0}
 FEATURE_METADATA: list[FeatureMetadata] = []
 _EXPECTED_COLS: list[str] = []
 FEATURE_NAMES: list[str] = []
+INPUT_COLUMNS: list[str] = []
 PT_INFO: dict[str, object] | None = None
 PT: PowerTransformer | None = None
 PT_IDX: List[int] = []
@@ -251,11 +349,15 @@ LINEAR_CONFIG: dict[str, object] = {}
 ENSEMBLE_MODELS: list[Callable[[Sequence[float]], float]] = []
 ENSEMBLE_WEIGHTS: Sequence[float] | None = None
 THRESHOLD: float = 0.5
+MASKED_ENCODER_INPUTS: list[str] = []
+MASKED_ENCODER_WEIGHTS = np.empty((0, 0))
+MASKED_ENCODER_BIAS = np.empty(0)
 
 
 # Load model.json at startup
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "model.json"
+MODEL_DIR = MODEL_PATH.parent
 try:
     with open(MODEL_PATH, "r", encoding="utf-8") as f:
         MODEL = json.load(f)
@@ -323,7 +425,7 @@ async def predict(req: PredictionRequest) -> PredictionResponse:
     if not _HAS_FEAST or STORE is None:
         raise HTTPException(status_code=500, detail="feature store unavailable")
     with observe_latency("predict"):
-        feature_cols = _EXPECTED_COLS or FEATURE_COLUMNS
+        feature_cols = INPUT_COLUMNS or FEATURE_COLUMNS
         feature_refs = [f"trade_features:{f}" for f in feature_cols]
         entity_rows = [{"symbol": s} for s in req.symbols]
         feat_dict = STORE.get_online_features(
@@ -348,8 +450,9 @@ async def predict(req: PredictionRequest) -> PredictionResponse:
             ) from exc
         results: List[float] = []
         for i in range(len(req.symbols)):
-            features = frame.iloc[i].tolist()
+            features = [float(frame.iloc[i][col]) for col in feature_cols]
             try:
+                features = _apply_masked_encoder(features)
                 if PT is not None and PT_IDX:
                     arr = np.asarray([features[j] for j in PT_IDX], dtype=float).reshape(1, -1)
                     transformed = PT.transform(arr).ravel().tolist()
@@ -381,6 +484,8 @@ def main() -> None:
         "--metrics-port", type=int, default=8004, help="Prometheus metrics port"
     )
     args = parser.parse_args()
+    if uvicorn is None:  # pragma: no cover - optional dependency
+        raise RuntimeError("uvicorn is required to run the model server")
     start_metrics_server(args.metrics_port)
     uvicorn.run("botcopier.scripts.serve_model:app", host=args.host, port=args.port)
 
