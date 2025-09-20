@@ -452,6 +452,19 @@
           "default": null,
           "title": "Controller Episode Sample Size"
         },
+        "controller_episode_combination_cap": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Controller Episode Combination Cap"
+        },
         "controller_baseline_momentum": {
           "anyOf": [
             {

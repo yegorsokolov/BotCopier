@@ -116,6 +116,7 @@ class TrainingConfig(BaseSettings):
     reuse_controller: bool = False
     controller_max_subset_size: Optional[int] = None
     controller_episode_sample_size: Optional[int] = None
+    controller_episode_combination_cap: Optional[int] = None
     controller_baseline_momentum: Optional[float] = 0.9
     meta_weights: Optional[Path] = None
 

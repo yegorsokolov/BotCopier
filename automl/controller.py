@@ -18,6 +18,8 @@ except Exception:  # pragma: no cover - best effort
 
 Action = Tuple[Tuple[str, ...], str]
 
+DEFAULT_EPISODE_COMBINATION_CAP = 4096
+
 __all__ = ["AutoMLController", "Action"]
 
 
@@ -50,6 +52,7 @@ class AutoMLController:
         max_subset_size: int | None = None,
         episode_sample_size: int | None = None,
         baseline_momentum: float | None = 0.9,
+        episode_combination_cap: int | None = None,
     ) -> None:
         self.features = list(features)
         if not self.features:
@@ -70,6 +73,12 @@ class AutoMLController:
         if self.episode_sample_size is not None and self.episode_sample_size < 1:
             raise ValueError("episode_sample_size must be positive when provided")
 
+        if episode_combination_cap is None:
+            episode_combination_cap = DEFAULT_EPISODE_COMBINATION_CAP
+        if episode_combination_cap < 1:
+            raise ValueError("episode_combination_cap must be at least 1")
+        self.episode_combination_cap = episode_combination_cap
+
         self.baseline_momentum = baseline_momentum
         if self.baseline_momentum is not None:
             if self.baseline_momentum <= 0.0:
@@ -80,6 +89,20 @@ class AutoMLController:
         self._known_actions: Dict[str, Action] = {}
         self._current_actions: List[Action] = []
         self._current_keys: List[str] = []
+        self._episode_seen_keys: set[str] = set()
+        self._episode_seen_subsets: set[Tuple[str, ...]] = set()
+        self.telemetry: Dict[str, float | int | bool] = {
+            "total_subsets": 0,
+            "sampled_subsets": 0,
+            "total_actions": 0,
+            "enumerated_actions": 0,
+            "explored_actions": 0,
+            "explored_subsets": 0,
+            "coverage": 0.0,
+            "combination_cap": self.episode_combination_cap,
+            "random_sampling": False,
+            "remaining_actions": 0,
+        }
         self.last_action: Action | None = None
 
         # policy parameters and reward estimates per action
@@ -105,9 +128,24 @@ class AutoMLController:
         self._known_actions.clear()
         self._current_actions = []
         self._current_keys = []
+        self._episode_seen_keys.clear()
+        self._episode_seen_subsets.clear()
         self.last_action = None
         self._baseline = 0.0
         self._baseline_updates = 0
+        self.telemetry.update(
+            {
+                "total_subsets": 0,
+                "sampled_subsets": 0,
+                "total_actions": 0,
+                "enumerated_actions": 0,
+                "explored_actions": 0,
+                "explored_subsets": 0,
+                "coverage": 0.0,
+                "random_sampling": False,
+                "remaining_actions": 0,
+            }
+        )
 
     def _key(self, action: Action) -> str:
         subset, model = action
@@ -134,6 +172,7 @@ class AutoMLController:
         max_subset_size: int | None = None,
         episode_sample_size: int | None = None,
         baseline_momentum: float | None = None,
+        episode_combination_cap: int | None = None,
     ) -> None:
         """Update controller hyperparameters for future episodes."""
 
@@ -145,6 +184,11 @@ class AutoMLController:
             if episode_sample_size < 1:
                 raise ValueError("episode_sample_size must be positive")
             self.episode_sample_size = episode_sample_size
+        if episode_combination_cap is not None:
+            if episode_combination_cap < 1:
+                raise ValueError("episode_combination_cap must be at least 1")
+            self.episode_combination_cap = episode_combination_cap
+            self.telemetry["combination_cap"] = self.episode_combination_cap
         if baseline_momentum is not None:
             if baseline_momentum <= 0.0:
                 self.baseline_momentum = None
@@ -154,6 +198,8 @@ class AutoMLController:
                 self.baseline_momentum = baseline_momentum
         self._current_actions = []
         self._current_keys = []
+        self._episode_seen_keys.clear()
+        self._episode_seen_subsets.clear()
 
     def _iter_subsets(self) -> Iterable[Tuple[str, ...]]:
         max_r = min(self.max_subset_size, len(self.features))
@@ -172,32 +218,77 @@ class AutoMLController:
     def _prepare_episode_actions(self, include: Sequence[Action] | None = None) -> None:
         include = list(include or [])
         subset_map: Dict[Tuple[str, ...], None] = OrderedDict()
+        include_actions: List[Action] = []
         for action in include:
             subset = tuple(sorted(action[0]))
+            model = action[1]
+            include_action = (subset, model)
+            include_actions.append(include_action)
             subset_map.setdefault(subset, None)
 
-        if self.episode_sample_size is None:
-            for subset in self._iter_subsets():
-                subset_map.setdefault(tuple(subset), None)
+        feature_count = len(self.features)
+        max_r = min(self.max_subset_size, feature_count)
+        total_subsets = sum(math.comb(feature_count, r) for r in range(1, max_r + 1))
+        total_actions = total_subsets * len(self.models)
+
+        subset_target = len(subset_map)
+        random_sampling = False
+        subset_cap = max(1, math.ceil(self.episode_combination_cap / len(self.models)))
+
+        if self.episode_sample_size is not None:
+            random_sampling = True
+            subset_target = max(subset_target, min(self.episode_sample_size, total_subsets))
+            if total_actions > self.episode_combination_cap:
+                subset_target = min(subset_target, subset_cap)
+        elif total_actions > self.episode_combination_cap:
+            random_sampling = True
+            subset_target = max(subset_target, min(total_subsets, subset_cap))
         else:
-            target = max(self.episode_sample_size, len(subset_map))
+            subset_target = max(subset_target, total_subsets)
+
+        if random_sampling:
             attempts = 0
-            max_attempts = max(100, target * 10)
-            while len(subset_map) < target and attempts < max_attempts:
+            max_attempts = max(100, subset_target * 10)
+            while len(subset_map) < subset_target and attempts < max_attempts:
                 subset_map.setdefault(self._random_subset(), None)
                 attempts += 1
-            if len(subset_map) < target:
+            if len(subset_map) < subset_target:
                 for subset in self._iter_subsets():
                     subset_map.setdefault(tuple(subset), None)
-                    if len(subset_map) >= target:
+                    if len(subset_map) >= subset_target:
                         break
+        else:
+            for subset in self._iter_subsets():
+                subset_map.setdefault(tuple(subset), None)
+                if len(subset_map) >= subset_target:
+                    break
 
         actions: List[Action] = []
-        for subset in subset_map.keys():
+        seen_keys: set[str] = set()
+
+        for action in include_actions:
+            key = self._register_action(action)
+            if key in seen_keys:
+                continue
+            actions.append(action)
+            seen_keys.add(key)
+            if len(actions) >= self.episode_combination_cap:
+                break
+
+        subsets = list(subset_map.keys())
+        random.shuffle(subsets)
+        for subset in subsets:
             for model in self.models:
                 action = (subset, model)
-                self._register_action(action)
+                key = self._register_action(action)
+                if key in seen_keys:
+                    continue
                 actions.append(action)
+                seen_keys.add(key)
+                if len(actions) >= self.episode_combination_cap:
+                    break
+            if len(actions) >= self.episode_combination_cap:
+                break
 
         if not actions:
             raise ValueError(
@@ -207,6 +298,23 @@ class AutoMLController:
         random.shuffle(actions)
         self._current_actions = actions
         self._current_keys = [self._key(action) for action in actions]
+        self._episode_seen_keys.clear()
+        self._episode_seen_subsets.clear()
+        enumerated_actions = len(actions)
+        self.telemetry.update(
+            {
+                "total_subsets": total_subsets,
+                "sampled_subsets": len(subset_map),
+                "total_actions": total_actions,
+                "enumerated_actions": enumerated_actions,
+                "explored_actions": 0,
+                "explored_subsets": 0,
+                "coverage": 0.0,
+                "combination_cap": self.episode_combination_cap,
+                "random_sampling": random_sampling or total_actions > self.episode_combination_cap,
+                "remaining_actions": enumerated_actions,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Persistence
@@ -294,8 +402,43 @@ class AutoMLController:
         """Sample an action according to the current policy."""
         if not self._current_actions:
             self._prepare_episode_actions()
+
+        available = [
+            (action, key)
+            for action, key in zip(self._current_actions, self._current_keys)
+            if key not in self._episode_seen_keys
+        ]
+        if not available:
+            self._prepare_episode_actions()
+            available = [
+                (action, key)
+                for action, key in zip(self._current_actions, self._current_keys)
+                if key not in self._episode_seen_keys
+            ]
+            if not available:
+                raise RuntimeError("AutoMLController has no unseen actions to sample")
+
+        self._current_actions = [action for action, _ in available]
+        self._current_keys = [key for _, key in available]
         probs = self._probs(self._current_keys)
-        action = random.choices(self._current_actions, probs)[0]
+        index = random.choices(range(len(self._current_actions)), probs)[0]
+        action = self._current_actions[index]
+        key = self._current_keys[index]
+        self._episode_seen_keys.add(key)
+        subset = tuple(sorted(action[0]))
+        self._episode_seen_subsets.add(subset)
+
+        explored_actions = len(self._episode_seen_keys)
+        enumerated_actions = int(self.telemetry.get("enumerated_actions", 0))
+        self.telemetry["explored_actions"] = explored_actions
+        self.telemetry["explored_subsets"] = len(self._episode_seen_subsets)
+        if enumerated_actions > 0:
+            self.telemetry["coverage"] = min(1.0, explored_actions / enumerated_actions)
+            self.telemetry["remaining_actions"] = max(0, enumerated_actions - explored_actions)
+        else:
+            self.telemetry["coverage"] = 0.0
+            self.telemetry["remaining_actions"] = 0
+
         self.last_action = action
         return action, probs
 

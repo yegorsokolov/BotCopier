@@ -187,6 +187,7 @@ def run_optuna(
         "reuse_controller": train_cfg.reuse_controller,
         "controller_max_subset_size": train_cfg.controller_max_subset_size,
         "controller_episode_sample_size": train_cfg.controller_episode_sample_size,
+        "controller_episode_combination_cap": train_cfg.controller_episode_combination_cap,
         "controller_baseline_momentum": train_cfg.controller_baseline_momentum,
         "random_seed": train_cfg.random_seed,
     }
@@ -421,6 +422,7 @@ def train(
     reuse_controller: bool = False,
     controller_max_subset_size: int | None = None,
     controller_episode_sample_size: int | None = None,
+    controller_episode_combination_cap: int | None = None,
     controller_baseline_momentum: float | None = None,
     complexity_penalty: float = 0.1,
     dvc_repo: Path | str | None = None,
@@ -483,6 +485,8 @@ def train(
         controller_kwargs["max_subset_size"] = controller_max_subset_size
     if controller_episode_sample_size is not None:
         controller_kwargs["episode_sample_size"] = controller_episode_sample_size
+    if controller_episode_combination_cap is not None:
+        controller_kwargs["episode_combination_cap"] = controller_episode_combination_cap
     if controller_baseline_momentum is not None:
         controller_kwargs["baseline_momentum"] = controller_baseline_momentum
 
@@ -495,6 +499,20 @@ def train(
             controller.reset()
         chosen_action, _ = controller.sample_action()
         controller_subset, _ = normalise_feature_subset(chosen_action[0])
+        telemetry_payload: dict[str, object] = dict(controller.telemetry)
+        telemetry_payload.update(
+            {
+                "selected_features": list(controller_subset),
+                "selected_model": chosen_action[1],
+            }
+        )
+        logger.info("Controller telemetry: %s", telemetry_payload)
+        current_span = trace.get_current_span()
+        if current_span and current_span.is_recording():
+            for key, value in telemetry_payload.items():
+                if isinstance(value, (bool, int, float)):
+                    current_span.set_attribute(f"controller.{key}", value)
+        add_metric("controller_episode", telemetry_payload)
         if subset_provided:
             allowed = set(user_subset)
             invalid = [name for name in controller_subset if name not in allowed]
