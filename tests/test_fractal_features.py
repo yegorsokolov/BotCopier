@@ -35,6 +35,7 @@ class _Memory:
 joblib.Memory = _Memory
 sys.modules.setdefault("joblib", joblib)
 
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.features.technical import _extract_features_impl
 
 
@@ -55,7 +56,8 @@ def _trending_series(n: int, seed: int = 0) -> np.ndarray:
 def test_random_walk_features():
     prices = _random_walk(200)
     df = pd.DataFrame({"symbol": ["EURUSD"] * len(prices), "price": prices})
-    out, features, *_ = _extract_features_impl(df.copy(), [])
+    config = configure_cache(FeatureConfig())
+    out, features, *_ = _extract_features_impl(df.copy(), [], config=config)
     assert "hurst" in features and "fractal_dim" in features
     h = out["hurst"].iloc[-1]
     f = out["fractal_dim"].iloc[-1]
@@ -66,7 +68,8 @@ def test_random_walk_features():
 def test_trending_series_features():
     prices = _trending_series(200)
     df = pd.DataFrame({"symbol": ["EURUSD"] * len(prices), "price": prices})
-    out, *_ = _extract_features_impl(df.copy(), [])
+    config = configure_cache(FeatureConfig())
+    out, *_ = _extract_features_impl(df.copy(), [], config=config)
     h = out["hurst"].iloc[-1]
     f = out["fractal_dim"].iloc[-1]
     assert h > 0.6

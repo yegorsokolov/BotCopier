@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.training.pipeline import (
     _encode_with_autoencoder,
     _extract_features,
@@ -44,8 +45,9 @@ def test_price_indicators_persisted(tmp_path: Path) -> None:
     for col in ["price", "volume", "spread"]:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert feat in model["feature_names"]
-    df, feature_cols, _ = _load_logs(data)
-    df, _, _, _ = _extract_features(df, feature_cols)
+    feature_config = configure_cache(FeatureConfig())
+    df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
+    df, _, _, _ = _extract_features(df, feature_cols, config=feature_config)
     for col in ["price", "volume", "spread"]:
         for feat in [f"{col}_lag_1", f"{col}_lag_5", f"{col}_diff"]:
             assert df[feat].notna().all()
@@ -80,9 +82,14 @@ def test_neighbor_correlation_features(tmp_path: Path) -> None:
     for col in factor_cols:
         assert col in model["feature_names"]
     assert "pca_components" in model
-    df, feature_cols, _ = _load_logs(data)
+    feature_config = configure_cache(FeatureConfig())
+    df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
     df, _, _, _ = _extract_features(
-        df, feature_cols, symbol_graph=sg_path, neighbor_corr_windows=[3]
+        df,
+        feature_cols,
+        symbol_graph=sg_path,
+        neighbor_corr_windows=[3],
+        config=feature_config,
     )
     for col in corr_cols:
         assert df[col].notna().all()
@@ -104,7 +111,8 @@ def test_calendar_fields_utc_and_ranges() -> None:
         }
     )
     feature_cols = ["price"]
-    df, feature_cols, _, _ = _extract_features(df, feature_cols)
+    config = configure_cache(FeatureConfig())
+    df, feature_cols, _, _ = _extract_features(df, feature_cols, config=config)
     assert df["hour"].tolist() == [23, 18]
     assert df["dayofweek"].tolist() == [6, 5]
     assert df["month"].tolist() == [12, 6]
@@ -139,8 +147,9 @@ def test_rank_feature_bounds() -> None:
         }
     )
     feature_cols = ["price", "volume"]
+    config = configure_cache(FeatureConfig())
     df, feature_cols, _, _ = _extract_features(
-        df, feature_cols, rank_features=True
+        df, feature_cols, rank_features=True, config=config
     )
     assert "ret_rank" in feature_cols
     assert "vol_rank" in feature_cols
@@ -191,8 +200,11 @@ def test_autoencoder_embedding_shapes(tmp_path: Path) -> None:
     assert (out_dir / "autoencoder.pt").exists()
     model = json.loads((out_dir / "model.json").read_text())
     assert model["feature_names"] == ["ae_0", "ae_1"]
-    df, feature_cols, _ = _load_logs(data)
-    df, feature_cols, _, _ = _extract_features(df, feature_cols)
+    feature_config = configure_cache(FeatureConfig())
+    df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
+    df, feature_cols, _, _ = _extract_features(
+        df, feature_cols, config=feature_config
+    )
     X = df[feature_cols].to_numpy(dtype=float)
     emb = _encode_with_autoencoder(X, out_dir / "autoencoder.pt")
     assert emb.shape == (len(df), 2)
@@ -214,9 +226,12 @@ def test_news_sentiment_feature_join(tmp_path: Path) -> None:
     ]
     sentiment.write_text("".join(sentiment_rows))
 
-    df, feature_cols, _ = _load_logs(trades)
+    feature_config = configure_cache(FeatureConfig())
+    df, feature_cols, _ = _load_logs(trades, feature_config=feature_config)
     ns_df = pd.read_csv(sentiment)
-    df, feature_cols, _, _ = _extract_features(df, feature_cols, news_sentiment=ns_df)
+    df, feature_cols, _, _ = _extract_features(
+        df, feature_cols, news_sentiment=ns_df, config=feature_config
+    )
     embed_cols = [c for c in feature_cols if c.startswith("sentiment_emb_")]
     assert embed_cols
     for col in embed_cols:
@@ -236,8 +251,10 @@ def test_augmentation_adds_rows_and_limits_ranges(tmp_path: Path) -> None:
         "0,1.4,140,1.9,2020-01-01T00:04:00,EURUSD\n",
     ]
     data.write_text("".join(rows))
-    base_df, _, _ = _load_logs(data)
-    aug_df, _, _ = _load_logs(data, augment_ratio=0.5)
+    base_df, _, _ = _load_logs(data, feature_config=configure_cache(FeatureConfig()))
+    aug_df, _, _ = _load_logs(
+        data, augment_ratio=0.5, feature_config=configure_cache(FeatureConfig())
+    )
     assert len(aug_df) > len(base_df)
     min_time = base_df["event_time"].min()
     max_time = base_df["event_time"].max()
@@ -261,8 +278,13 @@ def test_dtw_augmentation_adds_rows_and_limits_ranges(tmp_path: Path) -> None:
         "0,1.4,140,1.9,2020-01-01T00:04:00,EURUSD\n",
     ]
     data.write_text("".join(rows))
-    base_df, _, _ = _load_logs(data)
-    aug_df, _, _ = _load_logs(data, augment_ratio=0.5, dtw_augment=True)
+    base_df, _, _ = _load_logs(data, feature_config=configure_cache(FeatureConfig()))
+    aug_df, _, _ = _load_logs(
+        data,
+        augment_ratio=0.5,
+        dtw_augment=True,
+        feature_config=configure_cache(FeatureConfig()),
+    )
     assert len(aug_df) > len(base_df)
     assert "aug_ratio" in aug_df.columns
     assert aug_df["aug_ratio"].dropna().between(0.0, 1.0).all()
@@ -283,8 +305,11 @@ def test_market_index_neutralization(tmp_path: Path) -> None:
         "0,1.0,2,USDCHF\n",
     ]
     data.write_text("".join(rows))
-    df, feature_cols, _ = _load_logs(data)
-    df, feature_cols, _, _ = _extract_features(df, feature_cols)
+    feature_config = configure_cache(FeatureConfig())
+    df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
+    df, feature_cols, _, _ = _extract_features(
+        df, feature_cols, config=feature_config
+    )
     df_before = df.copy()
     df_neu, feature_cols_neu = _neutralize_against_market_index(df, feature_cols)
 

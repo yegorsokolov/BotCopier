@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import PowerTransformer, RobustScaler
 
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.training.pipeline import train, _load_logs, _extract_features
 
 
@@ -26,8 +27,9 @@ def test_scaler_robust_with_outliers(tmp_path):
     model = json.loads((out_dir / "model.json").read_text())
     params = model["session_models"]["asian"]
 
-    df, features, _ = _load_logs(data)
-    df, features, _, _ = _extract_features(df, features)
+    config = configure_cache(FeatureConfig())
+    df, features, _ = _load_logs(data, feature_config=config)
+    df, features, _, _ = _extract_features(df, features, config=config)
     X = df[features].to_numpy(dtype=float)
     skew = pd.DataFrame(X, columns=features).skew().abs()
     skew_cols = skew[skew > 1.0].index.tolist()

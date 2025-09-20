@@ -113,6 +113,14 @@ _SYMBOLIC_CACHE: dict | None = None
 
 _FEATURE_METADATA: dict[str, dict[str, Any]] = {}
 
+
+def _require_config(config: "FeatureConfig" | None) -> "FeatureConfig":
+    if config is None:
+        raise ValueError(
+            "FeatureConfig instance must be provided via the 'config' argument"
+        )
+    return config
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .engineering import FeatureConfig
 
@@ -341,9 +349,10 @@ def _wavelet_packet_feature_plugin(
     if wavelet_packets_enabled is not None:
         config_enabled = bool(wavelet_packets_enabled)
     else:
-        cfg = config or getattr(fe, "_DEFAULT_FEATURE_CONFIG", None)
-        if cfg is not None:
-            config_enabled = cfg.is_enabled("wavelet_packets")
+        cfg = config
+        if cfg is None:
+            cfg = fe.FeatureConfig()
+        config_enabled = cfg.is_enabled("wavelet_packets")
 
     if not config_enabled:
         return df, feature_names, {}, {}
@@ -1126,7 +1135,7 @@ def _extract_features_impl(
     """Attach calendar flags, correlation features and technical signals."""
     from . import engineering as fe  # avoid circular import
 
-    cfg = config or fe._DEFAULT_FEATURE_CONFIG
+    cfg = _require_config(config)
 
     graph_data: dict | None = None
     if symbol_graph is not None:
@@ -1656,7 +1665,7 @@ def _extract_features(
     global _FEATURE_METADATA
     _FEATURE_METADATA = {}
 
-    cfg = config or fe._DEFAULT_FEATURE_CONFIG
+    cfg = _require_config(config)
 
     plugin_overrides_raw = kwargs.pop("plugins", None)
     if plugin_overrides_raw is None:

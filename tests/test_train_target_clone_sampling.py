@@ -2,6 +2,7 @@ import json
 import numpy as np
 import torch
 
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.training.pipeline import (
     _load_logs,
     _extract_features,
@@ -19,8 +20,9 @@ def test_smote_balances_classes(tmp_path):
         lines.append(f"1,{2.0 + i*0.01},{i%24}")
     data.write_text("\n".join(lines))
 
-    df, features, _ = _load_logs(data)
-    df, features, _, _ = _extract_features(df, features)
+    config = configure_cache(FeatureConfig())
+    df, features, _ = _load_logs(data, feature_config=config)
+    df, features, _, _ = _extract_features(df, features, config=config)
     X = df[features].to_numpy(dtype=float)
     y = df["label"].astype(int).to_numpy()
     w = np.ones_like(y, dtype=float)

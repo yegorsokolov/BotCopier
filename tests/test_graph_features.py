@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 import botcopier.features.technical as technical
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.models.schema import ModelParams
 
 
@@ -24,8 +25,11 @@ def _build_graph() -> nx.Graph:
 def test_graph_features_update(tmp_path: Path) -> None:
     df = pd.DataFrame({"symbol": ["SYM"], "price": [1.0]})
     g = _build_graph()
+    config = configure_cache(FeatureConfig())
     feats: list[str] = []
-    out, feats1, *_ = technical._extract_features(df.copy(), feats, entity_graph=g)
+    out, feats1, *_ = technical._extract_features(
+        df.copy(), feats, entity_graph=g, config=config
+    )
     assert out["graph_article_count"].iloc[0] == 1
     assert out["graph_sentiment"].iloc[0] == 0.1
     assert "graph_article_count" in feats1
@@ -37,7 +41,9 @@ def test_graph_features_update(tmp_path: Path) -> None:
     g.add_node("A2", type="article", sentiment=0.6)
     g.add_edge("A2", "COMP2")
 
-    out2, feats2, *_ = technical._extract_features(df.copy(), [], entity_graph=g)
+    out2, feats2, *_ = technical._extract_features(
+        df.copy(), [], entity_graph=g, config=config
+    )
     assert out2["graph_article_count"].iloc[0] == 2
     assert out2["graph_sentiment"].iloc[0] == pytest.approx(0.35)
 

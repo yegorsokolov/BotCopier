@@ -42,7 +42,8 @@ def test_feature_cache_speed(tmp_path):
     )
     t2 = perf_counter() - start
 
-    configure_cache(FeatureConfig())
+    reset_config = configure_cache(FeatureConfig())
+    assert reset_config.cache_dir is None
 
     assert f1.equals(f2)
     assert c1 == c2
@@ -81,3 +82,4 @@ def test_feature_config_isolation(tmp_path):
     assert any(col.startswith("csd_") for col in cols_csd)
     assert not any(col.startswith("csd_") for col in cols_default)
     assert set(feats_default.columns) == set(cols_default)
+    assert config_default.enabled_features == set()

@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import RobustScaler
 
+from botcopier.features.engineering import FeatureConfig, configure_cache
 from botcopier.training.pipeline import (
     train,
     _load_logs,
@@ -44,8 +45,9 @@ def test_imputer_removes_nans_and_affects_coefficients(tmp_path):
     model = json.loads((out_dir / "model.json").read_text())
     imputer = pickle.loads(base64.b64decode(model["imputer"]))
 
-    df_raw, features_raw, _ = _load_logs(data)
-    df_raw, _, _, _ = _extract_features(df_raw, features_raw)
+    config = configure_cache(FeatureConfig())
+    df_raw, features_raw, _ = _load_logs(data, feature_config=config)
+    df_raw, _, _, _ = _extract_features(df_raw, features_raw, config=config)
     for col in model["feature_names"]:
         if col not in df_raw.columns:
             df_raw[col] = 0.0

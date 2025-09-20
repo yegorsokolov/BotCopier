@@ -2,7 +2,11 @@ from datetime import datetime
 
 from sklearn.feature_extraction import DictVectorizer
 
-from botcopier.features.engineering import _extract_features
+from botcopier.features.engineering import (
+    FeatureConfig,
+    _extract_features,
+    configure_cache,
+)
 from scripts.model_fitting import fit_logistic_regression
 from scripts.evaluation import evaluate_model
 
@@ -34,7 +38,8 @@ def test_end_to_end_pipeline():
             "spread": 2.0,
         },
     ]
-    feats, labels, *_ = _extract_features(rows)
+    config = configure_cache(FeatureConfig())
+    feats, labels, *_ = _extract_features(rows, config=config)
     vec = DictVectorizer(sparse=False)
     X = vec.fit_transform(feats)
     clf = fit_logistic_regression(X, labels)

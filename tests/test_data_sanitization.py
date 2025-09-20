@@ -5,12 +5,13 @@ import types
 import pandas as pd
 
 stub = types.SimpleNamespace(
-    _augment_dataframe=lambda df, ratio: df,
-    _augment_dtw_dataframe=lambda df, ratio: df,
+    _augment_dataframe=lambda df, ratio, **_: df,
+    _augment_dtw_dataframe=lambda df, ratio, **_: df,
 )
 sys.modules.setdefault("botcopier.features.augmentation", stub)
 
 from botcopier.data.loading import _drop_duplicates_and_outliers, _load_logs
+from botcopier.features.engineering import FeatureConfig, configure_cache
 
 
 def _build_df() -> pd.DataFrame:
@@ -35,7 +36,9 @@ def test_load_logs_reports_sanitization(tmp_path, caplog):
     file_path = tmp_path / "trades_raw.csv"
     df.to_csv(file_path, index=False)
     with caplog.at_level(logging.INFO):
-        loaded, _, _ = _load_logs(file_path)
+        loaded, _, _ = _load_logs(
+            file_path, feature_config=configure_cache(FeatureConfig())
+        )
     assert len(loaded) == 100
     assert any(
         "Removed 1 duplicate rows and 1 outlier rows" in m for m in caplog.messages

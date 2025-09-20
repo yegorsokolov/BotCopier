@@ -116,9 +116,6 @@ class FeatureConfig:
                 self.refresh()
 
 
-_DEFAULT_FEATURE_CONFIG = FeatureConfig()
-
-
 def _resolve_n_jobs(config: FeatureConfig, n_jobs: int | None) -> int:
     """Return an effective ``n_jobs`` respecting the provided configuration."""
 
@@ -306,22 +303,21 @@ def configure_cache(config: FeatureConfig | None = None) -> FeatureConfig:
     return cfg
 
 
-def clear_cache(config: FeatureConfig | None = None) -> None:
+def clear_cache(config: FeatureConfig) -> None:
     """Remove cached feature computations bound to ``config``."""
 
-    cfg = config or _DEFAULT_FEATURE_CONFIG
-    cfg.clear()
+    config.clear()
     _technical._FEATURE_METADATA.clear()
 
 
 def _augment_dataframe(*args, config: FeatureConfig | None = None, **kwargs):
-    cfg = config or _DEFAULT_FEATURE_CONFIG
+    cfg = config or FeatureConfig()
     func = cfg.cache_function("_augment_dataframe", _augmentation._augment_dataframe_impl)
     return func(*args, **kwargs)
 
 
 def _augment_dtw_dataframe(*args, config: FeatureConfig | None = None, **kwargs):
-    cfg = config or _DEFAULT_FEATURE_CONFIG
+    cfg = config or FeatureConfig()
     func = cfg.cache_function(
         "_augment_dtw_dataframe", _augmentation._augment_dtw_dataframe_impl
     )
@@ -330,7 +326,7 @@ def _augment_dtw_dataframe(*args, config: FeatureConfig | None = None, **kwargs)
 
 def _extract_features(*args, **kwargs):
     config = kwargs.pop("config", None)
-    cfg = config or _DEFAULT_FEATURE_CONFIG
+    cfg = config or FeatureConfig()
     call_kwargs = dict(kwargs)
     call_kwargs.setdefault("n_jobs", cfg.n_jobs)
     return _technical._extract_features(*args, config=cfg, **call_kwargs)
@@ -350,9 +346,6 @@ def _clip_apply(*args, **kwargs):
 
 def _score_anomalies(*args, **kwargs):
     return _anomaly._score_anomalies(*args, **kwargs)
-
-
-configure_cache(_DEFAULT_FEATURE_CONFIG)
 
 
 def train(*args, **kwargs):
