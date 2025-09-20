@@ -84,6 +84,19 @@ class FeaturePipeline:
     power_transformer: PowerTransformer | None = None
     power_indices: list[int] = field(default_factory=list)
     feature_name_to_original: dict[str, str] = field(default_factory=dict)
+    _input_indices: dict[str, int] = field(init=False, repr=False)
+    _feature_indices: dict[str, int] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._ensure_index_maps()
+
+    def _ensure_index_maps(self) -> None:
+        self._input_indices = {
+            name: idx for idx, name in enumerate(self.input_columns)
+        }
+        self._feature_indices = {
+            name: idx for idx, name in enumerate(self.feature_names)
+        }
 
     @classmethod
     def from_model(
@@ -184,8 +197,7 @@ class FeaturePipeline:
             arr = arr.ravel()
         length = arr.shape[0]
         if length == len(self.input_columns):
-            mapping = {name: float(arr[idx]) for idx, name in enumerate(self.input_columns)}
-            features = self._transform_from_mapping(mapping)
+            features = self._transform_from_input_matrix(arr.reshape(1, -1))[0]
         elif length == len(self.feature_names):
             features = arr.astype(float)
         else:
@@ -197,18 +209,10 @@ class FeaturePipeline:
         if data.ndim != 2:
             raise ValueError("feature matrix must be 2-dimensional")
         if data.shape[1] == len(self.input_columns):
-            if data.shape[0] == 0:
-                return np.zeros((0, len(self.feature_names)), dtype=float)
-            rows = [self.transform_array(row) for row in data]
-            return np.vstack(rows)
+            features = self._transform_from_input_matrix(data)
+            return self._apply_power_transform(features)
         if data.shape[1] == len(self.feature_names):
-            features = data.astype(float)
-            if features.size == 0 or not self.power_indices or self.power_transformer is None:
-                return features
-            transformed = self.power_transformer.transform(features[:, self.power_indices])
-            result = features.copy()
-            result[:, self.power_indices] = transformed
-            return result
+            return self._apply_power_transform(data.astype(float))
         raise ValueError("feature matrix column mismatch")
 
     def transform_dict(self, values: Mapping[str, float]) -> np.ndarray:
@@ -252,16 +256,88 @@ class FeaturePipeline:
             )
         return np.asarray(final, dtype=float)
 
+    def _transform_from_input_matrix(self, data: np.ndarray) -> np.ndarray:
+        matrix = np.asarray(data, dtype=float)
+        self._ensure_index_maps()
+        if matrix.ndim != 2:
+            raise ValueError("input matrix must be 2-dimensional")
+        samples, columns = matrix.shape
+        if columns != len(self.input_columns):
+            raise ValueError("input matrix column mismatch")
+        if samples == 0:
+            return np.zeros((0, len(self.feature_names)), dtype=float)
+
+        result = np.full((samples, len(self.feature_names)), np.nan, dtype=float)
+        filled = np.zeros(len(self.feature_names), dtype=bool)
+
+        target_indices: list[int] = []
+        source_indices: list[int] = []
+        for idx, name in enumerate(self.feature_names):
+            src_idx = self._input_indices.get(name)
+            if src_idx is not None:
+                target_indices.append(idx)
+                source_indices.append(src_idx)
+                continue
+            original = self.feature_name_to_original.get(name)
+            if original:
+                src_idx = self._input_indices.get(original)
+                if src_idx is not None:
+                    target_indices.append(idx)
+                    source_indices.append(src_idx)
+
+        if source_indices:
+            gathered = np.take(matrix, source_indices, axis=1)
+            result[:, target_indices] = gathered
+            filled_indices = np.asarray(target_indices, dtype=int)
+            filled[filled_indices] = True
+
+        if self.autoencoder_meta and self.autoencoder_inputs:
+            missing_inputs = [
+                name for name in self.autoencoder_inputs if name not in self._input_indices
+            ]
+            if missing_inputs:
+                raise ValueError(
+                    "missing autoencoder inputs: " + ", ".join(sorted(missing_inputs))
+                )
+            ae_indices = [self._input_indices[name] for name in self.autoencoder_inputs]
+            latent = apply_autoencoder_from_metadata(
+                np.take(matrix, ae_indices, axis=1), self.autoencoder_meta
+            )
+            outputs = self.autoencoder_outputs or self.feature_names[: latent.shape[1]]
+            limit = min(len(outputs), latent.shape[1])
+            if limit:
+                latent_slice = latent[:, :limit]
+                for pos, name in enumerate(outputs[:limit]):
+                    target_idx = self._feature_indices.get(name)
+                    if target_idx is not None:
+                        result[:, target_idx] = latent_slice[:, pos]
+                        filled[target_idx] = True
+
+        missing_features = [
+            self.feature_names[idx] for idx, is_filled in enumerate(filled) if not is_filled
+        ]
+        if missing_features:
+            raise ValueError(
+                "missing features: " + ", ".join(sorted(missing_features))
+            )
+        return result
+
     def _apply_power_transform(self, features: np.ndarray) -> np.ndarray:
         arr = np.asarray(features, dtype=float)
-        if arr.ndim != 1:
-            arr = arr.ravel()
         if self.power_transformer is None or not self.power_indices:
             return arr
-        subset = arr[self.power_indices].reshape(1, -1)
-        transformed = self.power_transformer.transform(subset).ravel()
-        result = arr.copy()
-        for idx, value in zip(self.power_indices, transformed):
-            result[idx] = float(value)
-        return result
+        if arr.ndim == 1:
+            subset = arr[self.power_indices].reshape(1, -1)
+            transformed = self.power_transformer.transform(subset).ravel()
+            result = arr.copy()
+            result[self.power_indices] = transformed
+            return result
+        if arr.ndim == 2:
+            if arr.shape[0] == 0:
+                return arr
+            transformed = self.power_transformer.transform(arr[:, self.power_indices])
+            result = arr.copy()
+            result[:, self.power_indices] = transformed
+            return result
+        raise ValueError("power transform input must be 1D or 2D array")
 
