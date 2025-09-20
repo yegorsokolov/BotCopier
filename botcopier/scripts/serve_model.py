@@ -29,6 +29,7 @@ from botcopier.metrics import (
 )
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.models.schema import FeatureMetadata
+from botcopier.utils.inference import FeaturePipeline
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -60,87 +61,11 @@ def _resolve_threshold(values: Sequence[object]) -> float:
     return 0.5
 
 
-def _load_masked_encoder_from_file(weights_file: object) -> tuple[np.ndarray | None, np.ndarray | None]:
-    if not weights_file:
-        return None, None
-    path = Path(str(weights_file))
-    if not path.is_absolute():
-        path = (MODEL_DIR / path).resolve()
-    if not path.exists():
-        logger.warning("Masked encoder weights file not found at %s", path)
-        return None, None
-    try:
-        import torch  # type: ignore
-
-        state = torch.load(path, map_location="cpu")
-        state_dict = state.get("state_dict", state)
-        weight_tensor = state_dict.get("weight")
-        bias_tensor = state_dict.get("bias")
-        if isinstance(weight_tensor, torch.Tensor):
-            weight_arr = weight_tensor.detach().cpu().numpy()
-        else:
-            weight_arr = (
-                np.asarray(weight_tensor, dtype=float)
-                if weight_tensor is not None
-                else None
-            )
-        if isinstance(bias_tensor, torch.Tensor):
-            bias_arr = bias_tensor.detach().cpu().numpy()
-        else:
-            bias_arr = np.asarray(bias_tensor, dtype=float) if bias_tensor is not None else None
-        return weight_arr, bias_arr
-    except Exception:  # pragma: no cover - optional torch dependency
-        logger.exception("Failed to load masked encoder weights from %s", path)
-        return None, None
-
-
-def _initialise_masked_encoder(meta: dict[str, object] | None) -> None:
-    """Populate globals describing the optional masked encoder."""
-
-    global MASKED_ENCODER_WEIGHTS, MASKED_ENCODER_BIAS, MASKED_ENCODER_INPUTS
-
-    MASKED_ENCODER_WEIGHTS = np.empty((0, 0))
-    MASKED_ENCODER_BIAS = np.empty(0)
-    MASKED_ENCODER_INPUTS = []
-
-    if not isinstance(meta, dict):
-        return
-
-    inputs = meta.get("input_features") or meta.get("original_features")
-    if isinstance(inputs, Sequence):
-        MASKED_ENCODER_INPUTS = [str(col) for col in inputs]
-
-    weights = meta.get("weights")
-    bias = meta.get("bias")
-    weight_arr: np.ndarray | None
-    bias_arr: np.ndarray | None
-    if weights is not None:
-        weight_arr = np.asarray(weights, dtype=float)
-        bias_arr = np.asarray(bias, dtype=float) if bias is not None else None
-    else:
-        weight_arr, bias_arr = _load_masked_encoder_from_file(meta.get("weights_file"))
-    if weight_arr is None:
-        if MASKED_ENCODER_INPUTS:
-            logger.warning("Masked encoder metadata present but weights unavailable")
-        return
-    MASKED_ENCODER_WEIGHTS = weight_arr.astype(float)
-    if bias_arr is not None:
-        MASKED_ENCODER_BIAS = bias_arr.astype(float)
-
-
 def _apply_masked_encoder(raw_features: Sequence[float]) -> list[float]:
-    if MASKED_ENCODER_WEIGHTS.size == 0:
+    if FEATURE_PIPELINE is None:
         return [float(x) for x in raw_features]
-    arr = np.asarray(raw_features, dtype=float)
-    expected = MASKED_ENCODER_WEIGHTS.shape[1]
-    if arr.size != expected:
-        raise ValueError(
-            f"masked encoder expected {expected} features, received {arr.size}"
-        )
-    encoded = arr @ MASKED_ENCODER_WEIGHTS.T
-    if MASKED_ENCODER_BIAS.size == encoded.shape[0]:
-        encoded = encoded + MASKED_ENCODER_BIAS
-    return encoded.astype(float).tolist()
+    transformed = FEATURE_PIPELINE.transform_array([float(x) for x in raw_features])
+    return transformed.astype(float).tolist()
 
 
 def _make_logistic_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
@@ -231,35 +156,20 @@ def _configure_model(model: dict) -> None:
     global PT_INFO, PT, PT_IDX
     global OOD_INFO, OOD_MEAN, OOD_COV, OOD_INV, OOD_THRESHOLD
     global LINEAR_CONFIG, ENSEMBLE_MODELS, ENSEMBLE_WEIGHTS, THRESHOLD
-    global MASKED_ENCODER_INPUTS
+    global MASKED_ENCODER_INPUTS, FEATURE_PIPELINE
 
     MODEL = model
-    FEATURE_METADATA = [FeatureMetadata(**m) for m in model.get("feature_metadata", [])]
-    _EXPECTED_COLS = [fm.original_column for fm in FEATURE_METADATA]
-    FEATURE_NAMES = model.get("feature_names", _EXPECTED_COLS or FEATURE_COLUMNS)
-    if FEATURE_METADATA and len(FEATURE_NAMES) != len(FEATURE_METADATA):
-        raise ValueError("feature_names and feature_metadata mismatch")
-
-    INPUT_COLUMNS = list(_EXPECTED_COLS or FEATURE_NAMES or FEATURE_COLUMNS)
+    FEATURE_PIPELINE = FeaturePipeline.from_model(model, model_dir=MODEL_DIR)
+    FEATURE_METADATA = FEATURE_PIPELINE.feature_metadata
+    FEATURE_NAMES = FEATURE_PIPELINE.feature_names
+    _EXPECTED_COLS = [
+        meta.original_column for meta in FEATURE_METADATA
+    ] if FEATURE_METADATA else []
+    INPUT_COLUMNS = list(FEATURE_PIPELINE.input_columns or FEATURE_NAMES or FEATURE_COLUMNS)
 
     PT_INFO = model.get("power_transformer")
-    PT = None
-    PT_IDX = []
-    if PT_INFO:
-        PT = PowerTransformer(method="yeo-johnson")
-        PT.lambdas_ = np.asarray(PT_INFO.get("lambdas", []), dtype=float)
-        PT.n_features_in_ = PT.lambdas_.shape[0]
-        from sklearn.preprocessing import StandardScaler
-
-        scaler = StandardScaler()
-        scaler.mean_ = np.asarray(PT_INFO.get("mean", []), dtype=float)
-        scaler.scale_ = np.asarray(PT_INFO.get("scale", []), dtype=float)
-        PT._scaler = scaler
-        PT_IDX = [
-            FEATURE_NAMES.index(f)
-            for f in PT_INFO.get("features", [])
-            if f in FEATURE_NAMES
-        ]
+    PT = FEATURE_PIPELINE.power_transformer
+    PT_IDX = list(FEATURE_PIPELINE.power_indices)
 
     OOD_INFO = model.get("ood", {})
     OOD_MEAN = np.asarray(OOD_INFO.get("mean", []), dtype=float)
@@ -323,12 +233,8 @@ def _configure_model(model: dict) -> None:
     threshold_candidates.extend([model.get("decision_threshold"), model.get("threshold")])
     THRESHOLD = _resolve_threshold(threshold_candidates)
 
-    encoder_meta = model.get("masked_encoder")
-    _initialise_masked_encoder(encoder_meta if isinstance(encoder_meta, dict) else None)
-    if MASKED_ENCODER_INPUTS:
-        INPUT_COLUMNS = list(MASKED_ENCODER_INPUTS)
-        _EXPECTED_COLS = list(MASKED_ENCODER_INPUTS)
-    elif not INPUT_COLUMNS:
+    MASKED_ENCODER_INPUTS = list(FEATURE_PIPELINE.autoencoder_inputs)
+    if not INPUT_COLUMNS:
         INPUT_COLUMNS = list(FEATURE_COLUMNS)
 
 
@@ -350,8 +256,7 @@ ENSEMBLE_MODELS: list[Callable[[Sequence[float]], float]] = []
 ENSEMBLE_WEIGHTS: Sequence[float] | None = None
 THRESHOLD: float = 0.5
 MASKED_ENCODER_INPUTS: list[str] = []
-MASKED_ENCODER_WEIGHTS = np.empty((0, 0))
-MASKED_ENCODER_BIAS = np.empty(0)
+FEATURE_PIPELINE: FeaturePipeline | None = None
 
 
 # Load model.json at startup
@@ -390,17 +295,21 @@ class PredictionResponse(BaseModel):
 def _predict_one(features: List[float]) -> float:
     """Compute an ensemble prediction applying the configured threshold."""
 
-    expected = len(FEATURE_METADATA) or len(FEATURE_NAMES)
-    if expected and len(features) != expected:
-        raise ValueError("feature length mismatch")
+    if FEATURE_PIPELINE is not None:
+        transformed = FEATURE_PIPELINE.transform_array(features)
+    else:
+        transformed = np.asarray(features, dtype=float)
+    if transformed.ndim != 1:
+        transformed = transformed.ravel()
+
     if OOD_MEAN.size and OOD_INV.size:
-        arr = np.asarray(features, dtype=float)
-        dist = float(np.sqrt((arr - OOD_MEAN) @ OOD_INV @ (arr - OOD_MEAN)))
+        dist = float(np.sqrt((transformed - OOD_MEAN) @ OOD_INV @ (transformed - OOD_MEAN)))
         if dist > OOD_THRESHOLD:
             OOD_COUNTER.inc()
             return 0.0
+    feature_list = transformed.astype(float).tolist()
     if ENSEMBLE_MODELS:
-        probabilities = [float(p(features)) for p in ENSEMBLE_MODELS]
+        probabilities = [float(p(feature_list)) for p in ENSEMBLE_MODELS]
         if not probabilities:
             raise ValueError("no ensemble estimators available")
         if ENSEMBLE_WEIGHTS is not None and len(ENSEMBLE_WEIGHTS) == len(probabilities):
@@ -415,7 +324,7 @@ def _predict_one(features: List[float]) -> float:
         else:
             prob = float(sum(probabilities) / len(probabilities))
     else:
-        prob = _predict_logistic(features, LINEAR_CONFIG)
+        prob = _predict_logistic(feature_list, LINEAR_CONFIG)
     return prob if prob >= THRESHOLD else 0.0
 
 
@@ -452,12 +361,6 @@ async def predict(req: PredictionRequest) -> PredictionResponse:
         for i in range(len(req.symbols)):
             features = [float(frame.iloc[i][col]) for col in feature_cols]
             try:
-                features = _apply_masked_encoder(features)
-                if PT is not None and PT_IDX:
-                    arr = np.asarray([features[j] for j in PT_IDX], dtype=float).reshape(1, -1)
-                    transformed = PT.transform(arr).ravel().tolist()
-                    for j, val in zip(PT_IDX, transformed):
-                        features[j] = float(val)
                 results.append(_predict_one(features))
             except ValueError as exc:
                 ERROR_COUNTER.labels(type="predict").inc()
