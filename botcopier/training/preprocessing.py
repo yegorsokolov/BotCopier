@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.metadata as importlib_metadata
 import json
@@ -512,9 +513,17 @@ def extract_torch_encoder_weights(model_path: Path) -> tuple[np.ndarray, np.ndar
 
 
 def extract_onnx_encoder_weights(
-    model_path: Path, input_dim: int
-) -> tuple[np.ndarray, np.ndarray | None]:
-    """Derive encoder weights and bias from an ONNX graph."""
+    model_path: Path,
+    input_dim: int,
+    *,
+    sample_inputs: np.ndarray | None = None,
+) -> tuple[np.ndarray | None, np.ndarray | None, dict[str, Any]]:
+    """Derive encoder weights/bias and graph metadata from an ONNX model.
+
+    When the ONNX graph represents a linear mapping we recover the explicit
+    weight matrix and bias. Otherwise the caller can fall back to executing the
+    ONNX graph directly using the returned metadata.
+    """
 
     try:
         import onnxruntime as ort  # type: ignore
@@ -523,17 +532,169 @@ def extract_onnx_encoder_weights(
 
     session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
     inputs = session.get_inputs()
+    outputs = session.get_outputs()
     if not inputs:
         raise ValueError("ONNX encoder has no inputs")
+    if not outputs:
+        raise ValueError("ONNX encoder has no outputs")
+
     input_name = inputs[0].name
-    zero = np.zeros((1, input_dim), dtype=np.float32)
-    bias_out = session.run(None, {input_name: zero})[0]
-    bias = np.asarray(bias_out[0], dtype=float)
-    identity = np.eye(input_dim, dtype=np.float32)
-    encoded_identity = session.run(None, {input_name: identity})[0]
-    weights_t = np.asarray(encoded_identity, dtype=float) - bias
-    weights = weights_t.T
-    return weights, bias
+    output_names = [meta.name for meta in outputs]
+    primary_output = output_names[0]
+
+    sample_matrix: np.ndarray | None
+    if sample_inputs is not None:
+        sample_matrix = np.asarray(sample_inputs, dtype=np.float32)
+        if sample_matrix.ndim != 2 or sample_matrix.shape[1] != input_dim:
+            raise ValueError("sample_inputs must be 2D with input_dim columns")
+    else:
+        sample_matrix = None
+
+    zero_input = np.zeros((1, input_dim), dtype=np.float32)
+    zero_output = np.asarray(
+        session.run([primary_output], {input_name: zero_input})[0], dtype=float
+    )
+    bias = zero_output.reshape(1, -1)[0]
+
+    basis = np.eye(input_dim, dtype=np.float32)
+    basis_outputs = np.asarray(
+        session.run([primary_output], {input_name: basis})[0], dtype=float
+    )
+
+    solve_inputs = basis
+    solve_outputs = basis_outputs
+    sample_outputs: np.ndarray | None = None
+    if sample_matrix is not None:
+        if sample_matrix.size:
+            sample_outputs = np.asarray(
+                session.run([primary_output], {input_name: sample_matrix})[0],
+                dtype=float,
+            )
+            solve_inputs = np.vstack([solve_inputs, sample_matrix])
+            solve_outputs = np.vstack([solve_outputs, sample_outputs])
+        else:
+            sample_outputs = np.empty((0, basis_outputs.shape[1]), dtype=float)
+
+    centred_outputs = solve_outputs - bias
+    weights: np.ndarray | None = None
+    linear_error = float("inf")
+    if solve_inputs.size and centred_outputs.size:
+        try:
+            solution, _, _, _ = np.linalg.lstsq(solve_inputs, centred_outputs, rcond=None)
+        except np.linalg.LinAlgError:
+            solution = None
+        if solution is not None:
+            weights = solution.T
+            predicted = solve_inputs @ weights.T + bias
+            linear_error = float(np.max(np.abs(predicted - solve_outputs)))
+
+    scale = max(1.0, float(np.max(np.abs(solve_outputs)))) if solve_outputs.size else 1.0
+    normalised_error = linear_error / scale if np.isfinite(linear_error) else float("inf")
+    numeric_linear = weights is not None and normalised_error <= 1e-5
+
+    nonlinear_ops: list[str] = []
+    op_types: list[str] = []
+    try:
+        import onnx  # type: ignore
+    except Exception:
+        pass
+    else:
+        model = onnx.load(str(model_path))
+        graph_ops = {node.op_type for node in model.graph.node}
+        op_types = sorted(graph_ops)
+        linear_ops = {
+            "Add",
+            "AveragePool",
+            "BatchNormalization",
+            "Cast",
+            "Concat",
+            "Constant",
+            "Div",
+            "Dropout",
+            "Flatten",
+            "Gather",
+            "Gemm",
+            "Identity",
+            "InstanceNormalization",
+            "MatMul",
+            "Mul",
+            "Pad",
+            "ReduceMean",
+            "ReduceSum",
+            "Reshape",
+            "Shape",
+            "Slice",
+            "Split",
+            "Sub",
+            "Squeeze",
+            "Transpose",
+            "Unsqueeze",
+        }
+        known_nonlinear = {
+            "Abs",
+            "Acos",
+            "Acosh",
+            "Asin",
+            "Asinh",
+            "Atan",
+            "Atanh",
+            "Celu",
+            "Clip",
+            "Cos",
+            "Cosh",
+            "Elu",
+            "Exp",
+            "Gelu",
+            "HardSigmoid",
+            "HardSwish",
+            "Hardmax",
+            "LeakyRelu",
+            "Log",
+            "LogSoftmax",
+            "PRelu",
+            "Relu",
+            "Selu",
+            "Sigmoid",
+            "Softmax",
+            "Softplus",
+            "Softsign",
+            "Swish",
+            "Tanh",
+            "ThresholdedRelu",
+        }
+        suspicious = {
+            op
+            for op in graph_ops
+            if op in known_nonlinear or op not in linear_ops
+        }
+        nonlinear_ops = sorted(suspicious)
+
+    graph_linear = not nonlinear_ops
+    is_linear = numeric_linear and graph_linear
+
+    output_shape = zero_output.shape
+    if zero_output.ndim <= 1:
+        latent_dim = int(zero_output.size)
+    else:
+        latent_dim = int(np.prod(output_shape[1:]))
+
+    metadata: dict[str, Any] = {
+        "onnx_input": input_name,
+        "onnx_outputs": output_names,
+        "latent_dim": latent_dim,
+    }
+    if op_types:
+        metadata["onnx_ops"] = op_types
+    if nonlinear_ops:
+        metadata["onnx_nonlinear_ops"] = nonlinear_ops
+    if sample_outputs is not None:
+        metadata["sample_outputs"] = sample_outputs
+
+    if not is_linear:
+        metadata["onnx_serialized"] = base64.b64encode(model_path.read_bytes()).decode("ascii")
+        return None, None, metadata
+
+    return weights, bias, metadata
 
 
 def apply_autoencoder_from_metadata(
@@ -554,6 +715,32 @@ def apply_autoencoder_from_metadata(
     if scale.size and scale.shape[0] == data.shape[1]:
         safe_scale = np.where(scale == 0, 1.0, scale)
         data = data / safe_scale
+
+    format_name = str(metadata.get("format") or "").lower()
+    if format_name == "onnx_nonlin":
+        try:
+            import onnxruntime as ort  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise ImportError("onnxruntime is required to execute nonlinear encoders") from exc
+
+        serialized = metadata.get("onnx_serialized")
+        session: "ort.InferenceSession"
+        if isinstance(serialized, str) and serialized:
+            graph_bytes = base64.b64decode(serialized.encode("ascii"))
+            session = ort.InferenceSession(graph_bytes, providers=["CPUExecutionProvider"])
+        else:
+            weights_file = metadata.get("weights_file")
+            if not weights_file:
+                raise ValueError("Nonlinear ONNX encoder metadata is missing model bytes")
+            path = Path(str(weights_file))
+            if not path.exists():
+                raise FileNotFoundError(f"ONNX encoder file not found at {path}")
+            session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+
+        input_name = metadata.get("onnx_input") or session.get_inputs()[0].name
+        output_names = metadata.get("onnx_outputs") or [session.get_outputs()[0].name]
+        outputs = session.run(output_names, {input_name: data.astype(np.float32)})[0]
+        return np.asarray(outputs, dtype=float)
 
     weights = metadata.get("weights")
     if weights is None:
@@ -606,8 +793,57 @@ def encode_with_autoencoder(
                 weights, bias = extract_torch_encoder_weights(model_path)
                 metadata["format"] = "torch"
             elif suffix == ".onnx":
-                weights, bias = extract_onnx_encoder_weights(model_path, features)
-                metadata["format"] = "onnx"
+                weights, bias, onnx_info = extract_onnx_encoder_weights(
+                    model_path,
+                    features,
+                    sample_inputs=centered,
+                )
+                sample_outputs = onnx_info.pop("sample_outputs", None)
+                metadata.update(onnx_info)
+                if weights is not None:
+                    metadata["format"] = "onnx"
+                    metadata.setdefault("latent_dim", int(weights.shape[0]))
+                    metadata["weights"] = weights.tolist()
+                    metadata["bias"] = bias.tolist() if bias is not None else None
+                    if sample_outputs is not None:
+                        embedding = np.asarray(sample_outputs, dtype=float)
+                    else:
+                        embedding = centered @ weights.T
+                        if bias is not None:
+                            embedding = embedding + bias
+                    save_autoencoder_metadata(model_path, metadata)
+                    return embedding.astype(float)
+                metadata["format"] = "onnx_nonlin"
+                metadata["weights"] = None
+                metadata["bias"] = None
+                if isinstance(sample_outputs, np.ndarray):
+                    embedding = np.asarray(sample_outputs, dtype=float)
+                elif samples:
+                    try:
+                        import onnxruntime as ort  # type: ignore
+                    except Exception as exc:  # pragma: no cover - optional dependency
+                        raise ImportError(
+                            "onnxruntime is required to execute nonlinear ONNX encoders"
+                        ) from exc
+                    model_bytes = metadata.get("onnx_serialized")
+                    if isinstance(model_bytes, str) and model_bytes:
+                        graph_bytes = base64.b64decode(model_bytes.encode("ascii"))
+                        session = ort.InferenceSession(graph_bytes, providers=["CPUExecutionProvider"])
+                    else:
+                        session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+                    input_name = metadata.get("onnx_input")
+                    if not input_name:
+                        input_name = session.get_inputs()[0].name
+                    output_names = metadata.get("onnx_outputs") or [session.get_outputs()[0].name]
+                    embedding = np.asarray(
+                        session.run(output_names, {input_name: centered.astype(np.float32)})[0],
+                        dtype=float,
+                    )
+                else:
+                    embedding = np.zeros((0, int(metadata.get("latent_dim", 0))), dtype=float)
+                metadata.setdefault("latent_dim", int(embedding.shape[1] if embedding.ndim == 2 else 0))
+                save_autoencoder_metadata(model_path, metadata)
+                return embedding.astype(float)
             else:
                 loaded_meta = load_autoencoder_metadata(model_path)
                 if loaded_meta and loaded_meta.get("weights") is not None:
