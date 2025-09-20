@@ -1,10 +1,14 @@
+import json
 import os
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
 np = pytest.importorskip("numpy")
-pytest.importorskip("pandas")
+if "pandas" not in sys.modules:
+    sys.modules["pandas"] = types.SimpleNamespace()
 
 from botcopier.training import pipeline
 
@@ -76,3 +80,80 @@ def test_autoencoder_embeddings_roundtrip(tmp_path, sample_autoencoder):
     logits = expected_features @ coeff
     expected_prob = 1.0 / (1.0 + np.exp(-logits))
     np.testing.assert_allclose(preds, expected_prob)
+
+
+def test_nonlinear_onnx_autoencoder(tmp_path, monkeypatch):
+    onnx_path = tmp_path / "autoencoder.onnx"
+    X = np.array(
+        [
+            [0.5, 0.25],
+            [0.8, 0.4],
+            [1.2, 0.6],
+            [1.5, 0.75],
+        ],
+        dtype=float,
+    )
+
+    payload = {
+        "weights": [[0.4, -0.1], [0.3, 0.2]],
+        "bias": [0.05, -0.15],
+        "ops": ["MatMul", "Add", "Relu"],
+        "activation": "relu",
+        "input_name": "input",
+        "output_name": "output",
+    }
+    onnx_path.write_text(json.dumps(payload))
+
+    class FakeInferenceSession:
+        def __init__(self, source, providers=None):
+            if isinstance(source, (bytes, bytearray)):
+                raw = bytes(source) if isinstance(source, bytearray) else source
+                data = json.loads(raw.decode("utf-8"))
+            else:
+                data = json.loads(Path(source).read_text())
+            self.weights = np.asarray(data["weights"], dtype=np.float32)
+            self.bias = np.asarray(data["bias"], dtype=np.float32)
+            self.activation = data.get("activation", "relu")
+            self.input_name = data.get("input_name", "input")
+            self.output_name = data.get("output_name", "output")
+            self.ops = data.get("ops", [])
+
+        def get_inputs(self):
+            return [types.SimpleNamespace(name=self.input_name)]
+
+        def get_outputs(self):
+            return [types.SimpleNamespace(name=self.output_name)]
+
+        def run(self, output_names, feeds):
+            arr = np.asarray(feeds[self.input_name], dtype=np.float32)
+            result = arr @ self.weights.T + self.bias
+            if self.activation == "relu":
+                result = np.maximum(result, 0.0)
+            return [result]
+
+    def fake_onnx_load(path):
+        data = json.loads(Path(path).read_text())
+
+        class Graph:
+            node = [types.SimpleNamespace(op_type=op) for op in data.get("ops", [])]
+
+        return types.SimpleNamespace(graph=Graph())
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", types.SimpleNamespace(InferenceSession=FakeInferenceSession))
+    monkeypatch.setitem(sys.modules, "onnx", types.SimpleNamespace(load=fake_onnx_load))
+
+    embeddings = pipeline._encode_with_autoencoder(X, onnx_path, latent_dim=2)
+    metadata = pipeline._load_autoencoder_metadata(onnx_path)
+    assert metadata is not None
+    assert metadata.get("format") == "onnx_nonlin"
+    assert metadata.get("onnx_serialized")
+
+    centered = X - X.mean(axis=0)
+    session = FakeInferenceSession(str(onnx_path))
+    expected = session.run(None, {session.input_name: centered.astype(np.float32)})[0]
+
+    np.testing.assert_allclose(embeddings, expected)
+    np.testing.assert_allclose(
+        pipeline._apply_autoencoder_from_metadata(X, metadata),
+        expected,
+    )

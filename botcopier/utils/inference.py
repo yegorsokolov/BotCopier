@@ -63,7 +63,8 @@ def resolve_autoencoder_metadata(
         if loaded:
             _merge(loaded)
 
-    if resolved.get("weights") in (None, []):
+    format_name = str(resolved.get("format") or "").lower()
+    if resolved.get("weights") in (None, []) and format_name != "onnx_nonlin":
         return None
 
     return resolved

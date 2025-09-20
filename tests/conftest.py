@@ -6,6 +6,7 @@ ALLOWED = {
     "test_generate_mql4_from_model.py",
     "test_batch_backtest.py",
     "test_full_pipeline.py",
+    "test_autoencoder_embeddings.py",
     "performance",
     "test_benchmarks.py",
     "test_nats_publisher_async.py",
