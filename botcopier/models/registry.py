@@ -155,7 +155,9 @@ class ConfidenceWeighted:
     The implementation follows the AROW update rule maintaining a mean
     weight vector and a diagonal covariance matrix.  It exposes a minimal
     scikit-learn like interface with ``partial_fit`` and ``predict``
-    methods allowing it to be used by the online trainer.
+    methods allowing it to be used by the online trainer.  Sample weights
+    are supported, normalised to unit mean and scale the magnitude of each
+    update when provided.
     """
 
     def __init__(self, r: float = 1.0) -> None:
@@ -176,24 +178,63 @@ class ConfidenceWeighted:
                 self.classes_ = np.asarray(classes)
 
     def partial_fit(
-        self, X: np.ndarray, y: np.ndarray, classes: np.ndarray | None = None
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        classes: np.ndarray | None = None,
+        sample_weight: np.ndarray | None = None,
     ) -> "ConfidenceWeighted":
+        """Incrementally fit the classifier on ``X`` and ``y``.
+
+        When ``sample_weight`` is provided the values must be non-negative.
+        The weights are normalised to unit mean so that relative magnitudes
+        determine the scale of each per-example update; zero-weighted examples
+        are skipped entirely.
+        """
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=int)
+        if X.shape[0] != y.shape[0]:
+            raise ValueError("X and y must contain the same number of samples")
+        n_samples = X.shape[0]
+        if sample_weight is None:
+            weights = np.ones(n_samples, dtype=float)
+        else:
+            weights = np.asarray(sample_weight, dtype=float).reshape(-1)
+            if weights.size == 1 and n_samples > 1:
+                weights = np.full(n_samples, float(weights[0]), dtype=float)
+            elif weights.size != n_samples:
+                raise ValueError(
+                    "sample_weight must be broadcastable to the number of samples"
+                )
+            weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+            weights = np.clip(weights, 0.0, None)
+        weight_mean = float(weights.mean())
+        if np.isfinite(weight_mean) and weight_mean > 0.0:
+            weights = weights / weight_mean
         self._ensure_init(X.shape[1], classes)
         assert self.w is not None and self.sigma is not None
-        conf: list[float] = []
-        for xi, yi in zip(X, y):
-            yi2 = 1 if yi == 1 else -1
+
+        def _apply_update(xi: np.ndarray, yi2: int, scale: float) -> float:
             wx = np.dot(self.w, xi) + self.b
             m = yi2 * wx
             v = float(np.dot(xi * xi, self.sigma) + self.bias_sigma)
             beta = 1.0 / (v + self.r)
-            alpha = max(0.0, 1.0 - m) * beta
+            alpha = max(0.0, 1.0 - m) * beta * scale
             self.w += alpha * yi2 * self.sigma * xi
             self.b += alpha * yi2 * self.bias_sigma
-            # keep variances constant to allow adaptation
-            conf.append(m / (np.sqrt(v) + 1e-12))
+            return m / (np.sqrt(v) + 1e-12)
+
+        conf: list[float] = []
+        for xi, yi, wi in zip(X, y, weights):
+            if wi <= 0.0:
+                continue
+            yi2 = 1 if yi == 1 else -1
+            full_steps = int(np.floor(wi))
+            frac = float(wi - full_steps)
+            for _ in range(full_steps):
+                conf.append(_apply_update(xi, yi2, 1.0))
+            if frac > 1e-12:
+                conf.append(_apply_update(xi, yi2, frac))
         if conf:
             self.last_batch_confidence = float(np.mean(conf))
         return self
@@ -272,10 +313,31 @@ def _fit_confidence_weighted(
     r: float = 1.0,
     sample_weight: np.ndarray | None = None,
 ) -> tuple[dict[str, object], Callable[[np.ndarray], np.ndarray]]:
-    """Fit a :class:`ConfidenceWeighted` classifier on ``X`` and ``y``."""
+    """Fit a :class:`ConfidenceWeighted` classifier on ``X`` and ``y``.
+
+    When ``sample_weight`` is supplied the values are normalised to unit mean
+    before calling :meth:`ConfidenceWeighted.partial_fit`, ensuring that
+    heavier samples scale the magnitude of their updates without altering the
+    effective learning rate.
+    """
+
+    weights = None
+    if sample_weight is not None:
+        weights = np.asarray(sample_weight, dtype=float).reshape(-1)
+        if weights.size == 1 and X.shape[0] > 1:
+            weights = np.full(X.shape[0], float(weights[0]), dtype=float)
+        elif weights.size != X.shape[0]:
+            raise ValueError("sample_weight must match the number of samples")
+        weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+        weights = np.clip(weights, 0.0, None)
+        mean = float(weights.mean())
+        if not np.isfinite(mean) or mean <= 0.0:
+            weights = np.ones_like(weights, dtype=float)
+        else:
+            weights = weights / mean
 
     clf = ConfidenceWeighted(r=r)
-    clf.partial_fit(X, y, classes=np.array([0, 1]))
+    clf.partial_fit(X, y, classes=np.array([0, 1]), sample_weight=weights)
 
     def _predict(arr: np.ndarray) -> np.ndarray:
         return clf.predict_proba(arr)[:, 1]
