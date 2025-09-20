@@ -163,21 +163,23 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
         (c for c in ["probability", "prob", "proba"] if c in df.columns), None
     )
     df["probability"] = (
-        pd.to_numeric(df[prob_col], errors="coerce") if prob_col else np.nan
+        pd.to_numeric(df[prob_col], errors="coerce") if prob_col else math.nan
     )
 
     val_col = next(
         (c for c in ["expected_value", "value", "pnl"] if c in df.columns), None
     )
-    df["value"] = pd.to_numeric(df[val_col], errors="coerce") if val_col else np.nan
+    df["value"] = pd.to_numeric(df[val_col], errors="coerce") if val_col else math.nan
 
     if "log_variance" in df.columns or "logvar" in df.columns:
         log_col = "log_variance" if "log_variance" in df.columns else "logvar"
         df["log_variance"] = pd.to_numeric(df[log_col], errors="coerce")
     elif "variance" in df.columns:
+        if np is None:
+            raise ImportError("optional dependencies not installed")
         df["log_variance"] = np.log(pd.to_numeric(df["variance"], errors="coerce"))
     else:
-        df["log_variance"] = np.nan
+        df["log_variance"] = math.nan
 
     model_col = next(
         (c for c in ["executed_model_idx", "model_idx", "model"] if c in df.columns),
@@ -186,12 +188,12 @@ def _load_predictions(pred_file: Path) -> pd.DataFrame:
     if model_col:
         df["executed_model_idx"] = pd.to_numeric(df[model_col], errors="coerce")
     else:
-        df["executed_model_idx"] = np.nan
+        df["executed_model_idx"] = math.nan
 
     if "decision_id" in df.columns:
         df["decision_id"] = pd.to_numeric(df["decision_id"], errors="coerce")
     else:
-        df["decision_id"] = np.nan
+        df["decision_id"] = math.nan
 
     cols = [
         "timestamp",
@@ -311,6 +313,9 @@ def evaluate(
     slippage_bps: float = 0.0,
     hooks: Sequence[str] | None = None,
 ) -> Dict:
+    if np is None or pd is None:
+        raise ImportError("optional dependencies not installed")
+
     predictions = _load_predictions(pred_file)
     trades = _load_actual_trades(actual_log)
 
@@ -346,7 +351,7 @@ def evaluate(
         merged = predictions.copy()
         merged["open_time"] = pd.NaT
         merged["close_time"] = pd.NaT
-        merged["profit"] = np.nan
+        merged["profit"] = math.nan
         merged["ticket"] = pd.NA
     matched_tickets = merged["ticket"].dropna().unique()
 
@@ -466,7 +471,7 @@ def evaluate(
         profits_valid = profits[valid].to_numpy(dtype=float)
         var = np.exp(log_v_vals)
         nll_values = 0.5 * (
-            np.log(2 * np.pi) + log_v_vals + ((profits_valid - mu_vals) ** 2) / var
+            math.log(2 * math.pi) + log_v_vals + ((profits_valid - mu_vals) ** 2) / var
         )
         nd = NormalDist()
         z = nd.inv_cdf(0.05)
@@ -790,7 +795,7 @@ def _classification_metrics(
         ) as exc:  # pragma: no cover - specific errors tested via injection
             err = ServiceError(f"Metric {name} failed", timestamp=datetime.now(UTC))
             logger.warning("%s", err, exc_info=exc)
-            results[name] = np.nan
+            results[name] = math.nan
     return results
 
 
@@ -932,10 +937,13 @@ def search_decision_threshold(
         risk_mask &= drawdowns <= max_drawdown
     if var_limit is not None:
         risk_mask &= var95_values <= var_limit
+    if max_drawdown is not None or var_limit is not None:
+        active_mask = np.any(returns_matrix != 0.0, axis=0)
+        risk_mask &= active_mask
 
     valid_mask = risk_mask & np.isfinite(metric_values)
     if np.any(valid_mask):
-        candidate_scores = np.where(valid_mask, metric_values, np.nan)
+        candidate_scores = np.where(valid_mask, metric_values, math.nan)
         best_idx = int(np.nanargmax(candidate_scores))
         best_threshold = float(thresholds_eval[best_idx])
         best_metrics = metrics_list[best_idx]
@@ -1018,7 +1026,7 @@ def bootstrap_metrics(
         )
         return np.asarray(
             [
-                float(metrics.get(k)) if metrics.get(k) is not None else np.nan
+                float(metrics.get(k)) if metrics.get(k) is not None else math.nan
                 for k in keys
             ],
             dtype=float,
