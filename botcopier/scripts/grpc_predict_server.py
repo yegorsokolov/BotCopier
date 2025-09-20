@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import io
 import json
 import logging
 import math
@@ -247,6 +248,27 @@ def _make_xgboost_predictor(config: dict[str, object]) -> Callable[[Sequence[flo
     return _predict
 
 
+def _make_catboost_predictor(config: dict[str, object]) -> Callable[[Sequence[float]], float]:
+    try:
+        import catboost as cb  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError("catboost is required to load this estimator") from exc
+
+    payload = config.get("cb_model") or config.get("model")
+    if not payload:
+        raise ValueError("missing catboost model payload")
+    buffer = io.BytesIO(base64.b64decode(payload))
+    model = cb.CatBoostClassifier()
+    model.load_model(stream=buffer)
+
+    def _predict(features: Sequence[float]) -> float:
+        arr = np.asarray(features, dtype=float).reshape(1, -1)
+        prob = model.predict_proba(arr)[0, 1]
+        return float(prob)
+
+    return _predict
+
+
 def _predict_logistic(features: Sequence[float]) -> float:
     if not LINEAR_CONFIG.get("coefficients"):
         if not COEFFS:
@@ -328,6 +350,28 @@ def _configure_runtime(model: dict) -> None:
                 logger.exception(
                     "Failed to initialise estimator %s", estimator.get("name", est_type)
                 )
+    standalone_estimators: list[tuple[str, Callable[[dict[str, object]], Callable[[Sequence[float]], float]], dict[str, object]]] = []
+    gb_model = model.get("gb_model")
+    if gb_model:
+        standalone_estimators.append(
+            ("gradient_boosting", _make_gradient_boosting_predictor, {"model": gb_model})
+        )
+    booster_payload = model.get("booster")
+    if booster_payload:
+        standalone_estimators.append(
+            ("xgboost", _make_xgboost_predictor, {"booster": booster_payload})
+        )
+    cb_model = model.get("cb_model")
+    if cb_model:
+        standalone_estimators.append(
+            ("catboost", _make_catboost_predictor, {"cb_model": cb_model})
+        )
+    for name, factory, cfg in standalone_estimators:
+        try:
+            ENSEMBLE_MODELS.append(factory(cfg))
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception("Failed to initialise standalone %s predictor", name)
+
     threshold_candidates.extend([model.get("decision_threshold"), model.get("threshold")])
     THRESHOLD = _resolve_threshold(threshold_candidates)
     _initialise_masked_encoder(model.get("masked_encoder"))
