@@ -59,6 +59,7 @@ from botcopier.scripts.evaluation import (
 from botcopier.scripts.model_card import generate_model_card
 from botcopier.scripts.portfolio import hierarchical_risk_parity
 from botcopier.scripts.splitters import PurgedWalkForward
+from botcopier.shap_utils import mean_absolute_shap
 from botcopier.training.curriculum import _apply_curriculum
 from botcopier.training.evaluation import (
     HAS_OPTUNA,
@@ -1785,84 +1786,66 @@ def train(
         # --- SHAP based feature selection ---------------------------------
         shap_threshold = float(kwargs.get("shap_threshold", 0.0))
         if not sequence_model:
+            mean_abs: np.ndarray | None = None
             try:
-                import shap  # type: ignore
-
-                explainer = None
-                if model_type == "logreg":
-
-                    class _LRWrap:
-                        def __init__(self, coef: list[float], intercept: float) -> None:
-                            self.coef_ = np.asarray(coef, dtype=float).reshape(1, -1)
-                            self.intercept_ = np.asarray([intercept], dtype=float)
-
-                    explainer = shap.LinearExplainer(
-                        _LRWrap(
-                            model_data.get("coefficients", []),
-                            float(model_data.get("intercept", 0.0)),
-                        ),
-                        X,
-                    )
-                else:
-                    # fall back to TreeExplainer if model exposes tree structure
-                    if hasattr(model_data, "booster") or model_type in {
-                        "xgboost",
-                        "lightgbm",
-                        "random_forest",
-                    }:
-                        try:
-                            explainer = shap.TreeExplainer(predict_fn)  # type: ignore[arg-type]
-                        except Exception:  # pragma: no cover - optional
-                            explainer = None
-
-                if explainer is not None:
-                    shap_values = explainer.shap_values(X)
-                    mean_abs = np.abs(shap_values).mean(axis=0)
-                    ranking = sorted(
-                        zip(feature_names, mean_abs), key=lambda x: x[1], reverse=True
-                    )
-                    logger.info("SHAP importance ranking: %s", ranking)
-                    if shap_threshold > 0.0:
-                        mask = mean_abs >= shap_threshold
-                        if mask.sum() < len(feature_names):
-                            X = X[:, mask]
-                            feature_names = [
-                                fn for fn, keep in zip(feature_names, mask) if keep
-                            ]
-                            if model_type == "multi_symbol":
-                                model_inputs = (X, symbol_indices)
-                            else:
-                                model_inputs = X
-                            builder_kwargs = dict(
-                                **gpu_kwargs,
-                                **(best_params or {}),
-                                **extra_model_params,
-                            )
-                            builder_kwargs["sample_weight"] = sample_weight
-                            if model_type in {"moe", "multi_symbol"} or sequence_model:
-                                builder_kwargs["grad_clip"] = grad_clip
-                            if model_type == "multi_symbol":
-                                builder_kwargs.update(
-                                    {
-                                        "symbol_names": symbol_names_ctx,
-                                        "embeddings": symbol_embeddings_ctx,
-                                        "neighbor_index": neighbor_lists_ctx,
-                                        "symbol_ids": symbol_indices,
-                                    }
-                                )
-                                model_data, predict_fn = builder(
-                                    model_inputs[0],
-                                    y,
-                                    **builder_kwargs,
-                                )
-                            else:
-                                model_data, predict_fn = builder(
-                                    model_inputs,
-                                    y,
-                                    **builder_kwargs,
-                                )
+                mean_abs = mean_absolute_shap(
+                    predict_fn, X, model_type=model_type
+                )
+            except ImportError:  # pragma: no cover - optional dependency missing
+                mean_abs = None
             except Exception:  # pragma: no cover - shap is optional
                 logger.exception("Failed to compute SHAP values")
+                mean_abs = None
+
+            if (mean_abs is None or not mean_abs.size) and model_type == "logreg":
+                coef = np.asarray(model_data.get("coefficients", []), dtype=float)
+                if coef.size == X.shape[1]:
+                    mean_abs = np.abs(coef) * np.std(X, axis=0)
+
+            if mean_abs is not None and mean_abs.size:
+                ranking = sorted(
+                    zip(feature_names, mean_abs), key=lambda x: x[1], reverse=True
+                )
+                logger.info("SHAP importance ranking: %s", ranking)
+                if shap_threshold > 0.0:
+                    mask = mean_abs >= shap_threshold
+                    if mask.sum() < len(feature_names):
+                        X = X[:, mask]
+                        feature_names = [
+                            fn for fn, keep in zip(feature_names, mask) if keep
+                        ]
+                        if model_type == "multi_symbol":
+                            model_inputs = (X, symbol_indices)
+                        else:
+                            model_inputs = X
+                        builder_kwargs = dict(
+                            **gpu_kwargs,
+                            **(best_params or {}),
+                            **extra_model_params,
+                        )
+                        builder_kwargs["sample_weight"] = sample_weight
+                        if model_type in {"moe", "multi_symbol"} or sequence_model:
+                            builder_kwargs["grad_clip"] = grad_clip
+                        if model_type == "multi_symbol":
+                            builder_kwargs.update(
+                                {
+                                    "symbol_names": symbol_names_ctx,
+                                    "embeddings": symbol_embeddings_ctx,
+                                    "neighbor_index": neighbor_lists_ctx,
+                                    "symbol_ids": symbol_indices,
+                                }
+                            )
+                            model_data, predict_fn = builder(
+                                model_inputs[0],
+                                y,
+                                **builder_kwargs,
+                            )
+                        else:
+                            model_data, predict_fn = builder(
+                                model_inputs,
+                                y,
+                                **builder_kwargs,
+                            )
         model_obj = getattr(predict_fn, "model", None)
 
         # --- Probability calibration ---------------------------------------

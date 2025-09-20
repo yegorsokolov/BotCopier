@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 from sklearn.inspection import permutation_importance
 
+from botcopier.shap_utils import mean_absolute_shap
+
 # ---------------------------------------------------------------------------
 # Helper utilities
 
@@ -45,15 +47,8 @@ def _linear_coefficients(model) -> np.ndarray | None:
 
 def _shap_importance(model, X: np.ndarray) -> np.ndarray:
     """Compute mean absolute SHAP values for ``X``."""
-    try:  # optional dependency
-        import shap  # type: ignore
-
-        explainer = shap.Explainer(model, X)
-        shap_values = explainer(X)
-        values = np.asarray(getattr(shap_values, "values", shap_values))
-        if values.ndim == 3:  # for models with output dimension
-            values = values[..., 1]
-        return np.abs(values).mean(axis=0)
+    try:
+        return mean_absolute_shap(model, X)
     except Exception:
         coef = _linear_coefficients(model)
         if coef is None:
