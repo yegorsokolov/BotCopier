@@ -113,6 +113,7 @@ from botcopier.training.weighting import (
     normalise_weights,
     summarise_weights,
 )
+from botcopier.utils.inference import FeaturePipeline
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
 from metrics.aggregator import add_metric
@@ -2346,40 +2347,28 @@ def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
     else:
         params = model
 
-    features = np.asarray(X, dtype=float)
-    feature_names = params.get("feature_names") or model.get("feature_names", [])
-    autoencoder_meta = params.get("autoencoder") or model.get("autoencoder")
-    metadata: Mapping[str, Any] | None = None
-    schema_feature_names: Sequence[str] | None = None
-    if autoencoder_meta:
-        metadata = dict(autoencoder_meta)
-        input_feature_names = metadata.get("input_features")
-        if input_feature_names:
-            schema_feature_names = list(input_feature_names)
-        elif feature_names:
-            schema_feature_names = list(feature_names)
-    elif feature_names:
-        schema_feature_names = list(feature_names)
+    pipeline = FeaturePipeline.from_model(model)
+    raw_features = np.asarray(X, dtype=float)
+    if raw_features.ndim != 2:
+        raise ValueError("feature matrix must be 2-dimensional")
 
-    if schema_feature_names:
-        if len(schema_feature_names) != features.shape[1]:
-            raise ValueError(
-                "feature matrix has %s columns but %s feature names provided"
-                % (features.shape[1], len(schema_feature_names))
-            )
-        df = pd.DataFrame(features, columns=schema_feature_names)
+    schema_cols: Sequence[str] = []
+    if raw_features.shape[1] == len(pipeline.input_columns):
+        schema_cols = pipeline.schema_columns
+    elif raw_features.shape[1] == len(pipeline.feature_names):
+        schema_cols = [] if pipeline.autoencoder_meta is not None else pipeline.feature_names
+    elif raw_features.shape[1] != len(pipeline.feature_names):
+        expected_cols = len(pipeline.input_columns) or len(pipeline.feature_names)
+        raise ValueError(
+            f"feature matrix has {raw_features.shape[1]} columns but expected {expected_cols}"
+        )
+
+    if schema_cols:
+        df = pd.DataFrame(raw_features, columns=list(schema_cols))
         FeatureSchema.validate(df, lazy=True)
 
-    if metadata is not None:
-        features = apply_autoencoder_from_metadata(features, metadata)
-        latent_names = metadata.get("feature_names")
-        if latent_names:
-            if len(latent_names) != features.shape[1]:
-                raise ValueError(
-                    "autoencoder produced %s features but %s names provided"
-                    % (features.shape[1], len(latent_names))
-                )
-            feature_names = list(latent_names)
+    features = pipeline.transform_matrix(raw_features)
+    feature_names = pipeline.feature_names
     clip_low = np.asarray(
         params.get("clip_low", model.get("clip_low", [])), dtype=float
     )

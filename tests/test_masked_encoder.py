@@ -2,12 +2,15 @@ import importlib
 import json
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
+
+np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
+sklearn_datasets = pytest.importorskip("sklearn.datasets")
 from sklearn.datasets import make_classification
 
 from botcopier.training.pipeline import train
+from botcopier.utils.inference import FeaturePipeline
 from scripts.pretrain_masked import train as pretrain_encoder
 
 FEATURE_COLS = ["spread", "volume", "hour_sin", "hour_cos"]
@@ -160,19 +163,16 @@ def test_masked_encoder_round_trip_matches_inference(tmp_path: Path) -> None:
         serve.MODEL_DIR = out_dir
         serve._configure_model(model)
         raw_sequence = [float(sample[col]) for col in serve.INPUT_COLUMNS]
-        serve_features = serve._apply_masked_encoder(raw_sequence)
-        if serve.PT is not None and serve.PT_IDX:
-            arr = np.asarray([serve_features[j] for j in serve.PT_IDX], dtype=float).reshape(1, -1)
-            transformed = serve.PT.transform(arr).ravel().tolist()
-            for idx, value in zip(serve.PT_IDX, transformed):
-                serve_features[idx] = float(value)
-        serve_prob = serve._predict_logistic(serve_features, serve.LINEAR_CONFIG)
+        pipeline = FeaturePipeline.from_model(model, model_dir=out_dir)
+        serve_features = pipeline.transform_array(raw_sequence)
+        serve_prob = serve._predict_logistic(serve_features.tolist(), serve.LINEAR_CONFIG)
     else:
         serve_prob = manual_prob
 
     replay_module = importlib.import_module("botcopier.scripts.replay_decisions")
     replay = importlib.reload(replay_module)
     replay.MODEL_DIR = out_dir
+    replay.FEATURE_PIPELINE = FeaturePipeline.from_model(model, model_dir=out_dir)
     replay_prob = replay._predict_logistic(model, features_dict)
 
     assert serve_prob == pytest.approx(manual_prob, rel=1e-6, abs=1e-6)
