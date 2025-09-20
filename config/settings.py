@@ -119,6 +119,8 @@ class TrainingConfig(BaseSettings):
     controller_episode_combination_cap: Optional[int] = None
     controller_baseline_momentum: Optional[float] = 0.9
     meta_weights: Optional[Path] = None
+    monotone_constraints: Optional[List[int]] = None
+    catboost_monotone_draft: Optional[str] = None
 
     model_config = {"env_prefix": "TRAIN_", "extra": "forbid"}
 

@@ -36,6 +36,20 @@ botcopier online-train --csv notebooks/data/trades_raw.csv --model ./models/late
 botcopier analyze-ticks notebooks/data/ticks.csv --interval daily
 ```
 
+### Monotonic constraints for tree ensembles
+
+Tree-based learners in the registry accept optional monotonicity hints. Provide
+the constraint vector through ``TrainingConfig.monotone_constraints`` in
+``params.yaml`` (or override it via the CLI/``param_grid``) to enforce
+feature-wise increasing ``(+1)``, decreasing ``(-1)`` or unconstrained ``(0)``
+relationships. The vector length must match the feature count; the training
+pipeline validates the shape before fitting the estimators.
+
+CatBoost exposes an additional ``monotone_draft`` knob for advanced constraint
+specifications. Set ``TrainingConfig.catboost_monotone_draft`` to forward the
+string directly to ``catboost.CatBoostClassifier`` alongside the standard
+constraint vector.
+
 ## Documentation and notebooks
 
 The MkDocs site, including automatic API reference pages powered by
