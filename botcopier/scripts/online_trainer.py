@@ -949,6 +949,19 @@ class OnlineTrainer:
         except Exception:
             return
         feats, model_name = action
+        telemetry_payload: Dict[str, Any] = dict(self.controller.telemetry)
+        telemetry_payload.update(
+            {
+                "selected_features": list(feats),
+                "selected_model": model_name,
+            }
+        )
+        logger.info("Controller telemetry: %s", telemetry_payload)
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            for key, value in telemetry_payload.items():
+                if isinstance(value, (bool, int, float)):
+                    span.set_attribute(f"controller.{key}", value)
         if feats:
             self.feature_names = list(feats)
         if model_name != self.model_type:
@@ -1455,6 +1468,10 @@ async def run(data_cfg: DataConfig, train_cfg: TrainingConfig) -> None:
         controller_kwargs["max_subset_size"] = train_cfg.controller_max_subset_size
     if train_cfg.controller_episode_sample_size is not None:
         controller_kwargs["episode_sample_size"] = train_cfg.controller_episode_sample_size
+    if train_cfg.controller_episode_combination_cap is not None:
+        controller_kwargs["episode_combination_cap"] = (
+            train_cfg.controller_episode_combination_cap
+        )
     if train_cfg.controller_baseline_momentum is not None:
         controller_kwargs["baseline_momentum"] = train_cfg.controller_baseline_momentum
 

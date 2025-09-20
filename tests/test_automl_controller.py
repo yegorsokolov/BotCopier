@@ -72,3 +72,57 @@ def test_controller_limits_action_growth(tmp_path: Path) -> None:
     assert actions
     assert max(len(subset) for subset, _ in actions) <= 2
     assert len(actions) <= 10 * 5 * len(controller.models)
+    telemetry = controller.telemetry
+    assert int(telemetry["enumerated_actions"]) <= controller.episode_combination_cap
+    assert int(telemetry["explored_actions"]) <= int(telemetry["enumerated_actions"])
+    assert int(telemetry["remaining_actions"]) == (
+        int(telemetry["enumerated_actions"]) - int(telemetry["explored_actions"])
+    )
+
+
+def test_controller_respects_combination_cap(tmp_path: Path) -> None:
+    random.seed(1)
+    features = [f"f{i}" for i in range(50)]
+    controller = AutoMLController(
+        features,
+        {"m1": 1},
+        model_path=tmp_path / "model.json",
+        max_subset_size=3,
+        episode_combination_cap=120,
+        reuse=False,
+    )
+
+    def reward_env(action: Action) -> float:
+        subset, _ = action
+        return 5.0 if len(subset) == 3 else 1.0
+
+    episodes = 60
+    controller.train(reward_env, episodes=episodes, alpha=0.2, penalty=0.0)
+    best = controller.select_best()
+    assert best is not None
+    assert len(best[0]) == 3
+    assert len(controller.action_space) <= episodes * controller.episode_combination_cap
+    telemetry = controller.telemetry
+    assert telemetry["random_sampling"]
+    assert int(telemetry["enumerated_actions"]) <= controller.episode_combination_cap
+
+
+def test_controller_avoids_resampling_within_episode(tmp_path: Path) -> None:
+    random.seed(3)
+    controller = AutoMLController(
+        ["a", "b", "c"],
+        {"m": 1},
+        model_path=tmp_path / "model.json",
+        max_subset_size=1,
+        episode_combination_cap=3,
+        reuse=False,
+    )
+
+    first, _ = controller.sample_action()
+    second, _ = controller.sample_action()
+    assert first != second
+    telemetry = controller.telemetry
+    assert int(telemetry["explored_actions"]) == 2
+    assert int(telemetry["remaining_actions"]) == (
+        int(telemetry["enumerated_actions"]) - 2
+    )

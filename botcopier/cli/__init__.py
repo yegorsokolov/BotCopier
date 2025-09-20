@@ -182,6 +182,10 @@ def train(
         None,
         help="Number of feature subsets sampled per controller episode",
     ),
+    controller_episode_combination_cap: Optional[int] = typer.Option(
+        None,
+        help="Maximum controller feature/model combinations evaluated per episode",
+    ),
     controller_baseline_momentum: Optional[float] = typer.Option(
         None,
         help="Momentum for the controller's reward baseline (set to 0 to disable)",
@@ -227,6 +231,12 @@ def train(
         train_cfg = train_cfg.model_copy(
             update={"controller_episode_sample_size": controller_episode_sample_size}
         )
+    if controller_episode_combination_cap is not None:
+        train_cfg = train_cfg.model_copy(
+            update={
+                "controller_episode_combination_cap": controller_episode_combination_cap
+            }
+        )
     if controller_baseline_momentum is not None:
         train_cfg = train_cfg.model_copy(
             update={"controller_baseline_momentum": controller_baseline_momentum}
@@ -249,6 +259,7 @@ def train(
         reuse_controller=train_cfg.reuse_controller,
         controller_max_subset_size=train_cfg.controller_max_subset_size,
         controller_episode_sample_size=train_cfg.controller_episode_sample_size,
+        controller_episode_combination_cap=train_cfg.controller_episode_combination_cap,
         controller_baseline_momentum=train_cfg.controller_baseline_momentum,
         regime_features=train_cfg.regime_features,
         config_hash=config_hash,
