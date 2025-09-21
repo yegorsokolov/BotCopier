@@ -60,6 +60,7 @@ class DataConfig(BaseSettings):
     log_dir: Optional[Path] = None
     out_dir: Optional[Path] = None
     files_dir: Optional[Path] = None
+    metrics_dir: Optional[Path] = None
     metrics_file: Optional[Path] = None
     tick_file: Optional[Path] = None
     baseline_file: Optional[Path] = None

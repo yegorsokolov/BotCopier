@@ -58,6 +58,12 @@ botcopier evaluate notebooks/data/predictions.csv notebooks/data/trades_raw.csv 
 Both commands write their configuration snapshot to ``params.yaml`` and print a
 JSON metrics summary so you can track changes between runs.
 
+Metrics captured by the training pipeline are persisted as ``*.metrics.json``
+files in the directory specified by ``data.metrics_dir`` (or the
+``DATA_METRICS_DIR`` environment variable).  The aggregator reloads any existing
+history on start-up so dashboards and scripts can resume without losing
+previous observations.
+
 When you have exported raw tick history from MetaTrader, compute quick summary
 statistics directly from the CLI:
 
