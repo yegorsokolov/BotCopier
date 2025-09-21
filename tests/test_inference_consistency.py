@@ -1,9 +1,17 @@
 import importlib
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
 np = pytest.importorskip("numpy")
+
+if "gplearn" not in sys.modules:
+    gplearn_mod = types.ModuleType("gplearn")
+    gplearn_mod.genetic = types.SimpleNamespace(SymbolicTransformer=object)
+    sys.modules["gplearn"] = gplearn_mod
+    sys.modules["gplearn.genetic"] = gplearn_mod.genetic
 
 from botcopier.training import pipeline
 from botcopier.utils.inference import FeaturePipeline
@@ -42,7 +50,7 @@ def test_inference_matches_pipeline_for_autoencoder_and_power_transform(tmp_path
 
     X = np.array([[0.5, 0.3], [1.2, -0.4], [-0.1, 0.8]], dtype=float)
 
-    expected = pipeline.predict_expected_value(model, X)
+    expected = pipeline.predict_expected_value(model, X, model_dir=tmp_path)
 
     serve_module = importlib.reload(importlib.import_module("botcopier.scripts.serve_model"))
     serve_module.MODEL_DIR = tmp_path

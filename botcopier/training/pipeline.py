@@ -50,7 +50,13 @@ from botcopier.features.engineering import (
     _neutralize_against_market_index,
     configure_cache,
 )
-from botcopier.models.registry import MODEL_REGISTRY, get_model, load_params
+from botcopier.models.registry import (
+    MODEL_REGISTRY,
+    TabTransformer,
+    TCNClassifier,
+    get_model,
+    load_params,
+)
 from botcopier.models.schema import FeatureMetadata, ModelParams
 from botcopier.scripts.evaluation import (
     _classification_metrics,
@@ -121,6 +127,11 @@ from metrics.aggregator import add_metric
 logger = logging.getLogger(__name__)
 
 SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn", "crossmodal"}
+
+
+# Backwards compatibility exports for test modules expecting private flags
+_HAS_OPTUNA = HAS_OPTUNA
+_HAS_TORCH = HAS_TORCH
 
 
 def run_optuna(
@@ -2349,15 +2360,44 @@ def train(
         return model_obj
 
 
-def predict_expected_value(model: dict, X: np.ndarray) -> np.ndarray:
-    """Compute expected profit predictions for feature matrix ``X``."""
+def predict_expected_value(
+    model: dict,
+    X: np.ndarray,
+    *,
+    model_dir: Path | str | None = None,
+) -> np.ndarray:
+    """Compute expected profit predictions for feature matrix ``X``.
+
+    Parameters
+    ----------
+    model
+        Serialised model configuration containing feature metadata and
+        estimator parameters.
+    X
+        Feature matrix provided either as engineered features or raw schema
+        columns expected by the model's autoencoder.
+    model_dir
+        Directory containing ``model.json`` and related resources. When
+        provided, relative autoencoder metadata references are resolved using
+        this directory.
+    """
 
     if "session_models" in model and model["session_models"]:
         params = next(iter(model["session_models"].values()))
     else:
         params = model
 
-    pipeline = FeaturePipeline.from_model(model)
+    resolved_dir: Path | None = None
+    if model_dir is not None:
+        candidate = Path(model_dir)
+        if candidate.is_dir():
+            resolved_dir = candidate
+        elif candidate.name.lower() == "model.json" or candidate.suffix.lower() == ".json":
+            resolved_dir = candidate.parent
+        else:
+            resolved_dir = candidate
+
+    pipeline = FeaturePipeline.from_model(model, model_dir=resolved_dir)
     raw_features = np.asarray(X, dtype=float)
     if raw_features.ndim != 2:
         raise ValueError("feature matrix must be 2-dimensional")
