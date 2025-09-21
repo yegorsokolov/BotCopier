@@ -57,10 +57,38 @@ except Exception:  # pragma: no cover - optional
 
 
 AUTOENCODER_META_SUFFIX = ".meta.json"
+LIGHTWEIGHT_ROW_THRESHOLD = 200
+
+
+def _looks_like_header(line: str) -> bool:
+    """Return ``True`` when ``line`` appears to describe column names."""
+
+    stripped = line.strip()
+    if not stripped:
+        return False
+    fields = [stripped]
+    for delimiter in (",", ";", "\t", "|"):
+        if delimiter in stripped:
+            fields = [part.strip() for part in stripped.split(delimiter)]
+            break
+    fields = [field for field in fields if field]
+    if len(fields) <= 1:
+        return False
+    alpha_fields = sum(1 for field in fields if any(char.isalpha() for char in field))
+    if not alpha_fields:
+        return False
+    numeric_fields = sum(1 for field in fields if any(char.isdigit() for char in field))
+    return alpha_fields >= numeric_fields
 
 
 def should_use_lightweight(data_dir: Path, kwargs: Mapping[str, Any]) -> bool:
-    """Return ``True`` when a simplified training path should be used."""
+    """Return ``True`` when a simplified training path should be used.
+
+    The raw trade log is consumed lazily and iteration stops once exceeding
+    :data:`LIGHTWEIGHT_ROW_THRESHOLD` would be unavoidable.  Keep this early
+    exit in mind if adjusting the threshold so large files continue to avoid
+    full scans.
+    """
 
     if kwargs.get("lite_mode"):
         return True
@@ -68,11 +96,23 @@ def should_use_lightweight(data_dir: Path, kwargs: Mapping[str, Any]) -> bool:
     file = data_path if data_path.is_file() else data_path / "trades_raw.csv"
     try:
         with file.open("r", encoding="utf-8") as handle:
-            # subtract header row if present
-            row_count = sum(1 for _ in handle) - 1
+            first_line = handle.readline()
+            if not first_line:
+                return True
+            row_count = 0
+            if not _looks_like_header(first_line):
+                row_count = 1
+                if row_count > LIGHTWEIGHT_ROW_THRESHOLD:
+                    return False
+            for line in handle:
+                if not line:
+                    continue
+                row_count += 1
+                if row_count > LIGHTWEIGHT_ROW_THRESHOLD:
+                    return False
     except FileNotFoundError:
         return False
-    return row_count <= 200
+    return row_count <= LIGHTWEIGHT_ROW_THRESHOLD
 
 
 def dependency_lines(packages: Sequence[str]) -> list[str]:
