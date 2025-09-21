@@ -1,78 +1,902 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>BotCopier Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BotCopier Operations Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
-    <h1>BotCopier Dashboard</h1>
-    <canvas id="metricsChart" width="400" height="200"></canvas>
-    <h2>Trades</h2>
-    <ul id="trades"></ul>
-    <h2>Training Progress</h2>
-    <ul id="training"></ul>
-
-    <script>
-        const token = prompt('API Token');
-
-        const ctx = document.getElementById('metricsChart').getContext('2d');
-        const metricsChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [
-                    { label: 'Win Rate', data: [], yAxisID: 'y' },
-                    { label: 'Flush Latency (ms)', data: [], yAxisID: 'y1' },
-                    { label: 'Network Latency (ms)', data: [], yAxisID: 'y1' },
-                    { label: 'CVaR', data: [], yAxisID: 'y2' },
-                    { label: 'ROC-AUC', data: [], yAxisID: 'y' },
-                    { label: 'PR-AUC', data: [], yAxisID: 'y' },
-                    { label: 'Brier Score', data: [], yAxisID: 'y' }
-                ]
-            },
-            options: {
-                scales: {
-                    y: { type: 'linear', position: 'left' },
-                    y1: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } },
-                    y2: { type: 'linear', position: 'right', grid: { drawOnChartArea: false } }
-                }
-            }
-        });
-
-        function updateChart(metric) {
-            metricsChart.data.labels.push(metric.time);
-            metricsChart.data.datasets[0].data.push(metric.win_rate);
-            metricsChart.data.datasets[1].data.push(metric.flush_latency_ms);
-            metricsChart.data.datasets[2].data.push(metric.network_latency_ms);
-            metricsChart.data.datasets[3].data.push(metric.cvar);
-            metricsChart.data.datasets[4].data.push(metric.roc_auc);
-            metricsChart.data.datasets[5].data.push(metric.pr_auc);
-            metricsChart.data.datasets[6].data.push(metric.brier_score);
-            metricsChart.update();
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0d1b2a;
+            --bg-card: rgba(13, 27, 42, 0.85);
+            --bg-highlight: rgba(255, 255, 255, 0.06);
+            --border: rgba(255, 255, 255, 0.08);
+            --text: #f0f4f8;
+            --text-muted: rgba(240, 244, 248, 0.72);
+            --accent: #2ecc71;
+            --accent-warn: #f39c12;
+            --accent-critical: #e74c3c;
+            --shadow: rgba(0, 0, 0, 0.25);
         }
 
-        const metricsWs = new WebSocket(`ws://${location.host}/ws/metrics?token=${token}`);
-        metricsWs.onmessage = (event) => {
-            const metric = JSON.parse(event.data);
-            updateChart(metric);
-        };
+        * {
+            box-sizing: border-box;
+        }
 
-        const tradesWs = new WebSocket(`ws://${location.host}/ws/trades?token=${token}`);
-        tradesWs.onmessage = (event) => {
-            const trade = JSON.parse(event.data);
-            const li = document.createElement('li');
-            li.textContent = `${trade.symbol} ${trade.action} ${trade.lots}`;
-            document.getElementById('trades').appendChild(li);
-        };
+        body {
+            margin: 0;
+            font-family: "Segoe UI", "Inter", sans-serif;
+            background: radial-gradient(circle at top, #132a45, var(--bg) 60%);
+            color: var(--text);
+            min-height: 100vh;
+        }
 
-        const trainingWs = new WebSocket(`ws://${location.host}/ws/training_progress?token=${token}`);
-        trainingWs.onmessage = (event) => {
-            const prog = JSON.parse(event.data);
-            const li = document.createElement('li');
-            li.textContent = `${prog.step}: ${prog.status}`;
-            document.getElementById('training').appendChild(li);
-        };
+        header {
+            padding: 1.5rem 2rem;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1rem 2rem;
+            justify-content: space-between;
+        }
+
+        header h1 {
+            margin: 0;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .ops-status {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            align-items: flex-end;
+        }
+
+        .ops-status small {
+            color: var(--text-muted);
+        }
+
+        .status-pill {
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            background: var(--bg-highlight);
+            color: var(--text-muted);
+            transition: background 0.3s ease, color 0.3s ease;
+        }
+
+        .status-pill.good {
+            background: rgba(46, 204, 113, 0.18);
+            color: var(--accent);
+        }
+
+        .status-pill.warn {
+            background: rgba(243, 156, 18, 0.18);
+            color: var(--accent-warn);
+        }
+
+        .status-pill.critical {
+            background: rgba(231, 76, 60, 0.18);
+            color: var(--accent-critical);
+        }
+
+        main {
+            padding: 0 2rem 2.5rem;
+            display: grid;
+            gap: 1.5rem;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 1.5rem;
+            box-shadow: 0 12px 32px var(--shadow);
+            backdrop-filter: blur(8px);
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .card h2 {
+            margin: 0;
+            font-size: 1.1rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .controls .toggle-grid {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .toggle {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            gap: 1rem;
+            align-items: center;
+            padding: 0.85rem 1rem;
+            border-radius: 14px;
+            background: var(--bg-highlight);
+        }
+
+        .toggle strong {
+            font-size: 1rem;
+        }
+
+        .toggle span.description {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .toggle input[type="checkbox"] {
+            appearance: none;
+            width: 48px;
+            height: 24px;
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 999px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.3s ease;
+            outline: none;
+        }
+
+        .toggle input[type="checkbox"]::after {
+            content: "";
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--text);
+            position: absolute;
+            top: 2px;
+            left: 3px;
+            transition: transform 0.3s ease;
+        }
+
+        .toggle input[type="checkbox"]:checked {
+            background: rgba(46, 204, 113, 0.45);
+        }
+
+        .toggle input[type="checkbox"]:checked::after {
+            transform: translateX(24px);
+        }
+
+        .toggle .status {
+            font-size: 0.75rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            padding: 0.25rem 0.6rem;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--text-muted);
+            justify-self: end;
+        }
+
+        .toggle .status.on {
+            background: rgba(46, 204, 113, 0.18);
+            color: var(--accent);
+        }
+
+        .toggle .status.off {
+            background: rgba(231, 76, 60, 0.18);
+            color: var(--accent-critical);
+        }
+
+        .controls p.note {
+            margin: 0;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .indicator-banner {
+            padding: 1rem 1.25rem;
+            border-radius: 14px;
+            background: rgba(46, 204, 113, 0.14);
+            color: var(--accent);
+            font-weight: 600;
+            line-height: 1.5;
+            transition: background 0.3s ease, color 0.3s ease;
+        }
+
+        .indicator-banner.warn {
+            background: rgba(243, 156, 18, 0.16);
+            color: var(--accent-warn);
+        }
+
+        .indicator-banner.critical {
+            background: rgba(231, 76, 60, 0.18);
+            color: var(--accent-critical);
+        }
+
+        dl.indicator-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 0.75rem;
+            margin: 0;
+        }
+
+        dl.indicator-details div {
+            background: var(--bg-highlight);
+            padding: 0.75rem;
+            border-radius: 12px;
+        }
+
+        dl.indicator-details dt {
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        dl.indicator-details dd {
+            margin: 0.35rem 0 0;
+            font-size: 1rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        thead {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+        }
+
+        th, td {
+            padding: 0.55rem 0.35rem;
+            text-align: left;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        tbody tr:nth-child(even) {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        tbody tr.positive td:last-child {
+            color: var(--accent);
+        }
+
+        tbody tr.negative td:last-child {
+            color: var(--accent-critical);
+        }
+
+        .training-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .training-list li {
+            background: var(--bg-highlight);
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+        }
+
+        .training-list li span.time {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            display: block;
+        }
+
+        .training-list li strong {
+            display: block;
+            font-size: 0.95rem;
+            margin-bottom: 0.25rem;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 320px !important;
+        }
+
+        @media (max-width: 768px) {
+            header {
+                padding: 1.25rem;
+            }
+
+            main {
+                padding: 0 1.25rem 2.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>BotCopier Control Center</h1>
+        <div class="ops-status">
+            <span id="opsStatus" class="status-pill">Loading…</span>
+            <small>Automation snapshot <span id="lastUpdated">—</span></small>
+        </div>
+    </header>
+    <main>
+        <section class="card controls">
+            <h2>Automation Controls</h2>
+            <div class="toggle-grid">
+                <label class="toggle">
+                    <input type="checkbox" id="autoTradingToggle">
+                    <div>
+                        <strong>Auto Trading</strong>
+                        <span class="description">Live execution of validated signals</span>
+                    </div>
+                    <span class="status" data-status-for="auto_trading">—</span>
+                </label>
+                <label class="toggle">
+                    <input type="checkbox" id="autoRetrainToggle">
+                    <div>
+                        <strong>Auto Retraining</strong>
+                        <span class="description">Nightly refresh of statistical models</span>
+                    </div>
+                    <span class="status" data-status-for="auto_retraining">—</span>
+                </label>
+                <label class="toggle">
+                    <input type="checkbox" id="shadowModeToggle">
+                    <div>
+                        <strong>Shadow Testing</strong>
+                        <span class="description">Real-time mirroring without live orders</span>
+                    </div>
+                    <span class="status" data-status-for="shadow_mode">—</span>
+                </label>
+                <label class="toggle">
+                    <input type="checkbox" id="emergencyStopToggle">
+                    <div>
+                        <strong>Emergency Stop</strong>
+                        <span class="description">Hard stop for execution pathways</span>
+                    </div>
+                    <span class="status" data-status-for="emergency_stop">—</span>
+                </label>
+            </div>
+            <p class="note">The platform favours autonomous operation. Manual overrides should be temporary and only used for anomaly triage.</p>
+        </section>
+
+        <section class="card">
+            <h2>Shadow Testing Signal</h2>
+            <div id="shadowIndicator" class="indicator-banner warn">
+                Awaiting shadow testing results…
+            </div>
+            <dl class="indicator-details">
+                <div>
+                    <dt>Current Accuracy</dt>
+                    <dd id="shadowAccuracy">—</dd>
+                </div>
+                <div>
+                    <dt>Window Minimum</dt>
+                    <dd id="shadowMinAccuracy">—</dd>
+                </div>
+                <div>
+                    <dt>Observation Window</dt>
+                    <dd id="shadowWindow">30 days</dd>
+                </div>
+                <div>
+                    <dt>Last Update</dt>
+                    <dd id="shadowTimestamp">—</dd>
+                </div>
+            </dl>
+        </section>
+
+        <section class="card">
+            <h2>Performance Metrics</h2>
+            <canvas id="metricsChart" aria-label="Performance metrics chart"></canvas>
+        </section>
+
+        <section class="card">
+            <h2>Recent Trades</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Symbol</th>
+                        <th>Action</th>
+                        <th>Lots</th>
+                        <th>Profit</th>
+                    </tr>
+                </thead>
+                <tbody id="tradesBody"></tbody>
+            </table>
+        </section>
+
+        <section class="card">
+            <h2>Decision Stream</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Probability</th>
+                        <th>F1</th>
+                        <th>Shadow Profit</th>
+                    </tr>
+                </thead>
+                <tbody id="decisionsBody"></tbody>
+            </table>
+        </section>
+
+        <section class="card">
+            <h2>Training Progress</h2>
+            <ul class="training-list" id="trainingList"></ul>
+        </section>
+    </main>
+
+    <script>
+        (function () {
+            const MAX_ROWS = 50;
+            const MAX_POINTS = 200;
+            const latestControlState = {};
+            let lastShadowRefresh = 0;
+
+            let token = window.sessionStorage.getItem('botcopier_dashboard_token') || '';
+            if (!token) {
+                const entered = prompt('API Token (leave blank if not required)');
+                if (entered !== null) {
+                    token = entered.trim();
+                    if (token) {
+                        window.sessionStorage.setItem('botcopier_dashboard_token', token);
+                    }
+                }
+            }
+
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+
+            function authFetch(path, options = {}) {
+                const opts = { ...options };
+                opts.headers = opts.headers ? { ...opts.headers } : {};
+                if (token) {
+                    opts.headers['X-API-Token'] = token;
+                }
+                return fetch(path, opts);
+            }
+
+            function wsUrl(path) {
+                const query = token ? `?token=${encodeURIComponent(token)}` : '';
+                return `${wsProtocol}://${window.location.host}${path}${query}`;
+            }
+
+            function toNumber(value) {
+                const num = Number(value);
+                return Number.isFinite(num) ? num : null;
+            }
+
+            function formatNumber(value, options) {
+                const num = Number(value);
+                if (!Number.isFinite(num)) {
+                    return value ?? '—';
+                }
+                return num.toLocaleString(undefined, options);
+            }
+
+            function formatTime(value) {
+                if (!value) {
+                    return '—';
+                }
+                const date = new Date(value);
+                if (Number.isNaN(date.getTime())) {
+                    return value;
+                }
+                return date.toLocaleString();
+            }
+
+            function updateOpsStatus(state) {
+                const pill = document.getElementById('opsStatus');
+                if (!pill) {
+                    return;
+                }
+                pill.className = 'status-pill';
+                let mode = 'good';
+                let message = 'Fully autonomous';
+                if (state.emergency_stop) {
+                    mode = 'critical';
+                    message = 'Emergency stop engaged';
+                } else if (!state.auto_trading) {
+                    mode = 'warn';
+                    message = 'Manual supervision';
+                } else if (!state.shadow_mode) {
+                    mode = 'warn';
+                    message = 'Shadow mode paused';
+                }
+                pill.classList.add(mode);
+                pill.textContent = message;
+            }
+
+            function applyControlState(state) {
+                if (!state) {
+                    return;
+                }
+                const lastUpdatedEl = document.getElementById('lastUpdated');
+                if (state.last_updated && lastUpdatedEl) {
+                    lastUpdatedEl.textContent = formatTime(state.last_updated);
+                }
+                ['auto_trading', 'auto_retraining', 'shadow_mode', 'emergency_stop'].forEach((key) => {
+                    if (state[key] === undefined) {
+                        return;
+                    }
+                    latestControlState[key] = Boolean(state[key]);
+                    const checkboxId = {
+                        auto_trading: 'autoTradingToggle',
+                        auto_retraining: 'autoRetrainToggle',
+                        shadow_mode: 'shadowModeToggle',
+                        emergency_stop: 'emergencyStopToggle',
+                    }[key];
+                    const checkbox = document.getElementById(checkboxId);
+                    if (checkbox && checkbox.checked !== state[key]) {
+                        checkbox.checked = Boolean(state[key]);
+                    }
+                    const statusEl = document.querySelector(`[data-status-for="${key}"]`);
+                    if (statusEl) {
+                        statusEl.textContent = state[key] ? 'Active' : 'Paused';
+                        statusEl.classList.toggle('on', Boolean(state[key]));
+                        statusEl.classList.toggle('off', !state[key]);
+                    }
+                });
+                updateOpsStatus(state);
+            }
+
+            async function fetchControls() {
+                try {
+                    const resp = await authFetch('/controls');
+                    if (!resp.ok) {
+                        throw new Error('Unable to fetch control state');
+                    }
+                    const data = await resp.json();
+                    applyControlState(data);
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+
+            async function updateControl(key, value) {
+                const resp = await authFetch('/controls', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ [key]: value }),
+                });
+                if (!resp.ok) {
+                    throw new Error(`Failed to update ${key}`);
+                }
+                const data = await resp.json();
+                applyControlState(data);
+            }
+
+            function attachControlHandlers() {
+                const mapping = {
+                    auto_trading: document.getElementById('autoTradingToggle'),
+                    auto_retraining: document.getElementById('autoRetrainToggle'),
+                    shadow_mode: document.getElementById('shadowModeToggle'),
+                    emergency_stop: document.getElementById('emergencyStopToggle'),
+                };
+                Object.entries(mapping).forEach(([key, checkbox]) => {
+                    if (!checkbox) {
+                        return;
+                    }
+                    checkbox.addEventListener('change', () => {
+                        const previous = latestControlState[key];
+                        const desired = checkbox.checked;
+                        updateControl(key, desired).catch((err) => {
+                            console.error(err);
+                            checkbox.checked = previous;
+                            fetchControls();
+                        });
+                    });
+                });
+            }
+
+            function appendRow(tbody, cells, className) {
+                const row = document.createElement('tr');
+                if (className) {
+                    row.className = className;
+                }
+                cells.forEach((value) => {
+                    const td = document.createElement('td');
+                    td.textContent = value ?? '—';
+                    row.appendChild(td);
+                });
+                tbody.prepend(row);
+                while (tbody.children.length > MAX_ROWS) {
+                    tbody.removeChild(tbody.lastChild);
+                }
+            }
+
+            function addTradeRow(trade) {
+                if (!trade || typeof trade !== 'object') {
+                    return;
+                }
+                const tbody = document.getElementById('tradesBody');
+                if (!tbody) {
+                    return;
+                }
+                const profit = toNumber(trade.profit);
+                const className = profit == null ? '' : profit >= 0 ? 'positive' : 'negative';
+                appendRow(tbody, [
+                    formatTime(trade.event_time || trade.time || trade.local_time),
+                    trade.symbol ?? '—',
+                    (trade.action || trade.order_type || '—').toString().toUpperCase(),
+                    formatNumber(trade.lots, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                    profit == null ? '—' : profit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                ], className);
+            }
+
+            function addDecisionRow(decision) {
+                if (!decision || typeof decision !== 'object') {
+                    return;
+                }
+                const tbody = document.getElementById('decisionsBody');
+                if (!tbody) {
+                    return;
+                }
+                appendRow(tbody, [
+                    decision.decision_id ?? decision.event_id ?? '—',
+                    formatNumber(decision.probability, { minimumFractionDigits: 3, maximumFractionDigits: 3 }),
+                    formatNumber(decision.f1, { minimumFractionDigits: 3, maximumFractionDigits: 3 }),
+                    formatNumber(decision.profit, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+                ]);
+            }
+
+            function addTrainingUpdate(update) {
+                if (!update || typeof update !== 'object') {
+                    return;
+                }
+                const list = document.getElementById('trainingList');
+                if (!list) {
+                    return;
+                }
+                const item = document.createElement('li');
+                const label = update.step ?? update.stage ?? 'Update';
+                const status = update.status ?? update.message ?? '';
+                const time = formatTime(update.time || update.timestamp || new Date().toISOString());
+                item.innerHTML = `<strong>${label}</strong><span class="time">${time}</span><div>${status}</div>`;
+                list.prepend(item);
+                while (list.children.length > MAX_ROWS) {
+                    list.removeChild(list.lastChild);
+                }
+            }
+
+            function normaliseMetric(metric) {
+                if (!metric || typeof metric !== 'object') {
+                    return null;
+                }
+                if (metric.metrics && typeof metric.metrics === 'object') {
+                    return { ...metric.metrics, strategy: metric.strategy ?? metric.metrics.strategy ?? null, time: metric.time ?? metric.metrics.time ?? metric.metrics.timestamp };
+                }
+                return metric;
+            }
+
+            const chartContext = document.getElementById('metricsChart').getContext('2d');
+            const metricsChart = new Chart(chartContext, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { label: 'Win Rate', data: [], borderColor: '#2ecc71', backgroundColor: 'rgba(46, 204, 113, 0.25)', tension: 0.35 },
+                        { label: 'Flush Latency (ms)', data: [], borderColor: '#3498db', backgroundColor: 'rgba(52, 152, 219, 0.25)', yAxisID: 'y1', tension: 0.35 },
+                        { label: 'Network Latency (ms)', data: [], borderColor: '#9b59b6', backgroundColor: 'rgba(155, 89, 182, 0.25)', yAxisID: 'y1', tension: 0.35 },
+                        { label: 'CVaR', data: [], borderColor: '#f39c12', backgroundColor: 'rgba(243, 156, 18, 0.25)', yAxisID: 'y2', tension: 0.35 },
+                        { label: 'ROC-AUC', data: [], borderColor: '#1abc9c', backgroundColor: 'rgba(26, 188, 156, 0.25)', tension: 0.35 },
+                        { label: 'PR-AUC', data: [], borderColor: '#e67e22', backgroundColor: 'rgba(230, 126, 34, 0.25)', tension: 0.35 },
+                        { label: 'Brier Score', data: [], borderColor: '#e74c3c', backgroundColor: 'rgba(231, 76, 60, 0.25)', tension: 0.35 },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: var_get('--text'),
+                            },
+                        },
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: var_get('--text-muted'), maxRotation: 45, minRotation: 45 },
+                            grid: { color: 'rgba(255,255,255,0.06)' },
+                        },
+                        y: {
+                            ticks: { color: var_get('--text-muted') },
+                            grid: { color: 'rgba(255,255,255,0.06)' },
+                        },
+                        y1: {
+                            position: 'right',
+                            ticks: { color: var_get('--text-muted') },
+                            grid: { drawOnChartArea: false },
+                        },
+                        y2: {
+                            position: 'right',
+                            ticks: { color: var_get('--text-muted') },
+                            grid: { drawOnChartArea: false },
+                        },
+                    },
+                },
+            });
+
+            function var_get(name) {
+                return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#ffffff';
+            }
+
+            function updateChart(metric) {
+                const entry = normaliseMetric(metric);
+                if (!entry) {
+                    return;
+                }
+                const label = formatTime(entry.time || new Date().toISOString());
+                metricsChart.data.labels.push(label);
+                const mappings = [
+                    entry.win_rate,
+                    entry.flush_latency_ms,
+                    entry.network_latency_ms,
+                    entry.cvar,
+                    entry.roc_auc,
+                    entry.pr_auc,
+                    entry.brier_score,
+                ];
+                metricsChart.data.datasets.forEach((dataset, idx) => {
+                    const value = toNumber(mappings[idx]);
+                    dataset.data.push(value);
+                    while (dataset.data.length > MAX_POINTS) {
+                        dataset.data.shift();
+                    }
+                });
+                while (metricsChart.data.labels.length > MAX_POINTS) {
+                    metricsChart.data.labels.shift();
+                }
+                metricsChart.update('none');
+                const now = Date.now();
+                if (now - lastShadowRefresh > 15000) {
+                    lastShadowRefresh = now;
+                    refreshShadowStatus();
+                }
+            }
+
+            function updateShadowIndicator(status) {
+                const banner = document.getElementById('shadowIndicator');
+                const accuracyEl = document.getElementById('shadowAccuracy');
+                const minEl = document.getElementById('shadowMinAccuracy');
+                const windowEl = document.getElementById('shadowWindow');
+                const tsEl = document.getElementById('shadowTimestamp');
+                if (!banner) {
+                    return;
+                }
+                banner.classList.remove('good', 'warn', 'critical');
+                if (!status || status.current_accuracy === null || status.current_accuracy === undefined) {
+                    banner.textContent = 'Awaiting shadow testing results…';
+                    banner.classList.add('warn');
+                    if (accuracyEl) accuracyEl.textContent = '—';
+                    if (minEl) minEl.textContent = '—';
+                    if (windowEl) windowEl.textContent = `${status ? status.window_days : 30} days`;
+                    if (tsEl) tsEl.textContent = '—';
+                    return;
+                }
+                banner.textContent = status.status;
+                if (status.meets_threshold) {
+                    banner.classList.add('good');
+                } else if (status.has_month) {
+                    banner.classList.add('critical');
+                } else {
+                    banner.classList.add('warn');
+                }
+                if (accuracyEl) {
+                    accuracyEl.textContent = `${(Number(status.current_accuracy) * 100).toFixed(2)}%`;
+                }
+                if (minEl) {
+                    minEl.textContent = status.window_min_accuracy != null ? `${(Number(status.window_min_accuracy) * 100).toFixed(2)}%` : '—';
+                }
+                if (windowEl) {
+                    windowEl.textContent = `${status.window_days} days`;
+                }
+                if (tsEl) {
+                    tsEl.textContent = formatTime(status.latest_timestamp);
+                }
+            }
+
+            async function refreshShadowStatus() {
+                try {
+                    const resp = await authFetch('/shadow_status');
+                    if (!resp.ok) {
+                        throw new Error('Failed to fetch shadow status');
+                    }
+                    const data = await resp.json();
+                    updateShadowIndicator(data);
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+
+            async function loadInitialData() {
+                try {
+                    const [tradesResp, decisionsResp, trainingResp] = await Promise.all([
+                        authFetch('/trades'),
+                        authFetch('/decisions'),
+                        authFetch('/training_progress'),
+                    ]);
+                    if (tradesResp.ok) {
+                        const trades = await tradesResp.json();
+                        trades.slice(-MAX_ROWS).forEach(addTradeRow);
+                    }
+                    if (decisionsResp.ok) {
+                        const decs = await decisionsResp.json();
+                        decs.slice(-MAX_ROWS).forEach(addDecisionRow);
+                    }
+                    if (trainingResp.ok) {
+                        const training = await trainingResp.json();
+                        training.slice(-MAX_ROWS).forEach(addTrainingUpdate);
+                    }
+                } catch (err) {
+                    console.error(err);
+                }
+            }
+
+            function connectWebSockets() {
+                const metricsWs = new WebSocket(wsUrl('/ws/metrics'));
+                metricsWs.onmessage = (event) => {
+                    try {
+                        const metric = JSON.parse(event.data);
+                        updateChart(metric);
+                    } catch (err) {
+                        console.error('Metric parse error', err);
+                    }
+                };
+
+                const tradesWs = new WebSocket(wsUrl('/ws/trades'));
+                tradesWs.onmessage = (event) => {
+                    try {
+                        const trade = JSON.parse(event.data);
+                        addTradeRow(trade);
+                    } catch (err) {
+                        console.error('Trade parse error', err);
+                    }
+                };
+
+                const decisionsWs = new WebSocket(wsUrl('/ws/decisions'));
+                decisionsWs.onmessage = (event) => {
+                    try {
+                        const decision = JSON.parse(event.data);
+                        addDecisionRow(decision);
+                    } catch (err) {
+                        console.error('Decision parse error', err);
+                    }
+                };
+
+                const trainingWs = new WebSocket(wsUrl('/ws/training_progress'));
+                trainingWs.onmessage = (event) => {
+                    try {
+                        const update = JSON.parse(event.data);
+                        addTrainingUpdate(update);
+                    } catch (err) {
+                        console.error('Training parse error', err);
+                    }
+                };
+
+                const controlsWs = new WebSocket(wsUrl('/ws/controls'));
+                controlsWs.onmessage = (event) => {
+                    try {
+                        const state = JSON.parse(event.data);
+                        applyControlState(state);
+                    } catch (err) {
+                        console.error('Control update parse error', err);
+                    }
+                };
+            }
+
+            attachControlHandlers();
+            fetchControls();
+            refreshShadowStatus();
+            loadInitialData();
+            connectWebSockets();
+            setInterval(refreshShadowStatus, 60000);
+        })();
     </script>
 </body>
 </html>
