@@ -10,7 +10,7 @@ from botcopier.models.registry import get_model
 
 logger = logging.getLogger(__name__)
 
-SEQUENCE_MODELS = {"tabtransformer", "tcn"}
+SEQUENCE_MODELS = {"tabtransformer", "tcn", "crossmodal"}
 
 
 def _apply_curriculum(
