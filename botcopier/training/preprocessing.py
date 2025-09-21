@@ -118,16 +118,27 @@ def normalise_feature_subset(
 def filter_feature_matrix(
     matrix: np.ndarray, feature_names: list[str], subset: Sequence[str]
 ) -> tuple[np.ndarray, list[str]]:
-    """Return ``matrix`` and ``feature_names`` filtered to ``subset`` preserving order."""
+    """Return ``matrix`` and ``feature_names`` filtered to ``subset`` preserving order.
+
+    The returned feature names follow the order provided in ``subset`` (first
+    occurrences when duplicates are supplied).
+    """
 
     if not subset:
         return matrix, feature_names
-    missing = [name for name in subset if name not in feature_names]
+    index_by_name = {name: idx for idx, name in enumerate(feature_names)}
+    missing = [name for name in subset if name not in index_by_name]
     if missing:
         raise ValueError(
             "Requested features not present in engineered feature set: %s" % missing
         )
-    keep = [idx for idx, name in enumerate(feature_names) if name in set(subset)]
+    keep: list[int] = []
+    seen: set[str] = set()
+    for name in subset:
+        if name in seen:
+            continue
+        seen.add(name)
+        keep.append(index_by_name[name])
     if not keep:
         raise ValueError("feature subset produced an empty feature matrix")
     if matrix.ndim != 2 or matrix.shape[1] != len(feature_names):

@@ -1,5 +1,7 @@
+import builtins
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -17,6 +19,7 @@ from botcopier.training.pipeline import (
     _extract_features,
     predict_expected_value,
 )
+from botcopier.training import preprocessing
 
 
 def test_voting_ensemble_improves_accuracy(tmp_path):
@@ -217,6 +220,43 @@ def test_feature_subset_filters_columns(tmp_path: Path) -> None:
     coeffs = model["session_models"]["asian"]["coefficients"]
     assert len(coeffs) == len(subset)
     assert model["metadata"].get("selected_features") == subset
+
+
+def test_feature_subset_respects_requested_order(tmp_path: Path) -> None:
+    df = _make_schema_compliant_frame(210)
+    data_file = tmp_path / "trades_raw.csv"
+    df.to_csv(data_file, index=False)
+
+    subset = ["hour_cos", "spread", "volume"]
+    out_dir = tmp_path / "out_subset_ordered"
+    train(data_file, out_dir, feature_subset=subset)
+
+    model = json.loads((out_dir / "model.json").read_text())
+    assert model["feature_names"] == subset
+    assert model["metadata"].get("selected_features") == subset
+
+
+def test_filter_feature_matrix_large_subset_preserves_order(monkeypatch) -> None:
+    feature_names = [f"f{i}" for i in range(500)]
+    matrix = np.arange(len(feature_names) * 4, dtype=float).reshape(4, len(feature_names))
+    subset = list(reversed(feature_names))
+
+    calls: list[tuple[Any, ...]] = []
+
+    def tracked_set(*args, **kwargs):
+        calls.append(args)
+        return builtins.set(*args, **kwargs)
+
+    monkeypatch.setattr(preprocessing, "set", tracked_set, raising=False)
+
+    filtered, names = preprocessing.filter_feature_matrix(matrix, feature_names, subset)
+
+    assert names == subset
+    assert filtered.shape == (matrix.shape[0], len(subset))
+    index_by_name = {name: idx for idx, name in enumerate(feature_names)}
+    expected = matrix[:, [index_by_name[name] for name in subset]]
+    assert np.array_equal(filtered, expected)
+    assert all(len(args) == 0 for args in calls)
 
 
 def test_feature_subset_missing_feature_raises(tmp_path: Path) -> None:
