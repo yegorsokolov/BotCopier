@@ -159,17 +159,36 @@ class FeaturePipeline:
         schema_columns = list(input_columns)
 
         if autoencoder_meta:
-            sources = autoencoder_meta.get("input_features") or autoencoder_meta.get("original_features")
+            sources = (
+                autoencoder_meta.get("input_features")
+                or autoencoder_meta.get("original_features")
+            )
             if sources:
                 auto_inputs = _normalise_feature_list(sources)
             elif input_columns:
                 auto_inputs = list(input_columns)
-            outputs = autoencoder_meta.get("feature_names") or []
-            auto_outputs = [str(name) for name in outputs if str(name) in feature_names]
+
+            outputs_raw = (
+                autoencoder_meta.get("feature_names")
+                or autoencoder_meta.get("autoencoder_outputs")
+                or []
+            )
+            auto_outputs = _normalise_feature_list(outputs_raw)
             if not auto_outputs:
-                latent_dim = int(autoencoder_meta.get("latent_dim", len(feature_names)))
-                latent_dim = max(0, min(latent_dim, len(feature_names)))
-                auto_outputs = feature_names[:latent_dim]
+                raise ValueError(
+                    "autoencoder metadata must define output feature names via "
+                    "'feature_names' or 'autoencoder_outputs'"
+                )
+            missing_outputs = [
+                name for name in auto_outputs if name not in feature_names
+            ]
+            if missing_outputs:
+                missing = ", ".join(sorted(missing_outputs))
+                available = ", ".join(feature_names) or "none"
+                raise ValueError(
+                    "autoencoder outputs %s are not present in feature_names (%s)"
+                    % (missing, available)
+                )
             schema_columns = list(auto_inputs)
 
         combined_inputs: list[str] = []
@@ -254,7 +273,12 @@ class FeaturePipeline:
             arr = np.asarray([resolved[name] for name in self.autoencoder_inputs], dtype=float)
             embedding = apply_autoencoder_from_metadata(arr.reshape(1, -1), self.autoencoder_meta)
             latent = embedding.ravel()
-            outputs = self.autoencoder_outputs or self.feature_names[: len(latent)]
+            outputs = self.autoencoder_outputs
+            if not outputs:
+                raise ValueError(
+                    "autoencoder_outputs are not configured; ensure metadata "
+                    "includes output feature names"
+                )
             if len(outputs) != len(latent):
                 limit = min(len(outputs), len(latent))
                 outputs = outputs[:limit]
@@ -322,7 +346,12 @@ class FeaturePipeline:
             latent = apply_autoencoder_from_metadata(
                 np.take(matrix, ae_indices, axis=1), self.autoencoder_meta
             )
-            outputs = self.autoencoder_outputs or self.feature_names[: latent.shape[1]]
+            outputs = self.autoencoder_outputs
+            if not outputs:
+                raise ValueError(
+                    "autoencoder_outputs are not configured; ensure metadata "
+                    "includes output feature names"
+                )
             limit = min(len(outputs), latent.shape[1])
             if limit:
                 latent_slice = latent[:, :limit]
