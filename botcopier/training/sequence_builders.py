@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -11,6 +12,19 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+try:
+    from numpy.lib.stride_tricks import sliding_window_view as _sliding_window_view
+except (ImportError, AttributeError):  # pragma: no cover - depends on NumPy version
+    _sliding_window_view = None
+    _HAS_SLIDING_WINDOW_VIEW = False
+else:  # pragma: no cover - executed when NumPy provides the helper
+    try:
+        _HAS_SLIDING_WINDOW_VIEW = (
+            "axis" in inspect.signature(_sliding_window_view).parameters
+        )
+    except (TypeError, ValueError):  # pragma: no cover - signature lookup failure
+        _HAS_SLIDING_WINDOW_VIEW = False
 
 
 def prepare_symbol_context(
@@ -134,11 +148,29 @@ def build_window_sequences(
 
     if X.shape[0] < window_length:
         raise ValueError("Not enough samples for the requested window length")
-    seq_list = [
-        X[i - window_length + 1 : i + 1]
-        for i in range(window_length - 1, X.shape[0])
-    ]
-    sequence_data = np.stack(seq_list, axis=0).astype(float)
+
+    sequence_view: np.ndarray | None = None
+    if _HAS_SLIDING_WINDOW_VIEW and _sliding_window_view is not None:
+        try:
+            sequence_view = _sliding_window_view(
+                X, window_shape=window_length, axis=0
+            )
+            if sequence_view.ndim >= 2:
+                sequence_view = np.moveaxis(sequence_view, -1, 1)
+        except TypeError:  # pragma: no cover - legacy signature without ``axis``
+            logger.debug(
+                "sliding_window_view does not support ``axis``; falling back to loops"
+            )
+            sequence_view = None
+
+    if sequence_view is not None:
+        sequence_data = np.ascontiguousarray(sequence_view).astype(float, copy=False)
+    else:
+        seq_list = [
+            X[i - window_length + 1 : i + 1]
+            for i in range(window_length - 1, X.shape[0])
+        ]
+        sequence_data = np.stack(seq_list, axis=0).astype(float)
     X = X[window_length - 1 :]
     y = y[window_length - 1 :]
     profits = profits[window_length - 1 :]
