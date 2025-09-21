@@ -2145,9 +2145,18 @@ def train(
             meta_entry["adapted"] = True
             model.setdefault("meta", meta_entry)
             model.setdefault("meta_weights", meta_init.tolist())
+        latent_columns: list[str] = []
         if autoencoder_info is not None:
             auto_meta_copy = json.loads(json.dumps(autoencoder_info))
             model["autoencoder"] = auto_meta_copy
+            outputs = auto_meta_copy.get("feature_names")
+            if isinstance(outputs, list):
+                for name in outputs:
+                    text = str(name)
+                    if text:
+                        latent_columns.append(text)
+            if latent_columns:
+                model["autoencoder_outputs"] = list(latent_columns)
         if encoder_meta is not None:
             model["masked_encoder"] = encoder_meta
         if getattr(technical_features, "_DEPTH_CNN_STATE", None) is not None:
@@ -2211,6 +2220,8 @@ def train(
             ]
             if autoencoder_info is not None:
                 sm_keys.append("autoencoder")
+                if latent_columns:
+                    sm_keys.append("autoencoder_outputs")
             if encoder_meta is not None:
                 sm_keys.append("masked_encoder")
             model["session_models"] = {
@@ -2222,6 +2233,8 @@ def train(
                     sess.setdefault(
                         "autoencoder", json.loads(json.dumps(autoencoder_info))
                     )
+                    if latent_columns:
+                        sess.setdefault("autoencoder_outputs", list(latent_columns))
             if encoder_meta is not None:
                 for sess in model["session_models"].values():
                     sess.setdefault("masked_encoder", json.loads(json.dumps(encoder_meta)))

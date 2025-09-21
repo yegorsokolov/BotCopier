@@ -200,6 +200,7 @@ def test_autoencoder_embedding_shapes(tmp_path: Path) -> None:
     assert (out_dir / "autoencoder.pt").exists()
     model = json.loads((out_dir / "model.json").read_text())
     assert model["feature_names"] == ["ae_0", "ae_1"]
+    assert model.get("autoencoder_outputs") == ["ae_0", "ae_1"]
     feature_config = configure_cache(FeatureConfig())
     df, feature_cols, _ = _load_logs(data, feature_config=feature_config)
     df, feature_cols, _, _ = _extract_features(
