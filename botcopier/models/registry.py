@@ -25,12 +25,22 @@ from .schema import ModelParams
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
+
+def _log_optional_dependency(
+    library: str, feature: str, exc: ImportError
+) -> None:
+    """Log a short message when an optional dependency is unavailable."""
+
+    message = f"{feature} disabled (missing {library})"
+    logger.info(message)
+    logger.debug("%s import error: %s", library, exc)
+
 try:  # Optional dependency
     import torch
 
     _HAS_TORCH = True
-except ImportError:  # pragma: no cover - optional
-    logger.exception("PyTorch is unavailable")
+except ImportError as exc:  # pragma: no cover - optional
+    _log_optional_dependency("PyTorch", "PyTorch models", exc)
     torch = None  # type: ignore
     _HAS_TORCH = False
 
@@ -38,8 +48,8 @@ try:  # Optional dependency
     import xgboost as xgb  # type: ignore
 
     _HAS_XGB = True
-except ImportError:  # pragma: no cover - optional
-    logger.exception("XGBoost is unavailable")
+except ImportError as exc:  # pragma: no cover - optional
+    _log_optional_dependency("XGBoost", "XGBoost models", exc)
     xgb = None  # type: ignore
     _HAS_XGB = False
 
@@ -47,8 +57,8 @@ try:  # Optional dependency
     import catboost as cb  # type: ignore
 
     _HAS_CATBOOST = True
-except ImportError:  # pragma: no cover - optional
-    logger.exception("CatBoost is unavailable")
+except ImportError as exc:  # pragma: no cover - optional
+    _log_optional_dependency("CatBoost", "CatBoost models", exc)
     cb = None  # type: ignore
     _HAS_CATBOOST = False
 
