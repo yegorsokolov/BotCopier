@@ -30,7 +30,11 @@ from botcopier.metrics import (
 )
 from botcopier.data.feature_schema import FeatureSchema
 from botcopier.models.schema import FeatureMetadata
-from botcopier.utils.inference import FeaturePipeline
+from botcopier.utils.inference import (
+    FeaturePipeline,
+    apply_probability_calibration,
+    resolve_calibration_metadata,
+)
 
 try:  # optional feast dependency
     from feast import FeatureStore  # type: ignore
@@ -78,6 +82,7 @@ def _make_logistic_predictor(config: dict[str, object]) -> Callable[[Sequence[fl
     clip_high = np.asarray(config.get("clip_high", []), dtype=float)
     center = np.asarray(config.get("center", []), dtype=float)
     scale = np.asarray(config.get("scale", []), dtype=float)
+    calibration_meta, cal_coef, cal_inter = resolve_calibration_metadata(config)
 
     def _predict(features: Sequence[float]) -> float:
         arr = np.asarray(features, dtype=float)
@@ -89,7 +94,14 @@ def _make_logistic_predictor(config: dict[str, object]) -> Callable[[Sequence[fl
             safe_scale = np.where(scale == 0, 1.0, scale)
             arr = (arr - center) / safe_scale
         score = float(np.dot(coeffs, arr) + intercept)
-        return float(_sigmoid(score))
+        _, calibrated = apply_probability_calibration(
+            score,
+            _sigmoid(score),
+            calibration=calibration_meta,
+            legacy_coef=cal_coef,
+            legacy_intercept=cal_inter,
+        )
+        return float(np.asarray(calibrated, dtype=float))
 
     return _predict
 
@@ -168,7 +180,17 @@ def _predict_logistic(features: Sequence[float], config: dict[str, object]) -> f
         safe_scale = np.where(scale == 0, 1.0, scale)
         arr = (arr - center) / safe_scale
     score = float(np.dot(coeffs, arr) + intercept)
-    return float(_sigmoid(score))
+    calibration_meta, cal_coef, cal_inter = resolve_calibration_metadata(
+        config, MODEL
+    )
+    _, calibrated = apply_probability_calibration(
+        score,
+        _sigmoid(score),
+        calibration=calibration_meta,
+        legacy_coef=cal_coef,
+        legacy_intercept=cal_inter,
+    )
+    return float(np.asarray(calibrated, dtype=float))
 
 
 def _configure_model(model: dict) -> None:
@@ -214,6 +236,9 @@ def _configure_model(model: dict) -> None:
         "clip_high": model.get("clip_high", []),
         "center": model.get("feature_mean", []),
         "scale": model.get("feature_std", []),
+        "calibration": model.get("calibration"),
+        "calibration_coef": model.get("calibration_coef"),
+        "calibration_intercept": model.get("calibration_intercept"),
     }
     ENSEMBLE_MODELS = []
     ENSEMBLE_WEIGHTS = None
@@ -247,6 +272,16 @@ def _configure_model(model: dict) -> None:
                         ),
                         "center": estimator.get("center", LINEAR_CONFIG.get("center", [])),
                         "scale": estimator.get("scale", LINEAR_CONFIG.get("scale", [])),
+                        "calibration": estimator.get(
+                            "calibration", LINEAR_CONFIG.get("calibration")
+                        ),
+                        "calibration_coef": estimator.get(
+                            "calibration_coef", LINEAR_CONFIG.get("calibration_coef")
+                        ),
+                        "calibration_intercept": estimator.get(
+                            "calibration_intercept",
+                            LINEAR_CONFIG.get("calibration_intercept"),
+                        ),
                     }
                 elif est_type == "gradient_boosting":
                     ENSEMBLE_MODELS.append(_make_gradient_boosting_predictor(estimator))
