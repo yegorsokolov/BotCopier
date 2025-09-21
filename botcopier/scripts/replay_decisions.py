@@ -50,7 +50,11 @@ else:  # pragma: no cover - optional dependency
     TCNClassifier = None  # type: ignore
     MixtureOfExperts = None  # type: ignore
 from botcopier.training.pipeline import detect_resources
-from botcopier.utils.inference import FeaturePipeline
+from botcopier.utils.inference import (
+    FeaturePipeline,
+    apply_probability_calibration,
+    resolve_calibration_metadata,
+)
 
 try:  # optional graph embedding support
     from graph_dataset import GraphDataset, compute_gnn_embeddings
@@ -129,24 +133,17 @@ def _predict_logistic(model: Dict, features: Dict[str, float]) -> float:
         coeffs = coeffs[: vec.shape[0]]
     std_safe = np.where(std == 0, 1, std)
     z = ((vec - mean) / std_safe) @ coeffs + intercept
-    prob = float(1 / (1 + math.exp(-z)))
-    calib = model.get("calibration")
-    if isinstance(calib, dict):
-        if calib.get("method") == "isotonic":
-            x = np.asarray(calib.get("x", []), dtype=float)
-            y = np.asarray(calib.get("y", []), dtype=float)
-            if x.size and y.size:
-                prob = float(np.interp(prob, x, y, left=y[0], right=y[-1]))
-        elif {"coef", "intercept"} <= calib.keys():
-            z = z * float(calib["coef"]) + float(calib["intercept"])
-            prob = float(1 / (1 + math.exp(-z)))
-    else:
-        cal_coef = model.get("calibration_coef")
-        cal_inter = model.get("calibration_intercept")
-        if cal_coef is not None and cal_inter is not None:
-            z = z * float(cal_coef) + float(cal_inter)
-            prob = float(1 / (1 + math.exp(-z)))
-    return prob
+    logits = np.asarray(z, dtype=float)
+    prob = 1.0 / (1.0 + np.exp(-logits))
+    calibration_meta, cal_coef, cal_inter = resolve_calibration_metadata(model)
+    _, prob = apply_probability_calibration(
+        logits,
+        prob,
+        calibration=calibration_meta,
+        legacy_coef=cal_coef,
+        legacy_intercept=cal_inter,
+    )
+    return float(np.asarray(prob, dtype=float))
 
 
 def _predict_nn(model: Dict, features: Dict[str, float]) -> float:

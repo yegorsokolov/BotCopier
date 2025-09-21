@@ -19,6 +19,84 @@ from botcopier.training.preprocessing import (
 logger = logging.getLogger(__name__)
 
 
+def resolve_calibration_metadata(
+    *sources: Mapping[str, Any] | None,
+) -> tuple[Mapping[str, Any] | None, Any, Any]:
+    """Return calibration metadata and legacy parameters if present."""
+
+    calibration: Mapping[str, Any] | None = None
+    coef: Any = None
+    intercept: Any = None
+
+    for mapping in sources:
+        if not isinstance(mapping, Mapping):
+            continue
+
+        if calibration is None:
+            candidate = mapping.get("calibration")
+            if isinstance(candidate, Mapping):
+                calibration = candidate
+
+        if coef is None and mapping.get("calibration_coef") is not None:
+            coef = mapping.get("calibration_coef")
+
+        if intercept is None and mapping.get("calibration_intercept") is not None:
+            intercept = mapping.get("calibration_intercept")
+
+    return calibration, coef, intercept
+
+
+def apply_probability_calibration(
+    logits: np.ndarray | float,
+    probabilities: np.ndarray | float,
+    *,
+    calibration: Mapping[str, Any] | None,
+    legacy_coef: Any,
+    legacy_intercept: Any,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Adjust ``probabilities`` according to stored calibration metadata."""
+
+    logits_arr = np.asarray(logits, dtype=float)
+    prob_arr = np.asarray(probabilities, dtype=float)
+    logits_shape = logits_arr.shape
+    prob_shape = prob_arr.shape
+
+    logits_flat = logits_arr.reshape(-1)
+    prob_flat = prob_arr.reshape(-1)
+
+    calibrated_logits = logits_flat.copy()
+    calibrated_prob = prob_flat.copy()
+
+    calibration_applied = False
+    if isinstance(calibration, Mapping):
+        method = str(calibration.get("method") or "").lower()
+        if method == "isotonic":
+            x = np.asarray(calibration.get("x", []), dtype=float)
+            y = np.asarray(calibration.get("y", []), dtype=float)
+            if x.size and y.size:
+                calibrated_prob = np.interp(
+                    calibrated_prob, x, y, left=y[0], right=y[-1]
+                )
+                calibration_applied = True
+        elif {"coef", "intercept"} <= calibration.keys():
+            coef = float(calibration.get("coef", 1.0))
+            bias = float(calibration.get("intercept", 0.0))
+            calibrated_logits = calibrated_logits * coef + bias
+            calibrated_prob = 1.0 / (1.0 + np.exp(-calibrated_logits))
+            calibration_applied = True
+
+    if not calibration_applied and legacy_coef is not None and legacy_intercept is not None:
+        coef = float(legacy_coef)
+        bias = float(legacy_intercept)
+        calibrated_logits = calibrated_logits * coef + bias
+        calibrated_prob = 1.0 / (1.0 + np.exp(-calibrated_logits))
+
+    return (
+        calibrated_logits.reshape(logits_shape),
+        calibrated_prob.reshape(prob_shape),
+    )
+
+
 def _normalise_feature_list(values: Sequence[Any]) -> list[str]:
     return [str(v) for v in values if v is not None]
 

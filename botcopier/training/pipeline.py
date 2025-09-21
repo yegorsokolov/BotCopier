@@ -120,7 +120,11 @@ from botcopier.training.weighting import (
     normalise_weights,
     summarise_weights,
 )
-from botcopier.utils.inference import FeaturePipeline
+from botcopier.utils.inference import (
+    FeaturePipeline,
+    apply_probability_calibration,
+    resolve_calibration_metadata,
+)
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
 from metrics.aggregator import add_metric, configure_metrics_dir
@@ -2503,6 +2507,14 @@ def predict_expected_value(
         Optional key identifying which entry from ``session_models`` should be
         used for the linear model parameters. When omitted, the first available
         session is selected for backwards compatibility.
+
+    Notes
+    -----
+    When calibration metadata is available (modern ``calibration`` dictionaries
+    or the legacy ``calibration_coef``/``calibration_intercept`` keys) the
+    predicted probabilities are adjusted prior to combining them with the
+    optional profit regressor. This mirrors the behaviour used by the replay
+    tooling to ensure consistent inference across entry points.
     """
 
     session_models = model.get("session_models")
@@ -2583,6 +2595,18 @@ def predict_expected_value(
     intercept = float(params.get("intercept", 0.0))
     logits = features @ coef + intercept
     prob = 1.0 / (1.0 + np.exp(-logits))
+
+    calibration_meta, cal_coef, cal_intercept = resolve_calibration_metadata(
+        params, model
+    )
+    _, prob = apply_probability_calibration(
+        logits,
+        prob,
+        calibration=calibration_meta,
+        legacy_coef=cal_coef,
+        legacy_intercept=cal_intercept,
+    )
+    prob = np.asarray(prob, dtype=float)
 
     pnl_model = params.get("pnl_model")
     if pnl_model:
