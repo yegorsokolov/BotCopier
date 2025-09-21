@@ -2544,7 +2544,7 @@ def predict_expected_value(
 
     schema_cols: Sequence[str] = []
     if raw_features.shape[1] == len(pipeline.input_columns):
-        schema_cols = pipeline.schema_columns
+        schema_cols = pipeline.input_columns
     elif raw_features.shape[1] == len(pipeline.feature_names):
         schema_cols = [] if pipeline.autoencoder_meta is not None else pipeline.feature_names
     elif raw_features.shape[1] != len(pipeline.feature_names):

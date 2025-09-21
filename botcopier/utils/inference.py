@@ -205,12 +205,12 @@ class FeaturePipeline:
             auto_inputs = _deduplicate_preserving_order(auto_inputs)
 
         combined_inputs = _deduplicate_preserving_order((*input_columns, *auto_inputs))
-        input_columns = combined_inputs
-
-        if autoencoder_meta and auto_inputs:
-            schema_columns = list(auto_inputs)
-        else:
-            schema_columns = list(combined_inputs)
+        input_columns = list(combined_inputs)
+        # The schema used for validating raw inputs must mirror the full set of
+        # columns expected by the pipeline.  Track autoencoder inputs
+        # separately via ``autoencoder_inputs`` so callers can still perform
+        # targeted validation when required.
+        schema_columns = list(input_columns)
 
         pt_meta = params.get("power_transformer") or model.get("power_transformer")
         power_transformer: PowerTransformer | None = None
