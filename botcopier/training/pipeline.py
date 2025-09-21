@@ -122,7 +122,7 @@ from botcopier.training.weighting import (
 from botcopier.utils.inference import FeaturePipeline
 from botcopier.utils.random import set_seed
 from logging_utils import setup_logging
-from metrics.aggregator import add_metric
+from metrics.aggregator import add_metric, configure_metrics_dir
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,7 @@ def run_optuna(
 
     overrides = dict(settings_overrides or {})
     data_cfg, train_cfg, exec_cfg = load_settings(overrides, path=config_path)
+    configure_metrics_dir(data_cfg.metrics_dir)
     data_path = resolve_data_path(data_cfg)
     study_out_dir = Path(data_cfg.out_dir) if data_cfg.out_dir else model_json_path.parent
     study_out_dir.mkdir(parents=True, exist_ok=True)
@@ -2694,6 +2695,7 @@ def main() -> None:
     )
     args = p.parse_args()
     data_cfg, train_cfg, exec_cfg = load_settings(vars(args))
+    configure_metrics_dir(data_cfg.metrics_dir)
     setup_logging(enable_tracing=exec_cfg.trace, exporter=exec_cfg.trace_exporter)
     set_seed(train_cfg.random_seed)
     train(

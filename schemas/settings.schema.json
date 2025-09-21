@@ -44,6 +44,19 @@
           "default": null,
           "title": "Files Dir"
         },
+        "metrics_dir": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Metrics Dir"
+        },
         "metrics_file": {
           "anyOf": [
             {
