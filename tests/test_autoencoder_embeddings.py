@@ -7,10 +7,16 @@ from pathlib import Path
 import pytest
 
 np = pytest.importorskip("numpy")
-if "pandas" not in sys.modules:
-    sys.modules["pandas"] = types.SimpleNamespace()
+pytest.importorskip("pandas")
 
-from botcopier.training import pipeline
+if "gplearn" not in sys.modules:
+    gplearn_mod = types.ModuleType("gplearn")
+    gplearn_mod.genetic = types.SimpleNamespace(SymbolicTransformer=object)
+    sys.modules["gplearn"] = gplearn_mod
+    sys.modules["gplearn.genetic"] = gplearn_mod.genetic
+
+from botcopier.training import pipeline, preprocessing as preprocessing_mod
+from botcopier.utils.inference import FeaturePipeline
 
 
 @pytest.fixture()
@@ -27,82 +33,16 @@ def sample_autoencoder(tmp_path, monkeypatch):
         return weights, bias
 
     monkeypatch.setattr(
-        pipeline,
-        "_extract_torch_encoder_weights",
+        preprocessing_mod,
+        "extract_torch_encoder_weights",
         fake_extract,
     )
     return ae_path, weights, bias
 
 
-def test_autoencoder_embeddings_roundtrip(tmp_path, sample_autoencoder):
-    ae_path, weights, bias = sample_autoencoder
-    X = np.array(
-        [
-            [0.5, 0.25],
-            [0.8, 0.4],
-            [1.2, 0.6],
-        ],
-        dtype=float,
-    )
-    embeddings = pipeline._encode_with_autoencoder(X, ae_path, latent_dim=2)
-    centered = X - X.mean(axis=0)
-    expected = centered @ weights.T + bias
-    np.testing.assert_allclose(embeddings, expected)
-    metadata = pipeline._load_autoencoder_metadata(ae_path)
-    assert metadata is not None
-    metadata = dict(metadata)
-    metadata.setdefault("latent_dim", int(embeddings.shape[1]))
-    metadata["feature_names"] = [f"ae_{i}" for i in range(embeddings.shape[1])]
-    metadata["input_features"] = ["atr", "sl_dist_atr"]
-    meta_path = pipeline._save_autoencoder_metadata(ae_path, metadata)
-    metadata["metadata_file"] = os.path.relpath(meta_path, ae_path.parent)
-    pipeline._save_autoencoder_metadata(ae_path, metadata)
-    loaded = pipeline._load_autoencoder_metadata(ae_path)
-    assert loaded is not None
-    np.testing.assert_allclose(
-        embeddings,
-        pipeline._apply_autoencoder_from_metadata(X, loaded),
-    )
-
-    coeff = np.array([0.7, -0.4], dtype=float)
-    model = {
-        "feature_names": loaded["feature_names"],
-        "feature_mean": [0.0, 0.0],
-        "feature_std": [1.0, 1.0],
-        "clip_low": [-1e6, -1e6],
-        "clip_high": [1e6, 1e6],
-        "coefficients": coeff.tolist(),
-        "intercept": 0.0,
-        "autoencoder": loaded,
-    }
-    preds = pipeline.predict_expected_value(model, X)
-    expected_features = pipeline._apply_autoencoder_from_metadata(X, loaded)
-    logits = expected_features @ coeff
-    expected_prob = 1.0 / (1.0 + np.exp(-logits))
-    np.testing.assert_allclose(preds, expected_prob)
-
-
-def test_nonlinear_onnx_autoencoder(tmp_path, monkeypatch):
-    onnx_path = tmp_path / "autoencoder.onnx"
-    X = np.array(
-        [
-            [0.5, 0.25],
-            [0.8, 0.4],
-            [1.2, 0.6],
-            [1.5, 0.75],
-        ],
-        dtype=float,
-    )
-
-    payload = {
-        "weights": [[0.4, -0.1], [0.3, 0.2]],
-        "bias": [0.05, -0.15],
-        "ops": ["MatMul", "Add", "Relu"],
-        "activation": "relu",
-        "input_name": "input",
-        "output_name": "output",
-    }
-    onnx_path.write_text(json.dumps(payload))
+@pytest.fixture()
+def fake_onnx_session(monkeypatch):
+    """Provide a lightweight ONNXRuntime stub for nonlinear autoencoders."""
 
     class FakeInferenceSession:
         def __init__(self, source, providers=None):
@@ -139,21 +79,172 @@ def test_nonlinear_onnx_autoencoder(tmp_path, monkeypatch):
 
         return types.SimpleNamespace(graph=Graph())
 
-    monkeypatch.setitem(sys.modules, "onnxruntime", types.SimpleNamespace(InferenceSession=FakeInferenceSession))
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        types.SimpleNamespace(InferenceSession=FakeInferenceSession),
+    )
     monkeypatch.setitem(sys.modules, "onnx", types.SimpleNamespace(load=fake_onnx_load))
 
-    embeddings = pipeline._encode_with_autoencoder(X, onnx_path, latent_dim=2)
-    metadata = pipeline._load_autoencoder_metadata(onnx_path)
+    return FakeInferenceSession
+
+
+def test_autoencoder_embeddings_roundtrip(tmp_path, sample_autoencoder):
+    ae_path, weights, bias = sample_autoencoder
+    X = np.array(
+        [
+            [0.5, 0.25],
+            [0.8, 0.4],
+            [1.2, 0.6],
+        ],
+        dtype=float,
+    )
+    embeddings = preprocessing_mod.encode_with_autoencoder(X, ae_path, latent_dim=2)
+    centered = X - X.mean(axis=0)
+    expected = centered @ weights.T + bias
+    np.testing.assert_allclose(embeddings, expected)
+    metadata = preprocessing_mod.load_autoencoder_metadata(ae_path)
+    assert metadata is not None
+    metadata = dict(metadata)
+    metadata.setdefault("latent_dim", int(embeddings.shape[1]))
+    metadata["feature_names"] = [f"ae_{i}" for i in range(embeddings.shape[1])]
+    metadata["input_features"] = ["atr", "sl_dist_atr"]
+    meta_path = preprocessing_mod.save_autoencoder_metadata(ae_path, metadata)
+    metadata["metadata_file"] = os.path.relpath(meta_path, ae_path.parent)
+    preprocessing_mod.save_autoencoder_metadata(ae_path, metadata)
+    loaded = preprocessing_mod.load_autoencoder_metadata(ae_path)
+    assert loaded is not None
+    np.testing.assert_allclose(
+        embeddings,
+        preprocessing_mod.apply_autoencoder_from_metadata(X, loaded),
+    )
+
+    coeff = np.array([0.7, -0.4], dtype=float)
+    model = {
+        "feature_names": loaded["feature_names"],
+        "feature_metadata": [
+            {"original_column": "atr"},
+            {"original_column": "sl_dist_atr"},
+        ],
+        "feature_mean": [0.0, 0.0],
+        "feature_std": [1.0, 1.0],
+        "clip_low": [-1e6, -1e6],
+        "clip_high": [1e6, 1e6],
+        "coefficients": coeff.tolist(),
+        "intercept": 0.0,
+        "autoencoder": loaded,
+    }
+    preds = pipeline.predict_expected_value(model, X, model_dir=tmp_path)
+    feature_pipe = FeaturePipeline.from_model(model, model_dir=tmp_path)
+    transformed = feature_pipe.transform_matrix(X)
+    np.testing.assert_allclose(
+        transformed,
+        preprocessing_mod.apply_autoencoder_from_metadata(X, loaded),
+    )
+    logits = transformed @ coeff
+    expected_prob = 1.0 / (1.0 + np.exp(-logits))
+    np.testing.assert_allclose(preds, expected_prob)
+
+
+def test_nonlinear_onnx_autoencoder(tmp_path, fake_onnx_session):
+    onnx_path = tmp_path / "autoencoder.onnx"
+    X = np.array(
+        [
+            [0.5, 0.25],
+            [0.8, 0.4],
+            [1.2, 0.6],
+            [1.5, 0.75],
+        ],
+        dtype=float,
+    )
+
+    payload = {
+        "weights": [[0.4, -0.1], [0.3, 0.2]],
+        "bias": [0.05, -0.15],
+        "ops": ["MatMul", "Add", "Relu"],
+        "activation": "relu",
+        "input_name": "input",
+        "output_name": "output",
+    }
+    onnx_path.write_text(json.dumps(payload))
+
+    embeddings = preprocessing_mod.encode_with_autoencoder(X, onnx_path, latent_dim=2)
+    metadata = preprocessing_mod.load_autoencoder_metadata(onnx_path)
     assert metadata is not None
     assert metadata.get("format") == "onnx_nonlin"
     assert metadata.get("onnx_serialized")
 
     centered = X - X.mean(axis=0)
-    session = FakeInferenceSession(str(onnx_path))
+    session = fake_onnx_session(str(onnx_path))
     expected = session.run(None, {session.input_name: centered.astype(np.float32)})[0]
 
     np.testing.assert_allclose(embeddings, expected)
     np.testing.assert_allclose(
-        pipeline._apply_autoencoder_from_metadata(X, metadata),
+        preprocessing_mod.apply_autoencoder_from_metadata(X, metadata),
         expected,
     )
+
+
+def test_expected_value_with_onnx_weights_file(tmp_path, fake_onnx_session):
+    onnx_path = tmp_path / "autoencoder.onnx"
+    X = np.array(
+        [
+            [0.2, -0.1],
+            [1.1, 0.4],
+            [-0.3, 0.9],
+        ],
+        dtype=float,
+    )
+
+    payload = {
+        "weights": [[0.3, -0.2], [0.15, 0.25]],
+        "bias": [0.05, -0.1],
+        "ops": ["MatMul", "Add", "Relu"],
+        "activation": "relu",
+        "input_name": "features",
+        "output_name": "embedding",
+    }
+    onnx_path.write_text(json.dumps(payload))
+
+    embeddings = preprocessing_mod.encode_with_autoencoder(X, onnx_path, latent_dim=2)
+    metadata = preprocessing_mod.load_autoencoder_metadata(onnx_path)
+    assert metadata is not None
+    metadata = dict(metadata)
+    metadata["feature_names"] = ["latent_0", "latent_1"]
+    metadata["input_features"] = ["f0", "f1"]
+    preprocessing_mod.save_autoencoder_metadata(onnx_path, metadata)
+
+    model = {
+        "feature_names": ["latent_0", "latent_1"],
+        "feature_metadata": [
+            {"original_column": "f0"},
+            {"original_column": "f1"},
+        ],
+        "coefficients": [0.7, -0.3],
+        "intercept": 0.2,
+        "clip_low": [-10.0, -10.0],
+        "clip_high": [10.0, 10.0],
+        "feature_mean": [0.1, -0.2],
+        "feature_std": [1.5, 0.8],
+        "autoencoder": {
+            "weights_file": os.path.relpath(onnx_path, tmp_path),
+        },
+    }
+
+    preds = pipeline.predict_expected_value(model, X, model_dir=tmp_path)
+
+    feature_pipe = FeaturePipeline.from_model(model, model_dir=tmp_path)
+    transformed = feature_pipe.transform_matrix(X)
+    np.testing.assert_allclose(transformed, embeddings)
+
+    clip_low = np.asarray(model["clip_low"], dtype=float)
+    clip_high = np.asarray(model["clip_high"], dtype=float)
+    clipped = np.clip(transformed, clip_low, clip_high)
+    mean = np.asarray(model["feature_mean"], dtype=float)
+    std = np.asarray(model["feature_std"], dtype=float)
+    scaled = (clipped - mean) / np.where(std == 0, 1.0, std)
+    coeff = np.asarray(model["coefficients"], dtype=float)
+    logits = scaled @ coeff + float(model["intercept"])
+    expected = 1.0 / (1.0 + np.exp(-logits))
+
+    np.testing.assert_allclose(preds, expected)

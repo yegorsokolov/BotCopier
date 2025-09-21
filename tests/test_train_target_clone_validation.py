@@ -434,7 +434,7 @@ def test_expected_value_pipeline_outputs_expected_profit(tmp_path: Path) -> None
         proc = pd.concat(list(proc), ignore_index=True)
     proc, fcols, _, _ = _extract_features(proc, fcols, config=feature_config)
     X = proc[model["feature_names"]].to_numpy(dtype=float)
-    preds = predict_expected_value(model, X)
+    preds = predict_expected_value(model, X, model_dir=out_dir)
     mean = np.array(params["feature_mean"])
     std = np.array(params["feature_std"])
     X_scaled = (X - mean) / np.where(std == 0, 1, std)
