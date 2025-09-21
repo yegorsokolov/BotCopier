@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import logging
 import pickle
 from contextlib import nullcontext
+from copy import deepcopy
 from pathlib import Path
 from typing import Callable, Dict, Sequence
 
@@ -86,6 +88,9 @@ def _migrate_data(data: dict) -> dict:
     return data
 
 
+_READ_ONLY_ERRNOS = {errno.EROFS, errno.EPERM, errno.EACCES}
+
+
 def load_params(path: Path) -> ModelParams:
     """Load ``ModelParams`` from ``path`` upgrading older versions."""
     with tracer.start_as_current_span("load_params"):
@@ -97,17 +102,34 @@ def load_params(path: Path) -> ModelParams:
                     raw = fh.read()
             else:
                 raw = path.read_text()
+
+            original_data = json.loads(raw)
+
             try:
-                params = ModelParams.model_validate_json(raw)
+                params = ModelParams.model_validate(original_data)
             except ValidationError:
-                data = json.loads(raw)
-                data = _migrate_data(data)
-                params = ModelParams(**data)
+                migrated = _migrate_data(deepcopy(original_data))
+                params = ModelParams(**migrated)
+                final_data = params.model_dump()
             else:
                 if params.version != MODEL_VERSION:
-                    data = _migrate_data(params.model_dump())
-                    params = ModelParams(**data)
-            path.write_text(params.model_dump_json())
+                    migrated = _migrate_data(params.model_dump())
+                    params = ModelParams(**migrated)
+                final_data = params.model_dump()
+
+            if final_data != original_data:
+                try:
+                    path.write_text(params.model_dump_json())
+                except OSError as exc:
+                    if exc.errno in _READ_ONLY_ERRNOS:
+                        logger.warning(
+                            "Unable to update model parameters at %s due to read-only access: %s",
+                            path,
+                            exc,
+                        )
+                    else:
+                        raise
+
             return params
         except (OSError, json.JSONDecodeError, ValidationError) as exc:
             logger.exception("Failed to load model parameters from %s", path)
