@@ -6,7 +6,7 @@ import pytest
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 
-from botcopier.models.deep import CrossModalTransformer, TemporalConvNet
+from botcopier.models.deep import CrossModalTransformer, PositionalEncoding, TemporalConvNet
 from botcopier.models.registry import (
     TabTransformer,
     fit_crossmodal_transformer,
@@ -45,6 +45,29 @@ def test_tabtransformer_forward_and_accuracy():
     assert arch.get("num_features") == 4
     assert arch.get("window") == 1
     assert "state_dict" in meta and meta["state_dict"]
+
+
+def test_tabtransformer_positional_encoding_non_zero_initialisation():
+    torch.manual_seed(0)
+    model = TabTransformer(num_features=3, dim=6, heads=2, depth=1, ff_dim=8, dropout=0.0)
+    model.eval()
+    batch = torch.zeros(8, 3, dtype=torch.float32)
+
+    assert model.positional.weight.requires_grad is True
+    weight = model.positional.weight.detach().clone()
+    assert torch.count_nonzero(weight).item() > 0
+
+    with torch.no_grad():
+        baseline = model(batch)
+        model.positional.weight.zero_()
+        no_positional = model(batch)
+
+    assert not torch.allclose(baseline, no_positional)
+
+    frozen = PositionalEncoding(window=3, dim=6, learnable=False)
+    assert not isinstance(frozen.weight, torch.nn.Parameter)
+    assert frozen.weight.requires_grad is False
+    assert torch.count_nonzero(frozen.weight).item() > 0
 
 
 def test_temporal_convnet_forward_and_accuracy():
@@ -166,6 +189,7 @@ def test_multi_symbol_attention_improves_accuracy():
 
 __all__ = [
     "test_tabtransformer_forward_and_accuracy",
+    "test_tabtransformer_positional_encoding_non_zero_initialisation",
     "test_temporal_convnet_forward_and_accuracy",
     "test_crossmodal_forward_and_training",
     "test_multi_symbol_attention_improves_accuracy",

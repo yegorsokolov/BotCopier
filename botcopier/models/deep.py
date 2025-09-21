@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Sequence
 
 try:  # pragma: no cover - optional dependency handling
@@ -18,11 +19,51 @@ except ImportError:  # pragma: no cover - torch is optional
 if _HAS_TORCH:
 
     class PositionalEncoding(nn.Module):
-        """Learnable positional encoding for temporal sequences."""
+        """Positional encoding that supports sinusoidal or random initialisation."""
 
-        def __init__(self, window: int, dim: int) -> None:
+        def __init__(
+            self,
+            window: int,
+            dim: int,
+            *,
+            learnable: bool = True,
+            init: str = "sinusoidal",
+            noise_std: float = 0.02,
+        ) -> None:
             super().__init__()
-            self.weight = nn.Parameter(torch.zeros(1, window, dim))
+            if window < 1:
+                raise ValueError("window must be positive")
+            if dim < 1:
+                raise ValueError("dim must be positive")
+
+            init = init.lower()
+            dtype = torch.get_default_dtype()
+            if init == "sinusoidal":
+                encoding = self._build_sinusoidal(window, dim, dtype)
+            elif init == "normal":
+                encoding = torch.empty(window, dim, dtype=dtype)
+                nn.init.normal_(encoding, mean=0.0, std=noise_std)
+            else:
+                raise ValueError("init must be either 'sinusoidal' or 'normal'")
+
+            encoding = encoding.unsqueeze(0)
+            if learnable:
+                self.weight = nn.Parameter(encoding)
+            else:
+                self.register_buffer("weight", encoding)
+
+        @staticmethod
+        def _build_sinusoidal(window: int, dim: int, dtype: torch.dtype) -> torch.Tensor:
+            position = torch.arange(window, dtype=dtype).unsqueeze(1)
+            div_term = torch.exp(
+                torch.arange(0, dim, 2, dtype=dtype) * (-math.log(10000.0) / dim)
+            )
+            encoding = torch.zeros(window, dim, dtype=dtype)
+            angles = position * div_term
+            encoding[:, 0::2] = torch.sin(angles)
+            if dim > 1:
+                encoding[:, 1::2] = torch.cos(angles[:, : encoding[:, 1::2].shape[1]])
+            return encoding
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - simple
             if self.weight.size(1) < x.size(1):
