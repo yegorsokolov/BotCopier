@@ -196,7 +196,13 @@ def _configure_model(model: dict) -> None:
     OOD_INFO = model.get("ood", {})
     OOD_MEAN = np.asarray(OOD_INFO.get("mean", []), dtype=float)
     OOD_COV = np.asarray(OOD_INFO.get("covariance", []), dtype=float)
-    OOD_INV = np.linalg.pinv(OOD_COV) if OOD_COV.size else np.empty((0, 0))
+    OOD_PREC = np.asarray(OOD_INFO.get("precision", []), dtype=float)
+    if OOD_PREC.size:
+        OOD_INV = OOD_PREC
+    elif OOD_COV.size:
+        OOD_INV = np.linalg.pinv(OOD_COV)
+    else:
+        OOD_INV = np.empty((0, 0))
     OOD_THRESHOLD = float(OOD_INFO.get("threshold", float("inf")))
 
     coeffs = model.get("entry_coefficients") or model.get("coefficients") or []
