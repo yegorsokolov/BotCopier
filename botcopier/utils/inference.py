@@ -23,6 +23,18 @@ def _normalise_feature_list(values: Sequence[Any]) -> list[str]:
     return [str(v) for v in values if v is not None]
 
 
+def _deduplicate_preserving_order(values: Sequence[str]) -> list[str]:
+    """Return a list with duplicates removed while keeping the original order."""
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
 def resolve_autoencoder_metadata(
     meta: Mapping[str, Any] | None, model_dir: Path | None
 ) -> dict[str, Any] | None:
@@ -156,7 +168,6 @@ class FeaturePipeline:
 
         auto_inputs: list[str] = []
         auto_outputs: list[str] = []
-        schema_columns = list(input_columns)
 
         if autoencoder_meta:
             sources = (
@@ -164,7 +175,9 @@ class FeaturePipeline:
                 or autoencoder_meta.get("original_features")
             )
             if sources:
-                auto_inputs = _normalise_feature_list(sources)
+                auto_inputs = _deduplicate_preserving_order(
+                    _normalise_feature_list(sources)
+                )
             elif input_columns:
                 auto_inputs = list(input_columns)
 
@@ -189,13 +202,15 @@ class FeaturePipeline:
                     "autoencoder outputs %s are not present in feature_names (%s)"
                     % (missing, available)
                 )
-            schema_columns = list(auto_inputs)
+            auto_inputs = _deduplicate_preserving_order(auto_inputs)
 
-        combined_inputs: list[str] = []
-        for name in (*input_columns, *auto_inputs):
-            if name and name not in combined_inputs:
-                combined_inputs.append(name)
+        combined_inputs = _deduplicate_preserving_order((*input_columns, *auto_inputs))
         input_columns = combined_inputs
+
+        if autoencoder_meta and auto_inputs:
+            schema_columns = list(auto_inputs)
+        else:
+            schema_columns = list(combined_inputs)
 
         pt_meta = params.get("power_transformer") or model.get("power_transformer")
         power_transformer: PowerTransformer | None = None
