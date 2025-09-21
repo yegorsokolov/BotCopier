@@ -1,15 +1,30 @@
 """Unit tests covering autoencoder output mapping in the feature pipeline."""
 
+import json
 import sys
 import types
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 
+if "gplearn" not in sys.modules:
+    gplearn_mod = types.ModuleType("gplearn")
+    gplearn_mod.genetic = types.SimpleNamespace(SymbolicTransformer=object)
+    sys.modules["gplearn"] = gplearn_mod
+    sys.modules["gplearn.genetic"] = gplearn_mod.genetic
+
+
 def _ensure_preprocessing_stub() -> None:
     if "botcopier.training.preprocessing" in sys.modules:
         return
+
+    try:  # Prefer the real implementation when available.
+        import botcopier.training.preprocessing  # type: ignore  # noqa: F401
+        return
+    except Exception:  # pragma: no cover - fallback to lightweight stub
+        pass
 
     preprocessing_stub = types.ModuleType("botcopier.training.preprocessing")
 
@@ -17,6 +32,13 @@ def _ensure_preprocessing_stub() -> None:
         data = np.asarray(X, dtype=float)
         if data.ndim == 1:
             data = data.reshape(1, -1)
+        mean = np.asarray(metadata.get("input_mean", []), dtype=float)
+        scale = np.asarray(metadata.get("input_scale", []), dtype=float)
+        if mean.size and mean.shape[0] == data.shape[1]:
+            data = data - mean
+        if scale.size and scale.shape[0] == data.shape[1]:
+            safe_scale = np.where(scale == 0, 1.0, scale)
+            data = data / safe_scale
         weights = np.asarray(metadata.get("weights", []), dtype=float)
         bias = np.asarray(metadata.get("bias", []), dtype=float)
         embedding = data @ weights.T if weights.size else np.zeros((data.shape[0], 0))
@@ -24,13 +46,17 @@ def _ensure_preprocessing_stub() -> None:
             embedding = embedding + bias
         return embedding.astype(float)
 
-    def load_autoencoder_metadata(path):  # pragma: no cover - not needed in tests
-        return None
+    def load_autoencoder_metadata(path):  # pragma: no cover - compatibility stub
+        try:
+            return json.loads(Path(path).read_text())
+        except Exception:
+            return None
 
     preprocessing_stub.apply_autoencoder_from_metadata = apply_autoencoder_from_metadata
     preprocessing_stub.load_autoencoder_metadata = load_autoencoder_metadata
 
     training_stub = types.ModuleType("botcopier.training")
+    training_stub.__path__ = []  # type: ignore[attr-defined]
     training_stub.preprocessing = preprocessing_stub
     sys.modules["botcopier.training"] = training_stub
     sys.modules["botcopier.training.preprocessing"] = preprocessing_stub
@@ -103,3 +129,42 @@ def test_feature_pipeline_places_latents_in_expected_positions() -> None:
         mapping_result,
         np.concatenate([expected_latent[0], matrix[0]]),
     )
+
+
+def test_feature_pipeline_autoencoder_schema_handles_alias_metadata() -> None:
+    weights = np.array([[0.4, -0.2], [0.3, 0.6]], dtype=float)
+    bias = np.array([0.1, -0.05], dtype=float)
+    model = {
+        "feature_names": ["latent_0", "latent_1", "f0", "f1"],
+        "feature_metadata": [
+            {"original_column": "f0"},
+            {"original_column": "f1"},
+            {"original_column": "f0"},
+            {"original_column": "f1"},
+        ],
+        "autoencoder": {
+            "weights": weights.tolist(),
+            "bias": bias.tolist(),
+            "feature_names": ["latent_0", "latent_1"],
+        },
+    }
+
+    pipeline_obj = FeaturePipeline.from_model(model)
+
+    assert pipeline_obj.autoencoder_inputs == ["f0", "f1"]
+    assert pipeline_obj.input_columns == ["f0", "f1"]
+    assert pipeline_obj.schema_columns == ["f0", "f1"]
+
+    matrix = np.array(
+        [
+            [0.2, -0.1],
+            [1.0, 0.4],
+            [-0.6, 0.9],
+        ],
+        dtype=float,
+    )
+
+    transformed = pipeline_obj.transform_matrix(matrix)
+    expected_latent = matrix @ weights.T + bias
+    np.testing.assert_allclose(transformed[:, :2], expected_latent)
+    np.testing.assert_allclose(transformed[:, 2:], matrix)

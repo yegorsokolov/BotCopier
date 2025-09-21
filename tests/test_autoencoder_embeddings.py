@@ -9,6 +9,11 @@ import pytest
 np = pytest.importorskip("numpy")
 pytest.importorskip("pandas")
 
+training_mod = sys.modules.get("botcopier.training")
+if training_mod is not None and not hasattr(training_mod, "__path__"):
+    sys.modules.pop("botcopier.training", None)
+    sys.modules.pop("botcopier.training.preprocessing", None)
+
 if "gplearn" not in sys.modules:
     gplearn_mod = types.ModuleType("gplearn")
     gplearn_mod.genetic = types.SimpleNamespace(SymbolicTransformer=object)
