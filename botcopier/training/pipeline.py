@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.spatial.distance import squareform
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.covariance import LedoitWolf
 from sklearn.feature_selection import mutual_info_classif
 from sklearn.preprocessing import PowerTransformer, StandardScaler
 
@@ -125,6 +126,57 @@ from logging_utils import setup_logging
 from metrics.aggregator import add_metric, configure_metrics_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _fit_shrinkage_covariance(
+    matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return mean, covariance, and precision estimates for ``matrix``.
+
+    A Ledoit-Wolf shrinkage estimator is preferred for numerical stability. If
+    fitting fails or insufficient samples are available, fall back to a diagonal
+    covariance derived from marginal variances (defaulting to unit variance when
+    a column is constant).
+    """
+
+    if matrix.size == 0 or matrix.ndim != 2 or matrix.shape[1] == 0:
+        return np.empty(0), np.empty((0, 0)), np.empty((0, 0))
+    if matrix.shape[0] >= 2:
+        try:
+            estimator = LedoitWolf(store_precision=True, assume_centered=False)
+            fitted = estimator.fit(matrix)
+            mean = np.asarray(fitted.location_, dtype=float)
+            covariance = np.asarray(fitted.covariance_, dtype=float)
+            precision = np.asarray(fitted.precision_, dtype=float)
+            return mean, covariance, precision
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "LedoitWolf fit failed for matrix with shape %s: %s",
+                matrix.shape,
+                exc,
+                exc_info=True,
+            )
+    mean = np.asarray(np.mean(matrix, axis=0), dtype=float)
+    variances = np.asarray(np.var(matrix, axis=0, ddof=0), dtype=float)
+    safe_var = np.where(variances > 1e-12, variances, 1.0)
+    covariance = np.diag(safe_var)
+    precision = np.diag(1.0 / safe_var)
+    return mean, covariance.astype(float), precision.astype(float)
+
+
+def _mahalanobis_from_precision(
+    values: np.ndarray, mean: np.ndarray, precision: np.ndarray
+) -> np.ndarray:
+    """Return Mahalanobis distances of ``values`` using ``precision``."""
+
+    if values.size == 0 or precision.size == 0:
+        return np.zeros(values.shape[0], dtype=float)
+    centred = values - mean
+    distances_sq = np.einsum(
+        "ij,jk,ik->i", centred, precision, centred, optimize=True
+    )
+    return np.sqrt(np.maximum(distances_sq, 0.0))
+
 
 SEQUENCE_MODEL_TYPES = {"tabtransformer", "tcn", "crossmodal"}
 
@@ -861,61 +913,61 @@ def train(
         for chunk in logs:
             if HAS_FEAST and store is not None:
                 feat_df = store.get_historical_features(
-                    entity_df=chunk, features=feature_refs
+                        entity_df=chunk, features=feature_refs
                 ).to_df()
                 chunk = chunk.merge(feat_df, on=["symbol", "event_time"], how="left")
                 feature_names = list(FEATURE_COLUMNS)
             else:
                 chunk, feature_names, _, _ = _extract_features(
-                    chunk,
-                    feature_names,
-                    n_jobs=n_jobs,
-                    model_json=model_json,
-                    news_embeddings=news_embeddings_df,
-                    news_embedding_window=news_window_param,
-                    news_embedding_horizon=news_horizon_seconds,
-                    config=feature_config,
-                    **feature_extra_kwargs,
+                        chunk,
+                        feature_names,
+                        n_jobs=n_jobs,
+                        model_json=model_json,
+                        news_embeddings=news_embeddings_df,
+                        news_embedding_window=news_window_param,
+                        news_embedding_horizon=news_horizon_seconds,
+                        config=feature_config,
+                        **feature_extra_kwargs,
                 )
             meta_entry = technical_features._FEATURE_METADATA.get("__news_embeddings__")
             if meta_entry is not None:
                 seq_arr = np.array(meta_entry.get("sequences", []), dtype=float, copy=True)
                 if seq_arr.size:
-                    news_seq_list.append(seq_arr)
-                    if news_meta is None:
-                        news_meta = {
-                            key: meta_entry.get(key)
-                            for key in (
-                                "window",
-                                "dimension",
-                                "columns",
-                                "horizon_seconds",
-                            )
-                        }
+                        news_seq_list.append(seq_arr)
+                        if news_meta is None:
+                            news_meta = {
+                                key: meta_entry.get(key)
+                                for key in (
+                                    "window",
+                                    "dimension",
+                                    "columns",
+                                    "horizon_seconds",
+                                )
+                            }
             FeatureSchema.validate(chunk[feature_names], lazy=True)
             if label_col is None:
                 label_col = next(
-                    (c for c in chunk.columns if c.startswith("label")), None
+                        (c for c in chunk.columns if c.startswith("label")), None
                 )
                 if label_col is None:
-                    raise ValueError("no label column found")
+                        raise ValueError("no label column found")
             X_list.append(chunk[feature_names].fillna(0.0).to_numpy(dtype=float))
             if "symbol" in chunk.columns:
                 symbol_batches.append(chunk["symbol"].astype(str).to_numpy())
             if "event_time" in chunk.columns:
                 event_time_list.append(
-                    pd.to_datetime(chunk["event_time"], errors="coerce").to_numpy()
+                        pd.to_datetime(chunk["event_time"], errors="coerce").to_numpy()
                 )
             else:
                 event_time_list.append(
-                    np.full(len(chunk), np.datetime64("NaT"), dtype="datetime64[ns]")
+                        np.full(len(chunk), np.datetime64("NaT"), dtype="datetime64[ns]")
                 )
             if "profit" in chunk.columns:
                 p = chunk["profit"].to_numpy(dtype=float)
                 profit_list.append(p)
                 y_list.append((p > 0).astype(float))
                 if {"event_time", "symbol"} <= set(chunk.columns):
-                    returns_frames.append(chunk[["event_time", "symbol", "profit"]])
+                        returns_frames.append(chunk[["event_time", "symbol", "profit"]])
             elif label_col is not None:
                 y_list.append(chunk[label_col].to_numpy(dtype=float))
             else:
@@ -966,15 +1018,15 @@ def train(
             if seq_arr.size:
                 news_seq_list.append(seq_arr)
                 if news_meta is None:
-                    news_meta = {
-                        key: meta_entry.get(key)
-                        for key in (
-                            "window",
-                            "dimension",
-                            "columns",
-                            "horizon_seconds",
-                        )
-                    }
+                        news_meta = {
+                            key: meta_entry.get(key)
+                            for key in (
+                                "window",
+                                "dimension",
+                                "columns",
+                                "horizon_seconds",
+                            )
+                        }
         FeatureSchema.validate(df[feature_names], lazy=True)
         if HAS_DASK and isinstance(df, dd.DataFrame):
             df = df.compute()
@@ -986,31 +1038,31 @@ def train(
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 signs = np.unique(np.sign(profits[np.isfinite(profits)]))
                 if signs.size <= 1 and label_col is not None:
-                    y = df[label_col].to_numpy(dtype=float)
+                        y = df[label_col].to_numpy(dtype=float)
                 else:
-                    y = (profits > 0).astype(float)
+                        y = (profits > 0).astype(float)
                 has_profit = True
                 if "event_time" in df.columns:
-                    event_times = pd.to_datetime(
-                        df["event_time"], errors="coerce"
-                    ).to_numpy()
+                        event_times = pd.to_datetime(
+                            df["event_time"], errors="coerce"
+                        ).to_numpy()
                 else:
-                    event_times = np.full(
-                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
-                    )
+                        event_times = np.full(
+                            df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                        )
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
-                    raise ValueError("no label column found")
+                        raise ValueError("no label column found")
                 y = df[label_col].to_numpy(dtype=float)
                 profits = np.zeros_like(y)
                 has_profit = False
                 event_times = (
-                    pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
-                    if "event_time" in df.columns
-                    else np.full(
-                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
-                    )
+                        pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
+                        if "event_time" in df.columns
+                        else np.full(
+                            df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                        )
                 )
         elif isinstance(df, pd.DataFrame):
             if "symbol" in df.columns:
@@ -1021,35 +1073,35 @@ def train(
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 signs = np.unique(np.sign(profits[np.isfinite(profits)]))
                 if signs.size <= 1 and label_col is not None:
-                    y = df[label_col].to_numpy(dtype=float)
+                        y = df[label_col].to_numpy(dtype=float)
                 else:
-                    y = (profits > 0).astype(float)
+                        y = (profits > 0).astype(float)
                 has_profit = True
                 if "event_time" in df.columns:
-                    event_times = pd.to_datetime(
-                        df["event_time"], errors="coerce"
-                    ).to_numpy()
+                        event_times = pd.to_datetime(
+                            df["event_time"], errors="coerce"
+                        ).to_numpy()
                 else:
-                    event_times = np.full(
-                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
-                    )
+                        event_times = np.full(
+                            df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                        )
                 ret_cols = [
-                    c for c in ["event_time", "symbol", "profit"] if c in df.columns
+                        c for c in ["event_time", "symbol", "profit"] if c in df.columns
                 ]
                 returns_df = df[ret_cols] if ret_cols else None
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
-                    raise ValueError("no label column found")
+                        raise ValueError("no label column found")
                 y = df[label_col].to_numpy(dtype=float)
                 profits = np.zeros_like(y)
                 has_profit = False
                 event_times = (
-                    pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
-                    if "event_time" in df.columns
-                    else np.full(
-                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
-                    )
+                        pd.to_datetime(df["event_time"], errors="coerce").to_numpy()
+                        if "event_time" in df.columns
+                        else np.full(
+                            df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                        )
                 )
                 returns_df = None
         elif HAS_POLARS and isinstance(df, pl.DataFrame):
@@ -1059,41 +1111,41 @@ def train(
             if "profit" in df.columns:
                 profits = df["profit"].to_numpy().astype(float)
                 label_col = next(
-                    (c for c in df.columns if str(c).startswith("label")), None
+                        (c for c in df.columns if str(c).startswith("label")), None
                 )
                 signs = np.unique(np.sign(profits[np.isfinite(profits)]))
                 if signs.size <= 1 and label_col is not None:
-                    y = df[label_col].to_numpy().astype(float)
+                        y = df[label_col].to_numpy().astype(float)
                 else:
-                    y = (profits > 0).astype(float)
+                        y = (profits > 0).astype(float)
                 has_profit = True
                 if "event_time" in df.columns:
-                    event_times = pd.to_datetime(
-                        df["event_time"].to_numpy(), errors="coerce"
-                    ).to_numpy()
+                        event_times = pd.to_datetime(
+                            df["event_time"].to_numpy(), errors="coerce"
+                        ).to_numpy()
                 else:
-                    event_times = np.full(
-                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
-                    )
+                        event_times = np.full(
+                            df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                        )
                 ret_cols = [
-                    c for c in ["event_time", "symbol", "profit"] if c in df.columns
+                        c for c in ["event_time", "symbol", "profit"] if c in df.columns
                 ]
                 returns_df = df[ret_cols].to_pandas() if ret_cols else None
             else:
                 label_col = next((c for c in df.columns if c.startswith("label")), None)
                 if label_col is None:
-                    raise ValueError("no label column found")
+                        raise ValueError("no label column found")
                 y = df[label_col].to_numpy().astype(float)
                 profits = np.zeros_like(y)
                 has_profit = False
                 event_times = (
-                    pd.to_datetime(
-                        df["event_time"].to_numpy(), errors="coerce"
-                    ).to_numpy()
-                    if "event_time" in df.columns
-                    else np.full(
-                        df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
-                    )
+                        pd.to_datetime(
+                            df["event_time"].to_numpy(), errors="coerce"
+                        ).to_numpy()
+                        if "event_time" in df.columns
+                        else np.full(
+                            df.shape[0], np.datetime64("NaT"), dtype="datetime64[ns]"
+                        )
                 )
                 returns_df = None
         else:  # pragma: no cover - defensive
@@ -1220,52 +1272,52 @@ def train(
                 encoder.load_state_dict(state["state_dict"])
                 encoder.eval()
                 with torch.no_grad():
-                    X = encoder(torch.as_tensor(X, dtype=torch.float32)).numpy()
+                        X = encoder(torch.as_tensor(X, dtype=torch.float32)).numpy()
                 feature_names = [f"enc_{i}" for i in range(X.shape[1])]
                 state_dict = state.get("state_dict", {})
                 weight_tensor = state_dict.get("weight")
                 bias_tensor = state_dict.get("bias")
                 if isinstance(weight_tensor, torch.Tensor):
-                    weight_values = weight_tensor.detach().cpu().numpy()
+                        weight_values = weight_tensor.detach().cpu().numpy()
                 elif weight_tensor is not None:
-                    weight_values = np.asarray(weight_tensor, dtype=float)
+                        weight_values = np.asarray(weight_tensor, dtype=float)
                 else:
-                    weight_values = encoder.weight.detach().cpu().numpy()
+                        weight_values = encoder.weight.detach().cpu().numpy()
                 if isinstance(bias_tensor, torch.Tensor):
-                    bias_values: np.ndarray | None = bias_tensor.detach().cpu().numpy()
+                        bias_values: np.ndarray | None = bias_tensor.detach().cpu().numpy()
                 elif bias_tensor is not None:
-                    bias_values = np.asarray(bias_tensor, dtype=float)
+                        bias_values = np.asarray(bias_tensor, dtype=float)
                 else:
-                    bias_attr = getattr(encoder, "bias", None)
-                    bias_values = (
-                        bias_attr.detach().cpu().numpy()
-                        if isinstance(bias_attr, torch.Tensor)
-                        else None
-                    )
+                        bias_attr = getattr(encoder, "bias", None)
+                        bias_values = (
+                            bias_attr.detach().cpu().numpy()
+                            if isinstance(bias_attr, torch.Tensor)
+                            else None
+                        )
                 dest_path = out_dir / enc_path.name
                 try:
-                    if enc_path.resolve() != dest_path.resolve():
-                        dest_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(enc_path, dest_path)
+                        if enc_path.resolve() != dest_path.resolve():
+                            dest_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(enc_path, dest_path)
                 except OSError:
-                    dest_path = enc_path
+                        dest_path = enc_path
                 try:
-                    rel_weights = os.path.relpath(dest_path, out_dir)
+                        rel_weights = os.path.relpath(dest_path, out_dir)
                 except ValueError:
-                    rel_weights = str(dest_path)
+                        rel_weights = str(dest_path)
                 encoder_meta = {
-                    "architecture": [int(arch[0]), int(arch[1])],
-                    "input_dim": int(arch[0]) if arch else len(encoder_inputs),
-                    "latent_dim": int(arch[1]) if len(arch) > 1 else int(X.shape[1]),
-                    "mask_ratio": float(state.get("mask_ratio", 0.0)),
-                    "input_features": encoder_inputs,
-                    "weights_file": rel_weights,
-                    "weights": np.asarray(weight_values, dtype=float).tolist(),
-                    "bias": (
-                        np.asarray(bias_values, dtype=float).tolist()
-                        if bias_values is not None
-                        else None
-                    ),
+                        "architecture": [int(arch[0]), int(arch[1])],
+                        "input_dim": int(arch[0]) if arch else len(encoder_inputs),
+                        "latent_dim": int(arch[1]) if len(arch) > 1 else int(X.shape[1]),
+                        "mask_ratio": float(state.get("mask_ratio", 0.0)),
+                        "input_features": encoder_inputs,
+                        "weights_file": rel_weights,
+                        "weights": np.asarray(weight_values, dtype=float).tolist(),
+                        "bias": (
+                            np.asarray(bias_values, dtype=float).tolist()
+                            if bias_values is not None
+                            else None
+                        ),
                 }
 
     # --- Power transformation for highly skewed features -----------------
@@ -1306,16 +1358,16 @@ def train(
                 idx = np.where(cluster_ids == cid)[0]
                 names = [feature_names[i] for i in idx]
                 if len(idx) == 1:
-                    keep_idx.append(idx[0])
-                    cluster_map[names[0]] = names
-                    continue
+                        keep_idx.append(idx[0])
+                        cluster_map[names[0]] = names
+                        continue
                 best_local = idx[np.argmax(mi[idx])]
                 rep_name = feature_names[best_local]
                 cluster_map[rep_name] = names
                 keep_idx.append(best_local)
                 dropped = [f for f in names if f != rep_name]
                 if dropped:
-                    removed_groups.append({"kept": rep_name, "dropped": dropped})
+                        removed_groups.append({"kept": rep_name, "dropped": dropped})
             keep_idx = sorted(set(keep_idx))
             if len(keep_idx) < len(feature_names):
                 logger.info("Removed correlated feature groups: %s", removed_groups)
@@ -1396,18 +1448,7 @@ def train(
             symbol_indices = np.array([], dtype=int)
 
     # --- Baseline statistics for Mahalanobis distance ------------------
-    feat_mean: np.ndarray = np.mean(X, axis=0) if X.size else np.array([])
-    if X.shape[0] >= 2:
-        feat_cov = np.cov(X, rowvar=False)
-    else:
-        feat_cov = np.eye(X.shape[1]) if X.size else np.empty((0, 0))
-    cov_inv = np.linalg.pinv(feat_cov) if feat_cov.size else np.empty((0, 0))
-    diff_all = X - feat_mean if X.size else np.empty_like(X)
-    mahal_all = (
-        np.sqrt(np.einsum("ij,jk,ik->i", diff_all, cov_inv, diff_all))
-        if cov_inv.size
-        else np.array([])
-    )
+    feat_mean, feat_cov, feat_precision = _fit_shrinkage_covariance(X)
 
     mlflow_active = (tracking_uri is not None) or (experiment_name is not None)
     if mlflow_active and not HAS_MLFLOW:
@@ -1429,8 +1470,8 @@ def train(
             current_run = mlflow.active_run()
             if current_run is not None:
                 mlflow_run_info = {
-                    "run_id": str(current_run.info.run_id),
-                    "experiment_id": str(current_run.info.experiment_id),
+                        "run_id": str(current_run.info.run_id),
+                        "experiment_id": str(current_run.info.experiment_id),
                 }
         n_splits = int(kwargs.get("n_splits", 3))
         gap = int(kwargs.get("cv_gap", 1))
@@ -1456,15 +1497,61 @@ def train(
             model_inputs = (X, symbol_indices)
         else:
             model_inputs = sequence_data if sequence_model else X
-        val_dists = (
-            np.concatenate([mahal_all[val_idx] for _, val_idx in splits])
-            if mahal_all.size
-            else np.array([])
+        fold_ood_info: dict[int, dict[str, object]] = {}
+        aggregated_scores_list: list[np.ndarray] = []
+        fold_thresholds_list: list[float] = []
+        for fold_idx, (tr_idx, val_idx) in enumerate(splits):
+            if not X.size or X.shape[1] == 0 or tr_idx.size == 0 or val_idx.size == 0:
+                empty_scores = np.zeros(val_idx.size, dtype=float)
+                fold_ood_info[fold_idx] = {
+                        "scores": empty_scores,
+                        "threshold": float("inf"),
+                        "fold_rate": 0.0,
+                }
+                if empty_scores.size:
+                        aggregated_scores_list.append(empty_scores)
+                continue
+            mean_fold, _cov_fold, precision_fold = _fit_shrinkage_covariance(X[tr_idx])
+            val_scores = _mahalanobis_from_precision(X[val_idx], mean_fold, precision_fold)
+            fold_threshold = (
+                float(np.percentile(val_scores, 99)) if val_scores.size else float("inf")
+            )
+            fold_rate = (
+                float(np.mean(val_scores > fold_threshold))
+                if val_scores.size and np.isfinite(fold_threshold)
+                else 0.0
+            )
+            fold_ood_info[fold_idx] = {
+                "scores": val_scores,
+                "threshold": fold_threshold,
+                "fold_rate": fold_rate,
+            }
+            if val_scores.size:
+                aggregated_scores_list.append(val_scores)
+            if np.isfinite(fold_threshold):
+                fold_thresholds_list.append(fold_threshold)
+        combined_val_scores = (
+            np.concatenate(aggregated_scores_list)
+            if aggregated_scores_list
+            else np.empty(0, dtype=float)
         )
-        ood_threshold = (
-            float(np.percentile(val_dists, 99)) if val_dists.size else float("inf")
-        )
-        ood_rate = float(np.mean(val_dists > ood_threshold)) if val_dists.size else 0.0
+        if fold_thresholds_list:
+            ood_threshold = float(np.median(fold_thresholds_list))
+        elif combined_val_scores.size:
+            ood_threshold = float(np.percentile(combined_val_scores, 99))
+        else:
+            ood_threshold = float("inf")
+        if combined_val_scores.size and np.isfinite(ood_threshold):
+            ood_rate_cv = float(np.mean(combined_val_scores > ood_threshold))
+        else:
+            ood_rate_cv = 0.0
+        for stats in fold_ood_info.values():
+            scores = np.asarray(stats.pop("scores", np.empty(0)), dtype=float)
+            stats["agg_rate"] = (
+                float(np.mean(scores > ood_threshold))
+                if scores.size and np.isfinite(ood_threshold)
+                else 0.0
+            )
         param_grid = kwargs.get("param_grid") or [{}]
         metric_names = metrics
         best_score = -np.inf
@@ -1483,14 +1570,14 @@ def train(
             profit_all = np.concatenate([fp[3] for fp in fold_preds])
             try:
                 best_threshold, best_metrics = search_decision_threshold(
-                    y_all,
-                    prob_all,
-                    profit_all,
-                    objective=threshold_objective,
-                    threshold_grid=threshold_grid_values,
-                    metric_names=metric_names,
-                    max_drawdown=max_drawdown,
-                    var_limit=var_limit,
+                        y_all,
+                        prob_all,
+                        profit_all,
+                        objective=threshold_objective,
+                        threshold_grid=threshold_grid_values,
+                        metric_names=metric_names,
+                        max_drawdown=max_drawdown,
+                        var_limit=var_limit,
                 )
             except ValueError:
                 return 0.5, {}, []
@@ -1498,29 +1585,34 @@ def train(
             for fold_idx, y_val, prob_val, prof_val in fold_preds:
                 returns_fold = prof_val * (prob_val >= best_threshold)
                 metrics_fold = _classification_metrics_cached(
-                    y_val,
-                    prob_val,
-                    returns_fold,
-                    selected=metric_names,
-                    threshold=best_threshold,
+                        y_val,
+                        prob_val,
+                        returns_fold,
+                        selected=metric_names,
+                        threshold=best_threshold,
                 )
                 metrics_fold.setdefault("max_drawdown", eval_max_drawdown(returns_fold))
                 metrics_fold.setdefault("var_95", eval_var_95(returns_fold))
                 metrics_fold["threshold"] = float(best_threshold)
                 metrics_fold["threshold_objective"] = threshold_objective
+                metrics_fold["ood_rate"] = float(
+                        fold_ood_info.get(fold_idx, {}).get("agg_rate", ood_rate_cv)
+                )
+                metrics_fold["ood_threshold"] = float(ood_threshold)
                 fold_metrics.append((fold_idx, metrics_fold))
             return best_threshold, best_metrics, fold_metrics
 
         if distributed and not HAS_RAY:
             raise RuntimeError("ray is required for distributed execution")
+        fold_metrics: list[dict[str, object]] = []
         for params in param_grid:
             fold_predictions: list[tuple[int, np.ndarray, np.ndarray, np.ndarray]] = []
             if distributed and HAS_RAY:
                 if model_type == "crossmodal":
-                    price_ref = ray.put(sequence_data)
-                    news_ref = ray.put(news_sequence_data)
+                        price_ref = ray.put(sequence_data)
+                        news_ref = ray.put(news_sequence_data)
                 else:
-                    X_ref = ray.put(model_inputs)
+                        X_ref = ray.put(model_inputs)
                 y_ref = ray.put(y)
                 profits_ref = ray.put(profits)
                 weight_ref = ray.put(sample_weight)
@@ -1528,92 +1620,92 @@ def train(
 
                 @ray.remote
                 def _run_fold(tr_idx, val_idx, fold):
-                    if model_type == "crossmodal":
-                        price_data = ray.get(price_ref)
-                        news_data = ray.get(news_ref)
-                    elif model_type == "multi_symbol":
-                        data_feat, data_sym = ray.get(X_ref)
-                    else:
-                        data = ray.get(X_ref)
-                    y = ray.get(y_ref)
-                    profits = ray.get(profits_ref)
-                    weights = ray.get(weight_ref)
-                    R_local = ray.get(R_ref) if R_ref is not None else None
-                    builder = get_model(model_type)
-                    if model_type == "moe" and R_local is not None:
-                        model_fold, pred_fn = builder(
-                            X[tr_idx],
-                            y[tr_idx],
-                            regime_features=R_local[tr_idx],
-                            regime_feature_names=regime_feature_names,
-                            sample_weight=weights[tr_idx],
-                            grad_clip=grad_clip,
-                            **gpu_kwargs,
-                            **params,
-                            **(
-                                {"init_weights": meta_init}
-                                if meta_init is not None
-                                else {}
-                            ),
-                        )
-                        prob_val = pred_fn(X[val_idx], R_local[val_idx])
-                    else:
-                        builder_kwargs = dict(
-                            **gpu_kwargs, **params, **extra_model_params
-                        )
-                        builder_kwargs["sample_weight"] = weights[tr_idx]
-                        if model_type in {"moe", "multi_symbol"} or sequence_model:
-                            builder_kwargs["grad_clip"] = grad_clip
-                        if meta_init is not None:
-                            builder_kwargs["init_weights"] = meta_init
-                        if model_type == "multi_symbol":
-                            builder_kwargs.update(
-                                {
-                                    "symbol_names": symbol_names_ctx,
-                                    "embeddings": symbol_embeddings_ctx,
-                                    "neighbor_index": neighbor_lists_ctx,
-                                }
-                            )
                         if model_type == "crossmodal":
-                            train_input = (
-                                price_data[tr_idx],
-                                news_data[tr_idx],
-                            )
-                            model_fold, pred_fn = builder(
-                                train_input,
-                                y[tr_idx],
-                                **builder_kwargs,
-                            )
-                            prob_val = pred_fn(
-                                (
-                                    price_data[val_idx],
-                                    news_data[val_idx],
-                                )
-                            )
+                            price_data = ray.get(price_ref)
+                            news_data = ray.get(news_ref)
                         elif model_type == "multi_symbol":
-                            local_kwargs = dict(builder_kwargs)
-                            local_kwargs["symbol_ids"] = data_sym[tr_idx]
-                            model_fold, pred_fn = builder(
-                                data_feat[tr_idx],
-                                y[tr_idx],
-                                **local_kwargs,
-                            )
-                            prob_val = pred_fn((data_feat[val_idx], data_sym[val_idx]))
+                            data_feat, data_sym = ray.get(X_ref)
                         else:
+                            data = ray.get(X_ref)
+                        y = ray.get(y_ref)
+                        profits = ray.get(profits_ref)
+                        weights = ray.get(weight_ref)
+                        R_local = ray.get(R_ref) if R_ref is not None else None
+                        builder = get_model(model_type)
+                        if model_type == "moe" and R_local is not None:
                             model_fold, pred_fn = builder(
-                                data[tr_idx],
+                                X[tr_idx],
                                 y[tr_idx],
-                                **builder_kwargs,
+                                regime_features=R_local[tr_idx],
+                                regime_feature_names=regime_feature_names,
+                                sample_weight=weights[tr_idx],
+                                grad_clip=grad_clip,
+                                **gpu_kwargs,
+                                **params,
+                                **(
+                                    {"init_weights": meta_init}
+                                    if meta_init is not None
+                                    else {}
+                                ),
                             )
-                            prob_val = pred_fn(data[val_idx])
-                    profits_val = profits[val_idx]
-                    y_val = y[val_idx]
-                    return (
-                        fold,
-                        np.asarray(y_val, dtype=float),
-                        np.asarray(prob_val, dtype=float),
-                        np.asarray(profits_val, dtype=float),
-                    )
+                            prob_val = pred_fn(X[val_idx], R_local[val_idx])
+                        else:
+                            builder_kwargs = dict(
+                                **gpu_kwargs, **params, **extra_model_params
+                            )
+                            builder_kwargs["sample_weight"] = weights[tr_idx]
+                            if model_type in {"moe", "multi_symbol"} or sequence_model:
+                                builder_kwargs["grad_clip"] = grad_clip
+                            if meta_init is not None:
+                                builder_kwargs["init_weights"] = meta_init
+                            if model_type == "multi_symbol":
+                                builder_kwargs.update(
+                                    {
+                                        "symbol_names": symbol_names_ctx,
+                                        "embeddings": symbol_embeddings_ctx,
+                                        "neighbor_index": neighbor_lists_ctx,
+                                    }
+                                )
+                            if model_type == "crossmodal":
+                                train_input = (
+                                    price_data[tr_idx],
+                                    news_data[tr_idx],
+                                )
+                                model_fold, pred_fn = builder(
+                                    train_input,
+                                    y[tr_idx],
+                                    **builder_kwargs,
+                                )
+                                prob_val = pred_fn(
+                                    (
+                                        price_data[val_idx],
+                                        news_data[val_idx],
+                                    )
+                                )
+                            elif model_type == "multi_symbol":
+                                local_kwargs = dict(builder_kwargs)
+                                local_kwargs["symbol_ids"] = data_sym[tr_idx]
+                                model_fold, pred_fn = builder(
+                                    data_feat[tr_idx],
+                                    y[tr_idx],
+                                    **local_kwargs,
+                                )
+                                prob_val = pred_fn((data_feat[val_idx], data_sym[val_idx]))
+                            else:
+                                model_fold, pred_fn = builder(
+                                    data[tr_idx],
+                                    y[tr_idx],
+                                    **builder_kwargs,
+                                )
+                                prob_val = pred_fn(data[val_idx])
+                        profits_val = profits[val_idx]
+                        y_val = y[val_idx]
+                        return (
+                            fold,
+                            np.asarray(y_val, dtype=float),
+                            np.asarray(prob_val, dtype=float),
+                            np.asarray(profits_val, dtype=float),
+                        )
 
                 futures = [
                     _run_fold.remote(tr_idx, val_idx, fold)
@@ -1645,54 +1737,56 @@ def train(
                             ),
                         )
                         prob_val = pred_fn(X[val_idx], R[val_idx])
-                else:
-                    builder_kwargs = dict(
-                        **gpu_kwargs, **params, **extra_model_params
-                    )
-                    builder_kwargs["sample_weight"] = sample_weight[tr_idx]
-                    if model_type in {"moe", "multi_symbol"} or sequence_model:
-                        builder_kwargs["grad_clip"] = grad_clip
-                    if meta_init is not None:
-                        builder_kwargs["init_weights"] = meta_init
-                    if model_type == "multi_symbol":
-                        builder_kwargs.update(
-                            {
-                                "symbol_names": symbol_names_ctx,
-                                "embeddings": symbol_embeddings_ctx,
-                                "neighbor_index": neighbor_lists_ctx,
-                            }
-                        )
-                    if model_type == "crossmodal":
-                        price_train = sequence_data[tr_idx]
-                        news_train = news_sequence_data[tr_idx]
-                        model_fold, pred_fn = builder(
-                            (price_train, news_train),
-                            y[tr_idx],
-                            **builder_kwargs,
-                        )
-                        prob_val = pred_fn(
-                            (
-                                sequence_data[val_idx],
-                                news_sequence_data[val_idx],
-                            )
-                        )
-                    elif model_type == "multi_symbol":
-                        data_feat, data_sym = model_inputs
-                        local_kwargs = dict(builder_kwargs)
-                        local_kwargs["symbol_ids"] = data_sym[tr_idx]
-                        model_fold, pred_fn = builder(
-                            data_feat[tr_idx],
-                            y[tr_idx],
-                            **local_kwargs,
-                        )
-                        prob_val = pred_fn((data_feat[val_idx], data_sym[val_idx]))
                     else:
-                        model_fold, pred_fn = builder(
-                            model_inputs[tr_idx],
-                            y[tr_idx],
-                            **builder_kwargs,
+                        builder_kwargs = dict(
+                            **gpu_kwargs, **params, **extra_model_params
                         )
-                        prob_val = pred_fn(model_inputs[val_idx])
+                        builder_kwargs["sample_weight"] = sample_weight[tr_idx]
+                        if (
+                            model_type in {"moe", "multi_symbol"} or sequence_model
+                        ):
+                            builder_kwargs["grad_clip"] = grad_clip
+                        if meta_init is not None:
+                            builder_kwargs["init_weights"] = meta_init
+                        if model_type == "multi_symbol":
+                            builder_kwargs.update(
+                                {
+                                    "symbol_names": symbol_names_ctx,
+                                    "embeddings": symbol_embeddings_ctx,
+                                    "neighbor_index": neighbor_lists_ctx,
+                                }
+                            )
+                        if model_type == "crossmodal":
+                            price_train = sequence_data[tr_idx]
+                            news_train = news_sequence_data[tr_idx]
+                            model_fold, pred_fn = builder(
+                                (price_train, news_train),
+                                y[tr_idx],
+                                **builder_kwargs,
+                            )
+                            prob_val = pred_fn(
+                                (
+                                    sequence_data[val_idx],
+                                    news_sequence_data[val_idx],
+                                )
+                            )
+                        elif model_type == "multi_symbol":
+                            data_feat, data_sym = model_inputs
+                            local_kwargs = dict(builder_kwargs)
+                            local_kwargs["symbol_ids"] = data_sym[tr_idx]
+                            model_fold, pred_fn = builder(
+                                data_feat[tr_idx],
+                                y[tr_idx],
+                                **local_kwargs,
+                            )
+                            prob_val = pred_fn((data_feat[val_idx], data_sym[val_idx]))
+                        else:
+                            model_fold, pred_fn = builder(
+                                model_inputs[tr_idx],
+                                y[tr_idx],
+                                **builder_kwargs,
+                            )
+                            prob_val = pred_fn(model_inputs[val_idx])
                     profits_val = profits[val_idx]
                     if profile and eval_prof is not None:
                         eval_prof.enable()
@@ -1732,6 +1826,10 @@ def train(
                 }
             threshold_value = threshold_value or 0.5
             combined_metrics = combined_metrics or {}
+            metrics["ood_rate"] = ood_rate_cv
+            metrics["ood_threshold"] = float(ood_threshold)
+            if not fold_metrics:
+                fold_metrics = [metrics.copy()]
         agg = {
             k: float(
                 np.nanmean(
@@ -1743,6 +1841,8 @@ def train(
         }
         agg["threshold"] = float(threshold_value)
         agg["threshold_objective"] = threshold_objective
+        agg["ood_threshold"] = float(ood_threshold)
+        agg["ood_rate"] = ood_rate_cv
         for key in [
             "reliability_curve",
             "roc_auc",
@@ -1788,16 +1888,19 @@ def train(
                 metrics = agg.copy()
                 metrics.setdefault("threshold", float(threshold_value))
                 metrics.setdefault("threshold_objective", threshold_objective)
+                metrics["ood_rate"] = ood_rate_cv
+                metrics["ood_threshold"] = float(ood_threshold)
         selected_threshold = float(metrics.get("threshold", 0.5))
         if profile and eval_prof is not None:
             eval_prof.dump_stats(str(profiles_dir / "evaluation.prof"))
         metrics.setdefault("threshold", selected_threshold)
         metrics.setdefault("threshold_objective", threshold_objective)
+        metrics["ood_rate"] = ood_rate_cv
+        metrics["ood_threshold"] = float(ood_threshold)
         if max_drawdown is not None and metrics.get("max_drawdown", 0.0) > max_drawdown:
             raise ValueError("Selected model exceeds max_drawdown limit")
         if var_limit is not None and metrics.get("var_95", 0.0) > var_limit:
             raise ValueError("Selected model exceeds var_95 limit")
-        metrics["ood_rate"] = ood_rate
         min_acc = float(kwargs.get("min_accuracy", 0.0))
         min_profit = float(kwargs.get("min_profit", -np.inf))
         if metrics and (
@@ -2089,7 +2192,8 @@ def train(
         model["ood"] = {
             "mean": feat_mean.tolist(),
             "covariance": feat_cov.tolist(),
-            "threshold": ood_threshold,
+            "precision": feat_precision.tolist(),
+            "threshold": float(ood_threshold),
         }
         serialised_cv_metrics = serialise_metric_values(metrics)
         session_cv_metrics = serialise_metric_values(metrics)
