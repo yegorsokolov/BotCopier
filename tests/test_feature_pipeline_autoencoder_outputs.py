@@ -5,8 +5,9 @@ import sys
 import types
 from pathlib import Path
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
 
 
 if "gplearn" not in sys.modules:
@@ -168,3 +169,61 @@ def test_feature_pipeline_autoencoder_schema_handles_alias_metadata() -> None:
     expected_latent = matrix @ weights.T + bias
     np.testing.assert_allclose(transformed[:, :2], expected_latent)
     np.testing.assert_allclose(transformed[:, 2:], matrix)
+
+
+def test_feature_pipeline_autoencoder_subset_inputs_validation() -> None:
+    pd = pytest.importorskip("pandas")
+    from botcopier.data.feature_schema import FeatureSchema
+    from botcopier.training.pipeline import predict_expected_value
+
+    weights = np.array([[0.5, -0.15], [0.25, 0.35]], dtype=float)
+    bias = np.array([0.05, -0.1], dtype=float)
+    coefficients = np.array([0.4, -0.3, 0.2], dtype=float)
+    intercept = 0.15
+
+    model = {
+        "feature_names": ["latent_0", "latent_1", "book_imbalance"],
+        "feature_metadata": [
+            {"original_column": "atr"},
+            {"original_column": "sl_dist_atr"},
+            {"original_column": "book_imbalance"},
+        ],
+        "coefficients": coefficients.tolist(),
+        "intercept": float(intercept),
+        "autoencoder": {
+            "input_features": ["atr", "sl_dist_atr"],
+            "weights": weights.tolist(),
+            "bias": bias.tolist(),
+            "feature_names": ["latent_0", "latent_1"],
+        },
+    }
+
+    pipeline_obj = FeaturePipeline.from_model(model)
+
+    assert pipeline_obj.autoencoder_inputs == ["atr", "sl_dist_atr"]
+    assert pipeline_obj.input_columns == ["atr", "sl_dist_atr", "book_imbalance"]
+    assert pipeline_obj.schema_columns == pipeline_obj.input_columns
+
+    matrix = np.array(
+        [
+            [0.8, 1.5, 0.25],
+            [0.5, 0.9, -0.4],
+            [0.3, 0.7, 0.1],
+        ],
+        dtype=float,
+    )
+
+    df = pd.DataFrame(matrix, columns=pipeline_obj.schema_columns)
+    # Ensure Pandera validation succeeds when extra non-autoencoder columns are
+    # present alongside the autoencoder inputs.
+    FeatureSchema.validate(df, lazy=True)
+
+    transformed = pipeline_obj.transform_matrix(matrix)
+    latent = matrix[:, :2] @ weights.T + bias
+    expected = np.concatenate([latent, matrix[:, 2:].reshape(matrix.shape[0], 1)], axis=1)
+    np.testing.assert_allclose(transformed, expected)
+
+    preds = predict_expected_value(model, matrix)
+    logits = expected @ coefficients + intercept
+    expected_prob = 1.0 / (1.0 + np.exp(-logits))
+    np.testing.assert_allclose(preds, expected_prob)
