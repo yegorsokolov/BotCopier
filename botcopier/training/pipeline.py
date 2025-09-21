@@ -2365,6 +2365,7 @@ def predict_expected_value(
     X: np.ndarray,
     *,
     model_dir: Path | str | None = None,
+    session_key: str | None = None,
 ) -> np.ndarray:
     """Compute expected profit predictions for feature matrix ``X``.
 
@@ -2380,11 +2381,30 @@ def predict_expected_value(
         Directory containing ``model.json`` and related resources. When
         provided, relative autoencoder metadata references are resolved using
         this directory.
+    session_key
+        Optional key identifying which entry from ``session_models`` should be
+        used for the linear model parameters. When omitted, the first available
+        session is selected for backwards compatibility.
     """
 
-    if "session_models" in model and model["session_models"]:
-        params = next(iter(model["session_models"].values()))
+    session_models = model.get("session_models")
+    if session_models:
+        if session_key is None:
+            params = next(iter(session_models.values()))
+        else:
+            if session_key not in session_models:
+                available = ", ".join(sorted(map(str, session_models))) or "none"
+                raise ValueError(
+                    "model does not contain session "
+                    f"{session_key!r}; available sessions: {available}"
+                )
+            params = session_models[session_key]
     else:
+        if session_key is not None:
+            raise ValueError(
+                "model does not define session_models but session "
+                f"{session_key!r} was requested"
+            )
         params = model
 
     resolved_dir: Path | None = None
@@ -2397,7 +2417,9 @@ def predict_expected_value(
         else:
             resolved_dir = candidate
 
-    pipeline = FeaturePipeline.from_model(model, model_dir=resolved_dir)
+    pipeline = FeaturePipeline.from_model(
+        model, model_dir=resolved_dir, session_key=session_key
+    )
     raw_features = np.asarray(X, dtype=float)
     if raw_features.ndim != 2:
         raise ValueError("feature matrix must be 2-dimensional")

@@ -89,6 +89,33 @@ def fake_onnx_session(monkeypatch):
     return FakeInferenceSession
 
 
+@pytest.fixture()
+def simple_session_pipeline():
+    """Provide a minimal model with multiple session configurations."""
+
+    X = np.array(
+        [
+            [-0.4],
+            [0.0],
+            [0.6],
+        ],
+        dtype=float,
+    )
+    model = {
+        "feature_names": ["f0"],
+        "feature_metadata": [{"original_column": "f0"}],
+        "feature_mean": [0.0],
+        "feature_std": [1.0],
+        "clip_low": [-10.0],
+        "clip_high": [10.0],
+        "session_models": {
+            "asian": {"coefficients": [0.8], "intercept": -0.2},
+            "european": {"coefficients": [-0.5], "intercept": 0.6},
+        },
+    }
+    return model, X
+
+
 def test_autoencoder_embeddings_roundtrip(tmp_path, sample_autoencoder):
     ae_path, weights, bias = sample_autoencoder
     X = np.array(
@@ -248,3 +275,28 @@ def test_expected_value_with_onnx_weights_file(tmp_path, fake_onnx_session):
     expected = 1.0 / (1.0 + np.exp(-logits))
 
     np.testing.assert_allclose(preds, expected)
+
+
+def test_predict_expected_value_selects_session(simple_session_pipeline):
+    model, X = simple_session_pipeline
+
+    default_preds = pipeline.predict_expected_value(model, X)
+    asian_preds = pipeline.predict_expected_value(model, X, session_key="asian")
+    european_preds = pipeline.predict_expected_value(
+        model, X, session_key="european"
+    )
+
+    np.testing.assert_allclose(default_preds, asian_preds)
+    assert not np.allclose(asian_preds, european_preds)
+    assert np.max(np.abs(asian_preds - european_preds)) > 1e-6
+
+
+def test_predict_expected_value_missing_session(simple_session_pipeline):
+    model, X = simple_session_pipeline
+
+    with pytest.raises(ValueError, match="session 'unknown'"):
+        pipeline.predict_expected_value(model, X, session_key="unknown")
+
+    base_model = {k: v for k, v in model.items() if k != "session_models"}
+    with pytest.raises(ValueError, match="does not define session_models"):
+        pipeline.predict_expected_value(base_model, X, session_key="asian")

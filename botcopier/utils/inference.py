@@ -100,11 +100,30 @@ class FeaturePipeline:
 
     @classmethod
     def from_model(
-        cls, model: Mapping[str, Any], *, model_dir: Path | None = None
+        cls,
+        model: Mapping[str, Any],
+        *,
+        model_dir: Path | None = None,
+        session_key: str | None = None,
     ) -> "FeaturePipeline":
-        if "session_models" in model and model["session_models"]:
-            params = next(iter(model["session_models"].values()))
+        session_models = model.get("session_models")
+        if session_models:
+            if session_key is None:
+                params = next(iter(session_models.values()))
+            else:
+                if session_key not in session_models:
+                    available = ", ".join(sorted(map(str, session_models))) or "none"
+                    raise ValueError(
+                        "model does not contain session "
+                        f"{session_key!r}; available sessions: {available}"
+                    )
+                params = session_models[session_key]
         else:
+            if session_key is not None:
+                raise ValueError(
+                    "model does not define session_models but session "
+                    f"{session_key!r} was requested"
+                )
             params = model
 
         feature_names = [str(f) for f in params.get("feature_names") or model.get("feature_names", [])]
