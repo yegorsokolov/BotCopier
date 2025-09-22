@@ -1,0 +1,17 @@
+{
+  "feature_names": [
+    "price",
+    "price_lag_1",
+    "price_lag_5",
+    "price_diff",
+    "volume",
+    "volume_lag_1",
+    "volume_diff",
+    "spread",
+    "spread_lag_1",
+    "spread_lag_5",
+    "spread_diff",
+    "spread*spread_lag_1",
+    "spread*spread_diff"
+  ]
+}

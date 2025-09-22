@@ -29,40 +29,43 @@ class FeatureRuntime:
     helpers: tuple[str, ...] = ()
 
 
+def _market_feature(mode: str, *, tracked: bool = False) -> FeatureRuntime:
+    expr = f"MarketInfo(Symbol(), {mode})"
+    helpers: tuple[str, ...] = ()
+    if tracked:
+        expr = f"MarketSeries({mode}, 0)"
+        helpers = ("market_series",)
+    return FeatureRuntime(expr, helpers)
+
+
+def _time_feature(func: str) -> FeatureRuntime:
+    return FeatureRuntime(f"{func}(TimeCurrent())")
+
+
+def _time_phase(expr: str, period: int, trig: str, *, wrap: bool = False) -> FeatureRuntime:
+    base = f"({expr})" if wrap else expr
+    return FeatureRuntime(f"Math{trig}({base}*2*MathPi()/{period})")
+
+
 # Mapping from feature name to MQL4 runtime expression.
 # Add new feature mappings here as additional model features appear.
 FEATURE_MAP: dict[str, FeatureRuntime] = {
-    "spread": FeatureRuntime("MarketInfo(Symbol(), MODE_SPREAD)"),
-    "ask": FeatureRuntime("MarketInfo(Symbol(), MODE_ASK)"),
-    "bid": FeatureRuntime("MarketInfo(Symbol(), MODE_BID)"),
+    "spread": _market_feature("MODE_SPREAD", tracked=True),
+    "ask": _market_feature("MODE_ASK", tracked=True),
+    "bid": _market_feature("MODE_BID", tracked=True),
+    "price": FeatureRuntime("iClose(Symbol(), PERIOD_CURRENT, 0)"),
     "volume": FeatureRuntime("iVolume(Symbol(), PERIOD_CURRENT, 0)"),
-    "hour": FeatureRuntime("TimeHour(TimeCurrent())"),
-    "dayofweek": FeatureRuntime("TimeDayOfWeek(TimeCurrent())"),
-    "month": FeatureRuntime("TimeMonth(TimeCurrent())"),
-    "hour_sin": FeatureRuntime(
-        "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)"
-    ),
-    "hour_cos": FeatureRuntime(
-        "MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)"
-    ),
-    "dow_sin": FeatureRuntime(
-        "MathSin(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)"
-    ),
-    "dow_cos": FeatureRuntime(
-        "MathCos(TimeDayOfWeek(TimeCurrent())*2*MathPi()/7)"
-    ),
-    "month_sin": FeatureRuntime(
-        "MathSin((TimeMonth(TimeCurrent())-1)*2*MathPi()/12)"
-    ),
-    "month_cos": FeatureRuntime(
-        "MathCos((TimeMonth(TimeCurrent())-1)*2*MathPi()/12)"
-    ),
-    "dom_sin": FeatureRuntime(
-        "MathSin((TimeDay(TimeCurrent())-1)*2*MathPi()/31)"
-    ),
-    "dom_cos": FeatureRuntime(
-        "MathCos((TimeDay(TimeCurrent())-1)*2*MathPi()/31)"
-    ),
+    "hour": _time_feature("TimeHour"),
+    "dayofweek": _time_feature("TimeDayOfWeek"),
+    "month": _time_feature("TimeMonth"),
+    "hour_sin": _time_phase("TimeHour(TimeCurrent())", 24, "Sin"),
+    "hour_cos": _time_phase("TimeHour(TimeCurrent())", 24, "Cos"),
+    "dow_sin": _time_phase("TimeDayOfWeek(TimeCurrent())", 7, "Sin"),
+    "dow_cos": _time_phase("TimeDayOfWeek(TimeCurrent())", 7, "Cos"),
+    "month_sin": _time_phase("TimeMonth(TimeCurrent())-1", 12, "Sin", wrap=True),
+    "month_cos": _time_phase("TimeMonth(TimeCurrent())-1", 12, "Cos", wrap=True),
+    "dom_sin": _time_phase("TimeDay(TimeCurrent())-1", 31, "Sin", wrap=True),
+    "dom_cos": _time_phase("TimeDay(TimeCurrent())-1", 31, "Cos", wrap=True),
     "sma": FeatureRuntime(
         "iMA(Symbol(), PERIOD_CURRENT, 5, 0, MODE_SMA, PRICE_CLOSE, 0)"
     ),
@@ -97,24 +100,56 @@ FEATURE_MAP: dict[str, FeatureRuntime] = {
         "DepthOrderFlowImbalance()", ("orderbook",)
     ),
     "spread*hour_sin": FeatureRuntime(
-        "MarketInfo(Symbol(), MODE_SPREAD) * MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)"
+        "MarketSeries(MODE_SPREAD, 0) * MathSin(TimeHour(TimeCurrent())*2*MathPi()/24)",
+        ("market_series",),
     ),
     "spread*hour_cos": FeatureRuntime(
-        "MarketInfo(Symbol(), MODE_SPREAD) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)"
+        "MarketSeries(MODE_SPREAD, 0) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)",
+        ("market_series",),
     ),
     "spread*spread_lag_1": FeatureRuntime(
-        "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)"
+        "MarketSeries(MODE_SPREAD, 0) * MarketSeries(MODE_SPREAD, 1)",
+        ("market_series",),
     ),
     "spread*spread_lag_5": FeatureRuntime(
-        "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)"
+        "MarketSeries(MODE_SPREAD, 0) * MarketSeries(MODE_SPREAD, 5)",
+        ("market_series",),
     ),
     "spread*spread_diff": FeatureRuntime(
-        "MarketInfo(Symbol(), MODE_SPREAD) * MarketInfo(Symbol(), MODE_SPREAD)"
+        "MarketSeries(MODE_SPREAD, 0) * (MarketSeries(MODE_SPREAD, 0) - MarketSeries(MODE_SPREAD, 1))",
+        ("market_series",),
     ),
     "hour_sin*hour_cos": FeatureRuntime(
         "MathSin(TimeHour(TimeCurrent())*2*MathPi()/24) * MathCos(TimeHour(TimeCurrent())*2*MathPi()/24)"
     ),
 }
+
+
+SERIES_TEMPLATES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "price": ("iClose(Symbol(), PERIOD_CURRENT, {shift})", ()),
+    "volume": ("iVolume(Symbol(), PERIOD_CURRENT, {shift})", ()),
+    "spread": ("MarketSeries(MODE_SPREAD, {shift})", ("market_series",)),
+    "ask": ("MarketSeries(MODE_ASK, {shift})", ("market_series",)),
+    "bid": ("MarketSeries(MODE_BID, {shift})", ("market_series",)),
+}
+
+
+def _series_expr(name: str, shift: int, helpers: set[str]) -> str:
+    template = SERIES_TEMPLATES.get(name)
+    if template is None:
+        raise KeyError(name)
+    expr, needed = template
+    _register_helpers(helpers, needed)
+    return expr.format(shift=shift)
+
+
+def _series_diff(name: str, helpers: set[str]) -> str:
+    template = SERIES_TEMPLATES.get(name)
+    if template is None:
+        raise KeyError(name)
+    expr, needed = template
+    _register_helpers(helpers, needed)
+    return f"{expr.format(shift=0)} - {expr.format(shift=1)}"
 
 
 def _load_params(path: Path) -> dict[str, Any]:
@@ -265,6 +300,46 @@ double DepthCnnEmbedding(int idx)
     return 0.0;
 }
 """.strip(),
+    "market_series": """
+double MarketSeries(int mode, int shift)
+{
+    const int MAX_LAG = 32;
+    static double history[3][MAX_LAG];
+    static int count = 0;
+    static datetime last_time = 0;
+    datetime now = TimeCurrent();
+    if(last_time != now || count == 0)
+    {
+        for(int row = 0; row < 3; row++)
+        {
+            for(int i = MAX_LAG - 1; i > 0; i--)
+                history[row][i] = history[row][i - 1];
+        }
+        history[0][0] = MarketInfo(Symbol(), MODE_SPREAD);
+        history[1][0] = MarketInfo(Symbol(), MODE_ASK);
+        history[2][0] = MarketInfo(Symbol(), MODE_BID);
+        if(count < MAX_LAG)
+            count++;
+        last_time = now;
+    }
+    if(count <= 0)
+        return MarketInfo(Symbol(), mode);
+    if(shift < 0)
+        shift = 0;
+    if(shift >= count)
+        shift = count - 1;
+    int idx = 0;
+    if(mode == MODE_SPREAD)
+        idx = 0;
+    else if(mode == MODE_ASK)
+        idx = 1;
+    else if(mode == MODE_BID)
+        idx = 2;
+    else
+        return MarketInfo(Symbol(), mode);
+    return history[idx][shift];
+}
+""".strip(),
 }
 
 GET_FEATURE_TEMPLATE = """double GetFeature(int idx)\n{{\n    switch(idx)\n    {{\n{cases}\n    }}\n    return 0.0;\n}}\n"""
@@ -284,6 +359,20 @@ def _resolve_feature(name: str, helpers: set[str]) -> str:
     if runtime is not None:
         _register_helpers(helpers, runtime.helpers)
         return runtime.expr
+
+    if "_lag_" in name:
+        base, _, lag_str = name.rpartition("_lag_")
+        if lag_str.isdigit():
+            lag = int(lag_str)
+            if lag < 0:
+                raise KeyError(name)
+            return _series_expr(base, lag, helpers)
+
+    if name.endswith("_diff"):
+        base = name[: -len("_diff")]
+        if not base:
+            raise KeyError(name)
+        return _series_diff(base, helpers)
 
     if name.startswith("ratio_"):
         try:
