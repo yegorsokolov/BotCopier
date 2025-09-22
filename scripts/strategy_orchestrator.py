@@ -110,6 +110,7 @@ def run_strategies(
         for sid, fn in strategies.items():
             start_proc(sid, fn)
     else:
+        cached_market_data = market_data if isinstance(market_data, list) else list(market_data)
         data_queues: Dict[str, Queue] = {}
 
         def start_proc(sid: str, fn: StrategyFn) -> None:
@@ -118,7 +119,7 @@ def run_strategies(
             p = Process(target=_strategy_worker_queue, args=(sid, fn, q, metric_q))
             p.start()
             procs[sid] = p
-            for item in market_data:
+            for item in cached_market_data:
                 q.put(item)
             q.put(None)
 
