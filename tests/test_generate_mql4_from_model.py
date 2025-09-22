@@ -16,6 +16,14 @@ def _copy_template(tmp_path: Path) -> Path:
     return template
 
 
+@pytest.fixture
+def lag_diff_inputs(tmp_path: Path):
+    model_path = tmp_path / "model.json"
+    model_path.write_text((_SAMPLE_MODELS / "lag_diff_model.json").read_text())
+    template = _copy_template(tmp_path)
+    return model_path, template
+
+
 def test_generated_features(tmp_path):
     model = tmp_path / "model.json"
     model.write_text(
@@ -40,8 +48,8 @@ def test_generated_features(tmp_path):
     )
 
     template = tmp_path / "StrategyTemplate.mq4"
-    # minimal template containing placeholder for insertion
-    template.write_text("#property strict\n\n// __GET_FEATURE__\n")
+    # minimal template containing placeholders for insertion
+    template.write_text("#property strict\n\n// __INDICATOR_FUNCTIONS__\n// __GET_FEATURE__\n")
 
     subprocess.run(
         [
@@ -56,7 +64,7 @@ def test_generated_features(tmp_path):
     )
 
     content = template.read_text()
-    assert "case 0: return MarketInfo(Symbol(), MODE_SPREAD); // spread" in content
+    assert "case 0: return MarketSeries(MODE_SPREAD, 0); // spread" in content
     assert "case 1: return OrderSlippage(); // slippage" in content
     assert "case 2: return AccountEquity(); // equity" in content
     assert "case 3: return AccountMarginLevel(); // margin_level" in content
@@ -88,6 +96,7 @@ def test_generated_features(tmp_path):
     assert (
         "case 11: return iATR(Symbol(), PERIOD_CURRENT, 14, 0); // atr" in content
     )
+    assert "double MarketSeries(int mode, int shift)" in content
 
     data = json.loads(model.read_text())
     assert data["feature_names"] == [
@@ -104,6 +113,53 @@ def test_generated_features(tmp_path):
         "dom_cos",
         "atr",
     ]
+
+
+def test_lag_diff_features_resolve_runtime_expressions(lag_diff_inputs):
+    model_path, template = lag_diff_inputs
+
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/generate_mql4_from_model.py",
+            "--model",
+            model_path,
+            "--template",
+            template,
+        ],
+        check=True,
+    )
+
+    content = template.read_text()
+    assert "case 0: return iClose(Symbol(), PERIOD_CURRENT, 0); // price" in content
+    assert "case 1: return iClose(Symbol(), PERIOD_CURRENT, 1); // price_lag_1" in content
+    assert "case 2: return iClose(Symbol(), PERIOD_CURRENT, 5); // price_lag_5" in content
+    assert (
+        "case 3: return iClose(Symbol(), PERIOD_CURRENT, 0) - iClose(Symbol(), PERIOD_CURRENT, 1); // price_diff"
+        in content
+    )
+    assert "case 4: return iVolume(Symbol(), PERIOD_CURRENT, 0); // volume" in content
+    assert "case 5: return iVolume(Symbol(), PERIOD_CURRENT, 1); // volume_lag_1" in content
+    assert (
+        "case 6: return iVolume(Symbol(), PERIOD_CURRENT, 0) - iVolume(Symbol(), PERIOD_CURRENT, 1); // volume_diff"
+        in content
+    )
+    assert "case 7: return MarketSeries(MODE_SPREAD, 0); // spread" in content
+    assert "case 8: return MarketSeries(MODE_SPREAD, 1); // spread_lag_1" in content
+    assert "case 9: return MarketSeries(MODE_SPREAD, 5); // spread_lag_5" in content
+    assert (
+        "case 10: return MarketSeries(MODE_SPREAD, 0) - MarketSeries(MODE_SPREAD, 1); // spread_diff"
+        in content
+    )
+    assert (
+        "case 11: return MarketSeries(MODE_SPREAD, 0) * MarketSeries(MODE_SPREAD, 1); // spread*spread_lag_1"
+        in content
+    )
+    assert (
+        "case 12: return MarketSeries(MODE_SPREAD, 0) * (MarketSeries(MODE_SPREAD, 0) - MarketSeries(MODE_SPREAD, 1)); // spread*spread_diff"
+        in content
+    )
+    assert "double MarketSeries(int mode, int shift)" in content
 
 
 def test_pruned_features_not_emitted(tmp_path):
