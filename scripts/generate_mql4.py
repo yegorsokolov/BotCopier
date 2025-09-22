@@ -1,3 +1,5 @@
+"""Render MQL4 strategies from a JSON model without mutating the source file."""
+
 import argparse
 import json
 from pathlib import Path
@@ -101,7 +103,6 @@ def generate(model_path: Path, template_path: Path, out_path: Path, calendar_fil
     model["feature_names"] = emitted
     if "retained_features" in model:
         del model["retained_features"]
-    model_path.write_text(json.dumps(model))
 
     models_block = _emit_models(model)
     thr_block = _emit_symbol_thresholds(model)
@@ -119,10 +120,26 @@ def generate(model_path: Path, template_path: Path, out_path: Path, calendar_fil
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=Path, required=True)
-    parser.add_argument("--template", type=Path, required=True)
-    parser.add_argument("--out", type=Path)
+    parser = argparse.ArgumentParser(
+        description="Generate an MQL4 strategy without modifying the source model JSON."
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        required=True,
+        help="Path to the model.json file (left untouched by the exporter).",
+    )
+    parser.add_argument(
+        "--template",
+        type=Path,
+        required=True,
+        help="Strategy template containing the exporter placeholders.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="Output path for the rendered strategy; defaults to the template path.",
+    )
     parser.add_argument("--calendar-file")
     args = parser.parse_args()
     out = args.out or args.template

@@ -81,7 +81,9 @@ on rolling feature windows, its probabilities for each training sample are used
 as soft targets for a linear student.  The distilled coefficients and teacher
 evaluation metrics are saved in ``model.json`` and are embedded into
 ``StrategyTemplate.mq4`` by ``botcopier/scripts/generate_mql4_from_model.py`` for use in
-MetaTrader.
+MetaTrader.  The lightweight ``scripts/generate_mql4.py`` exporter performs the
+same embedding for distilled sessions without mutating the source ``model.json``,
+making repeated runs side-effect free.
 
 ## Memory usage
 

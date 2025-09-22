@@ -3,7 +3,18 @@ import math
 import re
 import subprocess
 import sys
+from importlib import util
 from pathlib import Path
+
+_SPEC = util.spec_from_file_location(
+    "generate_mql4", Path(__file__).resolve().parents[1] / "scripts" / "generate_mql4.py"
+)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - import guard
+    raise RuntimeError("Unable to load scripts/generate_mql4.py")
+_MODULE = util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MODULE)
+generate = _MODULE.generate
+
 
 def sigmoid(z: float) -> float:
     return 1.0 / (1.0 + math.exp(-z))
@@ -26,6 +37,42 @@ def action(prob, thr):
     if (1.0 - prob) > thr:
         return "sell"
     return "hold"
+
+
+def test_generate_does_not_modify_model(tmp_path):
+    model_path = tmp_path / "model.json"
+    model_path.write_text(
+        json.dumps(
+            {
+                "feature_names": ["spread", "slippage"],
+                "retained_features": ["slippage"],
+                "models": {},
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    original_bytes = model_path.read_bytes()
+
+    template = tmp_path / "StrategyTemplate.mq4"
+    template.write_text(
+        "#property strict\n\n"
+        "// __GET_FEATURE__\n"
+        "// __SESSION_MODELS__\n"
+        "// __SYMBOL_THRESHOLDS_START__\n"
+        "double SymbolThreshold()\n"
+        "{\n    return g_threshold;\n}\n"
+        "// __SYMBOL_THRESHOLDS_END__\n"
+    )
+
+    out_path = tmp_path / "strategy.mq4"
+    generate(model_path, template, out_path)
+
+    assert model_path.read_bytes() == original_bytes
+    rendered = out_path.read_text()
+    assert "OrderSlippage()" in rendered
+    assert "MODE_SPREAD" not in rendered
+
 
 def test_python_vs_mql4_parity(tmp_path):
     spreads = [1.0, 1.2, 1.1, 1.4, 1.6, 1.3, 1.5, 1.7, 1.8, 1.9]
