@@ -48,6 +48,31 @@ def test_multiple_strategies_run_concurrently(use_shm):
     assert duration < 0.7
 
 
+@pytest.mark.parametrize(
+    ("market_data_factory", "use_shm"),
+    [
+        (lambda: ([1, 2, 3], [1, 2, 3]), False),
+        (lambda: ([1, 2, 3], [1, 2, 3]), True),
+        (lambda: ([1, 2, 3], (item for item in [1, 2, 3])), False),
+    ],
+)
+def test_all_strategies_receive_complete_market_data(market_data_factory, use_shm):
+    expected, market_data = market_data_factory()
+    reset_metrics()
+
+    def strat_a(data):
+        return {"a": data}
+
+    def strat_b(data):
+        return {"b": data}
+
+    run_strategies({"A": strat_a, "B": strat_b}, market_data, use_shm=use_shm)
+
+    aggregated = get_aggregated_metrics()
+    assert len(aggregated["A"]) == len(expected)
+    assert len(aggregated["B"]) == len(expected)
+
+
 def test_strategy_restarts_on_crash():
     reset_metrics()
     flag = multiprocessing.Value("i", 1)
